@@ -1,0 +1,19 @@
+# Mobile API Security Configuration (public/local fail-closed defaults)
+# Production values are injected via mobile-security.yaml.template + envsubst
+
+enabled: false
+signing-secret: ""
+signing-required: false
+max-request-age-minutes: 5
+clock-skew-seconds: 30
+nonce-ttl-minutes: 10
+# Proxy-injected secret authenticating the X-Chronicle-Internal-Web signing
+# bypass. Blank disables the bypass; no literal marker is trusted.
+internal-web-secret: ""
+# Canonical public HTTPS root origin embedded in enrollment manifests.
+public-base-url: ""
+reviewer-enrollment:
+  enabled: false
+  secret: ""
+  study-id: ""
+  participant-id: ""

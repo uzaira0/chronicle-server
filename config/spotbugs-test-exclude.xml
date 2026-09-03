@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!--
+      Kotlin's inline/reified Mockito helpers emit unreachable primitive cast
+      branches at each call site. Scope the waiver to the test classes that
+      currently contain those generated branches, so new classes still fail.
+      This filter is attached only to spotbugsTest; spotbugsMain is unfiltered.
+    -->
+    <Match>
+        <Class name="~com\.openlattice\.chronicle\.(authorization\.HazelcastAuthorizationOwnerLockTest|controllers\.(AdminControllerTest|AuthorizationsControllerTest|DashboardControllerTest|ImportControllerTest|MobileEnrollmentControllerTest|MobileReminderControllerTest|NotificationControllerTest|OrganizationControllerTest|PermissionsControllerTest|PrincipalDirectoryControllerTest|StudyComplianceControllerTest|StudyControllerTest|StudyLimitsControllerTest|StudyParticipantPolicyImmutabilityTest|SurveyControllerTest|TimeUseDiaryControllerTest)|controllers\.v2\.ChronicleControllerV2Test|filters\.(ParticipantFormAccessFilterTest|RLSContextFilterMutationTest)|mapstores\.stats\.(ParticipantStatsCacheTest|ParticipantStatsMapstoreTest)|services\.(candidates\.CandidateServiceMutationTest|crypto\.EnvelopeRoundTripTest|enrollment\.(EnrollmentManifestServiceTest|EnrollmentServiceMutationTest|ReviewerEnrollmentServiceTest)|export\.ExportServiceTest|roles\.RoleServiceTest|studies\.(StudyComplianceServiceQuarantineTest|StudyLifecycleServiceTest|StudyLimitsServiceTest|StudyServiceCachePublicationTest)))"/>
+        <Bug pattern="BC_IMPOSSIBLE_CAST"/>
+    </Match>
+
+    <!--
+      Kotlin emits a null guard on every lateinit field read. In these setup
+      methods SpotBugs treats later compiler-generated guards as redundant.
+    -->
+    <Match>
+        <Class name="~com\.openlattice\.chronicle\.services\.(apikeys\.ApiKeyServiceTest|crypto\.EnvelopeRoundTripTest|dashboard\.DashboardServiceTest|enrollment\.EnrollmentServiceTest|export\.ExportServiceTest|quality\.DataQualityServiceTest|studies\.(StudyLifecycleServiceTest|StudyLimitsServiceTest|StudySettingsAuditServiceTest)|webhooks\.WebhookServiceTest)"/>
+        <Method name="setUp"/>
+        <Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/>
+    </Match>
+    <Match>
+        <Class name="com.openlattice.chronicle.controllers.ChronicleServerExceptionHandlerLogRedactionTest"/>
+        <Method name="attachAppender"/>
+        <Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/>
+    </Match>
+
+    <!-- Intentional JUnit ::field.isInitialized cleanup guards. -->
+    <Match>
+        <Class name="~com\.openlattice\.chronicle\.(deletion\.ParticipantErasureTest|storage\.rls\.(AuditTrailImmutabilityRlsTest|CandidateOrphanWriteIsolationRlsTest|EncryptedPayloadsRlsTest|RLSConnectionRoleEnforcementTest|RLSDataSourceBeanPostProcessorTest|RLSRequestContextTest|RLSStudyIsolationTest))"/>
+        <Method name="tearDown"/>
+        <Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/>
+    </Match>
+    <Match>
+        <Class name="com.openlattice.chronicle.services.crypto.EnvelopeRoundTripTest"/>
+        <Method name="setUp"/>
+        <Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/>
+    </Match>
+
+    <!-- Trusted in-repository migration SQL is intentionally executed verbatim. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.rls.RLSConnectionRoleEnforcementTest"/>
+        <Method name="installProductionRlsMigration"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+</FindBugsFilter>

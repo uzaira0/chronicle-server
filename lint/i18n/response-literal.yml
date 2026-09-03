@@ -1,0 +1,60 @@
+id: server-i18n-response-literal
+language: kotlin
+severity: error
+message: >-
+  Hardcoded English in a response the web app or mobile app shows to a person. Route it through
+  Messages.get("key") / Messages.format("key", args) and add the English entry to
+  src/main/resources/messages.properties. A protocol-level rejection that never renders as prose
+  may be marked with "// ast-grep-ignore: server-i18n-response-literal" on its own line above.
+note: |
+  Matched by node shape, so comments and line breaks inside the call do not hide it. Only a
+  direct string literal (or "literal" + expr) counts; "$detail" alone carries no English.
+ignores:
+  - '**/src/test/**'
+  # Request-hardening filters reject malformed protocol input before any handler runs; their
+  # reasons are never rendered as prose by the web or mobile clients (see docs/I18N.md).
+  - '**/configuration/SecurityHardeningConfig.kt'
+  - '**/configuration/ParameterPollutionFilter.kt'
+utils:
+  literal:
+    kind: string_literal
+    has: { kind: string_content, regex: '[A-Za-z]{2,}' }
+  literal-argument:
+    kind: call_suffix
+    has:
+      kind: value_arguments
+      has:
+        kind: value_argument
+        has:
+          any:
+            - matches: literal
+            - { kind: additive_expression, has: { matches: literal } }
+rule:
+  kind: call_expression
+  any:
+    - all:
+        - any:
+            # ResponseStatusException(status, "..."), ResponseEntity("...", status), reject("...")
+            - has: { kind: simple_identifier, regex: '^(ResponseStatusException|ResponseEntity|reject)$' }
+            # response.sendError(code, "..."), ResponseEntity.status(x).body("...")
+            - has:
+                kind: navigation_expression
+                has:
+                  kind: navigation_suffix
+                  has: { kind: simple_identifier, regex: '^(sendError|body)$' }
+        - has: { matches: literal-argument }
+    # ApiError(message = "..."): only the message is shown; `error` carries the HTTP reason phrase.
+    - all:
+        - has: { kind: simple_identifier, regex: '^ApiError$' }
+        - has:
+            kind: call_suffix
+            has:
+              kind: value_arguments
+              has:
+                kind: value_argument
+                all:
+                  - has: { kind: simple_identifier, regex: '^message$' }
+                  - has:
+                      any:
+                        - matches: literal
+                        - { kind: additive_expression, has: { matches: literal } }

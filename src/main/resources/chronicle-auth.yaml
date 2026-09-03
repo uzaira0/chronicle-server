@@ -1,0 +1,8 @@
+# The distributable server must not contain a usable shared signing key. Supported deployments
+# render this file with an operator-owned key or OIDC/JWKS settings. With no external
+# configuration, ChronicleServerSecurityPod fails startup instead of accepting a public secret.
+configurations: []
+testingLoginEnabled: false
+allowProductionTestingLogin: false
+roleClaimNamespace: "https://chronicle.app/metadata"
+users: []

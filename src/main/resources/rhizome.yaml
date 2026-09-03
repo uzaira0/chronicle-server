@@ -1,0 +1,35 @@
+enable-persistence:  false
+session-clustering-enabled: false
+
+hazelcast:
+  server: true
+  group: "local"
+  password: "trellis"
+  cp-member-count: 0
+  seed-nodes:
+    - "localhost"
+  port: 5710
+hazelcast-clients:
+  IDS:
+    server: false
+    group: "local"
+    password: "test"
+    cp-member-count: 0
+    seed-nodes:
+      - "127.0.0.1:5710"
+postgres:
+  citus: false
+  hikari:
+    jdbcUrl: "jdbc:postgresql://postgres:5432/chronicle"
+    username: "oltest"
+    password: "test"
+    maximumPoolSize: 20
+datasources:
+  chronicle:
+    citus: false
+    initialize-tables: true
+    hikari:
+      jdbcUrl: "jdbc:postgresql://postgres:5432/chronicle"
+      username: "oltest"
+      password: "test"
+      maximumPoolSize: 20

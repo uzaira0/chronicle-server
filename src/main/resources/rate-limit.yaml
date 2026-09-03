@@ -1,0 +1,75 @@
+# Rate Limiting Configuration
+# See docs/SECURITY-HARDENING.md for details
+
+enabled: true
+
+# Default rate limits (requests per minute)
+default-requests-per-minute: 100
+auth-requests-per-minute: 10
+sensitive-requests-per-minute: 20
+
+# Tiered endpoint rate limits (requests per minute)
+health-requests-per-minute: 1000
+read-requests-per-minute: 100
+write-requests-per-minute: 60
+admin-requests-per-minute: 20
+
+# Burst capacity multiplier (allows temporary spikes)
+burst-capacity-multiplier: 1.5
+
+# Per-study rate limit overrides (study UUID -> requests per minute)
+# Studies with more participants or higher data volumes can have higher limits.
+# Example:
+# study-overrides:
+#   "550e8400-e29b-41d4-a716-446655440000": 200
+#   "6ba7b810-9dad-11d1-80b4-00c04fd430c8": 500
+study-overrides: {}
+
+# Whitelisted IPs (bypass rate limiting)
+whitelisted-ips:
+  - "127.0.0.1"
+  - "::1"
+
+# Do not implicitly exempt RFC1918/private clients. Behind F5/Traefik, real
+# clients can arrive via private proxy hops; use whitelisted-ips for explicit
+# exceptions only.
+whitelist-private-networks: false
+
+# Exact whitelisted paths (bypass rate limiting)
+whitelisted-paths:
+  - "/healthcheck"
+  - "/actuator/health"
+  - "/actuator/prometheus"
+  # These exact operational paths must remain independent of the
+  # Hazelcast-backed limiter. Similar-looking sibling paths are not exempt.
+  - "/chronicle/internal/health/live"
+  - "/chronicle/internal/health/ready"
+  - "/prometheus"
+  - "/prometheus/"
+
+# Authentication endpoint patterns (stricter limits)
+auth-paths:
+  - "/auth/"
+  - "/login"
+  - "/oauth/"
+  - "/api/auth/"
+  - "/chronicle/v4/mobile/reviewer-enrollment"
+
+# Client IP extraction
+client-ip-header: "X-Forwarded-For"
+client-ip-header-fallback: "X-Real-IP"
+trust-proxy-headers: true
+# Trust only the direct Docker/Traefik bridge by default. Add explicit F5 CIDRs
+# here if they should be skipped in X-Forwarded-For chains; never use 10.0.0.0/8.
+trusted-proxy-cidrs:
+  - "172.16.0.0/12"
+  - "127.0.0.0/8"
+  - "::1/128"
+
+# Hazelcast configuration
+hazelcast-map-name: "RATE_LIMIT_BUCKETS"
+entry-ttl-seconds: 120
+
+# Response headers
+include-headers: true
+include-retry-after: true

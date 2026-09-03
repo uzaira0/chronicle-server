@@ -1,0 +1,42 @@
+package com.openlattice.chronicle.authorization.principals.processors
+
+import com.geekbeast.rhizome.hazelcast.processors.AbstractRhizomeEntryProcessor
+import com.openlattice.chronicle.authorization.AclKey
+import com.openlattice.chronicle.authorization.AclKeySet
+
+public open class AddPrincipalToPrincipalEntryProcessor(
+        public val newAclKey: AclKey
+) : AbstractRhizomeEntryProcessor<AclKey, AclKeySet?, AclKey?>() {
+
+    override fun process(entry: MutableMap.MutableEntry<AclKey, AclKeySet?>): AclKey? {
+        val currentChildPrincipals: AclKeySet = entry.value ?: AclKeySet()
+
+        return if (currentChildPrincipals.contains(newAclKey)) {
+            null
+        } else {
+            currentChildPrincipals.add(newAclKey)
+            entry.setValue(currentChildPrincipals)
+            entry.key
+        }
+    }
+
+    public fun getAclKey(): AclKey {
+        return newAclKey
+    }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+
+        other as AddPrincipalToPrincipalEntryProcessor
+
+        if (newAclKey != other.newAclKey) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        return newAclKey.hashCode()
+    }
+
+}

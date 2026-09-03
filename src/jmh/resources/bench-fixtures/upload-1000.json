@@ -1,0 +1,6002 @@
+[
+  {
+    "id": "ef74e87a-fcfe-42f0-99a9-204a1b0afad8",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700016441005,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "694e607a-58b8-4940-b3a7-72024e09c210",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700015491903,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f140c75f-99f5-4a09-ad6f-0826b7a497c1",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700044005961,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "7bc6e24b-8a8d-41be-b5c7-95ab09a4314c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700035209290,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ab36d812-e650-4749-a253-1983c5f5af75",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700029208144,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "2bd1b566-939c-4a39-874d-1c40de69c2f6",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700041962434,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "592b0b95-0c3f-447c-a032-20f3b6be549f",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700059281197,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "56792edc-7e49-4106-b56e-ef6f948a9dc2",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700044634120,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7a38fa4d-9772-4485-bee5-b75b10b96bf9",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700033812775,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "71058902-c854-4c55-af76-a797952e500a",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700041087155,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6e7506ee-88d3-4fbf-af06-f1bd2394e466",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700082214598,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "6a523af3-7477-4351-9367-50e872e8d4ba",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700048808956,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "94dde2a7-65f5-4173-8e88-ca495ea584c5",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700074098424,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "bcbe1408-da14-4ec1-b07c-be092a3f1940",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700058507355,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "08d33114-7e1b-4326-a1b3-e1129162f4da",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700000280583,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "78b90488-dfaa-408f-b7fd-54f3ab5c8a89",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700016807075,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "10c5369c-0539-4f78-9d05-3932349a36e8",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700017963142,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "2af4fea5-cfea-46ed-bb99-0325332451b2",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700015492764,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "4e46e8cc-49ce-450d-99bf-52603cc2b030",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700065705877,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "b31bcb1a-c9f9-4823-aa79-a9cf87c60ff5",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700040121778,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ca18570f-d72d-4867-9c83-cf5d259a941a",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700034548994,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "8f51f050-ef89-4f09-bb8d-b33a02eabe8a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700049809008,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a6464563-71b2-4180-b7ad-37442fdcc002",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700011249566,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "bd000051-3311-464d-bbda-47539c8dcf04",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700081425020,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "fd53c2d6-dcb2-4cca-80b3-09ae4bdfde2b",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700069669869,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "eabccaf7-3bc7-4bdf-87bb-c7ed7972a3a7",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700003863712,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "6b452bc0-08b2-4ebb-addf-9055728eec43",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700022123697,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "2d508264-8682-41b5-a7a2-385760f7cffe",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700080246507,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "04d380c4-16a3-41d9-bdf9-121dee8c92b2",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700041696276,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "36b6b1a3-5778-4548-94cf-2a8fc2b4cfff",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700020246963,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "ec130efe-153b-49f6-9d89-a778799c37b5",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700020156962,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4b34eeb7-eee2-4311-8221-49e56f295975",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700047378124,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8e965927-e5af-4ef2-bc1a-06003fdac428",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700022525976,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "0334adf5-25a7-48fb-b9c8-0dd2ed2e9f01",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700011857900,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "42533262-6fdb-4e3a-bddc-253af7bcb7a2",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700061686200,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "83e4cb2a-26a3-465e-b331-e7ce94c4fa19",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700085209377,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "e47c21b9-a674-4fce-b13b-35a8d0fa77e7",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700008079850,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "3c348f06-801e-4feb-9b3a-64240ec49846",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700025088717,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "279ed0a6-459b-4286-9e38-7c8de857a033",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700006409327,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "83a9e212-e0c6-473e-b631-9b594b679299",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700022502234,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "3d2eaea2-ac13-4884-bbfd-e6ba9fff1963",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700019540582,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "c4f4bc3f-abe5-432d-a7b9-3cedd40f4961",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700047069801,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "1b24b24a-f586-45e4-b374-58bf8e21fe23",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700008564637,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a5b74dfc-2c6a-444c-b545-e06a854feb45",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700080970015,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "93a91646-4010-45c8-944a-9613fac76241",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700018585633,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "e32bf001-3c54-4fb4-b810-fdc2b1f36739",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700009598664,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "d854a352-0e29-4343-8896-bc38c7defbaa",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700022371266,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d6a2dcd9-42cd-4873-abda-73cf19391d0f",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700054591405,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "048a3921-db7e-4bfb-89a4-bed999005b87",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700005069937,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "d94acb77-e6d0-42a3-a1bc-5c9773647883",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700007716304,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4264af44-6212-48e3-96fb-05aad4b2069b",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700008762098,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "37b72ac3-b662-4ebb-b671-c0b0c22ee0fc",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700026078211,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "7c28080c-fb22-4261-843c-2c2ee13983b0",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700003238675,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b4ac0e97-8ef7-4895-9e6f-09e983250d6a",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700020451007,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "402284f3-59e8-4735-afef-698b345271ad",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700067955399,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "4a84ab22-97b9-44a4-a266-80b3cbf94778",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700026720717,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "14bb2e16-5bd1-41be-bb14-a63a06eee346",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700008116296,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "4d028084-b2d3-4710-b0cb-3650e14a6a53",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700062336930,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ae74069b-9e27-42dd-b6da-54430090186b",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700028343673,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "085abd1c-ea3d-4523-bc00-c33f14937aeb",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700012816891,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "9fc12f11-517d-4b3c-8e69-5dccb4d7789d",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700043727536,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ace0f2c1-0d4a-4dc2-bc73-00c399e4ab4a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700015089770,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "824b28b5-1f94-4233-b641-f7292b90d2fb",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700019558453,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "3c050d7a-b364-440d-880c-85e2022dc289",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700055279360,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c4ccd484-4cc3-4882-bc84-e4495fe855d8",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700045322415,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2c7c324b-06a5-460f-96ff-ec64e1d3099f",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700041470670,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a5bcad73-4646-43d4-9769-6d40355e7fc1",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700000054005,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "311fc85f-a0be-4a6a-966f-b49eb591e8db",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700051059755,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c4f603d1-a447-4fbd-b9d1-42c2d259287c",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700070899840,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8f5babd4-2db4-41da-a09c-a70019ad560e",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700086124657,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "bbfb8e39-8eeb-4279-8c1a-d49491a1ec66",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700085884543,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "90ec9706-d988-4dd3-a1bc-598401892eaf",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700037437876,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "718c9746-f4c7-4817-b454-1af149bd30cf",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700058761973,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f1e2a17e-6bb5-4472-96ad-ec821f672ece",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700010686378,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a0cf331e-5e90-41a6-8986-b86602be5e53",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700026342770,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "58229398-65d4-4169-b61b-2223d95a60e0",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700065028183,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "20c106f3-675f-48f6-8d2d-e01762240496",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700038337486,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "63fb56ac-31d1-4d15-9aca-7ea1c0ff9226",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700079081172,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "abd9d9dd-8a24-4355-a48c-b25d0ef3dc16",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700020623887,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "6b4f89c9-bec6-4bab-b8a6-ee950b42e2f8",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700069318664,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "337a40c1-be00-46fe-a83a-0cd28efe9969",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700078007651,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "bb1373e9-37ae-440c-910c-019c548a640b",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700012425809,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "d28e331e-0ef1-40ea-aa14-618b02a513de",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700085437054,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "b673560b-d59b-4f9c-b576-641008d02f73",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700062811208,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "8d210a9d-ee65-4e5d-87ac-7393b7c5f4ce",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700061537213,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "dbf5fe01-716a-497d-b14f-45cdc1e5514d",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700029139120,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "22272666-26c5-4ed2-b195-bf62085fa5d6",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700024750970,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ac0179ac-6e8b-4fac-9ab2-8dd0acf41b8d",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700047128002,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "5a5f6759-0b83-4dea-94ef-adab70ec5508",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700038494315,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a445a3f4-6cdc-4663-a06b-f06b7caf9717",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700079546237,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "6ce98e4b-84be-40b9-a995-69b4cfddb66c",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700039729702,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "38c2cc1b-0576-4fe4-868a-9d1befa7e692",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700003634830,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "69477a17-560f-4c6c-b398-c796c8e57903",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700007133309,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "57ab2196-2f12-406d-a212-c90334487a7d",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700040017249,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "64bc232d-402e-41b2-a529-3db459bb2305",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700021726349,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0fc092f6-1b2f-48df-8297-734bd12dd36b",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700085994295,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "7ece2a7b-02a0-4ed9-880b-0b44f81e23a0",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700036650910,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8c2c59f0-f578-4019-8d64-9ebe3e9e07cd",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700012924215,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e0107683-c33a-4230-b822-7b5a7fac2b8c",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700071125919,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "193895ec-b052-4880-a063-0071d278d7da",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700076990101,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "5bff201e-a551-4c0b-ad4a-c4377df75420",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700017137642,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "5f39ed1d-39ce-4e5e-941c-4c12f5088712",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700017503644,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7f27a56f-6795-46d5-a4d2-5ed77514a1ea",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700000450716,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "8525f23e-4e12-4c47-82fb-c760a12897c8",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700024523781,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0815f97d-7ae8-4345-9ce7-35f75848e442",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700013697562,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "f365be99-a693-4f7a-9631-3e7ee1f073f3",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700073893639,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "faf61489-f535-45e4-b92e-d05c1cc16f36",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700041300014,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "820bbcff-b31f-4824-bad0-1b30145a7c5a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700004992394,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f0d8f653-8559-4d64-b133-5f4d645f2d00",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700017169947,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "106187d3-530e-4fac-b7f3-2993f9608cf5",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700046422280,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ef3dc4ac-1429-4341-a84c-3465544189c7",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700017172396,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a61c2283-37c9-4efe-8baa-c25b5fd6e554",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700036958961,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "66ddb400-8477-405c-8488-c316eca9edd0",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700077295839,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "6b1835bf-f464-4b48-810e-16c3f86f9d74",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700026489536,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a2262aa9-75d4-4c82-b449-a64b51caddb0",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700049962324,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6766de24-078d-43a8-ab71-ffdca51b5411",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700034408695,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "1dbaf37a-e1af-494f-8051-f9dec371b514",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700028653471,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "ee889869-1048-4f99-a368-5f45851a9623",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700075747960,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "3f53d6e0-d7b6-4a0d-9efa-550f6e2397a3",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700066902542,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "cae7db37-71c6-4f78-bac0-9a2ba1839ad4",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700074773459,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "68f9b902-7b3d-471c-8359-468b9f75969b",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700069724238,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "1f7c8263-3b89-4b0b-8506-e5a23a116aed",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700041199262,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "581170fa-1593-467f-9b57-3038e7466f7e",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700037893293,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a12355d5-9d63-4d8b-8408-e804e05ca61e",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700050465194,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "0eeccc3e-8cfa-4265-8824-fc65771f32db",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700065364272,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c0952a0f-a79a-4154-ba76-420a97c64b95",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700077713121,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "da99096f-bc09-46d2-9f9f-bd4d37582346",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700001976662,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "09660e9c-f14c-49a0-b9ed-54bd3adba80d",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700043723018,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "2788f51b-be71-450e-99a7-2f0bf47804a3",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700020257369,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "d7f263c8-4223-4698-bc42-9fcba2023bfc",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700003359834,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "866bd0d5-25b3-4ddb-95fb-3f8adee07691",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700061657678,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "2b74aef6-9257-44aa-80c4-fcd86f1cd99e",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700040624663,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a565ffd3-24f2-4e84-9ef1-ecab6382355e",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700002721233,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4326d0e7-2b19-4382-90fe-dfc47f1ac4d4",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700004121256,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "c4f0bf5a-5a3b-46b0-b951-a4eac3035c67",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700078350532,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8b24a570-db89-46af-8a6b-167c85ed23c4",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700024962538,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "eb035a91-f048-41dc-8d1a-d95ce00e0eaa",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700039895356,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8dbffd4a-e570-4ec4-809e-ed17f9fc2f39",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700069653921,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "090ebd5b-d0d5-4147-8a4a-fa616b360c4e",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700037171426,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "02eb5a4a-3e37-4732-95b1-31b8afe9b57f",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700039760745,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "6b868831-a6c5-42fd-ad2c-50d1ec338201",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700023817064,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "8f5e61b0-b0d9-4360-b278-4d990b479625",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700062136380,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ed96da9c-dfb8-4584-9775-b305d36fba01",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700067181697,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "987715f7-7bb4-462e-a1bb-f2c0c8c0dc30",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700054987804,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "5d0c3521-4d65-4b89-96ac-e592855a93bf",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700065077406,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "09bc936b-f44a-49bb-8f7b-e6b95d3d255c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700032017586,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "f0ee2250-00f7-484e-9ddb-2119c01758ea",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700074077000,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e84295ff-5840-4cba-a04d-2d6035fd014f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700032398868,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "03247c95-fafc-41b2-b5c1-30931776348a",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700008387008,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "eb3e4cf7-ce6b-4bbc-b4cd-21067477312f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700073880056,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8b313542-1b7e-4205-8e4b-65ccd03b85c4",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700007332498,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "951114dc-8358-4bfd-96b1-c17b2b9df80d",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700046354663,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e2338df0-8f48-4e48-a46e-6f9204a0788a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700036799765,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "27ebf28f-3f37-4fe1-97de-afea1cef4ec7",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700047603525,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "6ffbea72-e5c9-47ea-9033-5b2270d45d53",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700008313975,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "fd5df32d-b5ad-40c6-ae4e-fc81c64dcbe5",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700038948785,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "26ad8cc6-808c-42b5-b5a8-21ddf5c05617",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700056193751,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "46e7af4f-91e0-467a-a891-11325313cec2",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700011924808,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "80842bba-732d-4d26-ae56-1135c0458a40",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700053191356,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "9af22d57-09f1-4826-97cb-18ed1febe0a8",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700061117916,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ad4d2f98-7941-4223-810c-822faab8a804",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700077050794,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ae3a9afa-087a-43d3-a0bc-f1e9d04ea7ca",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700049814055,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "add6d2b1-d3e1-44e9-8a2c-a223fbd5ae06",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700060598542,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a7939b59-47aa-447f-89cc-50763b90a3c0",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700021290520,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9aafd944-ca2e-467e-8a20-7f5906ec9a27",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700062005803,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "24ff0ee7-3a00-4fb1-b977-5a8c07e840bc",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700085144549,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "726a6a99-bfcd-482c-bf8a-2ddbdd7f0de7",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700081418973,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "171a460b-ae4d-4afd-bed3-cdb1b6a8b66a",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700083703954,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "d5b35c9d-555f-4767-a8dc-b19c26abd5f7",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700059712014,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "75aadddc-a338-4435-be27-973af71e8b33",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700056437956,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "396599fb-4c3d-434d-ab69-4267e3e9a8b8",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700084706063,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "28d847ef-4574-4e84-a519-19cf63ac0e3a",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700034592639,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "91f5ad3b-3f5d-4d00-a742-bbefec236c34",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700033122396,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "107e0401-9af8-486f-844a-74dc3bac3b22",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700028694679,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "c495b3e7-d1a8-465d-b55d-ff2bcc32f7d4",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700015669176,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "b40730c2-ba01-4212-b1f8-32f1979d2a31",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700078158900,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "8b893bc4-88fd-4e18-8d07-e0483b537a04",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700086116655,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "acb191bf-9541-47c7-bcc7-05e67a6f993f",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700004813821,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "60474d68-908d-4e53-a184-884c19eddd4b",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700070371574,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "770f3659-1d0c-445f-a6d7-819f2ae7db6b",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700008430842,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "1c32a3c5-3503-4a94-b10a-34d045911511",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700006674855,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f2b33e96-9159-46ab-9818-0464e989f152",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700007567498,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "804a929b-867b-473c-935d-e1dfa6854cb5",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700067926503,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e7850a0b-3662-43d3-86d2-4d727ddafc84",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700074418359,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7ec2d49b-0be5-4717-a645-5fe924b18b38",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700057758229,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c9f08c9e-6328-4fdc-86aa-7217ca508d67",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700022135552,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ad0bc231-1e7d-4eda-8bbd-be6ac65d6b1e",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700081434695,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "e51363cb-e667-4058-bf66-9b4803814100",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700040029860,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "0e617452-782f-4a43-95c5-b3f75f685f9e",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700057596111,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "ca3c7b47-955c-4ad5-b6a4-ccf35fe0435b",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700052575506,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ffa02627-42cd-4fed-a28e-2ff94b530e07",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700081643208,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "38cfc276-9d28-4edc-afee-4e1e25161824",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700064424717,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "b6f84be3-86fc-4f5a-aaed-8e6ed2d4ddc2",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700080886127,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "978f2d10-3db1-44b7-87e2-19eb8bbb51ca",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700032081181,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "768a76e8-fa86-44e9-a6ef-ac23f84d5e20",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700029333068,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "49cceca9-7a8a-4a2a-84bd-82ed20400641",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700079887158,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8bfaf6b5-7c7d-43ad-8912-cbae0ae9ed25",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700084110270,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1a67bef6-a2bc-45c3-8efc-c99a7f7d3c32",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700005918011,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "1c4f6fa4-cd5d-48bb-a635-b545c9810303",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700070668058,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "f003a0eb-0630-4660-a2eb-55afad48fcdf",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700025590847,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "1c17131d-1168-4011-bc8c-faa7e61e6de7",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700051003688,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2c4b0abb-152e-4a29-8b10-a33b40652086",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700056038950,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "bce107d0-0988-45ea-af8f-05bd2c8f4ef0",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700033470936,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "b862b5a2-a4af-456f-bd25-0d060b07423d",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700011384636,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "eb8ad52c-4a37-4f62-b7b7-c13c5a3ee032",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700080518161,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "cde0c958-dfb6-48e4-b034-0675ee4afb7e",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700064389429,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "c9d8eeb5-ee5c-41bb-a1f7-097b799fb641",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700059600120,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "36bdc15e-e14a-4477-8a00-680a15ada8e3",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700033148094,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "d0de65ef-512c-4466-9d85-ca791f82048e",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700064441467,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "291a785e-e8d7-43ca-a632-fc165890b4ce",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700034652280,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "43e1baea-fc00-4900-ae49-a1deb73e4be4",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700078339961,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "61d99ec7-7076-484d-a29a-e63fb4b9da33",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700067631713,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "bbc76d48-ea97-4afc-be79-30b63bbf82c0",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700010272610,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "28c465ea-b453-4c39-9972-71edc5b84d4b",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700064675616,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "958c66b2-6e80-4366-9f9d-39e427486b11",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700025499282,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9b75a243-3e1f-44d3-92b4-a9e0a26b0e9b",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700025394870,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "43550f33-456c-404d-88d4-069eebe73a28",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700085935516,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ba0f4b78-d31d-45a7-8420-8eb78fdc587b",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700066997329,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2a09ceed-1649-4a24-8682-c3658201de01",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700021036689,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "88ff9956-193d-4adb-81e4-d6d8f4baf479",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700015627807,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "87adbc6e-19a2-4e34-85f1-87eb11975bff",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700034107236,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "08689b0d-fd64-47ac-895d-2ceb922d8b07",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700038591886,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "e2bd84be-15d2-42dd-9766-397ee68e3297",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700039761304,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "27551bff-9581-459c-98aa-3c71d939d98e",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700054493747,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6b0df9a7-29e2-4fd1-b8b9-91e0302d8bca",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700029529621,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ff26c424-de02-4f02-b6b6-1070d31dc7c0",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700023148922,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "6e0401a0-fef4-4311-98f4-121fc4305f86",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700061499623,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6df3595d-5f69-4b83-94f0-989771b564cf",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700017916212,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ad5aee9a-23c4-434b-a64b-ff9b5fddf368",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700015432540,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "ef739a78-d64e-47ff-9f61-ef9850864701",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700044196325,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "9a2f153b-d91c-4b22-ba0d-8375382751ba",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700038560153,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "ee60fa03-6c03-4d8e-b2ce-e5260da398ca",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700061744206,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "bb9c0b55-4e57-4deb-bb91-0d755c5a702e",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700014282116,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "03d181b3-2bb8-4728-93dc-d8dbcdef3994",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700058441859,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "78b49c91-3522-47f5-8733-181268255f12",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700006142571,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "176d9001-c514-41e7-a032-4aca163d5129",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700044381770,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "840772c7-a484-4824-b236-3fe06ba7994b",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700065159177,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f10b8466-d3e6-4bb8-90f0-26aac89de7c0",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700051362699,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "777ace46-6cd9-40c2-96d7-833abdbcc039",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700051680503,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "bd63e592-1457-4541-a64c-d786ace275f3",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700013828955,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "16e05d89-22a1-4274-96a5-7844faf1d620",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700068750926,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "880028a2-e237-4e80-9158-65d590be4684",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700085694757,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "52dd8337-0b4d-4fcd-a992-32d887d36cf4",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700030188230,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "cb43c94f-34da-44d0-83aa-c4df0b0d4f90",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700051122663,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "dced711d-017d-4012-902e-b6d8382ba77b",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700006198743,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "29319191-42af-4f80-bbe6-f235379f847b",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700086252351,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "0934ba93-0fa3-4bb6-ac08-3b86c323724c",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700072578580,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "510d9042-5b9f-4ef4-ad3e-a24216441b14",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700012419429,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7fd23234-cedc-4f39-b9d2-d24124d22a32",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700070540703,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "44e5729f-806a-41b9-8ff8-69ecd29fe297",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700010613463,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "4de33744-6271-4a0f-8a56-65c1d1ef48f6",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700084911352,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "fca4e293-0092-47c1-bac1-62b91fd337aa",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700048564230,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7be31e50-5f84-4f63-8bd1-6d6771a0a3be",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700041184325,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "bbb01104-cbed-4c56-af38-79d6e3120c84",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700045002222,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "dfa2cd98-a33a-4ed6-9749-63465e716b3c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700082681336,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "bec828fc-e716-4e05-a9d2-fabef37e3d02",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700037331539,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a960411a-ce8b-4535-80e2-bedfbff695a3",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700027555249,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "3a114e2a-dac7-4caf-86b7-3507bc15f2ae",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700085712684,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "7c2e5229-d899-4331-b8cc-1d7a34450257",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700036740407,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "cb2c24bc-c065-4fc1-a7f7-23504a0ade60",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700021871403,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "408c25bc-b53b-4d82-9016-1d6fdf2a04cd",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700051650531,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "26675258-c257-43ce-b12c-10ced8d0eb50",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700080071241,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a75d37a5-c451-49d2-b455-e7a684e73262",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700056082756,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "df78886f-97bd-4011-b2eb-501c928f363f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700066600486,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0a372696-d067-47e2-bbe2-8194679414e8",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700081316808,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f4645dc9-989d-4c2a-b8b6-c623c1cf4e40",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700047410200,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "db2d1977-79e4-4ad1-a3d2-d12bbc73e863",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700065663911,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "6ce3b795-4607-49ed-8444-6dd25d25be13",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700052466604,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6ac86db8-a907-429d-8e44-86cbd71c1a53",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700022385475,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "775847c5-cfb9-454e-821a-1d015178d74c",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700071488279,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "d727ac4a-4432-44c8-bc8b-b161620575b5",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700000728566,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d40b1b13-068d-49a1-b821-838bcb385518",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700022759839,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "80f73950-f265-4ecb-983e-61f21e9ea185",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700005798678,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "8a8a810e-ca4f-4e90-bdbf-8b90e19a8ecd",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700064752731,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9ca4cd99-f2f9-416b-a3ee-033a45aba2c0",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700082805760,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a1f395b8-6116-4f8f-b9fe-f8e731e7e7e7",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700012942956,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "06f506a2-9130-401b-920d-4be4f1916c9f",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700085037823,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "4f71c48d-e331-4564-9994-e6297e98fbbd",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700036206860,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "72a4fb35-633d-4c1d-a3b9-7db9618215ea",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700030232405,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "2ad40123-cfc6-4cdc-a2fa-97fa14430ffa",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700037291355,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "ec1ed7a9-6e60-40cf-a3a5-b246fea7d2ed",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700054204875,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "5cb1840b-bbff-4baf-aadf-f84f8d336607",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700082682981,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a208b286-aaaf-4ac7-b7dd-2552c3825afc",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700056422912,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1db4d3ba-d04a-4d1d-b961-a7291ffb2688",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700067412594,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ab87fd5c-d9f9-4f6c-b2ac-435d308b562d",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700032026163,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "9df6c9ee-d457-4bb4-af0a-a8063fa15611",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700026975252,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b87d0b71-ddea-47ff-982a-d85396c91261",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700054766179,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "9141d6d1-7dbc-4e01-b320-34024b760c34",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700043413669,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "3e6aa3de-1429-4f2f-903b-9967189ff252",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700085673121,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "64d485fd-f9f6-4688-aa5f-88cb163bcb0c",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700081918174,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "027ae428-9444-4fb6-8d76-c6bb55a5b5bf",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700019500658,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "5d28b4cf-3733-4312-8273-ae63a062209b",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700024931412,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9be8d8ee-446c-4aeb-8425-2549ee0f5bb5",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700039762701,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "f2b8237d-7298-4694-a923-72b1a9aedaff",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700075794073,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "4d8e52de-46e3-4128-ad83-ddae93fab5db",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700071274714,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "89d0d50e-21d0-4e46-aa18-143522585efa",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700000765503,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9748124e-c395-4904-9ad3-ac35f6e2df29",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700031569894,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c8a59ca2-f4b0-4d36-848c-26304777d9b7",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700005390990,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "775e1b48-6e03-4f25-8da2-0c43725c25c3",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700023769685,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8c8adb53-4041-4eae-b080-c24e06d29e53",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700043194680,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "2d8bebee-96b1-4000-911a-c7d0e1cd6783",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700060175025,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d81694dd-a244-4a15-b950-89926c715301",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700056586466,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "fe25735f-80e1-43fc-953d-0ba19e8eaaad",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700026669368,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ef145fc9-e69f-4188-85ec-6e4461e21024",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700054628830,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "f071b1c8-3fb6-4f46-9422-be226e445694",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700016448390,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "d4f99a87-bd53-452c-9e1c-79bbee05a140",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700064049639,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "5d276d58-5f3c-427f-9518-3c63ebfc8a20",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700072931982,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "61f11d04-f127-4486-8350-3ab1a1f6be5b",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700073324328,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f9b521e7-a2e2-458d-8e98-1bffbee83eb7",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700066749578,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a7b13f29-e5d2-4763-a0ee-e4773ec863a9",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700062890584,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "55230574-2a43-427c-bb73-698509dac248",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700031099042,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "06228933-a70b-4d2c-ac05-3be95d1f1de9",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700050654622,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "30415b71-5e5d-4dbf-a44b-6f3600a6ab7f",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700054610396,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "cb83600f-58ec-4352-9a42-9e15cc8d63e3",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700058772388,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "97382d5f-bbc5-403c-8779-ff4014b0c98d",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700037438275,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4ef5f339-28f1-4fc2-ad9c-f58b9d3aac8f",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700031405678,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "7c9dcf46-f95a-48a2-84d3-34a9bd57280d",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700038352198,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "98f8ed08-bf99-49ac-bd0b-fbfc05308dbf",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700025640822,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "edfd6978-5447-49b0-8244-bc0a054ce198",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700075271339,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "5b38ce50-6f6f-415c-8ec4-edbba525c315",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700075685013,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "8b0c18ad-6534-4545-8b50-a7eb9cb9d523",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700016501723,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "686446a7-0713-4f51-8748-500cc5efbba0",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700073470159,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "ed2ac3ce-cadb-439d-bf8b-cd428d87ce36",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700009345527,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b42ad8a7-5de2-46af-97fe-c2c8f3e79815",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700079016411,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "37c7306c-fb75-4a19-9e6e-af8465122ca1",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700055470088,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c1a782c9-7261-497b-93ee-3c2532299984",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700055043079,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "13dee85f-06f1-4db6-b47b-f3122abf1ab4",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700023637954,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "01cfcc12-ad44-444c-86ae-567632c4ff46",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700000677532,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b4da69b5-0674-4978-af8e-30bd593e7a67",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700068726111,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8d51fbdd-f420-4b84-a0f5-5f1a786ff379",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700065072066,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "342c3fa8-54c3-4951-ad39-4ec1970308ae",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700037128765,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "14c1796b-4559-4f30-b5c8-96801b7f518a",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700016936043,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "a5c61552-fa1a-4dc6-b7a5-1fd95433eae9",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700049781564,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "1932617b-0041-4b64-b49e-22076723d3a7",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700057281778,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "b6f45116-7d36-40a7-af9a-38ed6b552c1c",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700009869552,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "3abb2766-d7e0-4877-84bb-052f799a900b",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700053157638,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "28f1d7f0-b2cf-4266-af8b-5d510d66b3a8",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700054778118,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "5fd9561a-1a7a-4d8e-9d96-1f480ff100fa",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700002206760,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "a3e78392-bdbe-486f-b45e-d3328b11cb8e",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700028574478,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "67550f4b-b36d-40af-b839-5b7d374a3ecb",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700004190493,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c5bc2df5-f3c6-41e0-90b5-f258f9c3bbbf",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700054982257,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "a1742a65-a5b1-4c2f-9ced-f955b29f8577",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700024326344,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "87ea3b6c-2ca1-47be-a9da-0e23d35e567e",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700007934939,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7273938d-5924-4cf0-a85d-be0b0c9b297c",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700013249453,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "538badce-e799-4d40-9623-b6b3163f102a",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700040461364,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6a15519c-add2-4ced-a7e0-4c79ee44c5ad",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700020880825,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "1b443ea6-5e10-4a5d-81bb-9a0165bc07b7",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700068915253,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "54d94b40-f970-48e9-afba-36903bd6852e",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700074622226,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "16a542f6-bf1c-4abb-9f1a-7dfd79025b08",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700030207991,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "cccb62a1-d0d0-403e-addd-62ca645b4648",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700050210650,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "361aa871-58d8-498c-a6ca-66eca60a8f1a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700039295472,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "4e8c4b9d-9ed9-4332-ae27-fd5c53bdec92",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700060214354,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "094e052b-f7dc-476c-b708-058cd34301f1",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700004961964,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "9918e36f-5d88-456c-89bc-a2abc52247fe",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700047094522,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a9c3a7fe-daff-4df2-8b9f-fdf8f16694f4",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700012833648,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4f976466-3400-405f-8e11-0fee21e738b6",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700000029366,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b6628b26-09f2-436d-936d-5829be30417b",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700024350346,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b7f9b9f5-23dd-4a16-97d1-4a23796c4039",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700060662945,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "4f254814-087f-4b45-971a-2362e2bd8d87",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700003349778,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a52ed920-2cd0-42aa-9066-dba0bb78e281",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700001794676,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "129b2d3b-5ef4-451d-accc-1c1093deee68",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700022667754,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e71f1d88-7de7-4d3d-aef3-43ae9d9f101f",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700049575885,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0d5412dc-1240-48f5-98aa-2062b1ef776a",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700081171959,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2d3d8b07-e9c1-4c28-a429-b0a457103d78",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700035929700,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "3869121e-3830-4f94-ba38-9e9e2bf66499",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700077073726,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f47ae861-47c0-4e2d-8c4a-b43d636b3f79",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700041827960,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "f9d6d14f-8718-4634-8049-8fbdb2055a3c",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700035966486,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "160e3b49-5bd4-4c3b-8348-d418b7fba5ed",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700053958800,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ae8310ec-ed01-45e7-955c-a8f95cfac686",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700083506868,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "c3f6aca6-88f9-4ae4-9c2c-350dda49d9d1",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700012471556,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d5552e22-2f14-4a6f-bfe0-9a86813f039a",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700066766050,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "b0a30b54-9d38-4a0b-b8ab-97c64ea87223",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700009231183,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "af00302b-e7c7-417a-845a-c24d0d7ca16e",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700083536412,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "ace5fc44-9ca8-4384-b8cb-ebafc575b0de",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700008939951,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "44f5b847-748b-4b93-8338-eac7549e7829",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700034263261,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e4bad728-ab3d-4009-816f-9f21cc004cda",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700076963899,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "17665d61-90a2-4066-81ba-afa3feabbbe0",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700016856288,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e753eef9-f9b2-4c0a-9a33-d94c1a2ec6d3",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700064452772,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "2756ab6d-3c0e-4322-acd2-7bd6c9ea307f",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700010029417,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "d583b8f7-6656-4208-8292-90902847d895",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700013423003,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "1a65e679-1127-4785-a6e4-0b0c77696a03",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700035861743,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "0ff921d3-76c8-4f95-b108-437a86773e16",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700001932878,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "03abb9b3-2375-4881-b6b2-9e9ba4ef921b",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700085106254,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "94ac2813-096b-43f7-85bf-99f9ef9aa73a",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700029037382,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "10c05a19-b06c-4940-91dd-392b37efbe19",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700008678493,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "5f044ab2-f778-4bf0-8531-4e782ba7810e",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700045779704,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "01664cdd-1b4c-4a9c-b389-df54b07e06ee",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700014701150,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "cbc4a38e-781c-4882-9754-af74a084d4a8",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700082572548,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "d2bd4151-12a6-4499-870c-4f127bcc1148",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700051705645,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "dbf70438-cc87-4c61-9ddc-123f711e6101",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700023619909,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e8b1d625-83cc-419b-ae32-83f7b68613c3",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700075519145,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "cfb1ec30-d3d0-4f1c-baed-49ffea153716",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700060925271,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "d379dba4-dbb0-4551-8188-a616c126f196",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700024713671,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "45d9bb82-965d-4117-b1f7-3d8a8fd338e0",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700065050561,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "0ba7d283-9bbd-4e8a-aaf7-523f32476dbc",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700021308700,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "276890d8-e170-4c6b-87bd-1790dc46589d",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700063453706,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "4103f425-ad95-4d68-8f64-5bbedfcd87ea",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700018265186,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "d4d75425-8c69-47fe-9a8a-3ce20d10c510",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700082957585,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "f63cb31a-4a5a-4dc9-a0b9-13a84b920d23",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700045620688,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "aee57b21-1e59-480b-ad96-1817713f490b",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700049883306,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "8202c558-b09b-4872-9e2e-1ddefc74d754",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700016222769,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c1d6541d-3371-4196-9964-883e785a4816",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700017378130,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a2265a16-dd02-452a-9ebb-233257b41667",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700004319696,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "22f2684a-1dae-45d2-8a8c-371b3d7c5973",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700015327673,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1b0c6e84-9edd-4ff0-8f0a-e3c21a73ddef",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700021314468,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "050d0a44-55d0-47bc-8422-a7cd20276430",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700081435201,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "95d78425-ce99-4111-adaf-ce13041f894c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700014667145,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e6f065c5-2097-43a2-9641-81b7cfeb7483",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700019303672,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "985b8aa4-a3c7-4d3e-ac62-adf82d67d31b",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700033159701,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "dc1f2f20-68a7-4511-bd8e-ea87de38e5ff",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700019041918,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "c343a881-9c5b-4ceb-a22a-f881d49b9027",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700005027127,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "662e4228-4e5d-4923-8a72-64b9bd009c82",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700035418577,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "752abb60-c894-45a7-b54c-e067e9e3007a",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700058670880,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "9cdc0c6a-423d-4524-a63f-875f018cbf0c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700041074941,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "77797e47-2734-4249-a862-0b578fd9a76c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700025881541,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8ea5d500-9d1c-4ae8-aa51-3884d0db2499",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700063177866,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "fbf7ba89-1681-4342-9a38-4f7eb9d5384d",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700015126647,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6580a405-acc5-407e-a449-cb325b39cfed",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700060940762,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "bb9efe63-08d8-42a7-b13f-4fbc1a2e9d62",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700046588682,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "821e97f7-ffa6-4977-a39e-2858c073f1d8",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700066129476,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "bb296637-5951-4e6a-8867-a35d23127cc0",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700027372132,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "cd8656ee-6e8e-40d7-905c-9514bc13c1e1",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700078914191,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a3f3f284-d679-4b36-b080-fc3782477112",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700031752700,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "dba3900d-8aac-4847-8a10-e7d5b124647f",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700033863407,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "5162cf4c-81d2-4915-9313-88ce98acaaef",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700071477321,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "a6bcd99e-54d6-4303-bca2-706665c8e7aa",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700084767161,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a76962e2-200c-4f39-8c4f-df9aaeaffc22",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700030787011,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a19605ab-52d1-4ebb-858e-a861ed444c51",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700073453270,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "286388f8-6448-4e79-abe9-9588d322cc24",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700038241341,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "018cc3c8-3519-4527-b8a7-3fb88955bb4f",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700018394276,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f3258237-ccc0-44fc-b7bf-995bbc192f35",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700072692597,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "1edf2ed0-e5f5-44b0-a9f4-88e2d25d3c3c",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700048426898,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "abeb8d04-3121-4b96-a95a-5fbd09dc0557",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700045180856,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "19a31623-1ab0-4465-869a-1d656fac653d",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700021595067,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "87f36ee7-9a3a-426a-a32a-6259ca4b0d18",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700058475250,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "7a202a79-1d1e-4136-b630-ae443017db19",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700028988167,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a5eeae4b-99fa-4bed-b482-8ccf37631d4b",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700085961366,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "1dfe6017-d442-4045-b7ed-3167a8f2fa6a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700045360402,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "f4383ab2-b0fb-4228-bc28-84f9242739c2",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700036172858,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0d901b82-f13d-4ff4-8f00-87a66fe4845a",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700001240716,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "77dd69a2-82a9-424b-98ff-779e41e3e373",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700046592654,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "c7c2f9f8-44b2-44b8-b925-eb774a2278cf",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700026906112,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b0df0c47-3f68-4431-80f3-e46be8cdcc1e",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700025641790,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "1f3259d1-4e79-4343-919e-b1c4a43ff995",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700017546122,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1272fe76-0cfe-44e3-9d53-3b12288d9967",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700085903923,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "7b8d0c55-53be-4a67-8e57-09300f0e2529",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700080735114,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "4922eb05-9b48-499d-99d7-91f06bed8e20",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700047239267,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "22c6cf4a-5af0-42dc-a9d8-a7e17ed97796",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700083158593,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "623df14e-c513-47f3-b2cb-d4cdb8fe5f85",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700029975119,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "1b0d909d-270b-475f-ba05-5785bb6a905a",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700071550079,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "6271de9f-431a-4715-a33f-47420529254d",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700045249205,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "476ca6b0-3c15-4ff7-9812-4ce6c7bf0f03",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700002995891,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "806fc14d-3eae-494a-88ac-026af96d0540",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700018588722,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "fc34303d-18bc-4960-8dc8-4104f08fd09b",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700043256367,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "1f98db5d-7d5e-4864-a956-9e340308c562",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700046217863,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "04660d97-364b-4694-bfb2-2c43e924d23f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700002743061,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "681e5a0c-57cb-4684-8648-8e87d9701afb",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700006085095,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "41a6baa9-0f40-471c-a595-240575127ee5",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700011160351,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "9b23b68e-6358-492e-8a83-54136a8137d4",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700028581784,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f1672647-477d-4894-845c-73768e049062",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700026884517,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6afade11-f8c8-4bb4-b174-9320967ce8b5",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700028198971,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "d5d5424e-5b09-4c39-a625-f82fc6ed1499",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700064458245,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "d6e3fd5b-5ce9-466e-9e16-2dad5f16aea7",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700072982436,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a5f69bc9-abf6-46f9-bee1-6cbc4edfc30d",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700068371551,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c587368f-315d-4ab0-a353-b9b8dcc7e98c",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700011086121,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "67ad6122-fe99-4ceb-8530-cf471e495eec",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700045270236,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "da64fcb4-6905-4861-8ae2-3afdcebdd536",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700037528735,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "04e54e98-d4ec-45f3-9a97-392dff68f233",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700068118209,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "9fafa526-4417-41f6-b13f-686db886fda0",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700019816658,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9db5a2b8-beec-4b05-944e-fd176dd65747",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700056747718,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "f06a863a-3167-4aab-a310-4e89f1fc3904",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700016701491,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "2b0e0504-f24d-4846-9ea6-ffa6025fd19c",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700022693642,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "56060f74-2ee7-430a-b9b0-11993f5e83a2",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700056219897,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "857b7e2a-4c2e-4e81-a9cf-16218278dcfe",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700040907266,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "23127452-f392-47a3-b713-9b6dde894bb5",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700066447494,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "fa8e5c5a-aa59-4a99-94fe-bf8ae895df8d",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700049161017,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "5fdd3d8b-43e4-4b06-b616-03035c55f375",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700028475950,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "16e58ec9-1da0-4df9-89bd-f4d127e1db84",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700042458221,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "0839dab2-7fa3-4341-a406-8aec7b5d0e1a",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700076482917,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "83e4c39b-d600-40c9-9827-4d4b16821e8f",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700012774842,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a430aa6c-422f-4f42-8d26-79fa039e6c73",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700000539176,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "71db9531-96ce-42cd-ad61-05ebfefae110",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700008408489,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4a791af4-fb54-4040-bb3b-e31b33f72ebe",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700013234949,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "fb26baa7-3641-4f77-8431-e58d8a786755",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700027505789,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "3c714267-ae59-404e-8d05-e45f530096ea",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700082207837,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7d338126-5a23-420d-9a46-3a81c274c089",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700027616884,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "b3ad0911-9796-4ad0-bbd5-7c76c1cbf41c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700037591202,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "7179b906-1ce9-45c1-a3f3-356bd88369d6",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700055804311,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "33cd087d-4c35-4932-9a88-854fbc42c66f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700066478999,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "612f6093-f867-4afd-bef5-2fc8194b7fee",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700067008740,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ad427dca-6dbf-4af9-a686-ffc03fefddd3",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700031833704,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "fdbea52e-ef35-4322-bfe4-96c7d8369d04",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700071790485,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e5a80ede-8fd9-480c-b166-1af4bcd25630",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700042385135,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "71f19233-c1c8-4b86-9c52-9af5e49de151",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700007296951,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "286e8479-da53-4645-b40a-ff6e44674f0e",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700081363691,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "db1f5d99-d1ac-499f-bf4d-a89269b91230",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700056152458,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "c3f567e9-6512-4d14-90fc-284dcdfac09c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700000354667,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "15acfb66-f0da-4275-9711-ce1e57702a61",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700039542756,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "371b0a6d-b1ff-4932-b414-d53fa5445c7e",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700042465356,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "5efcbdbe-28e1-4f6d-8165-20a07c917963",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700024446300,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "842137cf-33e9-4669-aafd-38107c7054da",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700034745273,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "c5103178-9873-4a92-84a2-3139769affac",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700050203302,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "f18efe3e-b2af-4532-8c2c-4bb9eaa9bb47",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700035755473,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "20886842-a18c-475a-90a6-78ea034ab610",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700081168570,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "5dae6afe-4c59-4ac0-b243-13c91f8cb56e",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700083167217,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "b2da0946-6293-42f7-b394-884c790c52e4",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700039311300,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "f3f5e38e-c14e-4e15-9ef6-ab17ab6fd999",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700021680587,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "c34a6d94-9080-4cf1-97d8-856777a8efcc",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700057083950,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "89013a2c-1880-4dc5-9f4f-6e41fbdc037c",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700047295926,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "19aab7d9-8367-4197-a52d-f2039d4fa757",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700039110813,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "24957bf5-084b-4c94-a1b0-d6e18e884dfc",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700052117913,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ddd53849-4011-4641-be38-672703a78c3c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700016626459,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "4bcc24a1-3fb7-40d1-99cd-91f796cb6ac5",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700004931961,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "fd3c4e36-837b-4177-96ae-e4fbf4e50847",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700030197806,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c95299eb-7f42-4272-b63f-bb6deb6e1e9d",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700078376131,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "83b6dc41-d430-4e22-8cdc-ef200c90952d",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700024968462,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "cab83847-aa3f-49f8-ba73-b74b2652c1dd",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700031728270,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "4e2b35f4-2877-496b-b319-78d0c3ea03d6",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700009502214,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "7ab2d927-4823-4694-b8f0-5a04e91c40a2",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700058365856,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "0a093762-f336-4f8f-8843-5d53f526d8ee",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700027939083,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "72ce49aa-acf2-4dd3-8fa0-5745398d27c5",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700058080701,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "eb3abcb2-83ce-4812-9d64-d04236188237",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700076584526,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "695b3028-1d92-4f70-9de5-3052aa6803f6",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700006719578,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8d97e79d-b889-4145-8c16-00689764f564",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700021569590,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a72036ec-b2a0-41bf-9737-672dbcef0045",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700034530198,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "fe279ac8-8c8e-4b7c-ae83-692aba38921d",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700030469396,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "3d854838-7067-4e74-9587-8efa2e5bb3a8",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700050525635,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "26d6975d-caaa-41d5-9aba-63da3121c584",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700045289592,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "b289767e-8a6b-4ae4-bab8-f1ed4c11f8b5",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700008411604,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "aaabb31e-bc7b-41c3-add3-e02fe143bdef",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700028054841,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "8bf5097e-7f9c-4ae7-a0bc-5a7a5bb2840b",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700062850447,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "93fa3b37-beb7-465e-99f5-ce7396a1a928",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700055135302,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "b4028e46-20fa-4390-b0ee-18cbf969017c",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700014983202,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "2f2f8ed8-40be-4386-8910-9468fe94d0c8",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700064545025,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8ed7306f-c948-495f-a7d3-203894d7f261",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700037418336,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "11796aa8-7f52-4d56-b058-9046fffc463e",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700062555071,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "37839409-7c82-4cf1-8e5c-c349d356ce1f",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700044401279,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "8e0c53b5-4547-443a-b052-d5a7796b1b35",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700057756710,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "24c8a555-f775-400a-9945-a9727264e0c0",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700056398505,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d6b13f98-e980-4fdc-aaf3-194b7777a807",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700066917419,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "5ab5c72f-5583-4ffb-90e5-2636e28244b5",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700032996426,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "903c18f5-fc86-4755-8146-3c69898a6cfb",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700026101185,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b3dbe4a4-c5e7-482f-a8f2-f0035566e7b0",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700015195177,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d55892fa-d36a-4d6e-a02a-34afc503f863",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700078813749,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "0468f527-5a8f-450e-adcb-fb28e8af20f3",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700067088800,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "0e9fb779-9ffc-47f8-90be-e54a8634e5dc",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700032268456,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "fc80a74e-46a2-4db1-b569-c9ef7eb46ae8",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700005875126,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "cdf061a5-c603-4811-8ff1-4084effb1e07",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700059669312,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "5d47a450-1869-402b-9a52-2c1431429c12",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700054081624,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "0361418b-3e48-41d4-9cae-fd6595095870",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700002829517,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "20c4c71c-af3d-4139-9087-005b6c154329",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700072340303,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "9fd43218-2efa-4901-920d-d5fd46030895",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700016803266,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8a6b0037-cb34-4e5d-948c-5c9aab33eba8",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700033974885,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "0e4ed3da-ddc9-4533-b101-571819f812bc",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700008615796,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d330ef5b-4d45-465c-b229-a638953f3efb",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700075352037,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "8fa1e07f-7aa7-4545-be16-947ed9f0685e",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700077670841,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1f128a3f-b313-4910-89fe-3cc65b584d52",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700032531041,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b55016f6-9699-470c-b252-07c3a7788cd8",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700043222394,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "174224f1-2dd0-4680-9dcb-26d8b5554a15",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700016402098,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "98e0be3d-023a-4218-8eaa-f4d64588e030",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700005048262,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "073fa2e5-b3f5-45c8-b172-4d233e8fe2f1",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700026841154,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "ccd8cd30-d654-48f2-b9de-2f4d26f601d5",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700045827302,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "80d11b5a-4812-481d-a5cb-dc22a1360aa5",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700047328692,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "07a4168b-a2cc-4ff7-acc8-7fd161481e2e",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700065896231,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "fb6edb7f-396c-4a6a-b575-eda3aef1f362",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700058797441,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c6d8be1c-5198-4f32-aa43-e18abe335515",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700004194732,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "aaeb43d2-4290-4c89-94c8-a5239831046a",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700021736523,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "eaf29bc8-7c9a-4059-838d-b7b9b9e6bf0f",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700081370440,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "663a56dc-fc2c-420d-aec9-2909dfbf6440",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700036838452,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "47cb1fac-9dde-4ef7-be01-69a57adf177c",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700021696107,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "63968d2b-7ff1-4746-946d-e1c83210559c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700048916442,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "86b31b77-4b39-4291-884c-11ec2c6f0f80",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700046355124,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "248d4dc6-ef1c-40af-81d7-66bfc57772bb",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700016885177,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "7e231b97-fa5d-4ce0-bfbb-5bbb1fdc5ed8",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700032219307,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "64b9aec6-fc9a-4bff-85c7-435a5ca23cde",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700035881267,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "0c692c42-0e05-420c-a019-ce027eac76b1",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700042326160,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "66b2f083-54f9-4c65-8090-3b6bb87242bc",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700036654249,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "6bf1e192-4466-4783-8b2c-5f68f1cb730e",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700077317479,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "6fbecee7-9b1c-413b-a297-1f5ad90e642f",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700042511573,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "20e5cefb-f7e3-43b0-b66c-8492d7f8d540",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700014940498,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b2f86397-5210-4ff5-a162-7e5d5be96c72",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700070501794,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "fc8811a7-9269-4620-b223-e1a2628f62b5",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700030720860,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "b080f801-9881-414a-a58b-52cfe363cc2e",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700049891584,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "34af5cde-5f2a-4549-91be-d71e1a81d2e8",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700015741931,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "68ca40bf-d371-4e35-8cb4-192e50e9e07f",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700038607744,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "501456e7-ba43-41fd-b3f1-ee3de0d81ad2",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700039254971,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "80beadbb-761f-42b5-aace-aff87ae22f70",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700024439423,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0a742d0e-039e-41a1-af3e-21712e9688c0",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700019600219,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "13cdd1c0-9b36-445e-b475-fa643a4ad605",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700081185861,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b7f6ced1-cc28-4dc5-8c69-2022643d9adb",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700003879230,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9fd41fad-c51c-4134-ae0f-af6c795e7c27",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700015360986,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a6cb01bb-dc4e-41b9-b14e-9e7fc7f79290",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700071935568,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "1615e63d-8002-4835-a563-d978f9006898",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700070371463,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f037887f-0cf0-4ab2-b8dd-18962d0f31be",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700051961823,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "92017c6e-c9ad-4a7c-97b3-0ae237d03818",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700071905956,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "090f3914-058d-4327-9e8f-d20b1bf0d414",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700056481291,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "75174d62-c535-48ea-8d97-cc560db835e3",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700053859599,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "2dcdedce-e745-430d-93d3-78f7f85908a3",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700016986299,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "222eba8a-c783-40e1-8275-9b2fdc635611",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700010857460,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a3e546dd-f50c-4374-8801-7033ea0398df",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700076171017,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a9d471fe-30bb-474b-b8d0-31ce222bca73",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700049573815,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "1eca19ca-9f8e-4467-9965-a940516ccaba",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700053155935,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "651c85b6-e641-418c-a62f-f3acc6b46e20",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700065423968,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "ef1060b1-6735-4917-b8b1-48945e7c6cf0",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700078811059,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "915b4edd-ee75-4243-be8a-14a514366d91",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700044638292,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2aba07c3-8ae8-436e-97bb-cf0929aa85a3",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700025510244,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "9e675c9b-7574-45ce-83e2-3cf576b460ce",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700003253949,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "cbe172ba-12d9-4f7e-aebf-dbb7050a2506",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700062472615,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c6230a4c-e5e5-4ccd-8953-2c1408eedeb1",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700075352299,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "81187ad6-4a71-411d-90a3-42da1edea7a0",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700069052731,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "5dcc87b0-3447-4305-9d15-71bd4f964bd2",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700034382751,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "0b753228-64f4-4bed-a19a-9730c0915caf",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700042853265,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "dbad9a9d-dd1d-4849-8985-b4dc45bd52ac",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700001457671,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "366cd3fd-fea5-4a0e-89e9-e6bec6836c56",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700077196483,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "c43a6ddd-fbb9-4990-a407-a5388404f95d",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700066924778,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "bb19718d-dd5d-4008-acc5-33b8f5b59959",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700043982729,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "207960fa-2cc1-46fc-bbaf-3e00de380e9f",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700056647601,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "f4ff884f-fa2f-4e6e-97ce-4169dc0ea25c",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700047407323,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "642a1225-ed11-45ec-bef5-db002e060f39",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700057337770,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7f4e7334-0c02-4c73-896b-7b40ac87b6bc",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700024645793,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "2a5fb283-aa24-4a25-bff6-3156a7de7cf5",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700046830945,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "6af52bf6-a855-4922-a4d8-127657f1479a",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700011112178,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f3f86533-f916-49e0-9576-e4eee042fac5",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700061630007,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "d45f212c-0ce8-420e-9903-aaf77a075181",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700012288214,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ac855ae4-a859-4e2a-92c2-974985dfbb58",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700063515032,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "20b63353-17cc-43d8-a9b4-61d12d80dd11",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700024266338,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "9028016f-326a-448e-99f2-9072ff51b21a",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700013710505,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c1df2bb9-1bd0-40b2-95f1-7f8d487f9b3a",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700038628775,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "56cffe37-d0dc-41b8-b457-7b827017dbb7",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700058385663,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "8d5180dd-5ee6-4e8d-8753-c0de600dd51f",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700043418107,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "f35b0130-468d-4ef0-bb50-05d1023404b0",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700017576333,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ba2c61e2-c9f5-4583-9e81-2f9674122caa",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700010818533,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "836cda88-0088-4df9-be91-ae3c345401b5",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700003145848,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "c22098c7-6935-4cea-afbf-86c2efcfcaea",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700031812353,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a67b6ec0-bf2c-41aa-85b4-990d6e18878a",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700059019043,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a98c9cbe-96a2-43fc-b79d-996042595535",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700068087125,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "92e54974-4186-46cf-bfa7-81e87a4b8eb3",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700019636900,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f8aab431-0284-4b8b-84c5-33924f1efe3a",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700059149292,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c473c01f-d700-4a29-914f-3dd4b6493058",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700049076866,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "03fee60c-8590-490e-93f3-70bdfb0d0b8a",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700017485584,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "303de196-a7da-4c84-9572-e06906c5ecf0",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700003432885,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "bb6a260d-e518-45fd-b57a-eb7ae1b1053c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700053973303,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "d77660e7-39b6-49fa-92d9-82b2761fe962",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700070554467,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "559f188b-1a67-4d86-8b05-8d496fa480f0",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700019659184,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e50adb68-c029-4077-8a84-68f5a44a4b4b",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700018508328,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9a94e156-4895-477b-9cd2-8c0d5092d34f",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700047833740,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "aa05d18e-bd1d-4066-83d8-350f53547c3f",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700084032884,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "a650e2b6-c864-4f2e-afd2-c8567006f443",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700058702777,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "97a3a512-3a6a-47bf-a35c-a8d7caed2244",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700084582602,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "6a21fe82-c3b2-4068-b929-43512937eea5",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700081531692,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7eca6687-7dbd-4ce5-a7bb-ebb07a2d095d",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700070419075,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "aefc7198-31ae-4fa8-92ea-b300b68c7842",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700018656288,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "bdafbab3-41c6-456d-897b-4a753baa38ac",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700067277405,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e742ed4f-ffe8-4914-becf-beb085f1fcd9",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700042925210,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "470e46f2-4124-495f-8ff2-fc4cb77ce185",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700042491611,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "318f082f-d1d9-4815-9408-9df6b9de0913",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700067161333,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "103157db-3406-4ae8-bfa8-7b1325b29842",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700013203802,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d91a07f9-cf9f-40cb-be3c-42b5bef71ab1",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700078373112,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7fc41316-d800-4ab7-8f0f-97002b3a3692",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700053303642,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "0897d1c5-47cd-4786-b88e-fa5a2e3a731c",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700079539361,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b395dcf9-9d7e-4800-bb36-e24535845708",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700030502861,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6cc21a6b-49bb-4a9d-8ab0-b278f82c88a3",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700045728977,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8ac759d7-cec8-48b7-8a29-15a6f836eb7c",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700054487860,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c01c8126-3b40-429f-b62d-74765a19ca4f",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700066297476,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "41a27497-901e-4a90-a7da-f213776523da",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700011525861,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "095950bd-dead-4442-8858-b9f5f772aa4f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700007692943,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "d1257998-df4b-4649-a1d0-26953e85cb65",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700056786770,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "307624e8-02f8-4744-af36-9111a2fadc19",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700013555338,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "554ad8d7-6644-481f-9aba-6942ee30ccae",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700035885840,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "6964699b-6fd8-4514-99e6-911008da2e92",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700071299474,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "939dc622-6e1b-408c-817d-e3e192249e50",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700043436881,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7cf46acd-9bf4-4cea-b2eb-bb2c87cedf81",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700070174944,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f23f0576-e2c8-4393-b9ca-d1ba56d7e578",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700064362911,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "266ebea4-21d5-4c1c-8441-6f44cd95f8fd",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700078409861,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "848098b4-433d-42cc-a702-31012d0bbf50",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700001638504,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "dcc35f75-6a64-4f2d-a5fe-31cd070fe6b8",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700024194006,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b560d786-595b-4625-b854-4f3fbe1a3de2",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700004646597,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "99f47773-6918-4f35-acb6-00af073f4d83",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700067452432,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "8bf9fffb-ea77-4486-97db-44a0061ff3e4",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700025017312,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "00f561d5-c459-49a0-aafc-84fbd2ca21f8",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700043786660,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "c28bbacf-dcfb-4832-9564-95f1952b00c9",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700038930439,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "8b4fe362-c962-48b4-b75a-16db90fef151",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700079298712,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1c651068-e75f-4297-bf44-8b0e13aeb48f",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700053896468,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "01b53d3a-d2eb-4529-a9b1-e8c373550b5c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700038596925,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "93147b5f-c7b3-42a0-a739-83c46b002936",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700053290801,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "85752f3b-b9f8-4b68-b479-165ad591b58e",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700043699058,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "61862622-9b66-41e9-bd2b-a4d14096535a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700011777221,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "477408a6-9df3-4385-a47e-8613ae43dddc",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700048941170,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "67827459-533a-4ceb-821c-24383eaea330",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700055215806,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "05354753-22ec-4f85-953a-4dfa4a5aa6cc",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700036358437,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "22e3a030-d468-493a-acb8-3efa54718271",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700076223674,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "db0d3ebe-dd22-4416-98b3-c84b23bcd43c",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700051409847,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7a5f7e2c-85a6-4027-9b02-66a66b061186",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700056363903,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f7e22b99-0cde-4309-baa8-10387c0d49c2",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700013383089,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "9ed5dc20-e718-4dd8-a1e7-18f6cc261c31",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700036406210,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f3ff689b-da62-4b71-9111-5098312d3e9e",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700058936813,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "dc82357f-a9f7-4466-8dd2-c7c84eee593c",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700007876356,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "98175984-ce73-4cf1-9689-55cc8da511f3",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700046503116,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7ce41216-3aef-4885-a3c5-7e7640cea055",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700041608268,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "57b5e698-4254-43b0-ab7f-5c7b6899eb64",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700054431144,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "3843e28b-06ac-4906-8113-ca5846b1d1cf",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700063499582,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d07ff90f-610e-427a-8bc0-c517e91b3286",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700061531601,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c39e3d60-189a-4094-9739-3cab4ed564a1",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700009940994,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e2460e73-5258-40a3-ab8b-cf5e15771f16",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700080237389,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "5a2efb33-4d2d-4447-8888-203577047b04",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700049482255,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "364a208c-cdb2-41e0-8aa6-f1d12d238624",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700040854664,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e3c93495-1bf1-45f4-a6e0-978e72d73254",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700021409856,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b578b331-8ffd-4989-848f-17be3d14f848",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700050906955,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "c628294d-8295-47b2-86db-a3d1cfb62e78",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700035074669,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7d815054-7726-4d95-8188-69fb1b215b11",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700025966020,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d899b76a-29fa-4f7a-a650-248990b8a6a8",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700011680243,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "876ac03e-ac20-484c-ac55-bf72d6fe866b",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700069348013,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "79aeff6e-a855-464a-9210-291431a75431",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700069677088,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "53bd28dc-6fa4-4628-ab2a-ac6628542a77",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700079292540,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "d057f3e2-5bd0-4e43-9dc7-eee5ba2b1ead",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700019158973,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "bc64e999-da33-4850-8ecf-3ac8b7b68b97",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700029761918,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "97988aa3-f2cd-4be2-9ba7-9684ebf48bae",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700043270412,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ef04cb6b-c040-4cb8-a24a-08819f48ca2d",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700023015787,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "803502f2-88f2-4826-b939-fd2d6a0b25f5",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700082262745,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "32ebd7c1-7229-40e3-82b0-fa5d6edd2b8c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700072202614,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ed6e516c-5441-4339-9f61-e6ae43a16c23",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700076350248,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "1b328359-e5d5-4a2d-9435-d46edca1b86f",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700045327786,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ace60ab3-5c8b-42fd-80f0-a847268ab219",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700047525751,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "805ae6c2-f9c3-444a-92a5-b0834546c7aa",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700014933132,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "5600d36d-93cf-49ea-af4d-6b18fa8bb207",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700072269359,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "b6e52798-fd68-47d0-89ce-e3b4281e4195",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700020772663,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b6c9882d-b47a-41ad-b576-3a2c40f6126b",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700056282009,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "388341cd-a93f-4ff7-84e5-604056486f9d",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700003078876,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "0225af8f-f21b-4ed0-b4ff-e32f28399ea5",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700048289818,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4a1a4280-94bc-44c8-96ba-15cdcbd6bf7f",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700036085409,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "99a66a30-71b4-4d94-be7a-75be17e2736d",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700028580483,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "84189733-510e-492c-8812-57f1a7fa0a70",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700012486060,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e4780236-f88e-434a-9648-0faf31e19bc1",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700034334535,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "3406cd83-3fc5-434a-a496-53728ddce8cb",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700064265458,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "43dd1ef6-e2b0-4910-9382-a50eb00400af",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700050076824,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "6a063d2e-3200-4839-a779-ccde57f900e3",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700050052472,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "a8a0f074-90e2-4994-8b25-240a1fdceaeb",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700062355825,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "c161592c-177e-40e5-b1d2-70a5012ae767",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700050761056,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "ca42368b-9e01-4472-bd3e-8aff90f54e97",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700058098091,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "4ea20113-c041-4359-98a2-f1b98b590938",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700067759471,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "da9087f8-22de-452a-ae6a-c63ddbf65e51",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700059525221,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "4917b56f-aff6-4e2c-a120-eee06edca123",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700048742657,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "97b8fadd-437f-48fc-89e0-8f949e9ae061",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700007964178,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "77d7ebe3-e716-48b3-84b0-0a6f44c75fed",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700044469899,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0dec7623-122b-4c9c-9e7f-60afcb3f9ce2",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700051021947,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "9e632bbe-5462-40c1-abd4-fe197fc50302",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700043552770,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e270d350-7336-4251-a197-2475c69d8db1",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700072702757,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1defacc7-0fae-472b-865b-e27899754499",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700017196174,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "f92a1298-63a2-4280-8a18-070be8d82989",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700055913420,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "18f1c62e-3a99-4296-b84b-b5b80e7c3a8e",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700049013451,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "722ab078-e10f-4ec6-896c-717c7160ea39",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700027838304,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "33316fe1-ca02-4c92-ba3a-3681cad8eb71",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700082028257,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "00e43733-0db5-4712-aea6-7f4aecff799b",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700047150367,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "f679acaf-98da-4576-a18b-8dc0bbb7229b",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700042527724,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "edf8650c-4ddf-40b0-8da9-a9929d624b53",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700043829072,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "4e472cb9-1c74-466b-a6b8-9495b74d977e",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700050395486,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "0c331349-b5c9-4cf7-b0ee-158f49e666e8",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700053138063,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e702c259-f963-427c-ba6b-3c807a551c7c",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700012295913,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "994e62cf-346e-49c0-8df4-f0eb1affcca2",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700005359187,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "472c3723-bc78-4266-b3dd-732ae5a7726c",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700080026620,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "373f8ca6-26d4-4968-bf86-2e6865126645",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700014300420,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "4465b28d-337f-4fc2-8594-52d61708fc6e",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700018641813,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "bd80db67-e26c-4f2b-b39f-5939f1cf49c7",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700022061502,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "682f650e-0e84-4cd3-b33e-910d8509df2d",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700015661114,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "51d26835-ad1e-40da-bce0-215dccf0d8ce",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700054208132,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "8e0aabc3-abe9-4db1-aaa1-80abd12987ed",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700046270259,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "da2a71d4-6728-46ed-9418-65666682b964",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700060069809,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "6d09608e-1699-4877-a7f6-59eca15ba06f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700005373214,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "afbba6f8-a09d-482e-8b03-dd1089d4f1f2",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700060773616,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "aa202ffd-b609-42d8-9a6b-4cd24a94cfa3",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700025848700,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "8f5e0eb1-c6ba-451f-9911-fa54116695d0",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700054947260,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7dbe0dab-2151-4a6b-bbba-b1070f21949a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700030161989,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "580d7e84-5781-428e-bfa9-05fa6b88e821",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700037186672,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "bd00c154-159e-4d00-a895-713b237a6077",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700032561670,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "da891fe3-3315-4d95-b5ca-426e59bcc6e6",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700075278858,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "7a5fe5c6-dc35-4fe7-b288-c317dba5e1d0",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700001662654,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "d265d08e-5a60-43d6-98f3-0d49af43efce",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700020395368,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7c640e7d-c5a9-4ff5-ab89-36bd051acc2a",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700062744653,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "2ae20a6a-b1ea-4771-8396-2ba00cdfa71b",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700064096140,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "3cb2939b-e892-46fa-9340-645865bf46ad",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700054768032,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "62996ca1-8447-41d5-8abc-bc9180c92c0c",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700084599711,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "5431b31c-b4f7-47ae-9d3c-2414f8c3e134",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700072167315,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "5389b5c1-b3b6-4530-ae84-1b7b7c32790a",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700028142448,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "caf8b39e-7943-4c8e-aff7-ff12278508fd",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700079334203,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e97552c5-f035-46c7-a123-464f638b3d94",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700053808011,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "297b2fd2-680e-4e3e-81d3-5096721fe1b1",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700074720427,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "21b95bda-7696-4e8f-925c-d953e1043c53",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700036304648,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "9c5bb5f5-85bc-4715-82d9-d3dafe81181e",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700083625857,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "e0cd1622-72a5-4bfd-a36c-57798eb1f922",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700065807151,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "4e990ea9-58a1-4089-bc82-ffa35c1aea1a",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700012662096,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "49334401-5bcd-4095-8d63-5c55b30f2ac8",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700016130138,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "0a7f48b0-14b3-41c2-b757-dc65425c96ea",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700037068789,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "6d1543f5-14fb-44ce-b077-760a893018b1",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700029617378,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "9724c480-2b16-47c5-b5b0-68e12be0ff70",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700083180343,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "a03a4fc4-f6fd-447b-ad46-74bedcbab459",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700057425492,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "5113f0be-72ad-4147-a539-a134d47a75d1",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700064330021,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "21344b7f-c291-4890-add6-2bd444c36189",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700085586205,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "e7c7e0a9-5a8d-4e61-b1c6-a7c59ff2c713",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700048426676,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0ce451db-5367-414e-a04e-f11b81edaf4c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700074286560,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "faf51b65-314e-4553-b4f4-cc81d0e4f1e9",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700059701112,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "9d017285-823c-4391-958a-6830dbb1d3e3",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700014215033,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "437d661c-004c-49c3-8af4-50cb54b1d384",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700072905541,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c4ccf33b-e9e2-4e73-9f68-d3c4e1d3bd02",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700073826188,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "c4ff4219-31f9-4fec-8ce4-7bf71a40c049",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700004144266,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "33be9ecb-e1c6-4f8f-878a-ff3bf9c0f5b3",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700023177298,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "2fb7814d-d45d-49f0-8e91-7596c7ddba75",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700082690261,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "32dfe409-e2d7-46d5-be5d-ea5d2301054f",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700074051155,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "cdd3d399-4077-42e6-bdd5-e3966836a703",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700084763432,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0c36c70b-7d81-472a-97a3-790aaae2017e",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700061642381,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "0cc8e056-56f6-47f1-800d-4f7274663b4a",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700056707620,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "384debb2-5453-456b-8a94-2d18e2250434",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700001572213,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "c90b66f2-2989-4d22-b6e6-1686f6f893d5",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700040616613,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "d9074f8b-8a15-464e-8827-346da5ff96e2",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700063091917,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "5b79e07c-8e6b-4aca-a18e-14551a4a076e",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700026366824,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "ee22e0bd-371e-47b2-9899-9fed9ac0cd94",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700035070148,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8e78d7e0-c611-4020-9531-b9203e5b0b91",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700052935461,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e271b413-f322-4ebd-abb3-c785ff60ee67",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700006923271,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e5d7ec22-36f2-421d-9f9b-9c5265ffa330",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700030931836,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "0463de98-9510-48ab-b2d4-03c6259c5f62",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700065001758,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "5d9c6464-e196-427c-96c8-a406bc3560e4",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700076814372,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "299a5650-f03b-454e-ad7b-56183cb6edb8",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700044414498,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "de93da68-26bd-4b80-b76e-618a30ad81b9",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700053674110,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "9994e7c4-8323-4ed4-9e52-ebc68bdef420",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700008267563,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "6db42383-5040-4170-bce1-c68914b9ca2f",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700026377922,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "3d7d063a-d760-44d0-bfb1-c7af8a65d83a",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700020770221,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "a1a019ef-adf2-4264-9cd5-9f47d1fa3dbe",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700035499374,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "62971e4c-d6a1-4468-b0f8-6313820d2daa",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700038430138,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "220c161d-453a-4985-9572-e2c12915754c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700083926288,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "433694d9-276f-4883-8f2b-945397d713d4",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700041723120,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "aed30f4e-7376-4d17-b257-908f4a7b0022",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700065478059,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "7fc16f27-10f2-427e-adc6-407f28967b7d",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700006208074,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e3a93096-c905-483b-80ac-ed1246cb5216",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700058068523,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "3aabb5a4-8ae2-4298-81a9-8c2ef1c3af77",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700033376762,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "13a053f4-36b2-4478-8175-9035f679622c",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700013834781,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "1d4dbdb5-d13a-4c7a-b2d6-a6d3dc418dd8",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700080273840,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "cffd1832-293c-41e4-b3b3-d603d081321c",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700066030637,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "abffa669-36b8-43a1-981f-04410ebaeae3",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700005832410,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "30051a26-e769-4d13-9ea2-8de7a8c7aa3a",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700029094979,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "fa37a423-c057-4995-9238-97cef3a46371",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700058758166,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "3bb7dc00-d969-44b2-884e-ad07f536c1a9",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700076039802,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "832562c8-f2c6-4194-83e2-744877d7b34b",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700020317953,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "cf34a723-49de-46e4-9244-803fa5229440",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700074627579,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "fb6077a9-10a6-408d-ad62-ce3556279591",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700019557367,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "cb41fcd1-84b4-45a1-93c6-b27031f170d2",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700034910065,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "62cb1ba9-ca4e-43d8-97fb-b12f45a05201",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700067720813,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e71decaa-ef75-4320-bf7d-0d4879ef2cfd",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700025304199,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "f2aac20d-0c7b-4b7e-96c7-350e537e949b",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700074185608,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "1a152bf8-cfd2-4f96-a3dc-faa8a0cc64c1",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700038469186,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "07c27b04-3769-4da7-ac57-902def08bc8f",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700018687907,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "ee8d573b-0ca8-4f39-a3af-c2bea091dc2e",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700041799607,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ae687b3c-445c-4f43-9989-112f3a745a58",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700082927930,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "c193e454-477e-4a91-8b7e-9cefc78f1d95",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700033634282,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "7d9adf72-9509-4b26-ad4c-ea372a55447b",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700026446382,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ead90f56-fd4c-45d4-b264-3058d490327b",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700034780838,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "1c60fe0f-9e45-4232-a140-c080be42de68",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700080187214,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "73ba2e0a-839b-41d9-9cde-a4ad9d61472e",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700025500994,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "11ea4e31-04d0-4c8c-8541-440427a1607c",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700058643647,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "97d43f3c-b3d3-4a77-8cec-9c3e6c34a62b",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700021158351,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "7fc8e328-76ee-404a-a631-4d7dfb5d9578",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700038656152,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f5134510-3535-4acf-8351-c366a04a437d",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700000730808,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "58264fbe-0bfa-455c-9178-b7f426415832",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700018318816,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "7a2e43d7-f455-4899-bdf0-b9c9ffc4f03f",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700014194795,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "437ebff7-ef28-4b6c-a2ac-1a1f457ec5c6",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700011807247,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "5c0a7e22-a2ea-4ff4-9360-3bc0713ae033",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700074236066,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "837329bc-f38d-4fb9-a94b-0aabcfab7392",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700021013135,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "98bd5c5f-c1f6-44f0-b095-6fc19d07f59b",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700071428452,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "b706f4db-140b-42f1-86e9-9b1aa4601bbd",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700033866617,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "897552b7-5825-4caa-b9e7-2087c50ec750",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700003286218,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "dd0896a4-9c04-4f2d-87e3-5b7250adbae7",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700014799761,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "7eaa7450-37a9-47e2-900b-d0dd16be7f1f",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700076901173,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "73cc947e-92f6-438a-9e77-616f0ea459fd",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700084330650,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "8eed2f05-f094-4d05-96dc-f23dfc044c63",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700032177588,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "4ee98c5b-19cc-49a0-b4c6-15a35473ec41",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700006760177,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "f728b0d6-6e83-4b94-9ee7-9729a1a2db59",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700063488243,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "fe2724a3-7f34-4ae7-86e5-12d2cee4fb90",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700049638906,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "013a9259-320b-40cc-80c4-413bbcff63db",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700060866520,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "673dc2fe-f3ef-4fbf-9161-7a9750372053",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700025987167,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "b7f25c2f-1aab-440f-9780-7b2ae1247b31",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700019248109,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a62501eb-8955-4b9c-b810-b62d3906ffe5",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700047845740,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "a041675c-d417-47b3-9b42-1ac902be2d14",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700084557141,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "db3405ce-8cad-4e46-8e13-f5334faaf634",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700016004192,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "78cbb129-42b2-42af-b0d0-227fe7f55f63",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700037709061,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "54f3257d-647a-480a-8eda-21182f685aa2",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700019525532,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "8207813a-dfa4-4cef-9cb7-bf5dda2cc504",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700079617494,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e7c01ae1-18b3-4ab0-b331-d3527a4cfd20",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700051452674,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ecba2278-9170-442a-90f7-918de457e23c",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700001334769,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "2c399415-c7da-47a6-b5e6-efa186bb6ba5",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700016897247,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "aa79fcb5-507a-444d-b1ed-0184bf54583d",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700039637645,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e34aa719-cdc1-4dc3-b35a-a5047ec05b18",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700086076567,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "cc8cf46f-912d-431e-98d5-b9faba086f1f",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700001758074,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "1c76f7c9-f962-4589-a9cb-f47d4792cf83",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700040560958,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "80d13022-1a7c-472a-ab69-293fe2b995f6",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700001561655,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "6f8c9e4c-4659-4516-8753-23e2751c077f",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700034707223,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "f78af68a-f500-4507-992d-45f37d23b933",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700015158270,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "3746547f-0058-482d-aa16-3c40e186d92d",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700014969698,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "18b5dcea-5685-4097-a48c-2ab454c16697",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700004005019,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "72ef3f05-b550-4a4f-b566-a6ca263403a2",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700017906943,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ec63a7a9-4ac2-4742-8e70-7e0de40d6402",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700072471850,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "90ffb4d4-d5aa-4222-99e4-ced72e002d9e",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700020322484,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "798cde8e-15a2-4fed-a86b-e6810cfe73c8",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700017231319,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "8695314f-ab61-4807-bd77-6da7ca6f428f",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700011813899,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "1e49b341-0bc1-44c9-8362-ecc1cb64209b",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700060182021,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "3b260b17-911e-4a4d-971e-9d5b02fbda1c",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700026217363,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "6c1918bb-5b77-461a-b8a9-40a31e7d0593",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700024468187,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a6912a65-74d7-4290-9e72-4bfb93bc0420",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700077856009,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "4ccde22e-2aac-48fc-b8ec-f878f9a0c8ae",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700022781118,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "531bea1c-4d02-4898-a423-64c8c395d1d0",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700054562030,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "631cc05f-3ff1-4a34-846b-c45782dd121d",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700003640115,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "e943ee12-68fc-4094-b846-2fe56ac79a60",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700073651410,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "843934c6-5e6d-4325-9047-9f52debda484",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700024364040,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2df89695-29c9-4500-ade0-92697fa2d199",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700012339488,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ffb84e5a-57c7-4d5d-8eac-118081603765",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700067081629,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "4249d838-b846-4ef9-a854-00f786a58036",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700079775786,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "31135565-e4cd-4128-ace4-479094a78854",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700039242600,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "41031ccc-a686-4f28-bc32-87e4f5011bae",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700065361513,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "bfe109cb-4fd3-4c17-98f9-94b10e37def5",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700027176251,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "bb1ff8a6-ffad-4752-9d51-f0f5a8dc1e04",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700030095380,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "34a602d7-2294-485f-8fc6-f51409fb981a",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700006851461,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "ed6b4de4-7e6c-4289-9d2e-ddeb484124ae",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700078672136,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "fdd9b4de-2cfe-4b29-a02c-e81b2d0ffc74",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700038555929,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "58733423-df5f-4dc9-b8d8-f38e184f1229",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700055791517,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ef4a73ba-cb19-4304-b37e-b15f92282de7",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700044032184,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "6882d0c8-ef6f-4b13-bc4a-47869c0d485c",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700053777473,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "85396f7b-3245-4cb1-b8ca-301ae463b9eb",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700042620315,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "c29f37ee-9f0e-4817-9a3d-7b3ede18713e",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700044064945,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "eabb965f-9331-4cad-80af-12b5351d7764",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700028987876,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "5b36e3ad-42db-4048-bf32-e811e9f485c2",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700027612184,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f09cf620-1086-40bf-ae24-017564d1af89",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700011234971,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "600a3f6d-e4d2-4e27-9ca8-0ca2486d5a52",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700015200562,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "31774369-ef6b-44e0-94c9-24137ee90059",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700038625375,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "ecb2ccbd-bd30-44cc-8c46-ea25d2e0bc16",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700022662947,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "41d15494-af14-454d-bfc5-c75e3fcf0530",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700000921226,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "cbdb25c1-edfb-45cc-8837-5c90ae899dc6",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700083226968,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "56dc4873-d2cd-45c7-9ba6-2dc752ce7828",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700058574554,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "90499d4c-22ed-439d-a10d-930de8b0348c",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700013752843,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "f1a4b7ba-be41-480c-91a4-ef3cd9247e8a",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700038246343,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "e0ed9dbc-ba4c-4925-b0ef-db208eff637e",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700060233390,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "aa5d742a-4bea-424b-b70f-bdb59a03e971",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700017071582,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "abfdb73a-ba54-4a49-9a2f-75a13dce1874",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700012000509,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "5c4d99ef-bc4b-4699-84f1-c6ea3ad95756",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700016929108,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2aa6abb9-d9d5-497d-a779-0c7a6f3c5dad",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700001450049,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "2e1fc4c4-9e7b-4bf0-a81d-216b2ed5f9d7",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700009652882,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "58d359a9-7aaf-47d6-85f1-06c9934f0866",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700035548274,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "9122694a-ed41-41ef-961f-bc0c0648f0cb",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700079245539,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "55eb635b-dd92-48ed-9997-5de6b2822097",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700048230088,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "3716cdc0-2ef2-4be7-92c5-9c6605ee5a31",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700022455813,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "d7d9790d-56ce-4750-b245-f4b71015e5a5",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700050412892,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "0e9fea57-07cb-4fee-a450-076a448a5b15",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700051174451,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "43335f18-e31e-4bc4-a036-f1b28447a8c7",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700031560687,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "1e35d59e-ada4-4823-a5d1-219b400ae965",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700080721708,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "fb4f7fc4-cc64-4e93-8a68-c52792be4acc",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700059568142,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "4df48592-9737-4236-89ab-6461ce2e267d",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700007412010,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "38d2f669-278c-4e6f-a315-39696c5b0df7",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700022686738,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e3001699-1e2d-4c66-b5d6-a23792878742",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700017887731,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "8bcdc8a0-6a56-4424-a603-f7126492b92e",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700009789847,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "e5751389-6525-4e2d-87ec-6de7e55a88f2",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700000408971,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "bdf63288-8cfb-4631-a998-86d79a4a0467",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700032724715,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "7d255670-52d4-4f29-b1cd-acd84b1dbf8e",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700047664442,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "b01545cb-0f67-476e-9449-b7820f6a74b6",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700028126998,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "c5908000-c616-4577-898e-a2a66bc9f0d5",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700044610718,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "9ec0ba34-276a-4c3a-86f2-1544345dbc1c",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700048268389,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "653a767d-cb66-4755-8a63-f40ca7cad3d4",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700068241766,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "3975b93a-cbfc-4559-bc75-ff8ca161fc49",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700064779876,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "524c1f6d-a3ff-4a08-91f6-e0f949d2628f",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700043063696,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "1dbba99f-775c-49d7-821d-2925841b02e2",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700022793855,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d4e64fe4-da92-4155-af01-399fd0c0275e",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700033956804,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "6b207f67-7223-4d35-9b8c-c98a93e1ba89",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700077432940,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "500278d5-16df-49fe-9822-7e1d487d0eed",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700016407274,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "e4fcc046-f9a4-4729-9ce7-18e65f83933f",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700064854270,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "dbf77171-a657-4c6a-86b2-52d24ca3c5f9",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700030547923,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "2b208e41-d63d-48ad-87e2-4b71c76a5f14",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700067604063,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "0a578d48-939f-48e4-aaa8-c15b4465d4fb",
+    "appPackageName": "com.twitter.android",
+    "timestamp": 1700040456261,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "b2094dd0-4c75-4b65-9db0-6d133700fc51",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700066272468,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "d23b08e9-5dba-48f5-a914-0b7a1cb9a5c5",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700066807047,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "9ebb0d93-6f13-41e9-9844-31f0e28292ef",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700048706367,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "4b2067c0-32ac-4fe0-a5ad-3686c0c39fd6",
+    "appPackageName": "com.whatsapp",
+    "timestamp": 1700076541353,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "ada58d12-5c58-4b7b-985c-882dcea3ae33",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700067943982,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "7e499aa8-24bf-4e6c-a9e1-48561532d7c1",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700048639862,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "c9e79c90-8061-4ada-aaf4-7cb652a04adb",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700028539602,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "b063b064-15f0-4641-bf38-ad4d39a7b8ee",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700004785262,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "dc9d934d-a9de-451a-a532-a06dc49bfe66",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700084755961,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "7eb5c0a0-13df-405d-86dc-bcaf3585325c",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700074351780,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "f91f70cc-fc9c-4b10-bf43-eba330e1dcdc",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700004056133,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "9c503b70-54ce-47c8-9918-fbd1d79ab81a",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700007501246,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "867723c9-f0d1-4a18-ad6c-63e82ea08ae8",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700006826919,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "cd54e0c6-3e86-49d9-9a40-40b3ff1eb51c",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700004954361,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "e6e64b89-8cb4-4fce-bf59-5109faf487d2",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700020398400,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "0e78d752-ead7-451d-9335-3facfe0a27a0",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700069301475,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "6f36f765-a226-476a-8d5b-99da872a0cb0",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700026805897,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "38349c79-6e99-412e-afc4-eb9f616b596a",
+    "appPackageName": "org.mozilla.firefox",
+    "timestamp": 1700042684031,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "25c9f34c-5744-4ac4-b13c-6863ceb10545",
+    "appPackageName": "com.instagram.android",
+    "timestamp": 1700020869405,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "2ddc85ca-3e7a-45aa-9cdd-294bedbae4cd",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700003904957,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "a3b6c28b-f8df-4a27-8cbc-577ee4db97df",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700032143166,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "737910b1-6421-48cf-9bc4-8cb7b4d69a70",
+    "appPackageName": "com.android.chrome",
+    "timestamp": 1700060561995,
+    "eventType": "CONFIGURATION_CHANGE"
+  },
+  {
+    "id": "72c5155d-3545-4aa4-be9e-5ef8c8cb4af7",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700070743425,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "7e382818-c61a-4ecc-9e95-59d28eb2de33",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700055427488,
+    "eventType": "ACTIVITY_RESUMED"
+  },
+  {
+    "id": "92dd69da-e0d2-4ecb-be10-b02b7156fe77",
+    "appPackageName": "com.google.android.gm",
+    "timestamp": 1700008096092,
+    "eventType": "MOVE_TO_BACKGROUND"
+  },
+  {
+    "id": "a641cc18-112c-48a2-a966-e74d877f502e",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700071920890,
+    "eventType": "ACTIVITY_PAUSED"
+  },
+  {
+    "id": "17bdbfd2-1242-490f-93f0-d48c4a787d9a",
+    "appPackageName": "com.spotify.music",
+    "timestamp": 1700052425508,
+    "eventType": "MOVE_TO_FOREGROUND"
+  },
+  {
+    "id": "efae62af-9d21-47d3-b5eb-ccc238264d49",
+    "appPackageName": "com.facebook.katana",
+    "timestamp": 1700014166517,
+    "eventType": "MOVE_TO_BACKGROUND"
+  }
+]

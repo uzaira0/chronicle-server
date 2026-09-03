@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="warn" name="ChronicleServerConfig"
+               packages="com.openlattice.chronicle.util">
+    <Properties>
+        <Property name="serviceName">chronicle</Property>
+        <Property name="logDir">${env:LOG_DIR:-/var/log/chronicle}</Property>
+        <Property name="runningDir">${logDir}</Property>
+        <Property name="rollingDir">${logDir}</Property>
+        <Property name="auditDir">${env:AUDIT_LOG_DIR:-/var/log/chronicle}</Property>
+        <Property name="logFormat">${env:LOG_FORMAT:-text}</Property>
+    </Properties>
+
+    <Appenders>
+        <!-- Text console appender -->
+        <Console name="STDOUT" target="SYSTEM_OUT">
+            <PatternLayout pattern="%d{ISO8601} %p [%t] %c - %m{nolookups}%n"/>
+        </Console>
+
+        <!-- Alternate console appender selected by LOG_FORMAT=json; uses built-in layout to avoid optional plugin startup failures. -->
+        <Console name="JsonConsole" target="SYSTEM_OUT">
+            <PatternLayout pattern='{"timestamp":"%d{yyyy-MM-dd&apos;T&apos;HH:mm:ss.SSSXXX}","service":"backend","severity":"%p","logger":"%enc{%c}{JSON}","request_id":"%enc{%X{requestId}}{JSON}","method":"%enc{%X{httpMethod}}{JSON}","route":"%enc{%X{httpPath}}{JSON}","error_id":"%enc{%X{errorId}}{JSON}","message":"%enc{%m{nolookups}}{JSON}"}%n'/>
+        </Console>
+
+        <!-- Text rolling file appender -->
+        <RollingFile name="RollingFile"
+                     fileName="${runningDir}/${serviceName}.log"
+                     filePattern="${rollingDir}/${serviceName}-%d{MM-dd-yy-HH-mm-ss}-%i.log.gz">
+            <PatternLayout pattern="%d{ISO8601} %p [%t] %c - %m{nolookups}%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="86400" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="5GB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="30"/>
+        </RollingFile>
+
+        <!-- Alternate rolling file appender selected by LOG_FORMAT=json; uses built-in layout to avoid optional plugin startup failures. -->
+        <RollingFile name="JsonRollingFile"
+                     fileName="${runningDir}/${serviceName}-json.log"
+                     filePattern="${rollingDir}/${serviceName}-json-%d{MM-dd-yy-HH-mm-ss}-%i.log.gz">
+            <PatternLayout pattern='{"timestamp":"%d{yyyy-MM-dd&apos;T&apos;HH:mm:ss.SSSXXX}","service":"backend","severity":"%p","logger":"%enc{%c}{JSON}","request_id":"%enc{%X{requestId}}{JSON}","method":"%enc{%X{httpMethod}}{JSON}","route":"%enc{%X{httpPath}}{JSON}","error_id":"%enc{%X{errorId}}{JSON}","message":"%enc{%m{nolookups}}{JSON}"}%n'/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="86400" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="5GB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="30"/>
+        </RollingFile>
+
+        <!-- Routing console appender: text vs JSON via LOG_FORMAT env var -->
+        <Routing name="RoutingConsole">
+            <Routes pattern="${logFormat}">
+                <Route key="json" ref="JsonConsole"/>
+                <Route ref="STDOUT"/>
+            </Routes>
+        </Routing>
+
+        <!-- Routing rolling file appender: text vs JSON via LOG_FORMAT env var -->
+        <Routing name="RoutingRolling">
+            <Routes pattern="${logFormat}">
+                <Route key="json" ref="JsonRollingFile"/>
+                <Route ref="RollingFile"/>
+            </Routes>
+        </Routing>
+
+        <!-- Rewrite appender: masks PII via SensitiveDataRewritePolicy, then routes -->
+        <Rewrite name="RewriteConsole">
+            <AppenderRef ref="RoutingConsole"/>
+            <SensitiveDataRewritePolicy/>
+        </Rewrite>
+
+        <Rewrite name="RewriteRolling">
+            <AppenderRef ref="RoutingRolling"/>
+            <SensitiveDataRewritePolicy/>
+        </Rewrite>
+
+        <!-- HIPAA audit log appender — 2190 day (6 year) retention -->
+        <RollingFile name="AuditFile"
+                     fileName="${auditDir}/audit.log"
+                     filePattern="${auditDir}/audit.%d{yyyy-MM-dd}.log.gz"
+                     immediateFlush="true">
+            <PatternLayout pattern="%m%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="10GB"/>
+            </Policies>
+            <DefaultRolloverStrategy max="2190"/>
+        </RollingFile>
+    </Appenders>
+
+    <Loggers>
+        <!-- AUDIT logger writes ONLY to AuditFile, no propagation to root -->
+        <Logger name="AUDIT" level="info" additivity="false">
+            <AppenderRef ref="AuditFile"/>
+        </Logger>
+
+        <Root level="info">
+            <AppenderRef ref="RewriteConsole"/>
+            <AppenderRef ref="RewriteRolling"/>
+        </Root>
+    </Loggers>
+</Configuration>

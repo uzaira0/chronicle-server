@@ -1,0 +1,79 @@
+/*
+ * Copyright (C) 2018. OpenLattice, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * You can contact the owner of the copyright at support@openlattice.com
+ *
+ */
+package com.openlattice.chronicle.authorization
+
+import com.openlattice.chronicle.util.tests.TestDataFactory
+import org.junit.Assert
+import org.junit.BeforeClass
+import org.junit.Test
+import java.util.*
+import java.util.stream.Collectors
+
+open class PagingSecurableObjectsTest : HzAuthzTest() {
+    @Test
+    override fun testListSecurableObjects() {
+        val result = hzAuthz.listAuthorizedObjectsOfType(
+            currentPrincipals,
+            SecurableObjectType.Study,
+            EnumSet.of(Permission.READ)
+        )
+
+        Assert.assertEquals(2, result.size.toLong())
+    }
+
+    @Test
+    fun testNoResults() {
+        val result = hzAuthz.getAuthorizedObjectsOfType(
+            currentPrincipals,
+            SecurableObjectType.Organization,
+            EnumSet.of(Permission.READ)
+        ).collect(Collectors.toSet())
+        Assert.assertEquals(0, result.size.toLong())
+    }
+
+    companion object {
+        // Entity Set acl Keys
+        protected val key1 = AclKey(UUID.randomUUID())
+        protected val key2 = AclKey(UUID.randomUUID())
+        protected val key3 = AclKey(UUID.randomUUID())
+
+        // User and roles
+        protected val u1 = initializePrincipal(TestDataFactory.userPrincipal())
+        protected val r1 = initializePrincipal(u1, TestDataFactory.rolePrincipal())
+        protected val r2 = initializePrincipal(u1, TestDataFactory.rolePrincipal())
+        protected val r3 = initializePrincipal(u1, TestDataFactory.rolePrincipal())
+        protected val currentPrincipals: NavigableSet<Principal> = TreeSet()
+
+        @BeforeClass
+        @JvmStatic
+        fun init() {
+            HzAuthzTest.init()
+            currentPrincipals.add(u1)
+            currentPrincipals.add(r1)
+            currentPrincipals.add(r2)
+            currentPrincipals.add(r3)
+            hzAuthz.createUnnamedSecurableObject(key1, u1, EnumSet.noneOf(Permission::class.java),SecurableObjectType.Study)
+            hzAuthz.addPermission(key1, u1, EnumSet.allOf(Permission::class.java))
+            hzAuthz.createUnnamedSecurableObject(key2, u1, EnumSet.of(Permission.OWNER), SecurableObjectType.Study)
+            hzAuthz.addPermission(key2, r1, EnumSet.allOf(Permission::class.java))
+            hzAuthz.createUnnamedSecurableObject(key3, r2, EnumSet.noneOf(Permission::class.java),SecurableObjectType.Study)
+        }
+    }
+}

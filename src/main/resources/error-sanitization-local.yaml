@@ -1,0 +1,35 @@
+# Error Sanitization Configuration - Local Development
+#
+# This configuration allows full error details for local development and debugging.
+# SECURITY: Do NOT use these settings in production!
+#
+# Usage: Copy or symlink this file to error-sanitization.yaml for local development.
+
+# Disable sanitization in development to see full error messages
+sanitize-errors: false
+
+# Include stack traces in development for debugging
+include-stack-trace: true
+
+# Include error IDs for log correlation
+include-error-id: true
+
+# Log full error details server-side
+log-full-errors: true
+
+# Maximum length of error messages returned to clients
+max-message-length: 2000
+
+# Exception patterns that should ALWAYS be sanitized, even in development
+# These patterns match database-related exceptions that could leak schema information
+# Even in development, SQL errors should be sanitized to build good habits
+always-sanitize-patterns:
+  - ".*SQLException.*"
+  - ".*JDBIException.*"
+  - ".*DataAccessException.*"
+  - ".*HibernateException.*"
+  - ".*PersistenceException.*"
+  - ".*DataIntegrityViolationException.*"
+  - ".*PSQLException.*"
+  - ".*BatchUpdateException.*"
+  - ".*UnexpectedRollbackException.*"

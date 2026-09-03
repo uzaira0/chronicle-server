@@ -1,0 +1,23 @@
+package com.openlattice.chronicle.services.jobs
+
+import com.openlattice.chronicle.auditing.AuditableEvent
+import java.sql.Connection
+
+/**
+ *
+ * @author Matthew Tamayo-Rios &lt;matthew@openlattice.com&gt;
+ */
+public interface ChronicleJobRunner<T : ChronicleJobDefinition> {
+    /**
+     * Validates and runs a job. The default behavior should be that the job definition class must be
+     * assignable to the class returned by [accepts()]
+     * @param job The job to run.
+     *
+     */
+    public fun run(connection: Connection, job : ChronicleJob) : List<AuditableEvent>
+
+    /**
+     * The type of job definitions that can be run by this class.
+     */
+    public fun accepts() : Class<T>
+}

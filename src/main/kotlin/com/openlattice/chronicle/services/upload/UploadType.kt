@@ -1,0 +1,12 @@
+package com.openlattice.chronicle.services.upload
+
+/**
+ *
+ * @author Matthew Tamayo-Rios &lt;matthew@openlattice.com&gt;
+ */
+public enum class UploadType {
+    Android,
+    Ios,
+    AndroidSensor
+}
+

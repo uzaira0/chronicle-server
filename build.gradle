@@ -1,0 +1,522 @@
+/*
+ * Copyright (C) 2022. Chronicle.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * You can contact the owner of the copyright at support@openlattice.com
+ */
+
+plugins {
+    id 'application'
+    id 'eclipse'
+    id 'idea'
+    id 'jacoco'
+    id 'java'
+    id 'checkstyle'
+    id 'maven-publish'
+    id 'signing'
+    id 'com.github.spotbugs'
+    id 'org.jetbrains.kotlin.jvm'
+    id 'org.jetbrains.kotlin.plugin.spring'
+    id 'org.jetbrains.dokka'
+    id 'com.github.jk1.dependency-license-report'
+    id 'info.solidsoft.pitest' version '1.19.0'
+    id 'org.cyclonedx.bom' version '2.3.0'
+    id 'me.champeau.jmh' version '0.7.2'
+}
+
+if (hasProperty('buildScan')) {
+    buildScan {
+        termsOfServiceUrl = "https://gradle.com/terms-of-service"
+        termsOfServiceAgree = "yes"
+    }
+}
+
+if (!JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_21)) {
+    throw new GradleException(
+            "chronicle-server requires Gradle to run on JDK 21 or newer (JDK 25 is the " +
+                    "project standard; bytecode target stays 21). Set JAVA_HOME to a JDK 25 " +
+                    "install, for example: " +
+                    "export JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home"
+    )
+}
+
+// dependencyLocking, java 21 source/target, shared KotlinCompile options,
+// checkstyle (shared pinned release, local gradles/checkstyle.xml), jacoco toolVersion, and the
+// spotbugs reportLevel/toolVersion defaults come from gradles/chronicle.gradle.
+
+description = "Chronicle Server"
+group = "com.openlattice"
+ext.projectName = "chronicle-server"
+ext.scmUrl = 'scm:git:https://github.com/uzaira0/chronicle-server.git'
+ext.connectionUrl = 'scm:git:https://github.com/uzaira0/chronicle-server.git'
+ext.developerConnectionUrl = 'scm:git:https://github.com/uzaira0/chronicle-server.git'
+
+distTar {
+    archiveFileName =  "chronicle-server.tgz"
+}
+
+if(!project.hasProperty('developmentMode')) {
+    ext.developmentMode = false
+}
+
+println projectName + " with developmentMode = " + project.developmentMode
+
+def localChronicleGradle = file("../gradles/chronicle.gradle")
+if (!localChronicleGradle.exists()) {
+    localChronicleGradle = file("../methodic/gradles/chronicle.gradle")
+}
+if (localChronicleGradle.exists()) {
+    apply from: localChronicleGradle
+} else if( project.hasProperty('developmentMode') && project.developmentMode ) {
+    throw new GradleException("Missing local Chronicle Gradle script: gradles/chronicle.gradle")
+} else {
+    throw new GradleException("Missing local Chronicle Gradle script: gradles/chronicle.gradle")
+}
+
+def chronicleServerPatchedDependencyForces = [
+        "org.apache.logging.log4j:log4j-slf4j2-impl:${log4j_version}",
+        "org.apache.logging.log4j:log4j-api:${log4j_version}",
+        "org.apache.logging.log4j:log4j-core:${log4j_version}",
+        "org.apache.logging.log4j:log4j-web:${log4j_version}",
+        "com.zaxxer:HikariCP:${hikariCP_version}",
+        "org.eclipse.angus:angus-mail:${angus_mail_version}",
+        "org.eclipse.jetty:jetty-server:${jetty_version}",
+        "org.eclipse.jetty:jetty-http:${jetty_version}",
+        "org.eclipse.jetty:jetty-alpn-java-server:${jetty_version}",
+        "org.eclipse.jetty.http2:jetty-http2-server:${jetty_version}",
+        "org.eclipse.jetty.http2:jetty-http2-common:${jetty_version}",
+        "org.eclipse.jetty.http2:jetty-http2-hpack:${jetty_version}",
+        "org.eclipse.jetty.ee10:jetty-ee10-webapp:${jetty_version}",
+        "org.eclipse.jetty.ee10:jetty-ee10-servlet:${jetty_version}",
+        "org.eclipse.jetty.ee10:jetty-ee10-annotations:${jetty_version}",
+        "org.postgresql:postgresql:${postgresql_version}",
+        "io.netty:netty-transport-native-epoll:${netty_epoll_version}",
+        "io.projectreactor:reactor-core:3.7.14",
+        "org.jetbrains.kotlin:kotlin-reflect:${kotlin_version}",
+        "org.springframework.integration:spring-integration-core:${spring_websocket_version}",
+        "org.springframework.integration:spring-integration-websocket:${spring_websocket_version}",
+        "org.springframework.retry:spring-retry:2.0.13",
+        "org.springframework:spring-aop:${spring_framework_version}",
+        "org.springframework:spring-beans:${spring_framework_version}",
+        "org.springframework:spring-context:${spring_framework_version}",
+        "org.springframework:spring-core:${spring_framework_version}",
+        "org.springframework:spring-messaging:${spring_framework_version}",
+        "org.springframework:spring-test:${spring_framework_version}",
+        "org.springframework:spring-tx:${spring_framework_version}",
+        "org.springframework:spring-web:${spring_framework_version}",
+        "org.springframework:spring-webmvc:${spring_framework_version}",
+        "org.springframework:spring-websocket:${spring_framework_version}",
+        "org.springframework.security:spring-security-config:${spring_security_version}",
+        "org.springframework.security:spring-security-core:${spring_security_version}",
+        "org.springframework.security:spring-security-crypto:${spring_security_version}",
+        "org.springframework.security:spring-security-messaging:${spring_security_version}",
+        "org.springframework.security:spring-security-oauth2-core:${spring_security_version}",
+        "org.springframework.security:spring-security-oauth2-jose:${spring_security_version}",
+        "org.springframework.security:spring-security-oauth2-resource-server:${spring_security_version}",
+        "org.springframework.security:spring-security-web:${spring_security_version}",
+]
+
+// Scope the CVE force-list to THIS project only. It previously used
+// `allprojects`, which in the standalone composite (chronicle-server/settings.gradle
+// includes rhizome, rhizome-client, chronicle-api, chronicle-models) pushed
+// kotlin-reflect ${kotlin_version} into chronicle-api, colliding with the strict
+// 2.1.21 pin in chronicle-api/gradle.lockfile and failing dependency locking.
+// In the methodic root build `allprojects` here only ever reached chronicle-server
+// itself (it has no child projects there), so this is a resolution no-op for the
+// root build and makes standalone resolution identical to the root build: every
+// project resolves per its own build script + lockfile.
+configurations.configureEach {
+    resolutionStrategy {
+        chronicleServerPatchedDependencyForces.each { force it }
+    }
+}
+
+application {
+    mainClass = "com.openlattice.chronicle.ChronicleServer"
+}
+
+def CS_XMS = "$System.env.CHRONICLE_SERVER_XMS"
+def CS_XMX = "$System.env.CHRONICLE_SERVER_XMX"
+def CS_ARGS = "$System.env.CHRONICLE_SERVER_ARGS"
+def PARALLEL = "$System.env.PARALLELISM"
+def GC = "$System.env.GC"
+
+if (CS_XMS == 'null' || CS_XMS == null || CS_XMS == "") {
+    CS_XMS = '-Xms1g'
+}
+
+if (CS_XMX == 'null' || CS_XMX == null || CS_XMX == "") {
+    CS_XMX = '-Xmx4g'
+}
+
+if (CS_ARGS == 'null' || CS_ARGS == null || CS_ARGS == "") {
+    CS_ARGS = 'local postgres medialocal'
+}
+
+
+if (PARALLEL == 'null' || PARALLEL == null || PARALLEL == "") {
+    PARALLEL = "-Djava.util.concurrent.ForkJoinPool.common.parallelism=" + Runtime.runtime.availableProcessors()
+}
+
+if (GC == 'null' || GC == null || GC == "") {
+    GC = "-XX:+UseG1GC"
+}
+
+println "Using java args for running ${projectName}: Xms=" + CS_XMS + ",Xmx=" + CS_XMX + " -server"
+
+application {
+    applicationDefaultJvmArgs = [CS_XMS, CS_XMX, "-server", GC, PARALLEL, "-Dlog4j2.formatMsgNoLookups=true",
+                                 "--add-modules", "java.base",
+                                 "--add-modules", "java.se",
+                                 "--add-exports","java.base/jdk.internal.ref=ALL-UNNAMED",
+                                 "--add-opens","java.base/java.lang=ALL-UNNAMED",
+                                 "--add-opens","java.base/java.nio=ALL-UNNAMED",
+                                 "--add-opens","java.base/sun.nio.ch=ALL-UNNAMED",
+                                 "--add-opens","java.management/sun.management=ALL-UNNAMED",
+                                 "--add-opens", "jdk.management/com.ibm.lang.management.internal=ALL-UNNAMED",
+                                 "--add-opens","jdk.management/com.sun.management.internal=ALL-UNNAMED"]
+}
+// NOTE — intentionally NO jacocoTestCoverageVerification line-coverage gate here.
+// This is a deliberate decision, not an oversight:
+//   * The `test`-task exec covers ~24% instruction / 6% branch overall. That is NOT
+//     weak testing — most of chronicle-server is DB/Hazelcast/Spring integration code
+//     whose real coverage comes from the Testcontainers integration suite, which is
+//     gated on Docker and does NOT feed this exec. A global floor the runnable-here
+//     suite passes would necessarily be <=24% — a misleading "green" sandbag.
+//   * Test EFFECTIVENESS for the pure-logic security scope (SecureCompare,
+//     SqlIdentifierValidator, RedirectValidator, LogSanitizer, the JWT/RLS filters,
+//     the validators) is gated by `pitest` (mutationThreshold = 73, verified 76%).
+//     Mutation testing strictly dominates line coverage — it proves tests DETECT
+//     injected defects, not merely that lines execute — so a JaCoCo floor on the same
+//     classes would be a redundant, strictly-weaker duplicate of the pitest gate.
+// jacocoTestReport (HTML/XML) is still produced for human inspection.
+
+tasks.withType(Javadoc) {
+    enabled = false
+}
+
+spotbugsMain {
+    ignoreFailures = false
+    reports {
+        // XML emitted (machine-readable) so findings are auditable, not just an HTML
+        // page. A high-confidence production finding fails CI.
+        xml.required = true
+        html.required = true
+    }
+}
+
+spotbugsTest {
+    ignoreFailures = false
+    reports {
+        xml.required = true
+        html.required = true
+    }
+    // Keep test analysis enforced while excluding only documented compiler/test
+    // harness false positives. Production analysis has no exclusion filter.
+    excludeFilter = file("config/spotbugs-test-exclude.xml")
+}
+
+run {
+    if (CS_ARGS != null) {
+        args CS_ARGS.split();
+    } else if (System.getProperty("exec.args") != null) {
+        args System.getProperty("exec.args").split()
+    }
+}
+
+println "Enabled profiles: " + Arrays.toString(run.args)
+
+configurations {
+    tests
+    published.extendsFrom tests, archives
+}
+
+import com.github.jk1.license.render.InventoryHtmlReportRenderer
+
+licenseReport {
+    renderers = [new InventoryHtmlReportRenderer()]
+    // CheckLicenseTask requires allowedLicensesFile; Gradle 9.5 hard-fails task
+    // configuration validation when it is unset. Point it at the repo allowlist.
+    allowedLicensesFile = file("$rootDir/config/allowed-licenses.json")
+}
+
+configurations {
+    mockitoAgent
+}
+
+test {
+    ignoreFailures = false
+    // Mockito 5.x inline-mockmaker uses dynamic agent attachment; JDK 21 still allows
+    // it with a warning but the cleanup hook can fail with exit-1. Wiring mockito-core
+    // as an explicit -javaagent avoids the self-attach path and stabilises the test JVM.
+    doFirst {
+        jvmArgs("-javaagent:${configurations.mockitoAgent.asPath}",
+                "-XX:+EnableDynamicAgentLoading")
+    }
+    if (project.hasProperty('captureJfr')) {
+        jvmArgs += [
+            '-XX:+FlightRecorder',
+            '-XX:StartFlightRecording=duration=120s,filename=' +
+                layout.buildDirectory.file('test.jfr').get().asFile.absolutePath +
+                ',settings=profile,maxsize=256m'
+        ]
+    }
+}
+
+pitest {
+    // Scope: pure-logic security primitives whose unit tests PIT can actually run.
+    // CandidateService / EnrollmentService were intentionally REMOVED from mutation
+    // scope: their real coverage is the Testcontainers integration suite
+    // (AuthorizationsTests / CandidateApiTests / ...), which is excluded below because
+    // it cannot run in PIT's lightweight minion. Mutation-testing them via only the
+    // unit subset produced ~50 meaningless "survivors" for code that IS tested — so
+    // they are covered by integration tests, not by this gate.
+    targetClasses = [
+        'com.openlattice.chronicle.authorization.JwtBlocklist',
+        'com.openlattice.chronicle.util.PaginationDefaults',
+        'com.openlattice.chronicle.util.ParticipantIdValidator',
+        'com.openlattice.chronicle.util.SecureCompare',
+        'com.openlattice.chronicle.util.LogSanitizer',
+        'com.openlattice.chronicle.util.RedirectValidator',
+        'com.openlattice.chronicle.util.SqlIdentifierValidator',
+        'com.openlattice.chronicle.validation.ParticipantIdValidator',
+        'com.openlattice.chronicle.filters.JwtBlocklistFilter',
+        'com.openlattice.chronicle.filters.RLSContextFilter',
+    ]
+    targetTests = [
+        'com.openlattice.chronicle.authorization.*',
+        'com.openlattice.chronicle.util.*',
+        'com.openlattice.chronicle.filters.*',
+        'com.openlattice.chronicle.services.*',
+        'com.openlattice.chronicle.candidates.*',
+    ]
+    // Integration tests that bootstrap Hazelcast / Postgres / the full server context.
+    // They pass under the Gradle `test` task (testcontainers + wiring) but cannot run in
+    // PIT's lightweight coverage minion — PIT aborts with "did not pass without mutation;
+    // mutation testing requires a green suite". Exclude them so PIT mutates against the
+    // pure-unit tests that cover the target classes.
+    excludedTestClasses = [
+        'com.openlattice.chronicle.authorization.AuthorizationsTests',
+        'com.openlattice.chronicle.authorization.PermissionsTests',
+        'com.openlattice.chronicle.authorization.PrincipalDirectoryAuthTest',
+        'com.openlattice.chronicle.candidates.CandidateApiTests',
+    ]
+    pitestVersion = '1.20.3'   // >=1.20 required: relocated ASM must read Java 25 (major 69) class files
+    junit5PluginVersion = '1.2.1'
+    threads = 4
+    outputFormats = ['HTML', 'XML']
+    timestampedReports = false
+    mutators = ['DEFAULTS']
+    // pitest 1.20 mutates the Kotlin compiler's generated Intrinsics null-check calls
+    // (VoidMethodCallMutator on checkNotNull etc.) — untestable-by-construction noise
+    // for Kotlin bytecode, excluded per standard Kotlin-on-pitest practice.
+    // KNOWN TRADEOFF: avoidCallsTo is LINE-based and exempts every mutator on any line
+    // calling into the package — and Kotlin object `==` compiles to Intrinsics.areEqual,
+    // so equality-bearing lines lose mutation coverage too (measured impact in the
+    // mutated security scope: ~2 load-bearing comparisons, e.g. SsrfValidator's host
+    // allowlist compare). Accepted: the OSS alternative (no exclusion) drowns the gate
+    // in ~28 unkillable checkNotNull survivors.
+    avoidCallsTo = ['kotlin.jvm.internal']
+    // Honest, verified-achieved floor for the pure-logic security scope above —
+    // raised from a sandbagged 50 to 73. Measured score = 77% on pitest 1.20.3 /
+    // JDK 25 (201/262 killed; test strength 80%; Kotlin Intrinsics calls excluded
+    // via avoidCallsTo — see above). 73 leaves a small margin for PIT's
+    // timing-dependent TIMED_OUT count so the gate is not flaky.
+    //
+    // It is deliberately NOT 95%+: ~57 residual survivors are EQUIVALENT or LOGGING
+    // mutants no behavioural test can kill, so chasing a higher number would mean
+    // gaming the metric, not improving safety:
+    //   - logger.warn/debug VoidMethodCall removals — no observable effect without a
+    //     log-capture appender (we do not add "assert we logged" busywork);
+    //   - blank-input guards that fall through to a later guard with the same result
+    //     (e.g. SecureCompare.validateApiKey("  ", x) -> equals() still returns false);
+    //   - decodeUntilStable's repeat(5) loop bound (input stabilises in <=2 iterations);
+    //   - branches masked by an earlier check (the "//" protocol-relative guard is
+    //     unreachable because "//" is already rejected by the dangerous-pattern scan).
+    // Every GENUINELY killable mutant is covered — see SqlIdentifierValidatorKillTest +
+    // the per-class *MutationTest suites.
+    mutationThreshold = 73
+}
+
+// PIT spawns child "minion" JVMs to gather coverage and run mutations. On JDK 21
+// they need the same module opens + Mockito javaagent the `test` task uses, or the
+// coverage minion exits abnormally (UNKNOWN_ERROR) before any score is computed.
+// Set in afterEvaluate so the mockitoAgent configuration (declared in dependencies
+// below) is fully resolved.
+afterEvaluate {
+    pitest {
+        jvmArgs = [
+            '-Xmx3g',
+            '-XX:+EnableDynamicAgentLoading',
+            '-javaagent:' + configurations.mockitoAgent.asPath,
+            '--add-modules', 'java.base',
+            '--add-modules', 'java.se',
+            '--add-exports', 'java.base/jdk.internal.ref=ALL-UNNAMED',
+            '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
+            '--add-opens', 'java.base/java.nio=ALL-UNNAMED',
+            '--add-opens', 'java.base/sun.nio.ch=ALL-UNNAMED',
+            '--add-opens', 'java.management/sun.management=ALL-UNNAMED',
+            '--add-opens', 'jdk.management/com.ibm.lang.management.internal=ALL-UNNAMED',
+            '--add-opens', 'jdk.management/com.sun.management.internal=ALL-UNNAMED',
+        ]
+    }
+}
+
+ext.odata_version = '4.2.0'
+ext.chronicle_api_version = '0.0.17'
+
+dependencies {
+    //Spotbugs related
+    spotbugsPlugins "com.h3xstream.findsecbugs:findsecbugs-plugin:${findsecbugs_version}"
+    compileOnly "net.jcip:jcip-annotations:${jcip_version}"
+    compileOnly "com.github.spotbugs:spotbugs-annotations:${spotbugs_annotations_version}"
+    testCompileOnly "net.jcip:jcip-annotations:${jcip_version}"
+    testCompileOnly "com.github.spotbugs:spotbugs-annotations:${spotbugs_annotations_version}"
+
+    implementation "com.google.guava:guava:${guava_version}"
+    implementation "org.apache.commons:commons-text:${commonsText_version}"
+
+    implementation group: "com.twilio.sdk", name: "twilio", version: "9.6.1"
+    implementation "org.dmfs:lib-recur:0.10.2"
+
+    // Schema migrations: Flyway runs the db/migration corpus (fail-closed at startup via
+    // FlywayMigrationService; the postgresql module is required since Flyway 10).
+    implementation "org.flywaydb:flyway-core:${flyway_version}"
+    implementation "org.flywaydb:flyway-database-postgresql:${flyway_version}"
+
+    implementation (group: "org.slf4j", name: "slf4j-api", version: "${slf4j_version}")
+    if (project.hasProperty('developmentMode') && project.developmentMode) {
+        logger.quiet(project.name + " using project dependencies.")
+        implementation(project(":rhizome"))
+        implementation(project(":chronicle-models")) {
+            exclude group: 'com.google.guava', module: 'guava'
+        }
+        implementation(project(":chronicle-api")) {
+            exclude group: 'com.google.guava', module: 'guava'
+        }
+        testImplementation(project(path: ":rhizome", configuration: "tests"))
+        testImplementation(project(path: ":rhizome-client", configuration: "tests"))
+    } else {
+        logger.quiet(project.name + " using jar dependencies.")
+        implementation("com.openlattice:rhizome:${rhizome_version}")
+        // chronicle-models is transitively included via chronicle-api (api dependency),
+        // but we declare it explicitly for clarity
+        implementation("com.openlattice:chronicle-api:${chronicle_api_version}") {
+            exclude group: 'com.google.guava', module: 'guava'
+        }
+        testImplementation "com.geekbeast:rhizome:${rhizome_version}:tests"
+        testImplementation "com.geekbeast:rhizome-client:${rhizome_client_version}:tests"
+    }
+
+    /*
+     * TESTING
+     */
+    testImplementation "junit:junit:${junit_version}"
+    // PIT's coverage minion builds its own classpath from testRuntimeClasspath and,
+    // unlike Gradle's test task, does NOT get Gradle's auto-provisioned JUnit Platform
+    // engines — without one it dies with "Cannot create Launcher without at least one
+    // TestEngine". Declare both engines explicitly (aligned to the resolved 5.9.0 API /
+    // 1.9.0 platform): jupiter for the JUnit5 tests, vintage for the JUnit4 ones.
+    testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:5.9.0"
+    testRuntimeOnly "org.junit.vintage:junit-vintage-engine:5.9.0"
+    testImplementation("org.mockito:mockito-core:${mockito_version}") {
+        exclude module: 'hamcrest'
+        exclude module: 'hamcrest-core'
+    }
+    testImplementation "org.mockito.kotlin:mockito-kotlin:5.4.0"
+    mockitoAgent("org.mockito:mockito-core:${mockito_version}") { transitive = false }
+
+    testImplementation platform("org.testcontainers:testcontainers-bom:1.21.4")
+    testImplementation "org.testcontainers:testcontainers"
+    testImplementation "org.testcontainers:postgresql"
+
+    testImplementation "com.code-intelligence:jazzer-junit:0.22.1"
+    testImplementation "io.kotest:kotest-property:5.9.1"
+    testImplementation "io.kotest:kotest-assertions-core:5.9.1"
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0"
+
+    // Bucket4j for distributed rate limiting
+    implementation "com.bucket4j:bucket4j-core:8.7.0"
+    implementation "com.bucket4j:bucket4j-hazelcast:8.7.0"
+
+    // AspectJ for AOP (used by StudyAuthorizationAspect)
+    implementation "org.aspectj:aspectjweaver:1.9.19"
+
+    // Apache POI for Excel export (exclude commons-math3: not imported anywhere, saves 2.2 MB)
+    implementation("org.apache.poi:poi-ooxml:5.4.0") {
+        exclude group: "org.apache.commons", module: "commons-math3"
+    }
+
+    // Spring Vault for HashiCorp Vault integration
+    implementation "org.springframework.vault:spring-vault-core:3.1.2"
+
+    // Temporal SDK for durable workflow execution (Apache 2.0, open-source)
+    // Replaces the custom JobService polling loop with guaranteed-delivery workflows
+    implementation "io.temporal:temporal-sdk:1.27.0"
+}
+
+tasks.withType(JavaCompile) {
+    options.compilerArgs += chronicle_jvm_compile_module_args
+}
+
+tasks.withType(Test) {
+    jvmArgs += chronicle_jvm_test_module_args
+    systemProperty 'chronicle.export.dir', file("$buildDir/test-exports").absolutePath
+    // The long-running browser harness exercises concurrent export scenarios. Keep its
+    // admission budget aligned with the production default so two 512 MiB worst-case
+    // reservations do not make an otherwise valid parallel scenario fail deterministically.
+    systemProperty 'chronicle.export.maxTotalBytes',
+            System.getProperty('chronicle.playwright.backend', 'false') == 'true'
+                    ? '8589934592'
+                    : '805306368'
+    systemProperty 'chronicle.playwright.backend',
+            System.getProperty('chronicle.playwright.backend', 'false')
+    // Gradle system properties are not inherited by the forked test JVM. Forward
+    // only the two bounded-harness controls explicitly; otherwise automation
+    // silently falls back to the interactive infinite wait.
+    [
+            'chronicle.playwright.backend.doneFile',
+            'chronicle.playwright.backend.maxWaitSeconds',
+    ].each { propertyName ->
+        def propertyValue = System.getProperty(propertyName)
+        if (propertyValue != null) {
+            systemProperty propertyName, propertyValue
+        }
+    }
+}
+
+kotlin {
+    explicitApi()
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    if (name == 'compileKotlin') {
+        kotlinOptions.allWarningsAsErrors = true
+    }
+}
+
+jar {
+    doFirst {
+        manifest {
+            attributes (
+                    "Class-Path": configurations.runtimeClasspath.files.collect { it.getName() }.join(" "),
+                    "Main-Class": application.mainClass.get()
+            )
+        }
+    }
+}
+
+startScripts {
+    classpath = files(jar.archiveFile.get().asFile) + classpath.filter { it.getName().startsWith("rhizome") && !it.getName().contains("client") }
+}

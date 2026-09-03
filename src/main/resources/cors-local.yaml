@@ -1,0 +1,57 @@
+# CORS Configuration for Local Development
+#
+# This configuration enables development mode for CORS, which automatically
+# adds localhost origins for common development ports.
+#
+# Usage: Copy or symlink this file to cors.yaml for local development.
+# Or use it directly via configuration override.
+
+enabled: true
+
+# Production origins (still allowed for testing)
+allowed-origins:
+  - "http://localhost:3000"
+
+allowed-methods:
+  - "GET"
+  - "POST"
+  - "PUT"
+  - "DELETE"
+  - "PATCH"
+  - "OPTIONS"
+
+allowed-headers:
+  - "Authorization"
+  - "Content-Type"
+  - "Accept"
+  - "X-Requested-With"
+  - "Origin"
+  - "Access-Control-Request-Method"
+  - "Access-Control-Request-Headers"
+  - "X-Chronicle-Signature"
+  - "X-Chronicle-Timestamp"
+  - "X-Chronicle-Nonce"
+
+exposed-headers:
+  - "X-Request-Id"
+  - "X-RateLimit-Limit"
+  - "X-RateLimit-Remaining"
+  - "X-RateLimit-Reset"
+
+allow-credentials: true
+
+max-age-seconds: 3600
+
+# DEVELOPMENT MODE ENABLED
+# This adds localhost origins automatically
+development-mode: true
+
+# Localhost ports to allow for development
+development-ports:
+  - 3000    # Create React App default
+  - 3001    # Alternative React port
+  - 5173    # Vite default
+  - 5174    # Vite alternative
+  - 8080    # Common dev server port
+  - 4200    # Angular default
+  - 8000    # Python/Django default

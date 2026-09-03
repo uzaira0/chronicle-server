@@ -1,0 +1,22 @@
+# SSRF (Server-Side Request Forgery) Prevention Configuration
+# See docs/SECURITY-HARDENING.md for details
+
+enabled: true
+
+# Allowed hosts for outbound HTTP requests.
+# Leave this empty until deployment-specific SSO and integration domains are known.
+allowedHosts: []
+
+# Allowed protocols (default: HTTPS only)
+allowedProtocols:
+  - "https"
+
+# IP blocking configuration
+blockPrivateIps: true      # Block 10.x, 172.16-31.x, 192.168.x
+blockLocalhost: true       # Block 127.0.0.1, ::1
+blockLinkLocal: true       # Block 169.254.x.x, fe80::
+blockMetadataEndpoints: true  # Block cloud metadata IPs (169.254.169.254)
+
+# Redirect handling
+validateRedirects: true
+maxRedirects: 3

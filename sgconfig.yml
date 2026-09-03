@@ -1,0 +1,5 @@
+# ast-grep project config for the hardcoded-English guard on server responses.
+#   ../scripts/i18n-lint.sh   (from the monorepo root) or   ast-grep scan src/main
+# Rules are documented in docs/I18N.md.
+ruleDirs:
+  - lint/i18n

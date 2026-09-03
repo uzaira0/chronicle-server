@@ -1,0 +1,68 @@
+{
+  "@timestamp": {
+    "$resolver": "timestamp",
+    "pattern": {
+      "format": "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+    }
+  },
+  "level": {
+    "$resolver": "level",
+    "field": "name"
+  },
+  "logger": {
+    "$resolver": "logger",
+    "field": "name"
+  },
+  "thread": {
+    "$resolver": "thread",
+    "field": "name"
+  },
+  "message": {
+    "$resolver": "message",
+    "stringified": true
+  },
+  "service": "chronicle",
+  "requestId": {
+    "$resolver": "mdc",
+    "key": "requestId"
+  },
+  "traceId": {
+    "$resolver": "mdc",
+    "key": "traceId"
+  },
+  "spanId": {
+    "$resolver": "mdc",
+    "key": "spanId"
+  },
+  "studyId": {
+    "$resolver": "mdc",
+    "key": "studyId"
+  },
+  "participantId": {
+    "$resolver": "mdc",
+    "key": "participantId"
+  },
+  "userId": {
+    "$resolver": "mdc",
+    "key": "userId"
+  },
+  "clientIp": {
+    "$resolver": "mdc",
+    "key": "clientIp"
+  },
+  "httpMethod": {
+    "$resolver": "mdc",
+    "key": "httpMethod"
+  },
+  "httpPath": {
+    "$resolver": "mdc",
+    "key": "httpPath"
+  },
+  "exception": {
+    "$resolver": "exception",
+    "field": "stackTrace",
+    "stackTrace": {
+      "stringified": true
+    }
+  }
+}

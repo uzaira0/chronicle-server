@@ -1,0 +1,34 @@
+# Error Sanitization Configuration - Production
+#
+# This configuration controls how error responses are sanitized to prevent
+# information disclosure through stack traces, internal paths, and database errors.
+#
+# SECURITY: These settings are appropriate for production environments.
+
+# Sanitize error messages to remove sensitive patterns (paths, SQL, class names)
+sanitize-errors: true
+
+# Do NOT include stack traces in production responses
+include-stack-trace: false
+
+# Include error IDs for log correlation (recommended for all environments)
+include-error-id: true
+
+# Log full error details server-side for debugging
+log-full-errors: true
+
+# Maximum length of error messages returned to clients
+max-message-length: 500
+
+# Exception patterns that should ALWAYS be sanitized, even if sanitize-errors is false
+# These patterns match database-related exceptions that could leak schema information
+always-sanitize-patterns:
+  - ".*SQLException.*"
+  - ".*JDBIException.*"
+  - ".*DataAccessException.*"
+  - ".*HibernateException.*"
+  - ".*PersistenceException.*"
+  - ".*DataIntegrityViolationException.*"
+  - ".*PSQLException.*"
+  - ".*BatchUpdateException.*"
+  - ".*UnexpectedRollbackException.*"

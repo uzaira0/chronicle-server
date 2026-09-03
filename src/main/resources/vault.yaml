@@ -1,0 +1,12 @@
+# HashiCorp Vault integration — disabled by default for local development.
+# In production, this is rendered from vault.yaml.template with env vars.
+# See docker/vault.yaml.template for the production template.
+address: "http://localhost:8200"
+token: ""
+secretBasePath: "chronicle"
+enabled: false
+connectionTimeoutMs: 5000
+readTimeoutMs: 5000
+authMethod: "token"
+appRoleId: ""
+appRoleSecretId: ""
