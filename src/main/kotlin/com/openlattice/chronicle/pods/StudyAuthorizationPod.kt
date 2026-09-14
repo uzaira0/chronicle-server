@@ -19,7 +19,9 @@ package com.openlattice.chronicle.pods
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.StudyAuthorizationService
+import com.openlattice.chronicle.authorization.aspects.OrganizationAuthorizationAspect
 import com.openlattice.chronicle.authorization.aspects.StudyAuthorizationAspect
+import com.openlattice.chronicle.services.organizations.OrganizationMemberService
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.EnableAspectJAutoProxy
@@ -57,5 +59,19 @@ public open class StudyAuthorizationPod {
     @Bean
     public fun studyAuthorizationAspect(): StudyAuthorizationAspect {
         return StudyAuthorizationAspect(studyAuthorizationService())
+    }
+
+    /**
+     * Creates the AOP aspect that enforces @RequiresOrganizationAccess.
+     *
+     * The aspect's own @Aspect/@Component stereotype never took effect: the MVC pod scans only the
+     * controller packages, so nothing registered the bean and every organization-scoped endpoint
+     * ran unauthorized. It must be declared here alongside the study aspect.
+     */
+    @Bean
+    public fun organizationAuthorizationAspect(
+        organizationMemberService: OrganizationMemberService,
+    ): OrganizationAuthorizationAspect {
+        return OrganizationAuthorizationAspect(organizationMemberService)
     }
 }
