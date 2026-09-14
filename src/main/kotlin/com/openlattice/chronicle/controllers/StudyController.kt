@@ -1097,10 +1097,13 @@ public open class StudyController @Inject constructor(
             else -> ensureWriteAccess(AclKey(studyId))
         }
 
+        val expectedRevision = parseSettingsRevisionPrecondition(requestHeader(HttpHeaders.IF_MATCH))
+
         return try {
-            val persistedUpdate = persistLockedStudySettingsMutation(studyId) { priorSettings ->
+            val persistedUpdate = persistLockedStudySettingsMutation(studyId, expectedRevision) { priorSettings ->
                 mergeStudySetting(priorSettings, settingType, settings)
             }
+            setSettingsRevisionEtag(persistedUpdate.settingsRevision)
             studyService.refreshStudyCache(setOf(studyId))
             recordSettingsAuditDiff(
                 studyId,

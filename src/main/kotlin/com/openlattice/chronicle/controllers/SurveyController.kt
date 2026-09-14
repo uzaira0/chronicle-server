@@ -318,6 +318,9 @@ public open class SurveyController @Inject constructor(
         ) {
             val scope = ParticipantFormAccessFilter.currentScope()
             if (scope == null) {
+                // No participant capability was presented, so this is an authenticated caller.
+                // Authentication alone is not authorization to write another study's PHI.
+                ensureWriteAccess(AclKey(realStudyId))
                 surveysService.submitAppUsageSurvey(realStudyId, participantId, surveyResponses)
             } else {
                 participantFormSubmissionReceiptService.executeWithoutResult(
@@ -468,6 +471,8 @@ public open class SurveyController @Inject constructor(
         ) {
             val scope = ParticipantFormAccessFilter.currentScope()
             if (scope == null) {
+                // Authenticated caller rather than a participant capability: require study write.
+                ensureWriteAccess(AclKey(realStudyId))
                 surveysService.submitQuestionnaireResponses(realStudyId, participantId, questionnaireId, responses)
             } else {
                 participantFormSubmissionReceiptService.executeWithSubmissionId(

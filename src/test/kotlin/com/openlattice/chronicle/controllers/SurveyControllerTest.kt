@@ -16,7 +16,9 @@ import com.openlattice.chronicle.survey.AppUsage
 import com.openlattice.chronicle.survey.DeviceUsage
 import com.openlattice.chronicle.survey.Questionnaire
 import com.openlattice.chronicle.survey.QuestionnaireResponse
+import com.geekbeast.controllers.exceptions.ForbiddenException
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
@@ -211,9 +213,11 @@ class SurveyControllerTest {
     }
 
     // ---------------------------------------------------------------------------
-    // POST app-usage survey — participant submission. Not ACL-gated. Pins that the
-    // exact response list is forwarded to surveysService.submitAppUsageSurvey under
-    // the resolved real study id.
+    // POST app-usage survey. A participant reaches this through a capability session
+    // (ParticipantFormAccessFilter scope); an authenticated caller with no scope must hold
+    // study WRITE, because authentication alone is not authorization to write another
+    // study's PHI. Pins that the exact response list is forwarded under the resolved
+    // real study id once write access is granted.
     // ---------------------------------------------------------------------------
     @Test
     fun testSubmitAppUsageSurveyDelegatesToService() {
@@ -230,17 +234,40 @@ class SurveyControllerTest {
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
 
         TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
 
         controller.submitAppUsageSurvey(studyId, participantId, responses)
 
         verify(surveysService).submitAppUsageSurvey(studyId, participantId, responses)
-        verify(authorizationManager, never()).checkIfHasPermissions(kAny(), kAny(), kAny())
+        verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
+    }
+
+    @Test
+    fun testSubmitAppUsageSurveyDeniesAnAuthenticatedCallerWithoutStudyWrite() {
+        val studyId = UUID.randomUUID()
+        val responses = listOf(
+            AppUsage(
+                "pkg.a", "A",
+                OffsetDateTime.of(2024, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC),
+                1, listOf(), "UTC", Optional.empty()
+            )
+        )
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(false)
+
+        // A researcher holding only READ could previously post responses for any known participant.
+        assertThrows(ForbiddenException::class.java) {
+            controller.submitAppUsageSurvey(studyId, "participant-1", responses)
+        }
+        verify(surveysService, never()).submitAppUsageSurvey(kAny(), kAnyString(), kAny())
     }
 
     // ---------------------------------------------------------------------------
-    // POST questionnaire responses — participant submission, not ACL-gated. Pins
-    // that the response list is forwarded with the resolved study id and the
-    // questionnaire id, and that the controller returns the service-backed OK.
+    // POST questionnaire responses. Same rule as the app-usage submission: a capability
+    // session or, for an authenticated caller, study WRITE. Pins that the response list is
+    // forwarded with the resolved study id and questionnaire id and that the controller
+    // returns the service-backed OK.
     // ---------------------------------------------------------------------------
     @Test
     fun testSubmitQuestionnaireResponsesDelegatesToService() {
@@ -252,12 +279,29 @@ class SurveyControllerTest {
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
 
         TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
 
         val result = controller.submitQuestionnaireResponses(studyId, participantId, questionnaireId, responses)
 
         assertNotNull(result)
         verify(surveysService).submitQuestionnaireResponses(studyId, participantId, questionnaireId, responses)
-        verify(authorizationManager, never()).checkIfHasPermissions(kAny(), kAny(), kAny())
+        verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
+    }
+
+    @Test
+    fun testSubmitQuestionnaireResponsesDeniesAnAuthenticatedCallerWithoutStudyWrite() {
+        val studyId = UUID.randomUUID()
+        val questionnaireId = UUID.randomUUID()
+        val responses = listOf(Mockito.mock(QuestionnaireResponse::class.java))
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(false)
+
+        assertThrows(ForbiddenException::class.java) {
+            controller.submitQuestionnaireResponses(studyId, "participant-1", questionnaireId, responses)
+        }
+        verify(surveysService, never())
+            .submitQuestionnaireResponses(kAny(), kAnyString(), kAny(), kAny())
     }
 
     // ---------------------------------------------------------------------------

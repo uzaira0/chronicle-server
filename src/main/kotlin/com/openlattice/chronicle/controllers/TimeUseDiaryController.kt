@@ -118,6 +118,9 @@ public open class TimeUseDiaryController(
         return try {
             val participantScope = ParticipantFormAccessFilter.currentScope()
             val submissionResult = if (participantScope == null) {
+                // Authenticated caller rather than a participant capability: authentication alone
+                // is not authorization to write another study's PHI.
+                ensureWriteAccess(AclKey(realStudyId))
                 IdempotentSubmissionResult(
                     storageResolver.getPlatformStorage().connection.use { conn ->
                         AuditedTransactionBuilder<UUID>(conn, auditingManager)

@@ -17,10 +17,13 @@ import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import com.geekbeast.controllers.exceptions.ForbiddenException
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito
+import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 import java.sql.Connection
 import java.time.OffsetDateTime
@@ -185,11 +188,30 @@ class TimeUseDiaryControllerTest {
         ).thenReturn(expectedSubmissionId)
 
         TestSecurityUtils.setupSecurityContext()
+        // No participant capability session is present, so this is an authenticated caller and
+        // must hold study WRITE before any PHI is written.
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
 
         val result = controller.submitTimeUseDiary(studyId, participantId, responses)
 
         assertSame(expectedSubmissionId, result)
         verify(timeUseDiaryService).submitTimeUseDiary(connection, studyId, participantId, responses)
+        verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
+    }
+
+    @Test
+    fun testSubmitTimeUseDiaryDeniesAnAuthenticatedCallerWithoutStudyWrite() {
+        val studyId = UUID.randomUUID()
+        val responses = listOf(Mockito.mock(TimeUseDiaryResponse::class.java))
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(false)
+
+        assertThrows(ForbiddenException::class.java) {
+            controller.submitTimeUseDiary(studyId, "participant-1", responses)
+        }
+        verify(timeUseDiaryService, never())
+            .submitTimeUseDiary(kAny(), kAny(), kAnyString(), kAny())
     }
 
     // ---------------------------------------------------------------------------
