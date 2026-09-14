@@ -45,6 +45,7 @@ import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresEventColumns
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.Study
+import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.SqlIdentifierValidator
 import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryResponse
@@ -188,14 +189,16 @@ public open class ImportController(
 
         val maybeUsers = usersMap.values(Predicates.equal(UserMapstore.EMAIL_INDEX, principalEmail))
 
+        // E-mail addresses are identifiers; log a stable fingerprint, never the address.
+        val emailRef = LogSanitizer.stableFingerprint(principalEmail, "email")
         if (maybeUsers.size > 1) {
-            logger.warn("Found more than 1 user with e-mail: $principalEmail, using the first")
+            logger.warn("Found more than 1 user with e-mail {}, using the first", emailRef)
         }
 
         return if (maybeUsers.isNotEmpty()) {
             maybeUsers.map { Principal(PrincipalType.USER, it.id) }
         } else {
-            logger.warn("Didn't find any users with e-mail $principalEmail... skipping")
+            logger.warn("Didn't find any users with e-mail {}; skipping", emailRef)
             null
         }
     }
