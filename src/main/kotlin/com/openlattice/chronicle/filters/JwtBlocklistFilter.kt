@@ -53,7 +53,9 @@ public class JwtBlocklistFilter(private val jwtBlocklist: JwtBlocklist) : OncePe
                 val revokeAllBefore = jwtBlocklist.getRevokeAllTimestamp()
                 if (revokeAllBefore != null) {
                     val issuedAt = jwt.issuedAt
-                    if (issuedAt != null && issuedAt.isBefore(revokeAllBefore)) {
+                    // The cutoff and `iat` are both truncated to whole seconds, so a token minted
+                    // in the same second as the revocation must also be rejected.
+                    if (issuedAt != null && !issuedAt.isAfter(revokeAllBefore)) {
                         rejectToken(response, "Token was issued before a global revocation event")
                         return
                     }

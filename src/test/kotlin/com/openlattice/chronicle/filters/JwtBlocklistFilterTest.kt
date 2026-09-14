@@ -140,6 +140,30 @@ class JwtBlocklistFilterTest {
     }
 
     @Test
+    fun testRejectsTokenIssuedInTheSameSecondAsRevokeAll() {
+        // revokeAllBefore truncates to epoch seconds and a JWT `iat` is second-resolution, so a
+        // token minted in the same second as /revoke-all had an equal iat and stayed usable.
+        val revokeTime = Instant.now().minusSeconds(1800).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        val jwt = createJwt(
+            tokenValue = "same-second-${UUID.randomUUID()}",
+            jti = null,
+            issuedAt = revokeTime
+        )
+        blocklist.revokeAllBefore(revokeTime)
+        setAuthentication(jwt)
+
+        val request = MockHttpServletRequest("GET", "/api/data")
+        val response = MockHttpServletResponse()
+        val chain = MockFilterChain()
+
+        filter.doFilter(request, response, chain)
+
+        assertNull("Token issued in the revocation second should NOT pass through", chain.request)
+        assertEquals(401, response.status)
+        SecurityContextHolder.clearContext()
+    }
+
+    @Test
     fun testAllowsTokenIssuedAfterRevokeAll() {
         val revokeTime = Instant.now().minusSeconds(7200)
         val issuedAt = Instant.now().minusSeconds(60)
