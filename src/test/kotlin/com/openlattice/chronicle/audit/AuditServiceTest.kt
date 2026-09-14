@@ -44,6 +44,35 @@ class AuditServiceTest {
         service.shutdown()
     }
 
+    @Test
+    fun `a prolonged database outage does not discard dequeued audit entries`() {
+        val repository = Mockito.mock(AuditLogRepository::class.java)
+        // More consecutive failures than the old three-strike retry budget, which dropped the
+        // batch and left the PHI operation absent from audit_logs after recovery.
+        Mockito.`when`(repository.saveBatch(anyList()))
+            .thenThrow(
+                IllegalStateException("database unavailable"),
+                IllegalStateException("database unavailable"),
+                IllegalStateException("database unavailable"),
+                IllegalStateException("database unavailable"),
+                IllegalStateException("database unavailable"),
+            )
+            .thenAnswer { invocation -> invocation.getArgument<List<AuditLogEntry>>(0).size }
+
+        val service = AuditService(repository, ObjectMapper())
+        service.log(testEntry())
+
+        repeat(6) { service.flushBatch() }
+
+        // The sixth flush is the first that could succeed; it can only do so if the entry was
+        // still queued after five failures.
+        verify(repository, times(6)).saveBatch(anyList())
+        Mockito.clearInvocations(repository)
+        service.flushBatch()
+        verify(repository, Mockito.never()).saveBatch(anyList())
+        service.shutdown()
+    }
+
     private fun testEntry(): AuditLogEntry = AuditLogEntry(
         ipAddress = "127.0.0.1",
         action = AuditAction.VIEW,

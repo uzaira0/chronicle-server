@@ -531,34 +531,27 @@ public open class AuditService(
                 }
                 consecutiveFlushFailures.set(0)
             } catch (e: Exception) {
-                if (consecutiveFlushFailures.incrementAndGet() < MAX_FLUSH_RETRIES) {
-                    logger.error(
-                        "Failed to flush {} audit entries to database — re-queuing for retry (attempt {}/{})",
-                        batch.size,
-                        consecutiveFlushFailures.get(),
-                        MAX_FLUSH_RETRIES,
-                        e
-                    )
-                    // Re-queue events so they are not silently discarded.
-                    // They have already been written to the log file as a fallback.
-                    batch.forEach { entry ->
-                        if (!eventQueue.offer(entry)) {
-                            logger.error(
-                                "Audit database queue filled while re-queuing a failed batch; " +
-                                    "event {} remains only in the audit log file",
-                                entry.id,
-                            )
-                        }
+                val failures = consecutiveFlushFailures.incrementAndGet()
+                // Never discard dequeued PHI audit entries on a retry budget: a database outage
+                // spanning a few flush attempts would otherwise leave successful PHI operations
+                // permanently absent from audit_logs. Entries are retained until the insert
+                // succeeds or the bounded queue itself overflows (which is logged per entry).
+                logger.error(
+                    "Failed to flush {} audit entries to database — re-queuing for retry " +
+                        "(consecutive failure {}, alert threshold {})",
+                    batch.size,
+                    failures,
+                    MAX_FLUSH_RETRIES,
+                    e
+                )
+                batch.forEach { entry ->
+                    if (!eventQueue.offer(entry)) {
+                        logger.error(
+                            "Audit database queue filled while re-queuing a failed batch; " +
+                                "event {} remains only in the audit log file",
+                            entry.id,
+                        )
                     }
-                } else {
-                    logger.error(
-                        "Failed to flush {} audit entries to database after {} consecutive failures " +
-                            "— dropping events (already written to audit log file as fallback)",
-                        batch.size,
-                        consecutiveFlushFailures.get(),
-                        e
-                    )
-                    consecutiveFlushFailures.set(0) // Allow recovery after transient outage
                 }
             }
         }
