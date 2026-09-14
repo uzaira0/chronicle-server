@@ -38,4 +38,29 @@ class MobileApiSecurityConfigTest {
 
         assertTrue(failure.message.orEmpty().contains("internal-web-secret is blank"))
     }
+
+    @Test
+    fun `a nonce ttl shorter than the timestamp window is rejected at startup`() {
+        val subject = MobileApiSecurityConfig()
+        ReflectionTestUtils.setField(
+            subject,
+            "mobileSecurityConfiguration",
+            MobileSecurityConfiguration(
+                enabled = true,
+                signingSecret = "controlled-legacy-signing-secret-32-bytes!!",
+                signingRequired = true,
+                internalWebSecret = "controlled-internal-web-secret-32-bytes!!!",
+                maxRequestAgeMinutes = 10,
+                nonceTtlMinutes = 1,
+            ),
+        )
+
+        // A request captured within the ten minute timestamp window replays cleanly once its
+        // one minute nonce entry has expired.
+        val failure = assertThrows(IllegalStateException::class.java) {
+            subject.mobileApiSignatureFilter()
+        }
+
+        assertTrue(failure.message.orEmpty().contains("nonce-ttl-minutes"))
+    }
 }

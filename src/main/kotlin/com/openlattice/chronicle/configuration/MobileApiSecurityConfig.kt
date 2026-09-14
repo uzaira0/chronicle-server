@@ -81,6 +81,7 @@ public open class MobileApiSecurityConfig {
          * Minimum recommended secret length in bytes (256 bits).
          */
         private const val MIN_SECRET_LENGTH = 32
+        private const val SECONDS_PER_MINUTE = 60L
     }
 
     @Inject
@@ -156,6 +157,17 @@ public open class MobileApiSecurityConfig {
         }
         check(previousSecret.isBlank() || previousSecret != secret) {
             "Mobile API previous signing secret must differ from the current secret."
+        }
+
+        // A nonce that expires before the timestamp window closes leaves a replay window: the
+        // captured request's nonce is forgotten while its timestamp is still accepted.
+        val minimumNonceTtlMinutes =
+            config.maxRequestAgeMinutes + (config.clockSkewSeconds + SECONDS_PER_MINUTE - 1) / SECONDS_PER_MINUTE
+        check(config.nonceTtlMinutes >= minimumNonceTtlMinutes) {
+            "Mobile API nonce-ttl-minutes (${config.nonceTtlMinutes}) must be at least " +
+                "max-request-age-minutes (${config.maxRequestAgeMinutes}) plus clock skew " +
+                "(${config.clockSkewSeconds}s), i.e. $minimumNonceTtlMinutes minutes; " +
+                "otherwise a captured request can be replayed after its nonce expires."
         }
 
         check(!config.signingRequired || config.internalWebSecret.isNotBlank()) {
