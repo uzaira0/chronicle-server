@@ -71,7 +71,7 @@ public open class AuthorizationsController @Inject constructor(
     override fun getAccessibleObjects(
         @RequestParam(value = AuthorizationsApi.OBJECT_TYPE) objectType: SecurableObjectType,
         @RequestParam(value = AuthorizationsApi.PERMISSION) permission: Permission,
-        @RequestParam(value = AuthorizationsApi.PAGING_TOKEN, required = false) pagingToken: String
+        @RequestParam(value = AuthorizationsApi.PAGING_TOKEN, required = false) pagingToken: String?
     ): AuthorizedObjectsSearchResult {
         val authorizedAclKeys = authorizationManager.getAuthorizedObjectsOfType(
             Principals.getCurrentPrincipals(),
