@@ -155,6 +155,17 @@ class StudyControllerTest {
         val mockMap = Mockito.mock(IMap::class.java) as IMap<UUID, Study>
         Mockito.`when`(hazelcastInstance.getMap<UUID, Study>(HazelcastMap.STUDIES.name)).thenReturn(mockMap)
 
+        // Device-data writes run inside the atomic collection-halt recheck. The real service opens
+        // a transaction; here it just runs the write so these tests still exercise the upload path.
+        Mockito.`when`(
+            participantCollectionAcknowledgmentService.withCollectionHaltRecheck<Any?>(
+                kAny<UUID>(), kAnyString(), kAny<UUID>(), kAny<Function0<Any?>>(),
+            ),
+        ).thenAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            (invocation.getArgument<Any>(3) as () -> Any?).invoke()
+        }
+
         controller = StudyController(
             hazelcastInstance, storageResolver, idGenerationService,
             enrollmentService, studyService, sensorDataUploadService,

@@ -32,6 +32,15 @@ public interface StudyManager {
     public fun getStudySensors(studyId: UUID): Set<SensorType>
     public fun getStudySettings(studyId: UUID): Map<StudySettingType, StudySetting>
     public fun getStudySettings(studyIds: Collection<UUID>): Map<UUID, Map<StudySettingType, StudySetting>>
+
+    /**
+     * Per-study monotonically increasing settings revision (V103), used as the `ETag`/`If-Match`
+     * optimistic-concurrency token for the settings endpoints.
+     */
+    public fun getStudySettingsRevision(studyId: UUID): Long
+    public fun getStudySettingsRevision(connection: Connection, studyId: UUID): Long
+    public fun bumpStudySettingsRevision(connection: Connection, studyId: UUID): Long
+
     public fun insertOrUpdateParticipantStats(stats: ParticipantStats)
     public fun isNotificationsEnabled(studyId: UUID): Boolean
     public fun isValidStudy(studyId: UUID): Boolean

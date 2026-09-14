@@ -173,6 +173,9 @@ import org.slf4j.LoggerFactory
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Size
 import org.springframework.format.annotation.DateTimeFormat
+import org.springframework.http.HttpHeaders
+import org.springframework.web.context.request.RequestContextHolder
+import org.springframework.web.context.request.ServletRequestAttributes
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.validation.annotation.Validated
@@ -266,7 +269,29 @@ internal fun stampInitialDataCollectionSettings(study: Study): Study {
 internal data class LockedStudyUpdate(
     val priorSettings: StudySettings?,
     val stampedStudy: StudyUpdate,
+    /** Settings revision after the write, for the response `ETag`. */
+    val settingsRevision: Long = 0L,
 )
+
+/** Raised when an `If-Match` settings precondition does not match the row-locked revision. */
+public class StudySettingsRevisionMismatchException(
+    public val currentRevision: Long,
+    public val currentSettings: StudySettings,
+) : RuntimeException("Study settings were modified by another client")
+
+/**
+ * Parses an `If-Match` settings precondition. Returns null when absent or `*` (no check, which
+ * preserves the behaviour older mobile/iOS clients depend on).
+ */
+internal fun parseSettingsRevisionPrecondition(header: String?): Long? {
+    val value = header?.trim()?.takeUnless { it.isEmpty() || it == "*" } ?: return null
+    val revision = value.removePrefix("W/").trim().trim('"').toLongOrNull()
+    // ast-grep-ignore: server-i18n-response-literal
+    return revision ?: throw ResponseStatusException(
+        HttpStatus.BAD_REQUEST,
+        "If-Match must be a study settings revision, for example: \"7\"",
+    )
+}
 
 /** Reads and stamps settings only after serializing on the authoritative study row. */
 internal fun stampDataCollectionSettingsVersionLocked(
@@ -310,6 +335,42 @@ internal fun mergeLegacyDataCollectionSettings(
         )
     }
     return StudySettings(priorSettings + (StudySettingType.DataCollection to legacySetting))
+}
+
+/**
+ * The row-locked body of a settings write: read the authoritative map, check the optional
+ * `If-Match` precondition, apply the per-type delta, persist, and report the new revision.
+ *
+ * The mutation only ever sees the row-locked map, so a write of one setting type can never rewrite
+ * another type from a client-supplied merge. Everything happens on [transaction], which holds the
+ * `FOR UPDATE` lock taken by [loadLockedStudySettings], so a concurrent write of a different type
+ * is serialized behind this one rather than clobbering it.
+ */
+internal fun applyLockedSettingsMutation(
+    transaction: java.sql.Connection,
+    studyId: UUID,
+    expectedRevision: Long?,
+    studyService: StudyManager,
+    mutation: (StudySettings) -> StudySettings,
+): LockedStudyUpdate {
+    val priorSettings = loadLockedStudySettings(transaction, studyId)
+    val currentRevision = studyService.getStudySettingsRevision(transaction, studyId)
+    if (expectedRevision != null && expectedRevision != currentRevision) {
+        throw StudySettingsRevisionMismatchException(currentRevision, priorSettings)
+    }
+    val requestedStudy = StudyUpdate(settings = mutation(priorSettings))
+    val lockedUpdate = LockedStudyUpdate(
+        priorSettings,
+        stampDataCollectionSettingsVersion(priorSettings, requestedStudy),
+    )
+    ensureParticipantPolicyMutable(
+        transaction,
+        studyId,
+        priorSettings,
+        checkNotNull(lockedUpdate.stampedStudy.settings),
+    )
+    studyService.updateStudy(transaction, studyId, lockedUpdate.stampedStudy)
+    return lockedUpdate.copy(settingsRevision = studyService.getStudySettingsRevision(transaction, studyId))
 }
 
 /** Applies a single-setting endpoint delta to the authoritative row-locked settings map. */
@@ -713,6 +774,16 @@ public open class StudyController @Inject constructor(
             HttpStatus.FORBIDDEN,
             Messages.get(responseReasonKey),
         )
+    }
+
+    private fun requestHeader(name: String): String? =
+        (RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes)?.request?.getHeader(name)
+
+    /** Publishes the study's settings revision as a strong `ETag` for `If-Match` preconditions. */
+    private fun setSettingsRevisionEtag(revision: Long) {
+        (RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes)
+            ?.response
+            ?.setHeader(HttpHeaders.ETAG, "\"$revision\"")
     }
 
     private fun requireAcknowledgmentApiKey(
@@ -2911,26 +2982,23 @@ public open class StudyController @Inject constructor(
         }
     }
 
+    /**
+     * Applies a settings mutation under the study row lock.
+     *
+     * The mutation only ever receives the authoritative row-locked map, so a per-type write can
+     * never carry a client-supplied merge of the other types. When [expectedRevision] is supplied
+     * (`If-Match`) it is compared against the row-locked revision inside the same transaction, so
+     * a dashboard that read a stale map is rejected with 412 rather than clobbering a concurrent
+     * change to a different setting type. A missing precondition keeps the legacy behaviour.
+     */
     private fun persistLockedStudySettingsMutation(
         studyId: UUID,
+        expectedRevision: Long? = null,
         mutation: (StudySettings) -> StudySettings,
     ): LockedStudyUpdate = storageResolver.getPlatformStorage().connection.use { connection ->
         AuditedTransactionBuilder<LockedStudyUpdate>(connection, auditingManager)
             .transaction { transaction ->
-                val priorSettings = loadLockedStudySettings(transaction, studyId)
-                val requestedStudy = StudyUpdate(settings = mutation(priorSettings))
-                val lockedUpdate = LockedStudyUpdate(
-                    priorSettings,
-                    stampDataCollectionSettingsVersion(priorSettings, requestedStudy),
-                )
-                ensureParticipantPolicyMutable(
-                    transaction,
-                    studyId,
-                    priorSettings,
-                    checkNotNull(lockedUpdate.stampedStudy.settings),
-                )
-                studyService.updateStudy(transaction, studyId, lockedUpdate.stampedStudy)
-                lockedUpdate
+                applyLockedSettingsMutation(transaction, studyId, expectedRevision, studyService, mutation)
             }
             .audit { _ ->
                 listOf(
@@ -3019,6 +3087,7 @@ public open class StudyController @Inject constructor(
         val realStudyId = studyService.getStudyId(studyId)
         checkNotNull(realStudyId) { "invalid study id" }
         val settings = studyService.getStudySettings(realStudyId)
+        setSettingsRevisionEtag(studyService.getStudySettingsRevision(realStudyId))
         auditService.logWithContext {
             action(AuditAction.VIEW)
             resourceType("StudySettings")
@@ -3059,6 +3128,7 @@ public open class StudyController @Inject constructor(
             else -> ensureReadAccess(AclKey(studyId))
         }
         val settings = studyService.getStudySettings(studyId)
+        setSettingsRevisionEtag(studyService.getStudySettingsRevision(studyId))
         val setting = when (settingsKey) {
             StudySettingType.AndroidSensor -> settings[settingsKey] ?: AndroidSensorSetting.NO_SENSORS
             StudySettingType.Sensor -> settings[settingsKey] ?: SensorSetting.NO_SENSORS

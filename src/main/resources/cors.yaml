@@ -48,6 +48,7 @@ allowed-headers:
   - "X-Chronicle-Signature"
   - "X-Chronicle-Timestamp"
   - "X-Chronicle-Nonce"
+  - "If-Match"
 
 # Response headers that the browser is allowed to expose to JavaScript.
 # Only expose headers that the frontend needs to read.
@@ -56,6 +57,7 @@ exposed-headers:
   - "X-RateLimit-Limit"
   - "X-RateLimit-Remaining"
   - "X-RateLimit-Reset"
+  - "ETag"
 
 # Whether to allow credentials (cookies, authorization headers).
 # WARNING: When true, allowed-origins MUST NOT include "*".

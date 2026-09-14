@@ -316,6 +316,21 @@ class DataCollectionSettingsVersionTest {
     private fun settings(setting: AndroidDataCollectionSetting): StudySettings =
         StudySettings(mapOf(StudySettingType.DataCollection to setting))
 
+    @Test
+    fun `disabling upload telemetry is rejected because the Play client refuses to enroll without it`() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            stampDataCollectionSettingsVersion(
+                null,
+                update(
+                    AndroidDataCollectionSetting(
+                        modules = mapOf(CollectionModuleId.UPLOAD_TELEMETRY to CollectionModuleSetting(enabled = false)),
+                    ),
+                ),
+            )
+        }
+        org.junit.Assert.assertTrue(error.message.orEmpty().contains("upload_telemetry cannot be disabled"))
+    }
+
     private fun update(setting: AndroidDataCollectionSetting): StudyUpdate = StudyUpdate(settings = settings(setting))
 
     private fun dataCollection(update: StudyUpdate): AndroidDataCollectionSetting =

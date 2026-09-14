@@ -302,6 +302,20 @@ public open class StudyService(
             WHERE ${STUDY_ID.name} = ?
         """.trimIndent()
 
+        /** Optimistic-concurrency token for the study's settings map (V103). */
+        private val GET_STUDY_SETTINGS_REVISION_SQL = """
+            SELECT settings_revision
+            FROM ${STUDIES.name}
+            WHERE ${STUDY_ID.name} = ?
+        """.trimIndent()
+
+        private val BUMP_STUDY_SETTINGS_REVISION_SQL = """
+            UPDATE ${STUDIES.name}
+            SET settings_revision = settings_revision + 1
+            WHERE ${STUDY_ID.name} = ?
+            RETURNING settings_revision
+        """.trimIndent()
+
         /**
          * PreparedStatement bind order:
          * 1) StudyIds
@@ -556,7 +570,32 @@ public open class StudyService(
             ps.setObject(13, studyId)
             ps.executeUpdate()
         }
+        // Any write that carries a settings map moves the optimistic-concurrency token, so a
+        // dashboard holding a stale read is told to re-render instead of silently clobbering.
+        if (study.settings != null) {
+            bumpStudySettingsRevision(connection, studyId)
+        }
     }
+
+    override fun bumpStudySettingsRevision(connection: Connection, studyId: UUID): Long =
+        connection.prepareStatement(BUMP_STUDY_SETTINGS_REVISION_SQL).use { ps ->
+            ps.setObject(1, studyId)
+            ps.executeQuery().use { rs ->
+                check(rs.next()) { "No study with id $studyId" }
+                rs.getLong(1)
+            }
+        }
+
+    override fun getStudySettingsRevision(connection: Connection, studyId: UUID): Long =
+        connection.prepareStatement(GET_STUDY_SETTINGS_REVISION_SQL).use { ps ->
+            ps.setObject(1, studyId)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+        }
+
+    override fun getStudySettingsRevision(studyId: UUID): Long =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            getStudySettingsRevision(connection, studyId)
+        }
 
     override fun getStudyPhoneNumber(studyId: UUID): String? {
         val realStudyId = getStudyId(studyId)

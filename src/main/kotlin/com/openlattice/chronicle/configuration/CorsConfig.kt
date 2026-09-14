@@ -109,7 +109,9 @@ public data class CorsConfiguration(
         "Access-Control-Request-Headers",
         "X-Chronicle-Signature",
         "X-Chronicle-Timestamp",
-        "X-Chronicle-Nonce"
+        "X-Chronicle-Nonce",
+        // Optimistic-concurrency precondition for study-settings writes (V103).
+        "If-Match"
     ),
 
     /**
@@ -121,7 +123,9 @@ public data class CorsConfiguration(
         "X-Request-Id",
         "X-RateLimit-Limit",
         "X-RateLimit-Remaining",
-        "X-RateLimit-Reset"
+        "X-RateLimit-Reset",
+        // Study-settings revision the dashboard sends back as If-Match.
+        "ETag"
     ),
 
     /**

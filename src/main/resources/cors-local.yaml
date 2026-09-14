@@ -31,12 +31,14 @@ allowed-headers:
   - "X-Chronicle-Signature"
   - "X-Chronicle-Timestamp"
   - "X-Chronicle-Nonce"
+  - "If-Match"
 
 exposed-headers:
   - "X-Request-Id"
   - "X-RateLimit-Limit"
   - "X-RateLimit-Remaining"
   - "X-RateLimit-Reset"
+  - "ETag"
 
 allow-credentials: true
 

@@ -45,6 +45,7 @@ import org.springframework.security.core.AuthenticationException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.MissingRequestHeaderException
 import org.springframework.web.bind.MissingServletRequestParameterException
+import com.openlattice.chronicle.study.StudySettingsPreconditionFailure
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
@@ -380,6 +381,29 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      * The reason string is the controller's own fixed text, not request-derived, so it is safe to
      * return; sanitization still applies to 5xx, which keeps internal failures opaque.
      */
+    /**
+     * 412 for a stale study-settings `If-Match` precondition.
+     *
+     * The body carries the current revision and the current settings so the dashboard can
+     * re-render from this response instead of issuing another GET and racing again. No error id or
+     * path sanitization applies: the payload is the caller's own authorized study state.
+     */
+    @ExceptionHandler(StudySettingsRevisionMismatchException::class)
+    public fun handleStudySettingsRevisionMismatch(
+        req: HttpServletRequest,
+        e: StudySettingsRevisionMismatchException,
+    ): ResponseEntity<StudySettingsPreconditionFailure> {
+        logger.info("Study settings precondition failed at revision {}", e.currentRevision)
+        return ResponseEntity.status(HttpStatus.PRECONDITION_FAILED)
+            .eTag("\"${e.currentRevision}\"")
+            .body(
+                StudySettingsPreconditionFailure(
+                    settingsRevision = e.currentRevision,
+                    settings = e.currentSettings,
+                ),
+            )
+    }
+
     @ExceptionHandler(ResponseStatusException::class)
     public fun handleResponseStatusException(
         req: HttpServletRequest,
