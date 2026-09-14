@@ -335,6 +335,13 @@ private val PLAY_CUSTOM_COLLECTION_CADENCE_MODULES = setOf(
 
 /** Keeps the signed manifest within policy controls the Play client actually enforces. */
 internal fun validatePlayCollectionPolicy(setting: AndroidDataCollectionSetting) {
+    // The Play and Amazon clients refuse to enroll (requireSupportedCollectionPolicies) when
+    // upload diagnostics are not disclosed; the participant only sees a generic enrollment
+    // failure. Reject the setting here, where the researcher can read the reason.
+    require(setting.effectiveModules().getValue(CollectionModuleId.UPLOAD_TELEMETRY).enabled) {
+        "upload_telemetry cannot be disabled: Play and Amazon builds refuse to enroll a study " +
+            "that does not disclose upload diagnostics"
+    }
     setting.modules.forEach { (moduleId, moduleSetting) ->
         if (moduleId in PLAY_CUSTOM_COLLECTION_CADENCE_MODULES) {
             require(moduleSetting.collectionCadence.jitterSeconds == 0L) {
