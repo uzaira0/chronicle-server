@@ -54,6 +54,32 @@ class AppDataUploadServiceTest {
     )
 
     @Test
+    fun uploadAcknowledgesOnlyTheEventsItActuallyStored() {
+        // filter() silently drops events whose package name contains '[' (and events with no
+        // date logged). The service used to return data.size regardless, telling the client
+        // that records which were never persisted had been stored.
+        val studyId = UUID.randomUUID()
+        val hds = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
+        val connection = Mockito.mock(java.sql.Connection::class.java)
+        val statement = Mockito.mock(java.sql.PreparedStatement::class.java)
+        Mockito.`when`(storageResolver.resolveAndGetFlavor(studyId))
+            .thenReturn(com.geekbeast.configuration.postgres.PostgresFlavor.VANILLA to hds)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(hds)
+        Mockito.`when`(hds.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
+        Mockito.`when`(statement.executeUpdate()).thenReturn(1)
+
+        val stored = service.uploadAndroidUsageEvents(
+            studyId,
+            "p1",
+            UUID.randomUUID(),
+            listOf(usageEvent(), usageEvent().copy(appPackageName = "com.example.app[bad]")),
+        )
+
+        assertEquals(1, stored)
+    }
+
+    @Test
     fun uploadRejectsBatchLargerThanTenThousand() {
         // The service rejects an oversized batch before touching storage — the guard
         // is a hard input bound, not a best-effort check.

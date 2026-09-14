@@ -155,12 +155,15 @@ public open class AppDataUploadService(
 
                 val mappedData = filter(mapToStorageModel(data))
                 val expectedSize = data.size
-                doWrite(studyId, participantId, deviceId, mappedData, expectedSize, uploadedAt)
+                // Events rejected by filter() (null date logged, or a package name containing '[')
+                // are never persisted, so acknowledging data.size would tell the client that
+                // records it must stop retrying were stored when they were not.
+                val stored = doWrite(studyId, participantId, deviceId, mappedData, expectedSize, uploadedAt)
 
                 // Record upload metrics
                 ChronicleMetrics.uploadTotal.labels("android_usage").inc()
 
-                return data.size
+                return stored
             } catch (exception: Exception) {
                 logger.error(
                     "error logging data - studyId = {}, participantRef = {}, dataSourceId = {}",
@@ -241,9 +244,7 @@ public open class AppDataUploadService(
                 val mappedData = filter(mapLegacyDataToStorageModel(data))
                 val expectedSize = data.size
 
-                doWrite(studyId, participantId, deviceId, mappedData, expectedSize, uploadedAt)
-
-                return expectedSize
+                return doWrite(studyId, participantId, deviceId, mappedData, expectedSize, uploadedAt)
             } catch (exception: Exception) {
                 logger.error(
                     "error logging data - studyId = {}, participantRef = {}, dataSourceId = {}",
@@ -266,7 +267,7 @@ public open class AppDataUploadService(
         uploadedAt: OffsetDateTime,
     ): Int {
         val dataList = mappedData.toList()
-        val written = StopWatch(
+        StopWatch(
             log = "Writing ${dataList.size} entites (expected: $expectedSize) to Postgres upload buffer " +
                 "for studyId = $studyId, participantId = $participantId ",
             level = Level.INFO,
@@ -292,9 +293,10 @@ public open class AppDataUploadService(
             logger.warn("Wrote ${dataList.size} entities, but expected to write $expectedSize entities")
         }
 
-
-        //Currently nothing is done with written, but here in case we need it in the future.
-        return written
+        // The number of events actually persisted, which is what the client is acknowledged for.
+        // The prepared statement's update count is the number of buffer rows (always 1) and says
+        // nothing about how many events survived filter().
+        return dataList.size
     }
 
 
