@@ -29,6 +29,7 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.SETTINGS_VERS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SOURCE_DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UNAVAILABLE_MODULES
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
 import com.openlattice.chronicle.study.StudyParticipantPolicy
@@ -59,6 +60,13 @@ public data class CollectionAcknowledgmentAuthority(
     val decisionEnabledModules: Set<CollectionModuleId>,
     val decisionRequiredModules: Set<CollectionModuleId>,
 )
+
+/** Raised when the atomic recheck finds collection halted after the cheap upload gate passed. */
+public class CollectionHaltedException(
+    public val studyId: UUID,
+    public val participantId: String,
+    public val deviceId: UUID,
+) : RuntimeException("Required collection consent is unresolved")
 
 internal enum class IssuedCollectionDecisionState {
     ACCEPTED,
@@ -176,6 +184,54 @@ public open class ParticipantCollectionAcknowledgmentService(
         deviceId: UUID,
     ): Boolean = withLockedDeviceEvidence(deviceId) { connection ->
         loadCollectionHaltStatus(connection, studyId, participantId, deviceId)
+    }
+
+    /**
+     * Runs [write] only if collection is still un-halted, atomically with the halt predicate.
+     *
+     * [isCollectionHalted] is a cheap fast-fail that commits and releases its lock before the
+     * caller writes, so a consent DECLINE or a required-settings revision landing in between used
+     * to let an already-approved batch persist. This opens one transaction, takes the per-device
+     * advisory lock that [persistAcknowledgment] also takes, re-evaluates the predicate on that
+     * same connection, and then pins the connection so [write] joins the same transaction — the
+     * predicate and the write commit together or not at all.
+     *
+     * The two ways a halt is recorded are both serialized against this transaction:
+     *  - a consent decision takes the same `pg_advisory_xact_lock` (see [withLockedDeviceEvidence]);
+     *  - a settings revision must `UPDATE studies`, which blocks on the `FOR SHARE` row lock that
+     *    the predicate takes while reading the study's latest collection settings.
+     */
+    // reason: this is the transaction boundary; any failure must roll back before the connection
+    // is returned, including checked JDBC/Jackson failures raised by the caller's write.
+    @Suppress("TooGenericExceptionCaught")
+    public open fun <T> withCollectionHaltRecheck(
+        studyId: UUID,
+        participantId: String,
+        deviceId: UUID,
+        write: () -> T,
+    ): T {
+        val dataSource = storageResolver.getPlatformStorage()
+        return dataSource.connection.use { connection ->
+            val originalAutoCommit = connection.autoCommit
+            connection.autoCommit = false
+            try {
+                val halted = RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
+                    lockDeviceEvidence(connection, deviceId)
+                    loadCollectionHaltStatus(connection, studyId, participantId, deviceId)
+                }
+                if (halted) {
+                    throw CollectionHaltedException(studyId, participantId, deviceId)
+                }
+                val result = PinnedPlatformConnection.pinning(dataSource, connection) { write() }
+                connection.commit()
+                result
+            } catch (exception: Exception) {
+                connection.rollback()
+                throw exception
+            } finally {
+                connection.autoCommit = originalAutoCommit
+            }
+        }
     }
 
     // reason: this is the transaction boundary; any persistence/validation failure must roll back

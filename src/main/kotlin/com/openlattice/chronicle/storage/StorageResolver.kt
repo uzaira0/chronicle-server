@@ -84,10 +84,15 @@ public open class StorageResolver constructor(
         return hds
     }
 
+    /**
+     * Returns the platform datasource, or — when the current thread is inside a
+     * [PinnedPlatformConnection] scope — that scope's already-open transaction, so guarded work
+     * (lock, re-evaluate predicate, write) commits as one unit on one pooled connection.
+     */
     public open fun getPlatformStorage(requiredFlavor: PostgresFlavor = PostgresFlavor.VANILLA): HikariDataSource {
         val (flavor, hds) = getDefaultPlatformStorage()
         check(flavor == PostgresFlavor.ANY || flavor == requiredFlavor) { "Configured flavor $flavor does not match required flavor $requiredFlavor" }
-        return hds
+        return PinnedPlatformConnection.resolve(hds)
     }
 
     public fun getPlatformReadStorage(requiredFlavor: PostgresFlavor = PostgresFlavor.VANILLA) : HikariDataSource {

@@ -139,6 +139,49 @@ public object RLSConnectionCustomizer {
         }
     }
 
+    /**
+     * Transaction-local admin context that is *restored* to the caller's context afterwards.
+     *
+     * [withAdminTransactionContext] leaves `app.is_admin = true` in place for the rest of the
+     * transaction. When a guard evaluates a server-side predicate and then runs the caller's own
+     * write in the same transaction, that would silently elevate the write past RLS, so snapshot
+     * the four RLS settings and put them back before returning.
+     */
+    @JvmStatic
+    public fun <T> withRestoredAdminTransactionContext(connection: Connection, block: () -> T): T {
+        check(!connection.autoCommit) { "Transaction-local RLS admin context requires an active transaction" }
+        val saved = RLS_CONTEXT_SETTINGS.map { setting -> setting to readSetting(connection, setting) }
+        connection.createStatement().use { statement ->
+            statement.execute(ADMIN_TRANSACTION_CONTEXT_SQL)
+        }
+        return try {
+            block()
+        } finally {
+            connection.prepareStatement("SELECT set_config(?, ?, true)").use { statement ->
+                saved.forEach { (setting, value) ->
+                    statement.setString(1, setting)
+                    statement.setString(2, value)
+                    statement.execute()
+                }
+            }
+        }
+    }
+
+    private val RLS_CONTEXT_SETTINGS = listOf(
+        "app.current_user_id",
+        "app.authorized_studies",
+        "app.is_admin",
+        "app.authorized_orgs",
+    )
+
+    private fun readSetting(connection: Connection, setting: String): String =
+        connection.prepareStatement("SELECT coalesce(current_setting(?, true), '')").use { statement ->
+            statement.setString(1, setting)
+            statement.executeQuery().use { resultSet ->
+                if (resultSet.next()) resultSet.getString(1) ?: "" else ""
+            }
+        }
+
     @JvmStatic
     public fun <T> withAdminTransactionContext(connection: Connection, block: () -> T): T {
         check(!connection.autoCommit) { "Transaction-local RLS admin context requires an active transaction" }

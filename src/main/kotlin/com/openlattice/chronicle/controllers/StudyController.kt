@@ -102,8 +102,10 @@ import com.openlattice.chronicle.services.enrollment.EnrollmentManifestService
 import com.openlattice.chronicle.services.enrollment.EnrollmentService
 import com.openlattice.chronicle.services.jobs.ChronicleJob
 import com.openlattice.chronicle.services.jobs.JobService
+import com.openlattice.chronicle.services.studies.CollectionHaltedException
 import com.openlattice.chronicle.services.studies.ParticipantCollectionAcknowledgmentService
 import com.openlattice.chronicle.services.studies.StudyLifecycleService
+import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.studies.StudySettingsAuditService
 import com.openlattice.chronicle.services.studies.StudySettingsNotificationService
@@ -626,6 +628,53 @@ public open class StudyController @Inject constructor(
             }
             else -> return
         }
+        rejectMobileUpload(studyId, participantId, deviceId, operation, responseReasonKey, rejectionLog, logAsError)
+    }
+
+    /**
+     * Runs a device-data write atomically with the collection-halt predicate.
+     *
+     * [mobileUploadEnrollmentGate] stays as the cheap fast-fail; this closes the window between it
+     * and the write, during which a consent DECLINE or a required-settings revision could land and
+     * still leave the batch persisted. The write runs inside the recheck's transaction (see
+     * [ParticipantCollectionAcknowledgmentService.withCollectionHaltRecheck]) and is rolled back
+     * with the same 403 the gate returns when the recheck finds a halt.
+     */
+    private fun <T> guardedDeviceWrite(
+        studyId: UUID,
+        participantId: String,
+        deviceId: UUID,
+        operation: String,
+        write: () -> T,
+    ): T = try {
+        participantCollectionAcknowledgmentService.withCollectionHaltRecheck(
+            studyId,
+            participantId,
+            deviceId,
+            write,
+        )
+    } catch (halted: CollectionHaltedException) {
+        logger.warn("Collection halt landed between the upload gate and the write, rejecting {}", operation, halted)
+        rejectMobileUpload(
+            studyId,
+            participantId,
+            deviceId,
+            operation,
+            "error.enrollment.collectionHalted",
+            "required collection consent became unresolved before the write committed",
+            logAsError = false,
+        )
+    }
+
+    private fun rejectMobileUpload(
+        studyId: UUID,
+        participantId: String,
+        deviceId: UUID,
+        operation: String,
+        responseReasonKey: String,
+        rejectionLog: String,
+        logAsError: Boolean,
+    ): Nothing {
         val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
         val dataSourceRef = LogSanitizer.stableFingerprint(deviceId.toString(), "device")
         if (logAsError) {
@@ -1592,7 +1641,9 @@ public open class StudyController @Inject constructor(
         val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
         mobileUploadEnrollmentGate(studyId, participantId, deviceId, "sensor data upload")
         return try {
-            val count = sensorDataUploadService.upload(studyId, participantId, deviceId, data)
+            val count = guardedDeviceWrite(studyId, participantId, deviceId, "sensor data upload") {
+                sensorDataUploadService.upload(studyId, participantId, deviceId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.SENSOR_DATA_UPLOAD)
                 resourceType("SensorData")
@@ -1646,7 +1697,9 @@ public open class StudyController @Inject constructor(
             if (samples.isEmpty()) {
                 return 0
             }
-            val count = sensorDataUploadService.upload(studyId, participantId, deviceId, samples)
+            val count = guardedDeviceWrite(studyId, participantId, deviceId, "iOS Screen Time upload") {
+                sensorDataUploadService.upload(studyId, participantId, deviceId, samples)
+            }
             auditService.logWithContext {
                 action(AuditAction.SENSOR_DATA_UPLOAD)
                 resourceType("ScreenTimeData")
@@ -1700,7 +1753,9 @@ public open class StudyController @Inject constructor(
             if (samples.isEmpty()) {
                 return 0
             }
-            val count = sensorDataUploadService.upload(studyId, participantId, deviceId, samples)
+            val count = guardedDeviceWrite(studyId, participantId, deviceId, "iOS user identification upload") {
+                sensorDataUploadService.upload(studyId, participantId, deviceId, samples)
+            }
             auditService.logWithContext {
                 action(AuditAction.SENSOR_DATA_UPLOAD)
                 resourceType("UserIdentificationData")
@@ -1742,7 +1797,9 @@ public open class StudyController @Inject constructor(
         val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
         mobileUploadEnrollmentGate(studyId, participantId, deviceId, "android sensor data upload")
         return try {
-            val count = androidSensorDataUploadService.upload(studyId, participantId, deviceId, data)
+            val count = guardedDeviceWrite(studyId, participantId, deviceId, "android sensor data upload") {
+                androidSensorDataUploadService.upload(studyId, participantId, deviceId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.SENSOR_DATA_UPLOAD)
                 resourceType("SensorData")
@@ -1790,7 +1847,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "battery telemetry upload")
 
         return try {
-            val count = batteryTelemetryUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "battery telemetry upload") {
+                batteryTelemetryUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.BATTERY_TELEMETRY_UPLOAD)
                 resourceType("BatteryTelemetry")
@@ -1841,7 +1900,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "iOS battery telemetry upload")
 
         return try {
-            val count = batteryTelemetryUploadService.uploadIos(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "iOS battery telemetry upload") {
+                batteryTelemetryUploadService.uploadIos(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.BATTERY_TELEMETRY_UPLOAD)
                 resourceType("BatteryTelemetry")
@@ -1887,7 +1948,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "interaction events upload")
 
         return try {
-            val count = interactionEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "interaction events upload") {
+                interactionEventsUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.INTERACTION_EVENTS_UPLOAD)
                 resourceType("InteractionEvents")
@@ -1939,7 +2002,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "audio activity upload")
 
         return try {
-            val count = appAudioActivityUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "audio activity upload") {
+                appAudioActivityUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("AudioActivity")
@@ -1994,7 +2059,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "ambient audio upload")
 
         return try {
-            val count = ambientAudioUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "ambient audio upload") {
+                ambientAudioUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("AmbientAudio")
@@ -2047,7 +2114,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "audio content upload")
 
         return try {
-            val count = appAudioContentUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "audio content upload") {
+                appAudioContentUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("AudioContent")
@@ -2101,7 +2170,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "notification activity upload")
 
         return try {
-            val count = notificationActivityUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "notification activity upload") {
+                notificationActivityUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("NotificationActivity")
@@ -2153,7 +2224,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "sleep events upload")
 
         return try {
-            val count = sleepEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "sleep events upload") {
+                sleepEventsUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("SleepEvents")
@@ -2194,7 +2267,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "activity recognition events upload")
 
         return try {
-            val count = activityRecognitionEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "activity recognition events upload") {
+                activityRecognitionEventsUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("ActivityRecognitionEvents")
@@ -2238,7 +2313,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "health metrics upload")
 
         return try {
-            val count = healthMetricsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "health metrics upload") {
+                healthMetricsUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("HealthMetrics")
@@ -2280,7 +2357,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "connectivity state events upload")
 
         return try {
-            val count = connectivityStateEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "connectivity state events upload") {
+                connectivityStateEventsUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("ConnectivityStateEvents")
@@ -2324,7 +2403,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "app network usage upload")
 
         return try {
-            val count = appNetworkUsageUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "app network usage upload") {
+                appNetworkUsageUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("AppNetworkUsage")
@@ -2368,7 +2449,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "device settings upload")
 
         return try {
-            val count = deviceSettingsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "device settings upload") {
+                deviceSettingsUploadService.upload(realStudyId, participantId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.DATA_SUBMISSION)
                 resourceType("DeviceSettings")
@@ -2407,7 +2490,9 @@ public open class StudyController @Inject constructor(
         val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "upload diagnostics")
 
-        return uploadDiagnosticsUploadService.upload(realStudyId, participantId, deviceId, data)
+        return guardedDeviceWrite(realStudyId, participantId, deviceId, "upload diagnostics") {
+            uploadDiagnosticsUploadService.upload(realStudyId, participantId, deviceId, data)
+        }
     }
 
     /**
@@ -2507,7 +2592,9 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "encrypted payload upload")
 
         return try {
-            val count = encryptedPayloadUploadService.upload(realStudyId, participantId, deviceId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "encrypted payload upload") {
+                encryptedPayloadUploadService.upload(realStudyId, participantId, deviceId, data)
+            }
             auditService.logWithContext {
                 action(AuditAction.SENSOR_DATA_UPLOAD)
                 resourceType("EncryptedPayload")
@@ -2599,22 +2686,29 @@ public open class StudyController @Inject constructor(
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "sensor availability report")
 
         return try {
-            val result = storageResolver.getPlatformStorage().connection.use { conn ->
-                conn.prepareStatement(UPSERT_SENSOR_AVAILABILITY_SQL).use { ps ->
-                    var index = 0
-                    ps.setObject(++index, realStudyId)
-                    ps.setString(++index, participantId)
-                    ps.setString(++index, deviceId.toString())
-                    ps.setArray(++index, conn.createArrayOf("text",
-                        availability.availableSensors.map { it.name }.toTypedArray()))
-                    ps.setArray(++index, conn.createArrayOf("text",
-                        availability.unavailableSensors.map { it.name }.toTypedArray()))
-                    setNullableInt(ps, ++index, availability.screenWidthPixels)
-                    setNullableInt(ps, ++index, availability.screenHeightPixels)
-                    setNullableInt(ps, ++index, availability.screenDensityDpi)
-                    setNullableInt(ps, ++index, availability.displayRotation)
-                    ps.setString(++index, availability.interactionPointerCaptureCapability?.name)
-                    ps.executeUpdate()
+            val result = guardedDeviceWrite(
+                realStudyId,
+                participantId,
+                deviceId,
+                "sensor availability report",
+            ) {
+                storageResolver.getPlatformStorage().connection.use { conn ->
+                    conn.prepareStatement(UPSERT_SENSOR_AVAILABILITY_SQL).use { ps ->
+                        var index = 0
+                        ps.setObject(++index, realStudyId)
+                        ps.setString(++index, participantId)
+                        ps.setString(++index, deviceId.toString())
+                        ps.setArray(++index, conn.createArrayOf("text",
+                            availability.availableSensors.map { it.name }.toTypedArray()))
+                        ps.setArray(++index, conn.createArrayOf("text",
+                            availability.unavailableSensors.map { it.name }.toTypedArray()))
+                        setNullableInt(ps, ++index, availability.screenWidthPixels)
+                        setNullableInt(ps, ++index, availability.screenHeightPixels)
+                        setNullableInt(ps, ++index, availability.screenDensityDpi)
+                        setNullableInt(ps, ++index, availability.displayRotation)
+                        ps.setString(++index, availability.interactionPointerCaptureCapability?.name)
+                        ps.executeUpdate()
+                    }
                 }
             }
             auditService.logWithContext {
@@ -2868,17 +2962,24 @@ public open class StudyController @Inject constructor(
         val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, datasourceId)
         mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "android usage event upload")
         return try {
-            val count = data.groupBy { it.javaClass }.map { (clazz, dataByClass) ->
-                when (clazz) {
-                    ChronicleUsageEvent::class.java -> appDataUploadService.uploadAndroidUsageEvents(
-                        realStudyId,
-                        participantId,
-                        deviceId,
-                        dataByClass.map { it as ChronicleUsageEvent })
+            val count = guardedDeviceWrite(
+                realStudyId,
+                participantId,
+                deviceId,
+                "android usage event upload",
+            ) {
+                data.groupBy { it.javaClass }.map { (clazz, dataByClass) ->
+                    when (clazz) {
+                        ChronicleUsageEvent::class.java -> appDataUploadService.uploadAndroidUsageEvents(
+                            realStudyId,
+                            participantId,
+                            deviceId,
+                            dataByClass.map { it as ChronicleUsageEvent })
 
-                    else -> 0
-                }
-            }.sum()
+                        else -> 0
+                    }
+                }.sum()
+            }
             auditService.logWithContext {
                 action(AuditAction.USAGE_DATA_UPLOAD)
                 resourceType("UsageData")
