@@ -1,12 +1,16 @@
 package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
+import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.authorization.StudyPermission
 import com.openlattice.chronicle.authorization.annotations.RequiresStudyAccess
 import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.configuration.RateLimit
 import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.export.ExportApi
+import okhttp3.ResponseBody
 import com.openlattice.chronicle.export.ExportFormat
 import com.openlattice.chronicle.export.ExportJobInfo
 import com.openlattice.chronicle.export.ExportJobStatus
@@ -31,7 +35,8 @@ import java.util.*
 @Timed
 @RateLimit(type = RateLimitType.SENSITIVE)
 public open class ExportController(
-    private val exportService: ExportService
+    private val exportService: ExportService,
+    private val auditService: AuditService,
 ) : ExportApi {
 
     @RequiresStudyAccess(StudyPermission.EXPORT_DATA)
@@ -45,7 +50,24 @@ public open class ExportController(
         @Valid @RequestBody request: ExportRequest
     ): ExportJobInfo {
         val userId = Principals.getCurrentUser().id
-        return exportService.createAsyncExport(studyId, userId, request)
+        val job = exportService.createAsyncExport(studyId, userId, request)
+        // Bulk export is the highest-volume PHI read path; HIPAA §164.312(b) wants it on record.
+        auditService.logWithContext {
+            action(AuditAction.EXPORT)
+            resourceType("Export")
+            resourceId(job.exportId)
+            studyId(studyId)
+            success(true)
+            accessedPHI(true)
+            phiFields(request.dataTypes.map { it.name }.sorted())
+            additionalData(
+                mapOf(
+                    "format" to request.format.name,
+                    "participantCount" to request.participantIds.size,
+                ),
+            )
+        }
+        return job
     }
 
     @RequiresStudyAccess(StudyPermission.READ_STUDY)
@@ -75,8 +97,10 @@ public open class ExportController(
         return exportService.listExports(studyId, safeLimit, safeOffset)
     }
 
-    override fun downloadExport(studyId: UUID, exportId: UUID) {
-        // Retrofit-only interface method; browser downloads use downloadExportFile below
+    override fun downloadExport(studyId: UUID, exportId: UUID): ResponseBody {
+        // Retrofit-only interface method; it carries no request mapping and is never dispatched.
+        // Browser and client downloads are served by downloadExportFile below.
+        throw UnsupportedOperationException("downloadExport is a client-side declaration; see downloadExportFile")
     }
 
     @RequiresStudyAccess(StudyPermission.EXPORT_DATA)
@@ -109,5 +133,14 @@ public open class ExportController(
 
         exportService.streamExportFile(studyId, exportId, userId, response.outputStream)
         response.flushBuffer()
+        auditService.logWithContext {
+            action(AuditAction.DOWNLOAD)
+            resourceType("Export")
+            resourceId(exportId)
+            studyId(studyId)
+            success(true)
+            accessedPHI(true)
+            additionalData(mapOf("format" to jobInfo.format.name, "rowCount" to jobInfo.rowCount))
+        }
     }
 }

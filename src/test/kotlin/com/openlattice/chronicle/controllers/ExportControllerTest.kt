@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.controllers
 
+import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.export.ExportJobInfo
 import com.openlattice.chronicle.services.export.ExportService
 import jakarta.servlet.http.HttpServletResponse
@@ -15,7 +16,8 @@ import java.util.UUID
 class ExportControllerTest {
 
     private val exportService = Mockito.mock(ExportService::class.java)
-    private val controller = ExportController(exportService)
+    private val auditService = Mockito.mock(AuditService::class.java)
+    private val controller = ExportController(exportService, auditService)
 
     @Test
     fun testListExportsReturnsServiceResult() {
