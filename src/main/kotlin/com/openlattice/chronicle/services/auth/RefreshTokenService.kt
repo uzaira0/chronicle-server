@@ -50,8 +50,18 @@ public class RefreshTokenService(
             WHERE token_hash = ?
         """.trimIndent()
 
-        private val MARK_ROTATED_SQL = """
-            UPDATE refresh_tokens SET rotated_at = now() WHERE id = ?
+        /**
+         * Claims the token for rotation in a single atomic statement. The `rotated_at IS NULL`
+         * predicate is evaluated under the row lock taken by the UPDATE, so exactly one of two
+         * concurrent presentations of the same token gets a row back; the loser sees no row and
+         * is routed to the reuse/theft path.
+         */
+        private val CLAIM_FOR_ROTATION_SQL = """
+            UPDATE refresh_tokens
+               SET rotated_at = now()
+             WHERE token_hash = ? AND rotated_at IS NULL
+            RETURNING id, user_id, token_hash, family_id, expires_at, rotated_at, revoked, created_at,
+                      ip_address, user_agent
         """.trimIndent()
 
         private val REVOKE_FAMILY_SQL = """
@@ -128,17 +138,21 @@ public class RefreshTokenService(
         return storageResolver.getPlatformStorage().connection.use { conn ->
             conn.autoCommit = false
             try {
-                val record = lookupToken(conn, tokenHash)
-                    ?: throw RefreshTokenException("Invalid refresh token")
+                // Atomically claim the token for rotation. Losing a race with a concurrent
+                // presentation of the same token yields no row, which is exactly the reuse case.
+                val record = claimForRotation(conn, tokenHash)
 
-                // Token theft detection: if already rotated, revoke the entire family
-                if (record.rotatedAt != null) {
+                if (record == null) {
+                    val reused = lookupToken(conn, tokenHash)
+                        ?: throw RefreshTokenException("Invalid refresh token")
+
+                    // Token theft detection: already rotated, so revoke the entire family
                     logger.warn(
                         "SECURITY: Refresh token reuse detected for user={}, family={}. " +
                             "Revoking entire token family. Possible token theft.",
-                        record.userId, record.familyId
+                        reused.userId, reused.familyId
                     )
-                    revokeFamily(conn, record.familyId)
+                    revokeFamily(conn, reused.familyId)
                     conn.commit()
                     throw RefreshTokenException("Refresh token has already been used. All sessions in this family have been revoked.")
                 }
@@ -152,9 +166,6 @@ public class RefreshTokenService(
                 if (record.expiresAt.toInstant().isBefore(Instant.now())) {
                     throw RefreshTokenException("Refresh token has expired")
                 }
-
-                // Mark old token as rotated
-                markRotated(conn, record.id)
 
                 // Create new token in the same family
                 val newRawToken = generateRawToken()
@@ -281,28 +292,31 @@ public class RefreshTokenService(
     private fun lookupToken(conn: Connection, tokenHash: String): RefreshTokenRecord? {
         conn.prepareStatement(LOOKUP_BY_HASH_SQL).use { ps ->
             ps.setString(1, tokenHash)
-            val rs = ps.executeQuery()
-            if (!rs.next()) return null
-
-            return RefreshTokenRecord(
-                id = rs.getObject("id", UUID::class.java),
-                userId = rs.getString("user_id"),
-                tokenHash = rs.getString("token_hash"),
-                familyId = rs.getObject("family_id", UUID::class.java),
-                expiresAt = rs.getObject("expires_at", OffsetDateTime::class.java),
-                rotatedAt = rs.getObject("rotated_at", OffsetDateTime::class.java),
-                revoked = rs.getBoolean("revoked"),
-                createdAt = rs.getObject("created_at", OffsetDateTime::class.java),
-                ipAddress = rs.getString("ip_address"),
-                userAgent = rs.getString("user_agent"),
-            )
+            ps.executeQuery().use { rs ->
+                return if (rs.next()) readRecord(rs) else null
+            }
         }
     }
 
-    private fun markRotated(conn: Connection, tokenId: UUID) {
-        conn.prepareStatement(MARK_ROTATED_SQL).use { ps ->
-            ps.setObject(1, tokenId)
-            ps.executeUpdate()
+    private fun readRecord(rs: java.sql.ResultSet): RefreshTokenRecord = RefreshTokenRecord(
+        id = rs.getObject("id", UUID::class.java),
+        userId = rs.getString("user_id"),
+        tokenHash = rs.getString("token_hash"),
+        familyId = rs.getObject("family_id", UUID::class.java),
+        expiresAt = rs.getObject("expires_at", OffsetDateTime::class.java),
+        rotatedAt = rs.getObject("rotated_at", OffsetDateTime::class.java),
+        revoked = rs.getBoolean("revoked"),
+        createdAt = rs.getObject("created_at", OffsetDateTime::class.java),
+        ipAddress = rs.getString("ip_address"),
+        userAgent = rs.getString("user_agent"),
+    )
+
+    private fun claimForRotation(conn: Connection, tokenHash: String): RefreshTokenRecord? {
+        conn.prepareStatement(CLAIM_FOR_ROTATION_SQL).use { ps ->
+            ps.setString(1, tokenHash)
+            ps.executeQuery().use { rs ->
+                return if (rs.next()) readRecord(rs) else null
+            }
         }
     }
 
