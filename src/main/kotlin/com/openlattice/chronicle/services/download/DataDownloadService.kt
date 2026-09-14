@@ -204,6 +204,23 @@ public open class DataDownloadService(
         public fun associateObject(rs: ResultSet, pcd: PostgresColumnDefinition, clazz: Class<*>) =
             pcd.name to rs.getObject(pcd.name, clazz)
 
+        /**
+         * The row's own `timezone` column as a zone, or null when the table has none or the
+         * value is not a valid zone id. Module and sensor exports render every TIMESTAMPTZ in
+         * this zone so they read like the usage-event export (participant-local offset), not a
+         * mix of `-04:00` on one sheet and `Z` on the next.
+         */
+        internal fun rowZone(rs: ResultSet, columns: Collection<PostgresColumnDefinition>): ZoneId? {
+            val timezoneColumn = columns.firstOrNull { it.name == PostgresColumns.SENSOR_TIMEZONE.name } ?: return null
+            val zone = rs.getString(timezoneColumn.name) ?: return null
+            return runCatching { ZoneId.of(zone) }.getOrNull()
+        }
+
+        internal fun localizedTimestamp(rs: ResultSet, column: PostgresColumnDefinition, zone: ZoneId?): Any {
+            val odt = rs.getObject(column.name, OffsetDateTime::class.java) ?: return ""
+            return if (zone == null) odt else odt.toInstant().atZone(zone).toOffsetDateTime()
+        }
+
         private fun participantFilterSql(enabled: Boolean): String =
             if (enabled) "AND ${PARTICIPANT_ID.name} = ANY(?)" else ""
 
@@ -492,9 +509,10 @@ public open class DataDownloadService(
                 }
             }
         ) { rs ->
+            val zone = rowZone(rs, ANDROID_SENSOR_DATA.columns)
             ANDROID_SENSOR_DATA.columns.associate { col ->
                 when (col.datatype) {
-                    PostgresDatatype.TIMESTAMPTZ -> col.name to (rs.getObject(col.name, OffsetDateTime::class.java) ?: "")
+                    PostgresDatatype.TIMESTAMPTZ -> col.name to localizedTimestamp(rs, col, zone)
                     PostgresDatatype.REAL -> {
                         val v = rs.getFloat(col.name)
                         col.name to if (rs.wasNull()) "" else v
@@ -539,10 +557,10 @@ public open class DataDownloadService(
                 statement.setObject(++index, endDateTime)
             },
         ) { resultSet ->
+            val zone = rowZone(resultSet, definition.table.columns)
             definition.table.columns.associate { column ->
                 val value: Any = when (column.datatype) {
-                    PostgresDatatype.TIMESTAMPTZ ->
-                        resultSet.getObject(column.name, OffsetDateTime::class.java) ?: ""
+                    PostgresDatatype.TIMESTAMPTZ -> localizedTimestamp(resultSet, column, zone)
                     PostgresDatatype.JSON,
                     PostgresDatatype.JSONB,
                     PostgresDatatype.TEXT_ARRAY,

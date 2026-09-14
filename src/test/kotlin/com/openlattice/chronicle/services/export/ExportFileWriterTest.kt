@@ -1,7 +1,11 @@
 package com.openlattice.chronicle.services.export
 
+import com.geekbeast.postgres.streams.BasePostgresIterable
+import com.geekbeast.postgres.streams.StatementHolder
+import com.openlattice.chronicle.converters.PostgresDownloadWrapper
 import com.openlattice.chronicle.export.ExportFormat
 import org.apache.poi.ss.usermodel.WorkbookFactory
+import org.mockito.Mockito
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -12,7 +16,11 @@ import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.attribute.PosixFilePermissions
+import java.sql.Connection
+import java.sql.ResultSet
+import java.sql.Statement
 import java.time.Duration
+import java.util.function.Supplier
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -370,6 +378,58 @@ class ExportFileWriterTest {
         Files.list(ExportFileWriter.EXPORT_DIR).use { paths ->
             assertFalse(paths.anyMatch { it.fileName.toString().startsWith("$exportId.json.") })
         }
+    }
+
+    @Test
+    fun testZeroRowDownloadKeepsAdvisedHeadersAndStreams() {
+        // A study whose enabled modules produced no rows yet (the Chilean pilot's empty
+        // sheets) must still download: header-only CSV/Excel, empty JSON, no 500.
+        val advised = listOf("participant_id", "timestamp", "value")
+        val exportId = UUID.randomUUID()
+        val results = ExportFormat.entries.associateWith { format ->
+            ExportFileWriter.writeMultiDataTypeExport(
+                mapOf("BatteryTelemetry" to emptyPostgresRows(advised)),
+                format,
+                exportId,
+            )
+        }
+        try {
+            results.values.forEach { result ->
+                assertEquals(0L, result.rowCount)
+                val managed = ExportFileWriter.verifyManagedExportFile(result.path.toString())
+                val copied = ByteArrayOutputStream()
+                ExportFileWriter.copyManagedExportFile(managed.toString(), copied)
+                assertEquals(Files.size(managed), copied.size().toLong())
+            }
+            assertEquals(
+                "data_type,participant_id,timestamp,value\n",
+                Files.readString(results.getValue(ExportFormat.CSV).path),
+            )
+            WorkbookFactory.create(results.getValue(ExportFormat.EXCEL).path.toFile()).use { workbook ->
+                val sheet = workbook.getSheet("BatteryTelemetry")
+                assertEquals(advised, (0 until 3).map { sheet.getRow(0).getCell(it).stringCellValue })
+                assertEquals(0, sheet.lastRowNum)
+            }
+            assertTrue(Files.readString(results.getValue(ExportFormat.JSON).path).isNotBlank())
+        } finally {
+            results.values.forEach { Files.deleteIfExists(it.path) }
+        }
+    }
+
+    /** A [PostgresDownloadWrapper] over a result set that is exhausted before its first row. */
+    private fun emptyPostgresRows(columns: List<String>): PostgresDownloadWrapper {
+        val resultSet = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(resultSet.next()).thenReturn(false)
+        val iterable = BasePostgresIterable(
+            Supplier {
+                StatementHolder(
+                    Mockito.mock(Connection::class.java),
+                    Mockito.mock(Statement::class.java),
+                    resultSet,
+                )
+            },
+        ) { rs -> columns.associateWith { rs.getObject(it) } }
+        return PostgresDownloadWrapper(iterable).withColumnAdvice(columns)
     }
 
     private fun assertNoWorkingArtifacts(finalPath: java.nio.file.Path) {

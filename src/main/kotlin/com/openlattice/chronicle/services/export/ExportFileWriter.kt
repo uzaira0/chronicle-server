@@ -6,6 +6,7 @@ import com.fasterxml.jackson.dataformat.csv.CsvSchema
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.kotlinModule
 import com.geekbeast.mappers.mappers.ObjectMappers
+import com.openlattice.chronicle.converters.PostgresDownloadWrapper
 import com.openlattice.chronicle.export.ExportFormat
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import org.apache.poi.xssf.streaming.SXSSFWorkbook
@@ -201,7 +202,8 @@ public class ExportFileWriter private constructor() {
             try {
                 dataByType.toSortedMap().forEach { (dataType, rows) ->
                     require(dataType.isNotBlank()) { "CSV export data type must not be blank" }
-                    val cursor = TypedCsvCursor(dataType, rows.iterator())
+                    val advised = (rows as? PostgresDownloadWrapper)?.columnAdvice.orEmpty()
+                    val cursor = TypedCsvCursor(dataType, rows.iterator(), advised)
                     cursors.add(cursor)
                     cursor.prime()
                 }
@@ -209,12 +211,17 @@ public class ExportFileWriter private constructor() {
                 cursors.forEach { cursor ->
                     cursor.expectedColumns?.let(dataColumns::addAll)
                 }
+                val columns = listOf(CSV_DATA_TYPE_COLUMN) + dataColumns
                 if (cursors.none(TypedCsvCursor::hasNext)) {
-                    Files.writeString(filePath, "")
+                    // A zero-row export still carries its header (when the loaders advised
+                    // one): the researcher can tell an empty result from a broken download.
+                    Files.writeString(
+                        filePath,
+                        if (dataColumns.isEmpty()) "" else columns.joinToString(",", postfix = "\n"),
+                    )
                     return
                 }
 
-                val columns = listOf(CSV_DATA_TYPE_COLUMN) + dataColumns
                 val schemaBuilder = CsvSchema.builder()
                 columns.forEach(schemaBuilder::addColumn)
                 val schema = schemaBuilder.setUseHeader(true).build()
@@ -359,6 +366,14 @@ public class ExportFileWriter private constructor() {
                             var rowIndex = 2
                             while (rows.hasNext()) {
                                 writeExcelRow(sheet, rowIndex++, columns, budget.accept(rows.next()))
+                            }
+                        } else {
+                            // No rows for this type: still write the header so an empty sheet
+                            // shows its schema instead of a blank grid.
+                            val advised = (data as? PostgresDownloadWrapper)?.columnAdvice.orEmpty()
+                            if (advised.isNotEmpty()) {
+                                val headerRow = sheet.createRow(0)
+                                advised.forEachIndexed { idx, col -> headerRow.createCell(idx).setCellValue(col) }
                             }
                         }
                     } finally {
@@ -789,6 +804,8 @@ public class ExportFileWriter private constructor() {
         private class TypedCsvCursor(
             val dataType: String,
             private val iterator: Iterator<Map<String, Any>>,
+            /** Loader-advised columns, used as the schema when the type has no rows. */
+            private val advisedColumns: List<String> = emptyList(),
         ) : Iterator<Map<String, Any>>, AutoCloseable {
             var expectedColumns: Set<String>? = null
                 private set
@@ -808,6 +825,11 @@ public class ExportFileWriter private constructor() {
                     expectedColumns = row.keys.toSet()
                     firstRow = row
                     firstPending = true
+                } else if (advisedColumns.isNotEmpty()) {
+                    require(CSV_DATA_TYPE_COLUMN !in advisedColumns) {
+                        "CSV export columns use reserved column $CSV_DATA_TYPE_COLUMN"
+                    }
+                    expectedColumns = advisedColumns.toSet()
                 }
             }
 
