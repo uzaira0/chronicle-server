@@ -38,8 +38,8 @@
 
 pluginManagement {
     plugins {
-        id 'org.jetbrains.kotlin.jvm' version '2.3.21'
-        id 'org.jetbrains.kotlin.plugin.spring' version '2.3.21'
+        id 'org.jetbrains.kotlin.jvm' version '2.4.10'
+        id 'org.jetbrains.kotlin.plugin.spring' version '2.4.10'
         id 'org.jetbrains.dokka' version '2.2.0'
         id 'com.github.spotbugs' version '6.5.5'
         id 'com.github.jk1.dependency-license-report' version '3.1.2'

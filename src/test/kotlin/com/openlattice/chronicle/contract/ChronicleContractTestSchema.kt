@@ -36,7 +36,7 @@ object ChronicleContractTestSchema {
      * Plain `postgres:16` containers previously used here drifted from prod; keep every
      * Postgres testcontainer on this constant.
      */
-    const val PROD_POSTGRES_IMAGE = "percona/percona-distribution-postgresql:18.4-5"
+    const val PROD_POSTGRES_IMAGE = "percona/percona-distribution-postgresql:18.6.1-1"
 
     fun prodPostgresContainer(databaseName: String): PostgreSQLContainer<*> =
         PostgreSQLContainer(
