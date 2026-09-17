@@ -3086,8 +3086,13 @@ public open class StudyController @Inject constructor(
         ensureReadAccess(AclKey(studyId))
         val realStudyId = studyService.getStudyId(studyId)
         checkNotNull(realStudyId) { "invalid study id" }
+        // Read the revision BEFORE the settings: the two reads use separate connections, so
+        // reading it after could hand the client a revision newer than the map it received and
+        // let a subsequent If-Match PATCH silently clobber the concurrent change (V103 lost
+        // update). Reading it first can only produce a stale-low token, which fails safe with 412.
+        val revision = studyService.getStudySettingsRevision(realStudyId)
         val settings = studyService.getStudySettings(realStudyId)
-        setSettingsRevisionEtag(studyService.getStudySettingsRevision(realStudyId))
+        setSettingsRevisionEtag(revision)
         auditService.logWithContext {
             action(AuditAction.VIEW)
             resourceType("StudySettings")
@@ -3127,8 +3132,11 @@ public open class StudyController @Inject constructor(
             StudySettingType.Encryption -> ensureValidStudy(studyId)
             else -> ensureReadAccess(AclKey(studyId))
         }
+        // Revision first — see getStudySettings above: a revision read after the settings can be
+        // newer than them, turning a later If-Match PATCH into a silent lost update.
+        val revision = studyService.getStudySettingsRevision(studyId)
         val settings = studyService.getStudySettings(studyId)
-        setSettingsRevisionEtag(studyService.getStudySettingsRevision(studyId))
+        setSettingsRevisionEtag(revision)
         val setting = when (settingsKey) {
             StudySettingType.AndroidSensor -> settings[settingsKey] ?: AndroidSensorSetting.NO_SENSORS
             StudySettingType.Sensor -> settings[settingsKey] ?: SensorSetting.NO_SENSORS
