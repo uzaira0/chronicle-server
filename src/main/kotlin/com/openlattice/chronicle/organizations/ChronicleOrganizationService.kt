@@ -13,6 +13,7 @@ import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.authorization.Principal
+import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.authorization.SecurableObjectType
 import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
@@ -80,6 +81,36 @@ public open class ChronicleOrganizationService(
         private val GET_ALL_ORGANIZATIONS_SQL = """
             SELECT * FROM ${ORGANIZATIONS.name}
         """.trimIndent()
+
+        /**
+         * 1. organization id
+         * 2. user id
+         */
+        private val INSERT_OWNER_MEMBERSHIP_SQL = """
+            INSERT INTO organization_members (organization_id, user_id, role)
+            VALUES (?, ?, 'OWNER')
+            ON CONFLICT (organization_id, user_id) DO NOTHING
+        """.trimIndent()
+
+        /**
+         * The RLS context is computed when the request starts, so it cannot contain an organization
+         * that this transaction is creating. Add it before inserting the owner membership row,
+         * otherwise org_members_insert_policy rejects the row. Transaction-local (is_local = true):
+         * CONNECTION_INIT_SQL does not reset app.authorized_orgs, so a session-scoped value would
+         * leak to the next borrower of the pooled connection.
+         *
+         * 1. organization id (twice)
+         */
+        private val AUTHORIZE_NEW_ORGANIZATION_SQL = """
+            SELECT set_config(
+                'app.authorized_orgs',
+                CASE WHEN coalesce(current_setting('app.authorized_orgs', true), '') = ''
+                     THEN ?
+                     ELSE current_setting('app.authorized_orgs', true) || ',' || ?
+                END,
+                true
+            )
+        """.trimIndent()
     }
 
     public fun createOrganization(owner: Principal, organization: Organization) : UUID {
@@ -124,6 +155,29 @@ public open class ChronicleOrganizationService(
             EnumSet.allOf(Permission::class.java),
             SecurableObjectType.Organization
         )
+        insertOwnerMembership(connection, organization.id, owner)
+    }
+
+    /**
+     * Seeds organization_members with the creator as OWNER. Without this row every endpoint
+     * annotated with @RequiresOrganizationAccess is permanently 403 for a newly created
+     * organization, since OrganizationAuthorizationAspect resolves roles from this table only.
+     */
+    private fun insertOwnerMembership(connection: Connection, organizationId: UUID, owner: Principal) {
+        // Role principals (the bootstrap global-admin role) are never a request's current user,
+        // so a membership row keyed by a role name would only be noise in the members list.
+        if (owner.type != PrincipalType.USER) return
+        check(!connection.autoCommit) { "owner membership must be seeded inside the creating transaction" }
+        connection.prepareStatement(AUTHORIZE_NEW_ORGANIZATION_SQL).use { ps ->
+            ps.setString(1, organizationId.toString())
+            ps.setString(2, organizationId.toString())
+            ps.executeQuery().close()
+        }
+        connection.prepareStatement(INSERT_OWNER_MEMBERSHIP_SQL).use { ps ->
+            ps.setObject(1, organizationId)
+            ps.setString(2, owner.id)
+            ps.executeUpdate()
+        }
     }
 
     private fun insertOrganization(connection: Connection, organization: Organization) {
