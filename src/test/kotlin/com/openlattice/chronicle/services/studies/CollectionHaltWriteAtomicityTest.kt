@@ -4,9 +4,11 @@ import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.jdbc.DataSourceManager
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
+import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.collection.CollectionModuleSetting
 import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
+import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.PinnedPlatformConnection
@@ -23,6 +25,8 @@ import org.junit.BeforeClass
 import org.junit.Test
 import org.mockito.Mockito
 import org.testcontainers.containers.PostgreSQLContainer
+import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -185,6 +189,34 @@ class CollectionHaltWriteAtomicityTest {
         assertTrue(service.isCollectionHalted(studyId, PARTICIPANT_ID, deviceId))
     }
 
+    /**
+     * The diagnostics service used to force autocommit back on before returning, so the guard's
+     * own commit() threw "Cannot commit when autoCommit is enabled" and every non-empty batch
+     * answered 500. The batch must commit through the pinned connection like any other upload.
+     */
+    @Test
+    fun `upload diagnostics commit inside the recheck`() {
+        val studyId = newStudy(required = false, settingsVersion = 1)
+        val deviceId = UUID.randomUUID()
+        val now = OffsetDateTime.now()
+        val event = AndroidUploadDiagnosticEvent(
+            id = UUID.randomUUID().toString(),
+            day = LocalDate.now(),
+            moduleFamily = "USAGE_LIFECYCLE",
+            issueCode = "TIMEOUT",
+            count = 1,
+            firstOccurredAt = now,
+            lastOccurredAt = now,
+        )
+
+        val accepted = service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, deviceId) {
+            UploadDiagnosticsUploadService(storageResolver).upload(studyId, PARTICIPANT_ID, deviceId, listOf(event))
+        }
+
+        assertEquals(listOf(event.id), accepted)
+        assertTrue("the batch must be committed by the guard", diagnosticExists(studyId, event.id))
+    }
+
     private fun newStudy(required: Boolean, settingsVersion: Int): UUID {
         val studyId = UUID.randomUUID()
         postgres.createConnection("").use { connection ->
@@ -249,6 +281,14 @@ class CollectionHaltWriteAtomicityTest {
     private fun probeExists(probeId: UUID): Boolean = postgres.createConnection("").use { connection ->
         connection.prepareStatement("SELECT 1 FROM guard_probe WHERE id = ?").use { statement ->
             statement.setObject(1, probeId)
+            statement.executeQuery().use { resultSet -> resultSet.next() }
+        }
+    }
+
+    private fun diagnosticExists(studyId: UUID, eventId: String): Boolean = postgres.createConnection("").use { connection ->
+        connection.prepareStatement("SELECT 1 FROM upload_diagnostics WHERE study_id = ? AND event_id = ?").use { statement ->
+            statement.setObject(1, studyId)
+            statement.setString(2, eventId)
             statement.executeQuery().use { resultSet -> resultSet.next() }
         }
     }

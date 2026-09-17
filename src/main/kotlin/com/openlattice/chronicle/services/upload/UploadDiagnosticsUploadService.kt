@@ -62,6 +62,10 @@ public open class UploadDiagnosticsUploadService(
             "Upload diagnostics batch contains duplicate event IDs"
         }
         storageResolver.getPlatformStorage().connection.use { connection ->
+            // Inside withCollectionHaltRecheck this is the pinned guard connection with
+            // autocommit already off; forcing it back on here made the guard's own commit()
+            // throw and every non-empty batch answer 500. Restore what we found instead.
+            val previousAutoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
                 deleteExpired(connection, studyId, participantId)
@@ -71,7 +75,7 @@ public open class UploadDiagnosticsUploadService(
                 connection.rollback()
                 throw error
             } finally {
-                connection.autoCommit = true
+                connection.autoCommit = previousAutoCommit
             }
         }
         return data.map { it.id }
