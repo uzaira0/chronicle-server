@@ -21,6 +21,10 @@ import com.openlattice.chronicle.participantaccess.ParticipantFormSessionRespons
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
 import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType
+import com.openlattice.chronicle.services.studies.StudyManager
+import com.openlattice.chronicle.study.StudyParticipantPolicy
+import com.openlattice.chronicle.study.StudySetting
+import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.validateParticipantId
 import jakarta.servlet.http.HttpServletResponse
@@ -42,6 +46,7 @@ import java.util.UUID
 public open class ParticipantFormAccessController(
     private val participantFormAccessService: ParticipantFormAccessService,
     private val enrollmentManager: EnrollmentManager,
+    private val studyManager: StudyManager,
     private val auditService: AuditService,
     override val authorizationManager: AuthorizationManager,
     override val auditingManager: AuditingManager,
@@ -144,6 +149,21 @@ public open class ParticipantFormAccessController(
             success(true)
             additionalData(mapOf("formKind" to exchanged.response.formKind.name))
         }
-        return exchanged.response
+        // The session is committed by now; a study that vanished since the code was issued
+        // only costs the footer links, never the participant's form.
+        val settings = try {
+            studyManager.getStudySettings(exchanged.response.studyId)
+        } catch (_: NoSuchElementException) {
+            emptyMap()
+        }
+        return exchanged.response.withPolicyLinks(settings)
     }
+}
+
+/** Copies the study's participant-policy links onto a form session, so every form can link them. */
+internal fun ParticipantFormSessionResponse.withPolicyLinks(
+    settings: Map<StudySettingType, StudySetting>,
+): ParticipantFormSessionResponse {
+    val policy = settings[StudySettingType.ParticipantPolicy] as? StudyParticipantPolicy ?: return this
+    return copy(privacyPolicyUrl = policy.privacyPolicyUrl, withdrawalUrl = policy.withdrawalUrl)
 }
