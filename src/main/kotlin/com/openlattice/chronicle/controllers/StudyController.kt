@@ -3234,7 +3234,7 @@ public open class StudyController @Inject constructor(
         // Users with access to thousands of studies would otherwise force full materialization.
         val studyIds = studyAclKeys.mapTo(mutableSetOf()) { it.first() }
         val cappedStudyIds = if (studyIds.size > PaginationDefaults.MAX_BULK_IDS) {
-            studyIds.take(PaginationDefaults.MAX_BULK_IDS).toMutableSet()
+            studyIds.sorted().take(PaginationDefaults.MAX_BULK_IDS).toMutableSet()
         } else studyIds
         val studies = studyService.getStudies(cappedStudyIds)
 
@@ -3256,7 +3256,8 @@ public open class StudyController @Inject constructor(
 
         // Pagination applied in-memory because getAllStudies fetches from Hazelcast cache
         // (studies.getAll), which does not support SQL LIMIT/OFFSET.
-        return studies.toList().drop(safeOffset).take(safeLimit)
+        // Stable order, so consecutive offsets never repeat or skip a study.
+        return studies.sortedBy { it.id }.drop(safeOffset).take(safeLimit)
     }
 
     @Timed

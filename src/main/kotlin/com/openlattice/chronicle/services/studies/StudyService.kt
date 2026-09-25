@@ -326,8 +326,10 @@ public open class StudyService(
             WHERE ${STUDY_ID.name} = ANY(?)
         """.trimIndent()
 
-        private val SELECT_STUDY_PARTICIPANTS_SQL = """
-            SELECT * FROM ${STUDY_PARTICIPANTS.name} WHERE ${STUDY_ID.name} = ? LIMIT ? OFFSET ?
+        internal val SELECT_STUDY_PARTICIPANTS_SQL = """
+            SELECT * FROM ${STUDY_PARTICIPANTS.name} WHERE ${STUDY_ID.name} = ?
+            ORDER BY ${PARTICIPANT_ID.name}
+            LIMIT ? OFFSET ?
         """.trimIndent()
 
         private fun selectStudyIdSql(table: String): String {
@@ -355,10 +357,11 @@ public open class StudyService(
          * PreparedStatement bind order
          * 1) studyId
          */
-        private val GET_STUDY_PARTICIPANT_STATS = """
+        internal val GET_STUDY_PARTICIPANT_STATS = """
             SELECT $PARTICIPANT_STATS_COLUMNS
             FROM ${PARTICIPANT_STATS.name}
             WHERE ${STUDY_ID.name} = ?
+            ORDER BY ${PARTICIPANT_ID.name}
             LIMIT ? OFFSET ?
         """.trimIndent()
 
