@@ -44,6 +44,8 @@ public class FlywayMigrationService(
     public companion object {
         private val logger = LoggerFactory.getLogger(FlywayMigrationService::class.java)
         public const val MIGRATION_LOCATION: String = "classpath:db/migration"
+        public const val MIGRATION_SESSION_SQL: String =
+            "SET statement_timeout = 0; SET lock_timeout = 0; SET idle_in_transaction_session_timeout = 0"
 
         /**
          * The corpus GRANT/REVOKEs against the `chronicle` JDBC application role (V15 onward).
@@ -62,6 +64,9 @@ public class FlywayMigrationService(
          */
         public fun baseConfiguration(): FluentConfiguration = Flyway.configure()
             .locations(MIGRATION_LOCATION)
+            // Self-host Postgres bounds every statement and lock wait server-wide; a migration
+            // that rewrites a large table must never be cancelled halfway through an upgrade.
+            .initSql(MIGRATION_SESSION_SQL)
             .validateMigrationNaming(true)
             .baselineOnMigrate(true)
             .baselineVersion("0")
