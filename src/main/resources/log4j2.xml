@@ -30,7 +30,13 @@
                 <TimeBasedTriggeringPolicy interval="86400" modulate="true"/>
                 <SizeBasedTriggeringPolicy size="5GB"/>
             </Policies>
-            <DefaultRolloverStrategy max="30"/>
+            <!-- max counts %i within one timestamp only; delete archives by age so daily files do not accumulate forever. -->
+            <DefaultRolloverStrategy max="30">
+                <Delete basePath="${rollingDir}" maxDepth="1">
+                    <IfFileName glob="${serviceName}-*.log.gz"/>
+                    <IfLastModified age="30d"/>
+                </Delete>
+            </DefaultRolloverStrategy>
         </RollingFile>
 
         <!-- Alternate rolling file appender selected by LOG_FORMAT=json; uses built-in layout to avoid optional plugin startup failures. -->
@@ -42,7 +48,13 @@
                 <TimeBasedTriggeringPolicy interval="86400" modulate="true"/>
                 <SizeBasedTriggeringPolicy size="5GB"/>
             </Policies>
-            <DefaultRolloverStrategy max="30"/>
+            <!-- max counts %i within one timestamp only; delete archives by age so daily files do not accumulate forever. -->
+            <DefaultRolloverStrategy max="30">
+                <Delete basePath="${rollingDir}" maxDepth="1">
+                    <IfFileName glob="${serviceName}-*.log.gz"/>
+                    <IfLastModified age="30d"/>
+                </Delete>
+            </DefaultRolloverStrategy>
         </RollingFile>
 
         <!-- Routing console appender: text vs JSON via LOG_FORMAT env var -->
