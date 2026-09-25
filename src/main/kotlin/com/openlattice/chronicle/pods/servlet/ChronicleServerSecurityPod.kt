@@ -19,6 +19,7 @@
  */
 package com.openlattice.chronicle.pods.servlet
 
+import com.openlattice.chronicle.configuration.boundedRestTemplate
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
@@ -473,7 +474,7 @@ public open class ChronicleServerSecurityPod {
         val decoder: NimbusJwtDecoder = if (configuredJwks != null) {
             LoggerFactory.getLogger(ChronicleServerSecurityPod::class.java)
                 .info("Configuring JwtDecoder with OIDC JWKS ({})", configuredJwks)
-            NimbusJwtDecoder.withJwkSetUri(configuredJwks).build()
+            NimbusJwtDecoder.withJwkSetUri(configuredJwks).restOperations(boundedRestTemplate()).build()
         } else if (keyMaterial.isRs256()) {
             val rsaPublicKey = requireNotNull(keyMaterial.rsaPublicKey) {
                 "RSA public key is required when algorithm is RS256"

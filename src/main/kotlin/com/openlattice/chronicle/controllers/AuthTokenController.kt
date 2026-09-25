@@ -3,6 +3,7 @@ package com.openlattice.chronicle.controllers
 import com.codahale.metrics.annotation.Timed
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import com.openlattice.chronicle.configuration.boundedRestTemplate
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleJwtClientConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
@@ -32,7 +33,6 @@ import org.springframework.security.oauth2.jwt.JwtException
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
 import org.springframework.util.LinkedMultiValueMap
-import org.springframework.web.client.RestTemplate
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -408,7 +408,8 @@ public open class AuthTokenController(
 
     private fun createLaxJwtDecoder(config: ChronicleJwtClientConfiguration): JwtDecoder {
         return when {
-            !config.jwkSetUri.isNullOrBlank() -> NimbusJwtDecoder.withJwkSetUri(config.jwkSetUri).build()
+            !config.jwkSetUri.isNullOrBlank() ->
+                NimbusJwtDecoder.withJwkSetUri(config.jwkSetUri).restOperations(boundedRestTemplate()).build()
             config.signingAlgorithm.startsWith("HS") -> {
                 val secret = if (config.base64EncodedSecret) {
                     java.util.Base64.getDecoder().decode(config.secret)
@@ -632,7 +633,7 @@ public open class AuthTokenController(
         form.add("code_verifier", codeVerifier)
 
         return try {
-            val response = RestTemplate().postForEntity(
+            val response = boundedRestTemplate().postForEntity(
                 oidc.tokenUri,
                 HttpEntity(form, headers),
                 String::class.java
