@@ -70,6 +70,40 @@ class ChronicleDataAssetRegistryTest {
     }
 
     @Test
+    fun everyMigrationTableWithAParticipantIdIsDeletedOrDeliberatelyRetained() {
+        // Participant tables carry no FK to study_participants, so participant deletion reaches
+        // only what this registry names. usage_event_annotations and participant_pseudonyms were
+        // missed until V105; this scan catches the next one.
+        val retained = mapOf(
+            "api_keys" to "revoked credential kept as withdrawal replay evidence (V90)",
+            "mobile_withdrawal_requests" to "withdrawal receipt kept for replay (V90)",
+            "data_deletion_operations" to "the deletion ledger itself",
+        )
+        val migrationDir = sequenceOf(
+            File("src/main/resources/db/migration"),
+            File("chronicle-server/src/main/resources/db/migration"),
+        ).firstOrNull { it.isDirectory }
+            ?: error("Could not locate db/migration from cwd=${File(".").absolutePath}")
+        val corpus = migrationDir.listFiles { f -> f.extension == "sql" }!!
+            .joinToString("\n") { it.readText() }
+        val created = Regex(
+            """CREATE TABLE(?: IF NOT EXISTS)?\s+(?:public\.)?"?(\w+)"?\s*\((.*?)\)\s*(?:USING\s+\w+\s*)?(?:PARTITION BY [^;]*)?;""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+        ).findAll(corpus)
+            .filter { Regex("""\bparticipant_id\b""").containsMatchIn(it.groupValues[2]) }
+            .map { it.groupValues[1].lowercase() }
+        val added = Regex(
+            """ALTER TABLE(?: IF EXISTS)?\s+(?:ONLY\s+)?(?:public\.)?"?(\w+)"?\s+ADD COLUMN(?: IF NOT EXISTS)?\s+participant_id\b""",
+            RegexOption.IGNORE_CASE,
+        ).findAll(corpus).map { it.groupValues[1].lowercase() }
+        val participantTables = (created + added).toSet()
+        assertTrue("scan found no participant tables", "usage_event_annotations" in participantTables)
+
+        val registered = ChronicleDataAssetRegistry.participantAssets.map { it.tableName }.toSet()
+        assertEquals(emptySet<String>(), participantTables - registered - retained.keys)
+    }
+
+    @Test
     fun deletionPlanCreatesExactlyOneJobPerRegisteredAsset() {
         var ordinal = 0L
         val jobs = ParticipantDeletionPlan.jobs(

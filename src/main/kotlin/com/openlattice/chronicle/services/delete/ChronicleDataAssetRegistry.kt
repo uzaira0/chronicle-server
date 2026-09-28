@@ -53,6 +53,8 @@ public object ChronicleDataAssetRegistry {
         ParticipantDataAsset("android-device-sensor-availability", "android_device_sensor_availability", false),
         ParticipantDataAsset("participant-form-receipts", "participant_form_submission_receipts", false),
         ParticipantDataAsset("participant-form-sessions", "participant_form_sessions", false),
+        ParticipantDataAsset("usage-event-annotations", "usage_event_annotations", false),
+        ParticipantDataAsset("participant-pseudonyms", "participant_pseudonyms", false),
         ParticipantDataAsset("jobs", "jobs", false, ParticipantScope.TEXT_ARRAY_COLUMN),
         // Keep access codes last: deleting one cascades sessions and receipts, which would
         // otherwise make their independently verified step counts inaccurate.

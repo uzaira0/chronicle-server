@@ -3956,7 +3956,7 @@ class FlywayMigrationCorpusTest {
             ).use { statement ->
                 statement.executeQuery().use { resultSet ->
                     assertTrue(resultSet.next())
-                    assertEquals(33, resultSet.getInt(1))
+                    assertEquals(35, resultSet.getInt(1))
                 }
             }
             assertEquals(true to true, rlsState("jobs"))
