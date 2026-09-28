@@ -19,6 +19,7 @@ import com.openlattice.chronicle.study.StudyLimitsApi.Companion.STUDY_ID
 import com.openlattice.chronicle.study.StudyLimitsApi.Companion.STUDY_ID_PATH
 import jakarta.validation.Valid
 import org.springframework.http.MediaType
+import org.springframework.http.HttpHeaders
 import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
@@ -26,6 +27,8 @@ import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.context.request.RequestContextHolder
+import org.springframework.web.context.request.ServletRequestAttributes
 import java.util.*
 import jakarta.inject.Inject
 
@@ -51,10 +54,15 @@ public open class StudyLimitsController @Inject constructor(
     )
     override fun setStudyLimits(@PathVariable(STUDY_ID) studyId: UUID, @Valid @RequestBody studyLimits: StudyLimits) {
         ensureAdminAccess()
+        val request = RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes
+        val expectedRevision = parseSettingsRevisionPrecondition(request?.request?.getHeader(HttpHeaders.IF_MATCH))
+        var nextRevision: Long? = null
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
-                .transaction {
+                .transaction { transaction ->
+                    checkLockedStudyRevision(transaction, studyId, expectedRevision, studyService)
                     studyLimitsMgr.setStudyLimits(studyId, studyLimits)
+                    nextRevision = studyService.bumpStudySettingsRevision(transaction, studyId)
                 }.audit {
                     listOf(
                         AuditableEvent(
@@ -65,6 +73,7 @@ public open class StudyLimitsController @Inject constructor(
                     )
                 }.buildAndRun()
         }
+        nextRevision?.let { request?.response?.setHeader(HttpHeaders.ETAG, "\"$it\"") }
     }
 
     @GetMapping(

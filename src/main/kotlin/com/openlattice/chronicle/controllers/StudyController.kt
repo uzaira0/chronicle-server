@@ -329,6 +329,20 @@ internal fun loadLockedStudySettings(
         }
     }
 
+internal fun checkLockedStudyRevision(
+    connection: java.sql.Connection,
+    studyId: UUID,
+    expectedRevision: Long?,
+    studyService: com.openlattice.chronicle.services.studies.StudyManager,
+) {
+    if (expectedRevision == null) return
+    val settings = loadLockedStudySettings(connection, studyId)
+    val currentRevision = studyService.getStudySettingsRevision(connection, studyId)
+    if (expectedRevision != currentRevision) {
+        throw StudySettingsRevisionMismatchException(currentRevision, settings)
+    }
+}
+
 internal fun mergeLegacyDataCollectionSettings(
     priorSettings: StudySettings,
     legacySetting: ChronicleDataCollectionSettings,
@@ -1463,6 +1477,7 @@ public open class StudyController @Inject constructor(
         @Valid @RequestBody study: StudyUpdate,
         @RequestParam(value = RETRIEVE, required = false, defaultValue = "false") retrieve: Boolean,
     ): Study? {
+        val expectedRevision = parseSettingsRevisionPrecondition(requestHeader(HttpHeaders.IF_MATCH))
         val studyAclKey = AclKey(studyId)
         ensureOwnerAccess(studyAclKey)
         if (study.settings?.containsKey(StudySettingType.Sensor) == true && !isAdmin()) {
@@ -1471,7 +1486,8 @@ public open class StudyController @Inject constructor(
         val currentUser = Principals.getCurrentSecurablePrincipal()
         logger.info("Updating study with id $studyId on behalf of ${currentUser.principal.id}")
         return try {
-            val persistedUpdate = persistStudyUpdate(studyId, study, studyAclKey, currentUser)
+            val persistedUpdate = persistStudyUpdate(studyId, study, studyAclKey, currentUser, expectedRevision)
+            setSettingsRevisionEtag(persistedUpdate.settingsRevision)
             studyService.refreshStudyCache(setOf(studyId))
             persistedUpdate.stampedStudy.settings?.let { newSettings ->
                 recordSettingsAuditDiff(studyId, persistedUpdate.priorSettings ?: emptyMap(), newSettings)
@@ -1500,10 +1516,12 @@ public open class StudyController @Inject constructor(
         requestedStudy: StudyUpdate,
         studyAclKey: AclKey,
         currentUser: com.openlattice.chronicle.authorization.SecurablePrincipal,
+        expectedRevision: Long?,
     ): LockedStudyUpdate =
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<LockedStudyUpdate>(connection, auditingManager)
                 .transaction { transaction ->
+                    checkLockedStudyRevision(transaction, studyId, expectedRevision, studyService)
                     val lockedUpdate = stampDataCollectionSettingsVersionLocked(
                         transaction,
                         studyId,
@@ -1518,7 +1536,7 @@ public open class StudyController @Inject constructor(
                         )
                     }
                     studyService.updateStudy(transaction, studyId, lockedUpdate.stampedStudy)
-                    lockedUpdate
+                    lockedUpdate.copy(settingsRevision = studyService.getStudySettingsRevision(transaction, studyId))
                 }
                 .audit { _ ->
                     listOf(
@@ -3150,7 +3168,9 @@ public open class StudyController @Inject constructor(
             // apiKey, signing secret, or participantId), and the device must fetch it
             // pre-enrollment to seal its uploads — so it joins the mobile-public set,
             // study-scoped and RLS-enforced via ensureValidStudy, exactly like DataCollection.
-            StudySettingType.Encryption -> ensureValidStudy(studyId)
+            StudySettingType.Encryption -> if (!ensureValidStudy(studyId)) {
+                throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.study.notFound"))
+            }
             else -> ensureReadAccess(AclKey(studyId))
         }
         // Revision first — see getStudySettings above: a revision read after the settings can be

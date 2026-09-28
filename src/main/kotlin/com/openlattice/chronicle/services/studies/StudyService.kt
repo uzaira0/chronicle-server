@@ -573,11 +573,8 @@ public open class StudyService(
             ps.setObject(13, studyId)
             ps.executeUpdate()
         }
-        // Any write that carries a settings map moves the optimistic-concurrency token, so a
-        // dashboard holding a stale read is told to re-render instead of silently clobbering.
-        if (study.settings != null) {
-            bumpStudySettingsRevision(connection, studyId)
-        }
+        // Details and settings share one revision, so a stale dashboard edit cannot overwrite either.
+        bumpStudySettingsRevision(connection, studyId)
     }
 
     override fun bumpStudySettingsRevision(connection: Connection, studyId: UUID): Long =

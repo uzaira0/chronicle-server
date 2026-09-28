@@ -81,7 +81,9 @@ import com.openlattice.chronicle.sources.AndroidDevice
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudySettings
+import com.openlattice.chronicle.study.StudyUpdate
 import com.openlattice.chronicle.webhooks.WebhookEventType
+import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -104,6 +106,10 @@ import org.springframework.http.HttpStatus
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.server.ResponseStatusException
 import java.time.OffsetDateTime
+import java.time.LocalDate
+import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
 import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -193,6 +199,57 @@ class StudyControllerTest {
     @Test
     fun testControllerConstructsSuccessfully() {
         assertNotNull(controller)
+    }
+
+    @Test
+    fun testAndroidDiagnosticsHistoryEndpointChecksReadAccessAndAppliesFilters() {
+        val studyId = UUID.randomUUID()
+        val deviceId = UUID.randomUUID()
+        val day = LocalDate.parse("2026-09-25")
+        val dataSource = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val resultSet = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
+        Mockito.`when`(storageResolver.getPlatformReadStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(kAnyString())).thenReturn(statement)
+        Mockito.`when`(statement.executeQuery()).thenReturn(resultSet)
+        Mockito.`when`(resultSet.next()).thenReturn(false)
+
+        val page = controller.getAndroidDiagnostics(
+            studyId = studyId,
+            participantId = "participant-1",
+            deviceId = deviceId,
+            fromDay = day,
+            toDay = day,
+            moduleFamily = "LOCAL_STORE",
+            issueCode = "LOCAL_WRITE_FAILED",
+            cursor = null,
+            limit = 25,
+        )
+
+        assertTrue(page.items.isEmpty())
+        val sql = argumentCaptor<String>()
+        verify(connection).prepareStatement(sql.capture())
+        assertTrue(sql.firstValue.contains("FROM upload_diagnostics"))
+        assertTrue(sql.firstValue.contains("FROM data_quality_alerts"))
+        assertTrue(sql.firstValue.contains("module_family = ?"))
+        assertTrue(sql.firstValue.contains("issue_code = ?"))
+        assertTrue("Page keys must be limited before code aggregation", sql.firstValue.indexOf("LIMIT ?") < sql.firstValue.indexOf("jsonb_agg"))
+        verify(statement, Mockito.atLeast(2)).setObject(Mockito.anyInt(), Mockito.eq(studyId))
+    }
+
+    @Test
+    fun testAndroidDiagnosticsRejectsOversizedCursorBeforeQueryingStorage() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            com.openlattice.chronicle.services.upload.UploadDiagnosticsQueryService(storageResolver).getPage(
+                UUID.randomUUID(),
+                cursor = "2026-09-01~${"a".repeat(1020)}~_~0~_",
+            )
+        }
+        assertTrue(error.message.orEmpty().contains("1024"))
+        Mockito.verifyNoInteractions(storageResolver)
     }
 
     @Test
@@ -1200,6 +1257,56 @@ class StudyControllerTest {
         val result = controller.getStudySetting(studyId, StudySettingType.DataCollection)
         assertTrue(result is AndroidDataCollectionSetting)
         assertEquals(stored, result)
+    }
+
+    @Test
+    fun testPublicStudySettingRejectsUnknownStudyBeforeReadingSettings() {
+        val studyId = UUID.randomUUID()
+        Mockito.`when`(studyService.isValidStudy(studyId)).thenReturn(false)
+
+        val error = assertThrows(ResponseStatusException::class.java) {
+            controller.getStudySetting(studyId, StudySettingType.DataCollection)
+        }
+        assertEquals(HttpStatus.NOT_FOUND, error.statusCode)
+        verify(studyService, never()).getStudySettings(studyId)
+    }
+
+    @Test
+    fun testDetailsRevisionCheckRejectsStaleWriteUnderStudyRowLock() {
+        val studyId = UUID.randomUUID()
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val resultSet = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(connection.prepareStatement("SELECT settings FROM studies WHERE study_id = ? FOR UPDATE"))
+            .thenReturn(statement)
+        Mockito.`when`(statement.executeQuery()).thenReturn(resultSet)
+        Mockito.`when`(resultSet.next()).thenReturn(true)
+        Mockito.`when`(studyService.getStudySettingsRevision(connection, studyId)).thenReturn(2L)
+
+        val error = assertThrows(StudySettingsRevisionMismatchException::class.java) {
+            checkLockedStudyRevision(connection, studyId, 1L, studyService)
+        }
+        assertEquals(2L, error.currentRevision)
+    }
+
+    @Test
+    fun testDetailsOnlyUpdateAdvancesSettingsRevision() {
+        val service = Mockito.mock(StudyService::class.java, Mockito.CALLS_REAL_METHODS)
+        val connection = Mockito.mock(Connection::class.java)
+        val update = Mockito.mock(PreparedStatement::class.java)
+        val bump = Mockito.mock(PreparedStatement::class.java)
+        val revision = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenAnswer { invocation ->
+            if ((invocation.getArgument<String>(0)).contains("SET settings_revision")) bump else update
+        }
+        Mockito.`when`(bump.executeQuery()).thenReturn(revision)
+        Mockito.`when`(revision.next()).thenReturn(true)
+        Mockito.`when`(revision.getLong(1)).thenReturn(1L)
+
+        service.updateStudy(connection, UUID.randomUUID(), StudyUpdate(title = "Revised title"))
+
+        verify(update).executeUpdate()
+        verify(bump).executeQuery()
     }
 
     @Test

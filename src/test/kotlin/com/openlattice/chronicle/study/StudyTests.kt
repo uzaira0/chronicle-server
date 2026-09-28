@@ -507,22 +507,22 @@ class StudyTests : ChronicleServerTests() {
     }
 
     @Test
-    fun testDataCollectionSettingReadForUnknownStudyYieldsSafeDefault() {
-        // An unknown study id resolves to no settings -> the safe default. This is
-        // identical to the long-standing AndroidSensor behavior (NO_SENSORS) — the
-        // generalized read does not throw and never enables a privacy-sensitive
-        // module for an unknown study.
+    fun testPublicSettingReadForUnknownStudyIsNotFound() {
+        // Public setting reads must not reveal which study IDs exist, and must not hand a device
+        // made-up defaults: an unknown study is 404 for every mobile-public setting type. The app
+        // keeps its last settings and retries on this error; it never treats it as "all off".
         val unknownStudyId = UUID.randomUUID()
-        val read = chronicleClient.studyApi.getStudySetting(unknownStudyId, StudySettingType.DataCollection)
-        Assert.assertTrue(read is AndroidDataCollectionSetting)
-        Assert.assertTrue(
-            (read as AndroidDataCollectionSetting).modules.values.none { it.enabled },
-        )
-        // Baseline parity: AndroidSensor for an unknown study likewise yields NO_SENSORS.
-        Assert.assertEquals(
-            AndroidSensorSetting.NO_SENSORS,
-            chronicleClient.studyApi.getStudySetting(unknownStudyId, StudySettingType.AndroidSensor),
-        )
+        listOf(
+            StudySettingType.DataCollection,
+            StudySettingType.AndroidSensor,
+            StudySettingType.Sensor,
+            StudySettingType.Encryption,
+        ).forEach { type ->
+            val error = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
+                chronicleClient.studyApi.getStudySetting(unknownStudyId, type)
+            }
+            Assert.assertEquals("$type", 404, error.code)
+        }
     }
 
     @Test(expected = RhizomeRetrofitCallException::class)
