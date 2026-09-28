@@ -28,7 +28,7 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
     override fun runTask() {
         RLSRequestContext.withSystemContext {
             pauseParticipantsForStudiesOverDuration()
-            deleteStudiesWhoseDataIsOutsideOfRetentionPeriod()
+            expireStudiesOutsideOfRetentionPeriod()
         }
     }
 
@@ -51,18 +51,16 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
         }
     }
 
-    private fun deleteStudiesWhoseDataIsOutsideOfRetentionPeriod() {
+    /**
+     * Expiry only revokes non-admin access; it never erases data. Owner decision 2026-09-28: a
+     * date or clock bug must not be able to destroy study data, so erasure stays an explicit,
+     * human-started operation. Do not start a study erasure from here.
+     */
+    private fun expireStudiesOutsideOfRetentionPeriod() {
         val deps = getDependency()
-        deps.storageResolver.getPlatformStorage().connection.use { connection ->
-            val studiesToDelete = deps.studyLimitsManager.getStudiesExcceedingDataRetentionPeriod()
-            logger.info(
-                "Deleting the following studies as they are outside of the retention period: {}",
-                studiesToDelete
-            )
-            deps.studyService.expireStudies(
-                studiesToDelete
-            )
-        }
+        val studiesToExpire = deps.studyLimitsManager.getStudiesExcceedingDataRetentionPeriod()
+        logger.info("Revoking non-admin access to studies past their retention period: {}", studiesToExpire)
+        deps.studyService.expireStudies(studiesToExpire)
     }
 }
 
