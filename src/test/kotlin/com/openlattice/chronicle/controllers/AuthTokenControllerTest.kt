@@ -1,6 +1,8 @@
 package com.openlattice.chronicle.controllers
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
 import com.openlattice.chronicle.services.auth.RefreshTokenService
@@ -47,6 +49,7 @@ class AuthTokenControllerTest {
     private val environment = Mockito.mock(Environment::class.java).also {
         Mockito.`when`(it.activeProfiles).thenReturn(emptyArray())
     }
+    private val auditService = Mockito.mock(AuditService::class.java)
     private val controller = AuthTokenController(
         jwtDecoder,
         chronicleAuthConfiguration,
@@ -54,6 +57,7 @@ class AuthTokenControllerTest {
         userListingService,
         refreshTokenService,
         environment,
+        auditService,
     )
 
     @Test
@@ -160,6 +164,7 @@ class AuthTokenControllerTest {
             userListingService,
             refreshTokenService,
             environment,
+            auditService,
         )
         val jwt = createJwt("testing-token", "user-789")
         Mockito.`when`(userListingService.issueTestingToken("test-user")).thenReturn("testing-token")
@@ -212,6 +217,10 @@ class AuthTokenControllerTest {
         assertEquals("/chronicle", csrfCookie.path)
         assertEquals("Strict", csrfCookie.getAttribute("SameSite"))
         assertEquals(csrfCookie.value, result.body?.get("csrfToken"))
+        Mockito.verify(auditService).logAuthEvent(
+            null, null, "127.0.0.1", null, AuditAction.LOGIN, true, null,
+            mapOf("method" to "dashboard", "subject" to "local-admin"),
+        )
     }
 
     @Test
@@ -228,6 +237,10 @@ class AuthTokenControllerTest {
         assertEquals(false, result.body?.get("authenticated"))
         assertEquals("invalid dashboard password", result.body?.get("error"))
         assertEquals(0, response.cookies.size)
+        Mockito.verify(auditService).logAuthEvent(
+            null, null, "127.0.0.1", null, AuditAction.LOGIN_FAILED, false, "password_mismatch",
+            mapOf("method" to "dashboard"),
+        )
     }
 
     @Test
@@ -370,6 +383,7 @@ class AuthTokenControllerTest {
         userListingService,
         refreshTokenService,
         environment,
+        auditService,
     )
 
     private fun createJwt(tokenValue: String, subject: String): Jwt {

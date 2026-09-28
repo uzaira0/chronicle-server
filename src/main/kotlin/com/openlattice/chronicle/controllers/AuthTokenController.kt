@@ -3,6 +3,8 @@ package com.openlattice.chronicle.controllers
 import com.codahale.metrics.annotation.Timed
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.configuration.boundedRestTemplate
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleJwtClientConfiguration
@@ -79,6 +81,7 @@ public open class AuthTokenController(
     private val userListingService: UserListingService,
     private val refreshTokenService: RefreshTokenService,
     private val environment: Environment,
+    private val auditService: AuditService,
 ) {
     internal companion object {
         private val logger = LoggerFactory.getLogger(AuthTokenController::class.java)
@@ -276,6 +279,7 @@ public open class AuthTokenController(
                 LogSanitizer.sanitize(error, 200),
                 LogSanitizer.sanitize(errorDescription ?: "", 500)
             )
+            auditLogin(request, "oidc", null, "idp_error")
             return ResponseEntity.status(401).body(mapOf("error" to "oidc_login_failed"))
         }
         if (code.isNullOrBlank() || state.isNullOrBlank()) {
@@ -297,10 +301,12 @@ public open class AuthTokenController(
             jwtDecoder.decode(sessionToken)
         } catch (exception: JwtException) {
             logger.warn("OIDC broker returned an invalid Chronicle session token: {}", exception.message)
+            auditLogin(request, "oidc", null, "invalid_token")
             return ResponseEntity.status(401).body(mapOf("error" to "invalid_oidc_token"))
         }
 
         if (!validateOidcNonce(tokenPayload, request)) {
+            auditLogin(request, "oidc", null, "invalid_nonce")
             return ResponseEntity.status(400).body(mapOf("error" to "invalid_oidc_nonce"))
         }
 
@@ -309,6 +315,7 @@ public open class AuthTokenController(
         clearCookie(response, request, OIDC_NONCE_COOKIE_NAME, sameSite = "Lax")
         clearCookie(response, request, OIDC_PKCE_VERIFIER_COOKIE_NAME, sameSite = "Lax")
         logger.info("OIDC login completed for subject {}", jwt.subject)
+        auditLogin(request, "oidc", jwt.subject, null)
         return ResponseEntity.status(302).location(URI.create(chronicleAuthConfiguration.oidc.postLoginRedirectUri)).build<Void>()
     }
 
@@ -476,6 +483,7 @@ public open class AuthTokenController(
                 "Rejecting dashboard-login from {}: no dashboardPasswordHash is configured",
                 dashboardClientReference(request)
             )
+            auditLogin(request, "dashboard", null, "no_password_hash")
             return dashboardLoginRejected()
         }
 
@@ -484,12 +492,14 @@ public open class AuthTokenController(
         // every attempt instead of being compared against.
         if (!dashboardPasswordEncoder.matches(password, configuredHash)) {
             logger.warn("Rejecting dashboard-login from {}: password mismatch", dashboardClientReference(request))
+            auditLogin(request, "dashboard", null, "password_mismatch")
             return dashboardLoginRejected()
         }
 
         val token = userListingService.issueDashboardToken(null)
         if (token == null) {
             logger.error("dashboard-login accepted the password but no local user is configured to mint a session for")
+            auditLogin(request, "dashboard", null, "no_local_user")
             return dashboardLoginRejected()
         }
 
@@ -500,6 +510,7 @@ public open class AuthTokenController(
                 "dashboard-login minted a session token the JWT decoder rejects: {}",
                 exception.message
             )
+            auditLogin(request, "dashboard", null, "invalid_token")
             return dashboardLoginRejected()
         }
 
@@ -507,7 +518,22 @@ public open class AuthTokenController(
         val metadata = buildAuthenticatedSession(jwt, csrfToken).toMutableMap()
         metadata["tokenSource"] = "dashboard-login"
         logger.info("dashboard-login succeeded for {}", dashboardClientReference(request))
+        auditLogin(request, "dashboard", jwt.subject, null)
         return ResponseEntity.ok(metadata)
+    }
+
+    /** Records a login outcome in the audit trail; [failure] null means the login succeeded. */
+    private fun auditLogin(request: HttpServletRequest, method: String, subject: String?, failure: String?) {
+        auditService.logAuthEvent(
+            userId = subject?.let { runCatching { UUID.fromString(it) }.getOrNull() },
+            userRole = null,
+            ipAddress = ClientIpResolver.resolve(request),
+            userAgent = request.getHeader(HttpHeaders.USER_AGENT),
+            eventType = if (failure == null) AuditAction.LOGIN else AuditAction.LOGIN_FAILED,
+            success = failure == null,
+            errorMessage = failure,
+            additionalData = listOfNotNull("method" to method, subject?.let { "subject" to it }).toMap(),
+        )
     }
 
     private fun dashboardClientReference(request: HttpServletRequest): String = LogSanitizer.stableFingerprint(
