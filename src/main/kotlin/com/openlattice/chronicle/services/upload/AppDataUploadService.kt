@@ -661,11 +661,11 @@ public open class AppDataUploadService(
 
                 //Create a table that contains any duplicate values introduced by this latest upload for the minimum upload_at value
                 StopWatch(
-                    log = "Creating duplicates table for studies = {} and participants = {} ",
+                    log = "Creating duplicates table for studies = {} and participantRefs = {} ",
                     level = Level.INFO,
                     logger = logger,
                     studies,
-                    participants
+                    LogSanitizer.stableFingerprints(participants, "participant")
                 ).use {
                     connection.createStatement()
                         .use { stmt -> stmt.execute(createTempTableOfDuplicates(tempTableName)) }

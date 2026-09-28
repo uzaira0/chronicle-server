@@ -13,6 +13,7 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
 import java.time.OffsetDateTime
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.Semaphore
 
@@ -30,6 +31,17 @@ import java.util.concurrent.Semaphore
  * cannot regress unnoticed.
  */
 class AppDataUploadServiceTest {
+
+    @Test
+    fun duplicateTableLogUsesParticipantFingerprints() {
+        val source = sequenceOf(
+            File("src/main/kotlin/com/openlattice/chronicle/services/upload/AppDataUploadService.kt"),
+            File("chronicle-server/src/main/kotlin/com/openlattice/chronicle/services/upload/AppDataUploadService.kt"),
+        ).first { it.isFile }.readText()
+        val logCall = source.substringAfter("log = \"Creating duplicates table").substringBefore(").use {")
+        assertTrue(logCall.contains("participantRefs"))
+        assertTrue(logCall.contains("LogSanitizer.stableFingerprints(participants, \"participant\")"))
+    }
 
     private val storageResolver = Mockito.mock(StorageResolver::class.java)
     private val enrollmentManager = Mockito.mock(EnrollmentManager::class.java)
