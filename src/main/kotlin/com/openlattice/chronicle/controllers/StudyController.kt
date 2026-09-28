@@ -163,6 +163,8 @@ import com.openlattice.chronicle.study.StudyApi.Companion.STATUS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.UPLOAD_STATUS_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.DATA_DROPS_PATH
+import com.openlattice.chronicle.study.AndroidDataDrop
 import com.openlattice.chronicle.study.StudyApi.Companion.VERIFY_PATH
 import com.openlattice.chronicle.util.ChronicleServerUtil
 import com.openlattice.chronicle.util.LogSanitizer
@@ -835,6 +837,21 @@ public open class StudyController @Inject constructor(
             WHERE study_id = ?
         """.trimIndent()
 
+        // Local-drop codes only: upload failures are not data loss. Rows age out after 30 days
+        // (UploadDiagnosticsUploadService retention), so this is a rolling window.
+        private val GET_ANDROID_DATA_DROPS_SQL = """
+            SELECT participant_id, issue_code,
+                   sum(occurrence_count)::bigint AS drop_count,
+                   max(last_occurred_at) AS last_occurred_at
+            FROM upload_diagnostics
+            WHERE study_id = ?
+              AND issue_code IN (
+                  'SENSOR_AGE_EXPIRED', 'SENSOR_CAPACITY_DROPPED',
+                  'SENSOR_DEAD_LETTER_DROPPED', 'USAGE_QUEUE_EVICTED'
+              )
+            GROUP BY participant_id, issue_code
+            ORDER BY participant_id, issue_code
+        """.trimIndent()
         private val GET_IOS_UPLOAD_STATUS_SQL = """
             WITH committed AS (
                 SELECT participant_id,
@@ -3317,6 +3334,40 @@ public open class StudyController @Inject constructor(
             }
         }
         return result
+    }
+
+    @Timed
+    @GetMapping(
+        path = [STUDY_ID_PATH + PARTICIPANTS_PATH + ANDROID_PATH + DATA_DROPS_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE]
+    )
+    override fun getAndroidDataDrops(@PathVariable(STUDY_ID) studyId: UUID): Map<String, List<AndroidDataDrop>> {
+        ensureReadAccess(AclKey(studyId))
+        val drops = linkedMapOf<String, MutableList<AndroidDataDrop>>()
+        storageResolver.getPlatformStorage().connection.use { conn ->
+            conn.prepareStatement(GET_ANDROID_DATA_DROPS_SQL).use { ps ->
+                ps.setObject(1, studyId)
+                ps.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        drops.getOrPut(rs.getString("participant_id")) { mutableListOf() } += AndroidDataDrop(
+                            issueCode = rs.getString("issue_code"),
+                            count = rs.getLong("drop_count"),
+                            lastOccurredAt = rs.getObject("last_occurred_at", OffsetDateTime::class.java),
+                        )
+                    }
+                }
+            }
+        }
+        auditService.logWithContext {
+            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            resourceType("UploadDiagnostics")
+            studyId(studyId)
+            success(true)
+            accessedPHI(true)
+            phiFields(listOf("participantId", "androidDataDrops"))
+            additionalData(mapOf("participantCount" to drops.size))
+        }
+        return drops
     }
 
     private fun readIosUploadStatusRows(

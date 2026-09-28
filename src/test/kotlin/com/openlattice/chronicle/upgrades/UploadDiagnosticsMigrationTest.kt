@@ -18,6 +18,9 @@ class UploadDiagnosticsMigrationTest {
     private val widenMigration = requireNotNull(
         javaClass.getResourceAsStream("/db/migration/V104__widen_upload_diagnostic_codes.sql"),
     ).bufferedReader().use { it.readText() }
+    private val localDropMigration = requireNotNull(
+        javaClass.getResourceAsStream("/db/migration/V106__add_local_drop_diagnostic_codes.sql"),
+    ).bufferedReader().use { it.readText() }
 
     private fun event(moduleFamily: String, issueCode: String) = AndroidUploadDiagnosticEvent(
         id = UUID.randomUUID().toString(),
@@ -44,6 +47,21 @@ class UploadDiagnosticsMigrationTest {
         }
         assertTrue("'UPLOAD_FAILURE'" in widenMigration)
         assertThrows(IllegalArgumentException::class.java) { event("SENSOR", "RAW_STACK_TRACE") }
+    }
+
+    @Test
+    fun `local drop codes are accepted by the model and the table, and V106 keeps every V104 code`() {
+        listOf(
+            "SENSOR" to "SENSOR_AGE_EXPIRED",
+            "SENSOR" to "SENSOR_CAPACITY_DROPPED",
+            "USAGE_LIFECYCLE" to "USAGE_QUEUE_EVICTED",
+        ).forEach { (family, code) ->
+            event(family, code)
+            assertTrue(code, "'$code'" in localDropMigration)
+        }
+        Regex("""'([A-Z_]+)'""").findAll(widenMigration.substringAfter("issue_code_check")).forEach {
+            assertTrue(it.groupValues[1], "'${it.groupValues[1]}'" in localDropMigration)
+        }
     }
 
     @Test
