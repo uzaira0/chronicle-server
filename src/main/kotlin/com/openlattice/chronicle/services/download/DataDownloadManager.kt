@@ -65,6 +65,22 @@ public interface DataDownloadManager {
         endDateTime: OffsetDateTime,
     ): Iterable<Map<String, Any>>
 
+    /** Full retained Android upload-diagnostic history, filtered by diagnostic day. */
+    public fun getParticipantsUploadDiagnosticsData(
+        studyId: UUID,
+        participantIds: Set<String>,
+        startDateTime: OffsetDateTime,
+        endDateTime: OffsetDateTime,
+    ): Iterable<Map<String, Any>>
+
+    /** Full retained data-quality alert history, filtered by alert creation time. */
+    public fun getParticipantsDataQualityAlertsData(
+        studyId: UUID,
+        participantIds: Set<String>,
+        startDateTime: OffsetDateTime,
+        endDateTime: OffsetDateTime,
+    ): Iterable<Map<String, Any>>
+
     public fun getQuestionnaireResponses(
         studyId: UUID,
         questionnaireId: UUID

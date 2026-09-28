@@ -84,6 +84,7 @@ import com.openlattice.chronicle.services.upload.ConnectivityStateEventsUploadSe
 import com.openlattice.chronicle.services.upload.AppNetworkUsageUploadService
 import com.openlattice.chronicle.services.upload.DeviceSettingsUploadService
 import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
+import com.openlattice.chronicle.services.upload.UploadDiagnosticsQueryService
 import com.openlattice.chronicle.services.upload.EncryptedPayloadUploadService
 import com.openlattice.chronicle.services.delete.ParticipantDeletionPlan
 import com.openlattice.chronicle.services.delete.DataDeletionMode
@@ -117,6 +118,7 @@ import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.EnrollmentResponse
 import com.openlattice.chronicle.study.EnrollmentPreviewResponse
 import com.openlattice.chronicle.study.IosUploadStatus
+import com.openlattice.chronicle.study.AndroidDiagnosticsPage
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudyApi
@@ -164,6 +166,7 @@ import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.UPLOAD_STATUS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.DATA_DROPS_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.DIAGNOSTICS_PATH
 import com.openlattice.chronicle.study.AndroidDataDrop
 import com.openlattice.chronicle.study.StudyApi.Companion.VERIFY_PATH
 import com.openlattice.chronicle.util.ChronicleServerUtil
@@ -645,6 +648,7 @@ public open class StudyController @Inject constructor(
 ) : StudyApi, AuthorizingComponent {
 
     private val studies = HazelcastMap.STUDIES.getMap(hazelcastInstance)
+    private val uploadDiagnosticsQueryService by lazy { UploadDiagnosticsQueryService(storageResolver) }
 
     @Inject
     private lateinit var enrollmentManifestService: EnrollmentManifestService
@@ -837,8 +841,8 @@ public open class StudyController @Inject constructor(
             WHERE study_id = ?
         """.trimIndent()
 
-        // Local-drop codes only: upload failures are not data loss. Rows age out after 30 days
-        // (UploadDiagnosticsUploadService retention), so this is a rolling window.
+        // Compatibility projection of local-drop codes. Full retained history is available from
+        // the paginated diagnostics endpoint below.
         private val GET_ANDROID_DATA_DROPS_SQL = """
             SELECT participant_id, issue_code,
                    sum(occurrence_count)::bigint AS drop_count,
@@ -3370,6 +3374,48 @@ public open class StudyController @Inject constructor(
         return drops
     }
 
+    @Timed
+    @GetMapping(
+        path = [STUDY_ID_PATH + PARTICIPANTS_PATH + ANDROID_PATH + DIAGNOSTICS_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE],
+    )
+    override fun getAndroidDiagnostics(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @RequestParam(value = "participantId", required = false) participantId: String?,
+        @RequestParam(value = "deviceId", required = false) deviceId: UUID?,
+        @RequestParam(value = "from", required = false)
+        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) fromDay: LocalDate?,
+        @RequestParam(value = "to", required = false)
+        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) toDay: LocalDate?,
+        @RequestParam(value = "moduleFamily", required = false) moduleFamily: String?,
+        @RequestParam(value = "issueCode", required = false) issueCode: String?,
+        @RequestParam(value = "cursor", required = false) cursor: String?,
+        @RequestParam(value = "limit", defaultValue = "50") limit: Int,
+    ): AndroidDiagnosticsPage {
+        ensureReadAccess(AclKey(studyId))
+        val page = uploadDiagnosticsQueryService.getPage(
+            studyId = studyId,
+            participantId = participantId,
+            deviceId = deviceId,
+            fromDay = fromDay,
+            toDay = toDay,
+            moduleFamily = moduleFamily,
+            issueCode = issueCode,
+            cursor = cursor,
+            limit = limit,
+        )
+        auditService.logWithContext {
+            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            resourceType("UploadDiagnostics")
+            studyId(studyId)
+            success(true)
+            accessedPHI(true)
+            phiFields(listOf("participantId", "deviceId", "uploadDiagnostics", "dataQualityAlerts"))
+            additionalData(mapOf("rowCount" to page.items.size))
+        }
+        return page
+    }
+
     private fun readIosUploadStatusRows(
         rs: java.sql.ResultSet,
         result: MutableMap<String, IosUploadStatus>
@@ -3457,6 +3503,20 @@ public open class StudyController @Inject constructor(
                 studyId,
                 participantIds,
                 dataType,
+                startDateTime,
+                endDateTime,
+            )
+
+            ParticipantDataType.UploadDiagnostics -> downloadService.getParticipantsUploadDiagnosticsData(
+                studyId,
+                participantIds,
+                startDateTime,
+                endDateTime,
+            )
+
+            ParticipantDataType.DataQualityAlerts -> downloadService.getParticipantsDataQualityAlertsData(
+                studyId,
+                participantIds,
                 startDateTime,
                 endDateTime,
             )

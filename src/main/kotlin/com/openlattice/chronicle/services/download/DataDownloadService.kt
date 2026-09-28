@@ -165,6 +165,52 @@ public open class DataDownloadService(
                 CollectionExportDefinition(DEVICE_SETTINGS, PostgresColumns.SAMPLE_TIMESTAMP),
         )
 
+        private val UPLOAD_DIAGNOSTICS_COLUMNS = listOf(
+            "study_id", "participant_id", "device_id", "event_id", "diagnostic_day", "module_family",
+            "issue_code", "occurrence_count", "first_occurred_at", "last_occurred_at", "http_status",
+            "error_type", "uploaded_at",
+        )
+        private val DATA_QUALITY_ALERT_COLUMNS = listOf(
+            "study_id", "participant_id", "alert_id", "alert_type", "score", "evaluation_start",
+            "evaluation_end", "threshold", "created_at",
+        )
+
+        internal fun diagnosticsExclusiveEndDay(endDateTime: OffsetDateTime): java.time.LocalDate =
+            endDateTime.toLocalDate().let { day ->
+                if (endDateTime.toLocalTime() == java.time.LocalTime.MIDNIGHT) day else day.plusDays(1)
+            }
+
+        internal fun retainedDiagnosticsSql(
+            filterParticipants: Boolean,
+            filterStart: Boolean,
+            filterEnd: Boolean,
+        ): String = """
+            SELECT study_id, participant_id, device_id, event_id, diagnostic_day, module_family,
+                   issue_code, occurrence_count, first_occurred_at, last_occurred_at,
+                   http_status, error_type, uploaded_at
+            FROM upload_diagnostics
+            WHERE study_id = ?
+              ${participantFilterSql(filterParticipants)}
+              ${if (filterStart) "AND diagnostic_day >= ?::date" else ""}
+              ${if (filterEnd) "AND diagnostic_day < ?::date" else ""}
+            ORDER BY diagnostic_day, participant_id, device_id, module_family, issue_code, event_id
+        """.trimIndent()
+
+        internal fun retainedQualityAlertsSql(
+            filterParticipants: Boolean,
+            filterStart: Boolean,
+            filterEnd: Boolean,
+        ): String = """
+            SELECT study_id, participant_id, alert_id, alert_type, score,
+                   evaluation_start, evaluation_end, threshold, created_at
+            FROM data_quality_alerts
+            WHERE study_id = ?
+              ${participantFilterSql(filterParticipants)}
+              ${if (filterStart) "AND created_at >= ?" else ""}
+              ${if (filterEnd) "AND created_at < ?" else ""}
+            ORDER BY created_at, participant_id, alert_id
+        """.trimIndent()
+
         internal fun collectionDataSql(dataType: StudyParticipantDataType, filterParticipants: Boolean): String {
             val definition = COLLECTION_EXPORTS[dataType]
                 ?: throw IllegalArgumentException("Participant data type $dataType is not a collection-table export")
@@ -576,6 +622,91 @@ public open class DataDownloadService(
             }
         }
         return PostgresDownloadWrapper(iterable).withColumnAdvice(definition.table.columns.map { it.name })
+    }
+
+    override fun getParticipantsUploadDiagnosticsData(
+        studyId: UUID,
+        participantIds: Set<String>,
+        startDateTime: OffsetDateTime,
+        endDateTime: OffsetDateTime,
+    ): Iterable<Map<String, Any>> {
+        val filterParticipants = participantIds.isNotEmpty()
+        val filterStart = startDateTime != OffsetDateTime.MIN
+        val filterEnd = endDateTime != OffsetDateTime.MAX
+        val iterable = BasePostgresIterable<Map<String, Any>>(
+            PreparedStatementHolderSupplier(
+                storageResolver.getPlatformReadStorage(),
+                retainedDiagnosticsSql(filterParticipants, filterStart, filterEnd),
+                FETCH_SIZE,
+            ) { statement ->
+                configureStreamingStatement(statement)
+                var index = 0
+                statement.setObject(++index, studyId)
+                if (filterParticipants) {
+                    statement.setArray(++index, PostgresArrays.createTextArray(statement.connection, participantIds))
+                }
+                if (filterStart) statement.setObject(++index, startDateTime.toLocalDate())
+                if (filterEnd) statement.setObject(++index, diagnosticsExclusiveEndDay(endDateTime))
+            },
+        ) { resultSet ->
+            val httpStatus = resultSet.getInt("http_status").let { if (resultSet.wasNull()) "" else it }
+            mapOf(
+                "study_id" to (resultSet.getString("study_id") ?: ""),
+                "participant_id" to (resultSet.getString("participant_id") ?: ""),
+                "device_id" to (resultSet.getString("device_id") ?: ""),
+                "event_id" to (resultSet.getString("event_id") ?: ""),
+                "diagnostic_day" to (resultSet.getObject("diagnostic_day") ?: ""),
+                "module_family" to (resultSet.getString("module_family") ?: ""),
+                "issue_code" to (resultSet.getString("issue_code") ?: ""),
+                "occurrence_count" to resultSet.getLong("occurrence_count"),
+                "first_occurred_at" to (resultSet.getObject("first_occurred_at", OffsetDateTime::class.java) ?: ""),
+                "last_occurred_at" to (resultSet.getObject("last_occurred_at", OffsetDateTime::class.java) ?: ""),
+                "http_status" to httpStatus,
+                "error_type" to (resultSet.getString("error_type") ?: ""),
+                "uploaded_at" to (resultSet.getObject("uploaded_at", OffsetDateTime::class.java) ?: ""),
+            )
+        }
+        return PostgresDownloadWrapper(iterable).withColumnAdvice(UPLOAD_DIAGNOSTICS_COLUMNS)
+    }
+
+    override fun getParticipantsDataQualityAlertsData(
+        studyId: UUID,
+        participantIds: Set<String>,
+        startDateTime: OffsetDateTime,
+        endDateTime: OffsetDateTime,
+    ): Iterable<Map<String, Any>> {
+        val filterParticipants = participantIds.isNotEmpty()
+        val filterStart = startDateTime != OffsetDateTime.MIN
+        val filterEnd = endDateTime != OffsetDateTime.MAX
+        val iterable = BasePostgresIterable<Map<String, Any>>(
+            PreparedStatementHolderSupplier(
+                storageResolver.getPlatformReadStorage(),
+                retainedQualityAlertsSql(filterParticipants, filterStart, filterEnd),
+                FETCH_SIZE,
+            ) { statement ->
+                configureStreamingStatement(statement)
+                var index = 0
+                statement.setObject(++index, studyId)
+                if (filterParticipants) {
+                    statement.setArray(++index, PostgresArrays.createTextArray(statement.connection, participantIds))
+                }
+                if (filterStart) statement.setObject(++index, startDateTime)
+                if (filterEnd) statement.setObject(++index, endDateTime)
+            },
+        ) { resultSet ->
+            mapOf(
+                "study_id" to (resultSet.getString("study_id") ?: ""),
+                "participant_id" to (resultSet.getString("participant_id") ?: ""),
+                "alert_id" to (resultSet.getString("alert_id") ?: ""),
+                "alert_type" to (resultSet.getString("alert_type") ?: ""),
+                "score" to resultSet.getDouble("score"),
+                "evaluation_start" to (resultSet.getObject("evaluation_start", OffsetDateTime::class.java) ?: ""),
+                "evaluation_end" to (resultSet.getObject("evaluation_end", OffsetDateTime::class.java) ?: ""),
+                "threshold" to resultSet.getDouble("threshold").let { if (resultSet.wasNull()) "" else it },
+                "created_at" to (resultSet.getObject("created_at", OffsetDateTime::class.java) ?: ""),
+            )
+        }
+        return PostgresDownloadWrapper(iterable).withColumnAdvice(DATA_QUALITY_ALERT_COLUMNS)
     }
 
     override fun getQuestionnaireResponses(

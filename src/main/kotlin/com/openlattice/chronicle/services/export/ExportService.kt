@@ -649,6 +649,10 @@ public open class ExportService(
                 startDate,
                 endDate,
             )
+        ParticipantDataType.UploadDiagnostics ->
+            downloadManager.getParticipantsUploadDiagnosticsData(studyId, participantIds, startDate, endDate)
+        ParticipantDataType.DataQualityAlerts ->
+            downloadManager.getParticipantsDataQualityAlertsData(studyId, participantIds, startDate, endDate)
     }
 
     private fun startLeaseHeartbeat(

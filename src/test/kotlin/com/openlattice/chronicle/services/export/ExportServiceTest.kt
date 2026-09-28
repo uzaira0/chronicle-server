@@ -383,6 +383,26 @@ class ExportServiceTest {
     }
 
     @Test
+    fun `retained diagnostic types dispatch through their dedicated download sources`() {
+        val studyId = UUID.randomUUID()
+        val participants = setOf("participant-1")
+        val start = OffsetDateTime.parse("2025-01-01T00:00:00Z")
+        val end = OffsetDateTime.parse("2026-01-01T00:00:00Z")
+        org.mockito.kotlin.whenever(
+            downloadManager.getParticipantsUploadDiagnosticsData(studyId, participants, start, end),
+        ).thenReturn(emptyList())
+        org.mockito.kotlin.whenever(
+            downloadManager.getParticipantsDataQualityAlertsData(studyId, participants, start, end),
+        ).thenReturn(emptyList())
+
+        service.loadDataForExport(studyId, participants, ParticipantDataType.UploadDiagnostics, start, end)
+        service.loadDataForExport(studyId, participants, ParticipantDataType.DataQualityAlerts, start, end)
+
+        verify(downloadManager).getParticipantsUploadDiagnosticsData(studyId, participants, start, end)
+        verify(downloadManager).getParticipantsDataQualityAlertsData(studyId, participants, start, end)
+    }
+
+    @Test
     fun testDateRangeBeyond366DaysFailsBeforeDataRetrieval() {
         val studyId = UUID.randomUUID()
         val exportId = UUID.randomUUID()

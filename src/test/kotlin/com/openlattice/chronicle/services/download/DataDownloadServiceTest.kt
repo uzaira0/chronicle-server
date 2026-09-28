@@ -2,6 +2,7 @@ package com.openlattice.chronicle.services.download
 
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.converters.PostgresDownloadWrapper
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -55,5 +56,57 @@ class DataDownloadServiceTest {
             assertTrue("$dataType must enforce a lower time bound", sql.contains(">= ?"))
             assertTrue("$dataType must enforce an upper time bound", sql.contains("< ?"))
         }
+    }
+
+    @Test
+    fun `diagnostic exports use retained day and alert-time filters without message columns`() {
+        val diagnosticsSql = DataDownloadService.retainedDiagnosticsSql(
+            filterParticipants = true,
+            filterStart = true,
+            filterEnd = true,
+        )
+        assertTrue(diagnosticsSql.contains("FROM upload_diagnostics"))
+        assertTrue(diagnosticsSql.contains("participant_id = ANY(?)"))
+        assertTrue(diagnosticsSql.contains("diagnostic_day >= ?::date"))
+        assertTrue(diagnosticsSql.contains("diagnostic_day < ?::date"))
+        assertTrue(diagnosticsSql.contains("event_id"))
+        assertFalse(diagnosticsSql.contains("server_origin"))
+        assertFalse(diagnosticsSql.contains("error_message"))
+
+        val alertsSql = DataDownloadService.retainedQualityAlertsSql(
+            filterParticipants = true,
+            filterStart = true,
+            filterEnd = true,
+        )
+        assertTrue(alertsSql.contains("FROM data_quality_alerts"))
+        assertTrue(alertsSql.contains("created_at >= ?"))
+        assertTrue(alertsSql.contains("created_at < ?"))
+        for (column in listOf("evaluation_start", "evaluation_end", "threshold")) {
+            assertTrue("Missing alert export column $column", alertsSql.contains(column))
+        }
+        assertFalse(alertsSql.contains("message"))
+    }
+
+    @Test
+    fun `diagnostic upper day honors each supplied offset and non-midnight end`() {
+        assertTrue(
+            DataDownloadService.diagnosticsExclusiveEndDay(OffsetDateTime.parse("2026-09-08T00:00:00-03:00"))
+                .toString() == "2026-09-08",
+        )
+        assertTrue(
+            DataDownloadService.diagnosticsExclusiveEndDay(OffsetDateTime.parse("2026-09-08T10:15:00+09:00"))
+                .toString() == "2026-09-09",
+        )
+    }
+
+    @Test
+    fun `quality alert export advertises its evaluation fields`() {
+        val storageResolver = Mockito.mock(StorageResolver::class.java)
+        Mockito.`when`(storageResolver.getPlatformReadStorage())
+            .thenReturn(Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java))
+        val rows = DataDownloadService(storageResolver).getParticipantsDataQualityAlertsData(
+            UUID.randomUUID(), emptySet(), OffsetDateTime.MIN, OffsetDateTime.MAX,
+        ) as PostgresDownloadWrapper
+        assertTrue(rows.columnAdvice.containsAll(listOf("evaluation_start", "evaluation_end", "threshold")))
     }
 }

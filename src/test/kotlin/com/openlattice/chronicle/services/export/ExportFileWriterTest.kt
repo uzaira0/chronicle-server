@@ -2,6 +2,7 @@ package com.openlattice.chronicle.services.export
 
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.StatementHolder
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.openlattice.chronicle.converters.PostgresDownloadWrapper
 import com.openlattice.chronicle.export.ExportFormat
 import org.apache.poi.ss.usermodel.WorkbookFactory
@@ -413,6 +414,85 @@ class ExportFileWriterTest {
             assertTrue(Files.readString(results.getValue(ExportFormat.JSON).path).isNotBlank())
         } finally {
             results.values.forEach { Files.deleteIfExists(it.path) }
+        }
+    }
+
+    @Test
+    fun `retained diagnostic and quality alert exports keep schemas in every format including empty results`() {
+        val diagnosticColumns = listOf(
+            "study_id", "participant_id", "device_id", "event_id", "diagnostic_day", "module_family",
+            "issue_code", "occurrence_count", "first_occurred_at", "last_occurred_at", "http_status",
+            "error_type", "uploaded_at",
+        )
+        val alertColumns = listOf("study_id", "participant_id", "alert_id", "alert_type", "score", "created_at")
+        val diagnostic = linkedMapOf<String, Any>(
+            "study_id" to UUID.randomUUID().toString(),
+            "participant_id" to "participant-1",
+            "device_id" to UUID.randomUUID().toString(),
+            "event_id" to UUID.randomUUID().toString(),
+            "diagnostic_day" to java.time.LocalDate.parse("2026-09-25"),
+            "module_family" to "LOCAL_STORE",
+            "issue_code" to "LOCAL_WRITE_FAILED",
+            "occurrence_count" to 3L,
+            "first_occurred_at" to java.time.OffsetDateTime.parse("2026-09-25T10:00:00Z"),
+            "last_occurred_at" to java.time.OffsetDateTime.parse("2026-09-25T10:05:00Z"),
+            "http_status" to "",
+            "error_type" to "IOException",
+            "uploaded_at" to java.time.OffsetDateTime.parse("2026-09-25T10:06:00Z"),
+        )
+        val alert = linkedMapOf<String, Any>(
+            "study_id" to diagnostic.getValue("study_id"),
+            "participant_id" to diagnostic.getValue("participant_id"),
+            "alert_id" to UUID.randomUUID().toString(),
+            "alert_type" to "LOW_QUALITY",
+            "score" to 12.5,
+            "created_at" to java.time.OffsetDateTime.parse("2026-09-25T10:07:00Z"),
+        )
+        val populated = linkedMapOf<String, Iterable<Map<String, Any>>>(
+            "UploadDiagnostics" to listOf(diagnostic),
+            "DataQualityAlerts" to listOf(alert),
+        )
+        val populatedFiles = ExportFormat.entries.associateWith { format ->
+            ExportFileWriter.writeMultiDataTypeExport(populated, format, UUID.randomUUID())
+        }
+        val empty = linkedMapOf<String, Iterable<Map<String, Any>>>(
+            "UploadDiagnostics" to emptyPostgresRows(diagnosticColumns),
+            "DataQualityAlerts" to emptyPostgresRows(alertColumns),
+        )
+        val emptyFiles = ExportFormat.entries.associateWith { format ->
+            ExportFileWriter.writeMultiDataTypeExport(empty, format, UUID.randomUUID())
+        }
+
+        try {
+            val expectedCsvColumns = listOf("data_type") + (diagnosticColumns + alertColumns).toSortedSet()
+            assertEquals(expectedCsvColumns.joinToString(",") + "\n", Files.readString(emptyFiles.getValue(ExportFormat.CSV).path))
+            assertTrue(Files.readString(populatedFiles.getValue(ExportFormat.CSV).path).contains("LOCAL_WRITE_FAILED"))
+            assertFalse(Files.readString(populatedFiles.getValue(ExportFormat.CSV).path).contains("error_message"))
+
+            val populatedJson = ObjectMapper().readTree(Files.readString(populatedFiles.getValue(ExportFormat.JSON).path))
+            assertEquals(listOf("LOCAL_WRITE_FAILED", "LOW_QUALITY"),
+                populatedJson.map { it.path("issue_code").asText(it.path("alert_type").asText()) })
+            assertFalse(Files.readString(populatedFiles.getValue(ExportFormat.JSON).path).contains("message"))
+            assertEquals(0, ObjectMapper().readTree(Files.readString(emptyFiles.getValue(ExportFormat.JSON).path)).size())
+
+            for (format in ExportFormat.entries) {
+                assertEquals(2L, populatedFiles.getValue(format).rowCount)
+                assertEquals(0L, emptyFiles.getValue(format).rowCount)
+                assertTrue(Files.size(emptyFiles.getValue(format).path) > 0)
+            }
+            listOf(populatedFiles, emptyFiles).forEach { files ->
+                WorkbookFactory.create(files.getValue(ExportFormat.EXCEL).path.toFile()).use { workbook ->
+                    assertEquals(listOf("UploadDiagnostics", "DataQualityAlerts"),
+                        (0 until workbook.numberOfSheets).map(workbook::getSheetName))
+                    assertEquals(diagnosticColumns,
+                        (0 until diagnosticColumns.size).map { workbook.getSheet("UploadDiagnostics").getRow(0).getCell(it).stringCellValue })
+                    assertEquals(alertColumns,
+                        (0 until alertColumns.size).map { workbook.getSheet("DataQualityAlerts").getRow(0).getCell(it).stringCellValue })
+                }
+            }
+        } finally {
+            populatedFiles.values.forEach { Files.deleteIfExists(it.path) }
+            emptyFiles.values.forEach { Files.deleteIfExists(it.path) }
         }
     }
 
