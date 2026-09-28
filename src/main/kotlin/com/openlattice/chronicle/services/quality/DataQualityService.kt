@@ -9,7 +9,6 @@ import com.openlattice.chronicle.study.DataQualityConfig
 import com.openlattice.chronicle.study.DataQualityDashboard
 import com.openlattice.chronicle.study.ParticipantQualityScore
 import com.openlattice.chronicle.study.StudySettingType
-import org.slf4j.LoggerFactory
 import java.sql.PreparedStatement
 import java.sql.Statement
 import java.time.Clock
@@ -25,8 +24,6 @@ public open class DataQualityService(
 ) {
 
     internal companion object {
-        private val logger = LoggerFactory.getLogger(DataQualityService::class.java)
-
         private val INSERT_ALERT_SQL = """
             INSERT INTO data_quality_alerts
                 (alert_id, study_id, participant_id, alert_type, message, score, created_at,
@@ -44,9 +41,6 @@ public open class DataQualityService(
             LIMIT 50
         """.trimIndent()
 
-        private val CLEANUP_OLD_ALERTS_SQL = """
-            DELETE FROM data_quality_alerts WHERE created_at < now() - interval '30 days'
-        """.trimIndent()
     }
 
     public fun getDataQualityDashboard(studyId: UUID): DataQualityDashboard {
@@ -145,17 +139,6 @@ public open class DataQualityService(
             ps.setObject(8, evaluationEnd)
             ps.setDouble(9, config.alertThresholdPercent.toDouble())
             ps.addBatch()
-        }
-    }
-
-    public fun cleanupOldAlerts() {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(CLEANUP_OLD_ALERTS_SQL).use { ps ->
-                val deleted = ps.executeUpdate()
-                if (deleted > 0) {
-                    logger.info("Cleaned up {} old data quality alerts", deleted)
-                }
-            }
         }
     }
 

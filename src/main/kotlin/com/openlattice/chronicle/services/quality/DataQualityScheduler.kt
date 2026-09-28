@@ -46,13 +46,6 @@ public open class DataQualityScheduler(
                 )
             }
         }
-
-        try {
-            dataQualityService.cleanupOldAlerts()
-        } catch (exception: Exception) {
-            ChronicleMetrics.dataQualityEvaluationsTotal.labels("cleanup", "failed").inc()
-            logger.error("data_quality outcome=cleanup_failed", exception)
-        }
         if (newAlerts > 0) ChronicleMetrics.dataQualityAlertsTotal.inc(newAlerts.toDouble())
         logger.info(
             "data_quality outcome=batch_complete successful_studies={} failed_studies={} new_alerts={}",

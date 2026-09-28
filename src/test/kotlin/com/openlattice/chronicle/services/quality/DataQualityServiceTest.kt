@@ -204,26 +204,6 @@ class DataQualityServiceTest {
         verify(mockPs).executeBatch()
     }
 
-    // --- cleanupOldAlerts tests ---
-
-    @Test
-    fun testCleanupOldAlertsExecutesDelete() {
-        `when`(mockPs.executeUpdate()).thenReturn(5)
-
-        service.cleanupOldAlerts()
-
-        verify(mockPs).executeUpdate()
-    }
-
-    @Test
-    fun testCleanupOldAlertsNoDeletesNeeded() {
-        `when`(mockPs.executeUpdate()).thenReturn(0)
-
-        service.cleanupOldAlerts()
-
-        verify(mockPs).executeUpdate()
-    }
-
     // --- Quality score calculation tests ---
 
     @Test

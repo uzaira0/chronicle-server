@@ -2,13 +2,11 @@ package com.openlattice.chronicle.services.upload
 
 import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.storage.rls.RLSRequestContext
-import org.slf4j.LoggerFactory
-import org.springframework.scheduling.annotation.Scheduled
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.sql.Types
+import java.time.OffsetDateTime
 import java.util.UUID
 
 /** Durable, idempotent storage for redacted Android upload-failure aggregates. */
@@ -17,8 +15,6 @@ public open class UploadDiagnosticsUploadService(
 ) {
     internal companion object {
         public const val TABLE: String = "upload_diagnostics"
-        private val logger = LoggerFactory.getLogger(UploadDiagnosticsUploadService::class.java)
-        private const val RETENTION_DAYS = 30
         private val UPSERT_SQL = """
             INSERT INTO $TABLE (
                 study_id, participant_id, device_id, event_id, diagnostic_day,
@@ -33,20 +29,20 @@ public open class UploadDiagnosticsUploadService(
                 http_status = EXCLUDED.http_status,
                 error_type = EXCLUDED.error_type
         """.trimIndent()
-        private val DELETE_EXPIRED_SQL = """
-            DELETE FROM $TABLE
+
+        /**
+         * Start of the latest completed erasure for this participant; older history stays erased.
+         * Completion clears participant_id, so the operation is matched by its block token.
+         */
+        private val ERASURE_CUTOFF_SQL = """
+            SELECT max(COALESCE(started_at, completed_at)) FROM data_deletion_operations
             WHERE study_id = ?
-              AND participant_id = ?
-              AND (
-                  last_occurred_at < now() - INTERVAL '$RETENTION_DAYS days'
-                  OR uploaded_at < now() - INTERVAL '$RETENTION_DAYS days'
-              )
+              AND participant_block_token = md5(?::text || ':' || ?)
+              AND status = 'COMPLETED'
         """.trimIndent()
-        private val DELETE_ALL_EXPIRED_SQL = """
-            DELETE FROM $TABLE
-            WHERE last_occurred_at < now() - INTERVAL '$RETENTION_DAYS days'
-               OR uploaded_at < now() - INTERVAL '$RETENTION_DAYS days'
-        """.trimIndent()
+
+        /** Exception class names only (binary names allow `$` for nested classes). */
+        private val ERROR_TYPE = Regex("^[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
     }
 
     /** Returns every accepted client event ID; the client deletes only acknowledged rows. */
@@ -68,8 +64,11 @@ public open class UploadDiagnosticsUploadService(
             val previousAutoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
-                deleteExpired(connection, studyId, participantId)
-                persistBatch(connection, studyId, participantId, deviceId, data)
+                val cutoff = erasureCutoff(connection, studyId, participantId)
+                // Events that began before a completed erasure are acknowledged but not stored, so a
+                // device replaying delivered history cannot resurrect what the purge removed.
+                val retained = if (cutoff == null) data else data.filter { !it.firstOccurredAt.isBefore(cutoff) }
+                if (retained.isNotEmpty()) persistBatch(connection, studyId, participantId, deviceId, retained)
                 connection.commit()
             } catch (error: SQLException) {
                 connection.rollback()
@@ -80,6 +79,14 @@ public open class UploadDiagnosticsUploadService(
         }
         return data.map { it.id }
     }
+
+    private fun erasureCutoff(connection: Connection, studyId: UUID, participantId: String): OffsetDateTime? =
+        connection.prepareStatement(ERASURE_CUTOFF_SQL).use { statement ->
+            statement.setObject(1, studyId)
+            statement.setString(2, studyId.toString())
+            statement.setString(3, participantId)
+            statement.executeQuery().use { rs -> if (rs.next()) rs.getObject(1, OffsetDateTime::class.java) else null }
+        }
 
     private fun persistBatch(
         connection: Connection,
@@ -105,30 +112,6 @@ public open class UploadDiagnosticsUploadService(
         statement.addBatch()
     }
 
-    /** Enforces the server-side 30-day diagnostic retention limit even after a device goes quiet. */
-    @Scheduled(cron = "0 15 3 * * *", zone = "UTC")
-    @Suppress("TooGenericExceptionCaught")
-    public open fun cleanupExpired(): Int = try {
-        RLSRequestContext.withSystemContext {
-            storageResolver.getPlatformStorage().connection.use { connection ->
-                connection.prepareStatement(DELETE_ALL_EXPIRED_SQL).use { it.executeUpdate() }
-            }
-        }.also { deleted ->
-            if (deleted > 0) logger.info("Deleted {} expired upload diagnostic aggregates", deleted)
-        }
-    } catch (error: Exception) {
-        logger.error("Failed to delete expired upload diagnostic aggregates", error)
-        0
-    }
-
-    private fun deleteExpired(connection: Connection, studyId: UUID, participantId: String) {
-        connection.prepareStatement(DELETE_EXPIRED_SQL).use { statement ->
-            statement.setObject(1, studyId)
-            statement.setString(2, participantId)
-            statement.executeUpdate()
-        }
-    }
-
     private fun bind(
         statement: PreparedStatement,
         studyId: UUID,
@@ -148,6 +131,6 @@ public open class UploadDiagnosticsUploadService(
         statement.setObject(10, event.lastOccurredAt)
         val httpStatus = event.httpStatus
         if (httpStatus == null) statement.setNull(11, Types.INTEGER) else statement.setInt(11, httpStatus)
-        statement.setString(12, event.errorType)
+        statement.setString(12, event.errorType?.takeIf { ERROR_TYPE.matches(it) })
     }
 }

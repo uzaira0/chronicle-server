@@ -5,6 +5,7 @@ import org.junit.Test
 import org.mockito.Mockito
 import org.mockito.Mockito.doThrow
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoMoreInteractions
 import org.mockito.kotlin.whenever
 import java.util.UUID
 
@@ -14,7 +15,7 @@ class DataQualitySchedulerTest {
     private val scheduler = DataQualityScheduler(studyManager, qualityService)
 
     @Test
-    fun oneStudyFailureDoesNotStarveRemainingStudiesOrCleanup() {
+    fun oneStudyFailureDoesNotStarveRemainingStudies() {
         val failingStudy = UUID.randomUUID()
         val healthyStudy = UUID.randomUUID()
         whenever(studyManager.getAllStudyIds()).thenReturn(listOf(failingStudy, healthyStudy))
@@ -27,17 +28,17 @@ class DataQualitySchedulerTest {
 
         verify(qualityService).generateAlerts(failingStudy)
         verify(qualityService).generateAlerts(healthyStudy)
-        verify(qualityService).cleanupOldAlerts()
+        verifyNoMoreInteractions(qualityService)
     }
 
     @Test
-    fun studyEnumerationFailureStillRunsCleanup() {
+    fun studyEnumerationFailureDoesNotTriggerAlertDeletion() {
         doThrow(IllegalStateException("synthetic enumeration failure"))
             .`when`(studyManager)
             .getAllStudyIds()
 
         scheduler.evaluateAllStudies()
 
-        verify(qualityService).cleanupOldAlerts()
+        verifyNoMoreInteractions(qualityService)
     }
 }

@@ -70,6 +70,32 @@ class ChronicleDataAssetRegistryTest {
     }
 
     @Test
+    fun everyRegisteredParticipantTableExceptJobsHasBothMutationGuards() {
+        val migrationDir = sequenceOf(
+            File("src/main/resources/db/migration"),
+            File("chronicle-server/src/main/resources/db/migration"),
+        ).first { it.isDirectory }
+        val corpus = migrationDir.listFiles { file -> file.extension == "sql" }!!
+            .joinToString("\n") { it.readText() }
+        val v68 = File(migrationDir, "V68__make_deletion_proofs_observable_and_stable.sql").readText()
+        val guardedByV68 = Regex("'([a-z_]+)'")
+            .findAll(v68.substringAfter("FOREACH table_name IN ARRAY ARRAY[").substringBefore("] LOOP"))
+            .map { it.groupValues[1] }
+            .toSet()
+
+        ChronicleDataAssetRegistry.participantAssets.filterNot { it.tableName == "jobs" }.forEach { asset ->
+            if (asset.tableName in guardedByV68) return@forEach
+            for (operation in listOf("insert", "update")) {
+                val trigger = Regex(
+                    """CREATE TRIGGER deletion_mutation_guard_$operation\s+AFTER ${operation.uppercase()} ON ${asset.tableName}\b""",
+                    RegexOption.IGNORE_CASE,
+                )
+                assertTrue("Missing $operation guard on ${asset.tableName}", trigger.containsMatchIn(corpus))
+            }
+        }
+    }
+
+    @Test
     fun everyMigrationTableWithAParticipantIdIsDeletedOrDeliberatelyRetained() {
         // Participant tables carry no FK to study_participants, so participant deletion reaches
         // only what this registry names. usage_event_annotations and participant_pseudonyms were

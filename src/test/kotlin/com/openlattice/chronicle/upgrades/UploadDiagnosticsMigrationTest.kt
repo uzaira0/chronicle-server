@@ -21,6 +21,9 @@ class UploadDiagnosticsMigrationTest {
     private val localDropMigration = requireNotNull(
         javaClass.getResourceAsStream("/db/migration/V106__add_local_drop_diagnostic_codes.sql"),
     ).bufferedReader().use { it.readText() }
+    private val retainedCatalogMigration = requireNotNull(
+        javaClass.getResourceAsStream("/db/migration/V107__retain_and_extend_upload_diagnostics.sql"),
+    ).bufferedReader().use { it.readText() }
 
     private fun event(moduleFamily: String, issueCode: String) = AndroidUploadDiagnosticEvent(
         id = UUID.randomUUID().toString(),
@@ -78,5 +81,33 @@ class UploadDiagnosticsMigrationTest {
     fun `follow-up migration removes redundant origin and unrestricted error detail`() {
         assertTrue("DROP COLUMN IF EXISTS server_origin" in minimizationMigration)
         assertTrue("DROP COLUMN IF EXISTS error_message" in minimizationMigration)
+    }
+
+    @Test
+    fun `every shared catalog family and issue code is accepted by model and V107`() {
+        val families = listOf(
+            "USAGE_LIFECYCLE", "BATTERY", "DEVICE_TELEMETRY", "SENSOR", "APP_RUNTIME",
+            "INTERACTION", "AUDIO_ACTIVITY", "AUDIO_CONTENT", "NOTIFICATION", "SLEEP",
+            "ACTIVITY_RECOGNITION", "HEALTH", "CONNECTIVITY", "APP_NETWORK", "DEVICE_SETTINGS", "LOCAL_STORE",
+        )
+        val codes = listOf(
+            "DESTINATION_MISSING", "DESTINATION_IDENTITY_MISMATCH", "DESTINATION_SOURCE_DEVICE_MISSING",
+            "DESTINATION_SETUP_INCOMPLETE", "DESTINATION_DISABLED", "DESTINATION_NONCANONICAL",
+            "DESTINATION_CREDENTIAL_INCOMPLETE", "HTTP_SERVER_ERROR", "HTTP_CLIENT_ERROR", "TIMEOUT",
+            "DNS_FAILURE", "TLS_FAILURE", "CONNECTION_FAILURE", "UPLOAD_FAILURE", "SENSOR_SAMPLE_QUARANTINED",
+            "SENSOR_DEAD_LETTER_DROPPED", "APP_CRASH", "APP_CRASH_NATIVE", "APP_ANR", "SENSOR_AGE_EXPIRED",
+            "SENSOR_CAPACITY_DROPPED", "USAGE_QUEUE_EVICTED", "SAMPLE_QUARANTINED", "LOCAL_BUFFER_OVERFLOW",
+            "LOCAL_REQUEUE_OVERFLOW", "LOCAL_WRITE_FAILED", "LOCAL_SHUTDOWN_DROPPED", "COLLECTION_GATE_DROPPED",
+            "MODULE_POLICY_ERASED", "DISTRIBUTION_POLICY_ERASED", "DIRECT_BOOT_CAPACITY_DROPPED",
+            "DIRECT_BOOT_CORRUPT_RECORD", "COLLECTION_PAUSED_STORAGE",
+        )
+        families.forEach { family ->
+            assertTrue(family, "'$family'" in retainedCatalogMigration)
+            codes.forEach { code ->
+                event(family, code)
+                assertTrue(code, "'$code'" in retainedCatalogMigration)
+            }
+        }
+        assertTrue("ON upload_diagnostics (study_id, participant_id, diagnostic_day)" in retainedCatalogMigration)
     }
 }

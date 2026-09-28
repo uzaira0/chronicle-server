@@ -506,6 +506,8 @@ internal object CollectionModuleContractMatrix {
         "ConnectivityState" to "connectivity_state_events",
         "AppNetworkUsage" to "app_network_usage",
         "DeviceSettings" to "device_settings",
+        "UploadDiagnostics" to "upload_diagnostics",
+        "DataQualityAlerts" to "data_quality_alerts",
     )
 
     /** Table-definition symbol each lane's SQL is built from in DataDownloadService.kt. */
@@ -527,6 +529,9 @@ internal object CollectionModuleContractMatrix {
         "ConnectivityState" to "CONNECTIVITY_STATE_EVENTS",
         "AppNetworkUsage" to "APP_NETWORK_USAGE",
         "DeviceSettings" to "DEVICE_SETTINGS",
+        // Retained operational history; the download SQL names these tables directly.
+        "UploadDiagnostics" to "FROM upload_diagnostics",
+        "DataQualityAlerts" to "FROM data_quality_alerts",
     )
 
     /** Locate a chronicle-server file whether the test cwd is the module dir or the repo root. */

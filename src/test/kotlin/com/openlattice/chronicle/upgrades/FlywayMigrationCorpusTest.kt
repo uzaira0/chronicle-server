@@ -64,6 +64,9 @@ import com.openlattice.chronicle.services.participantaccess.ParticipantSubmissio
 import com.openlattice.chronicle.services.webhooks.WebhookService
 import com.openlattice.chronicle.services.upload.UploadType
 import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
+import com.openlattice.chronicle.services.upload.UploadDiagnosticsQueryService
+import com.openlattice.chronicle.services.download.DataDownloadService
+import com.openlattice.chronicle.services.quality.DataQualityService
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ANDROID_DEVICE_SENSOR_AVAILABILITY
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ANDROID_SENSOR_DATA
@@ -86,6 +89,7 @@ import com.openlattice.chronicle.storage.rls.RLSConnectionContext
 import com.openlattice.chronicle.storage.rls.RLSDataSources
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.study.ParticipantDataType
+import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudyLifecycleStatus
 import com.openlattice.chronicle.study.StudySetting
 import com.openlattice.chronicle.study.StudySettingType
@@ -104,6 +108,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
@@ -118,6 +123,7 @@ import java.nio.file.Files
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.Properties
@@ -144,7 +150,7 @@ class FlywayMigrationCorpusTest {
     @Test
     // Real JDBC resources are deliberately nested so each one closes before the next assertion.
     @Suppress("NestedBlockDepth")
-    fun testUploadDiagnosticsAreIdempotentIdentityScopedAndRetentionBounded() {
+    fun testUploadDiagnosticsAreIdempotentIdentityScopedAndStudyRetained() {
         val studyId = UUID.randomUUID()
         val participantId = "diagnostic-participant-${UUID.randomUUID()}"
         val deviceId = UUID.randomUUID()
@@ -188,35 +194,318 @@ class FlywayMigrationCorpusTest {
                 }
             }
 
-            val expired = diagnostic(1, now.minusDays(31))
+            val oldDiagnostic = diagnostic(1, now.minusDays(365))
                 .copy(id = UUID.randomUUID().toString())
-            service.upload(studyId, participantId, deviceId, listOf(expired))
-
-            // A client-controlled future event time must not bypass the server's hard retention
-            // bound. uploaded_at is the immutable server receipt time and independently expires it.
-            val futureDated = diagnostic(1, now.plusYears(1))
-                .copy(id = UUID.randomUUID().toString())
-            service.upload(studyId, participantId, deviceId, listOf(futureDated))
             getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT count(*) FROM upload_diagnostics WHERE event_id = ?",
-                ).use { statement ->
-                    statement.setString(1, expired.id)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(0, resultSet.getInt(1))
-                    }
-                }
                 connection.prepareStatement(
                     "UPDATE upload_diagnostics SET uploaded_at = ? WHERE event_id = ?",
                 ).use { statement ->
-                    statement.setObject(1, now.minusDays(31))
-                    statement.setString(2, futureDated.id)
+                    statement.setObject(1, now.minusDays(365))
+                    statement.setString(2, eventId)
                     assertEquals(1, statement.executeUpdate())
                 }
             }
+            service.upload(studyId, participantId, deviceId, listOf(oldDiagnostic))
+            getConnection().use { connection ->
+                connection.prepareStatement(
+                    "SELECT count(*) FROM upload_diagnostics WHERE event_id IN (?, ?)",
+                ).use { statement ->
+                    statement.setString(1, eventId)
+                    statement.setString(2, oldDiagnostic.id)
+                    statement.executeQuery().use { resultSet ->
+                        assertTrue(resultSet.next())
+                        assertEquals(2, resultSet.getInt(1))
+                    }
+                }
+            }
+        } finally {
+            RLSRequestContext.clear()
+        }
+    }
 
-            assertEquals(1, service.cleanupExpired())
+    @Test
+    fun testV107AcceptsEveryDiagnosticFamilyAndIssueCodePair() {
+        val migration = requireNotNull(
+            javaClass.getResourceAsStream("/db/migration/V107__retain_and_extend_upload_diagnostics.sql"),
+        ).bufferedReader().use { it.readText() }
+        val families = Regex("'([A-Z_]+)'")
+            .findAll(migration.substringAfter("CHECK (module_family IN (").substringBefore("));"))
+            .map { it.groupValues[1] }
+            .toList()
+        val codes = Regex("'([A-Z_]+)'")
+            .findAll(migration.substringAfter("CHECK (issue_code IN (").substringBefore("));"))
+            .map { it.groupValues[1] }
+            .toList()
+        val studyId = UUID.randomUUID()
+        val deviceId = UUID.randomUUID()
+        val participantId = "catalog-${UUID.randomUUID()}"
+        val day = LocalDate.parse("2026-09-25")
+        val occurredAt = day.atStartOfDay().atOffset(ZoneOffset.UTC)
+        val events = families.flatMap { family ->
+            codes.map { code ->
+                AndroidUploadDiagnosticEvent(
+                    id = UUID.randomUUID().toString(),
+                    day = day,
+                    moduleFamily = family,
+                    issueCode = code,
+                    count = 1,
+                    firstOccurredAt = occurredAt,
+                    lastOccurredAt = occurredAt,
+                )
+            }
+        }
+        RLSRequestContext.set(
+            RLSConnectionContext(
+                principalId = "diagnostic-catalog-test",
+                authorizedStudyIds = setOf(studyId),
+                isAdmin = false,
+            ),
+        )
+        try {
+            val service = UploadDiagnosticsUploadService(storageResolver)
+            events.chunked(500).forEach { batch ->
+                assertEquals(batch.size, service.upload(studyId, participantId, deviceId, batch).size)
+            }
+            getConnection().use { connection ->
+                connection.prepareStatement("SELECT count(*) FROM upload_diagnostics WHERE study_id = ?").use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { resultSet ->
+                        assertTrue(resultSet.next())
+                        assertEquals(events.size, resultSet.getInt(1))
+                    }
+                }
+            }
+        } finally {
+            RLSRequestContext.clear()
+        }
+    }
+
+    @Test
+    fun testDiagnosticsFromBeforeACompletedPurgeAreAcknowledgedButNotStoredAgain() {
+        val studyId = UUID.randomUUID()
+        val participantId = "purged-${UUID.randomUUID()}"
+        val deviceId = UUID.randomUUID()
+        val purgeStarted = OffsetDateTime.parse("2026-09-20T12:00:00Z")
+        getConnection().use { connection ->
+            // A completed purge as the orchestrator leaves it: participant_id cleared, block token kept.
+            connection.prepareStatement(
+                """
+                INSERT INTO data_deletion_operations (
+                    operation_id, study_id, participant_id, participant_block_token, mode, status,
+                    requested_by, idempotency_key, registry_version, started_at, completed_at
+                ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                          'migration-test', ?, 1, ?, ?)
+                """.trimIndent(),
+            ).use { statement ->
+                statement.setObject(1, UUID.randomUUID())
+                statement.setObject(2, studyId)
+                statement.setString(3, studyId.toString())
+                statement.setString(4, participantId)
+                statement.setObject(5, UUID.randomUUID())
+                statement.setObject(6, purgeStarted)
+                statement.setObject(7, purgeStarted.plusMinutes(5))
+                assertEquals(1, statement.executeUpdate())
+            }
+        }
+        fun event(firstOccurredAt: OffsetDateTime) = AndroidUploadDiagnosticEvent(
+            id = UUID.randomUUID().toString(),
+            day = firstOccurredAt.toLocalDate(),
+            moduleFamily = "LOCAL_STORE",
+            issueCode = "LOCAL_WRITE_FAILED",
+            count = 1,
+            firstOccurredAt = firstOccurredAt,
+            lastOccurredAt = firstOccurredAt.plusMinutes(1),
+        )
+        val erased = event(purgeStarted.minusHours(3))
+        val later = event(purgeStarted.plusHours(3))
+
+        RLSRequestContext.set(
+            RLSConnectionContext(principalId = "purge-replay", authorizedStudyIds = setOf(studyId), isAdmin = false),
+        )
+        try {
+            assertEquals(
+                listOf(erased.id, later.id),
+                UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, deviceId, listOf(erased, later)),
+            )
+        } finally {
+            RLSRequestContext.clear()
+        }
+
+        getConnection().use { connection ->
+            connection.prepareStatement(
+                "SELECT event_id FROM upload_diagnostics WHERE study_id = ? AND participant_id = ?",
+            ).use { statement ->
+                statement.setObject(1, studyId)
+                statement.setString(2, participantId)
+                statement.executeQuery().use { rows ->
+                    val stored = generateSequence { if (rows.next()) rows.getString(1) else null }.toList()
+                    assertEquals(listOf(later.id), stored)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun testAndroidDiagnosticsHistoryPaginatesAndRespectsStudyRls() {
+        val visibleStudyId = UUID.randomUUID()
+        val hiddenStudyId = UUID.randomUUID()
+        val deviceIds = listOf(
+            UUID.fromString("00000000-0000-4000-8000-000000000001"),
+            UUID.fromString("00000000-0000-4000-8000-000000000002"),
+        )
+        val participantId = "history-${UUID.randomUUID()}"
+        val service = UploadDiagnosticsUploadService(storageResolver)
+        val baseDay = LocalDate.parse("2026-09-20")
+
+        fun event(day: LocalDate, deviceIndex: Int, issueCode: String) =
+            Triple(deviceIds[deviceIndex], day, AndroidUploadDiagnosticEvent(
+                id = UUID.randomUUID().toString(),
+                day = day,
+                moduleFamily = "LOCAL_STORE",
+                issueCode = issueCode,
+                count = 2,
+                firstOccurredAt = day.atStartOfDay().atOffset(ZoneOffset.UTC),
+                lastOccurredAt = day.atTime(1, 0).atOffset(ZoneOffset.UTC),
+            ))
+
+        RLSRequestContext.set(
+            RLSConnectionContext(
+                principalId = "diagnostic-history-seed",
+                authorizedStudyIds = setOf(visibleStudyId, hiddenStudyId),
+                isAdmin = false,
+            ),
+        )
+        try {
+            listOf(
+                event(baseDay, 0, "SENSOR_AGE_EXPIRED"),
+                event(baseDay.plusDays(1), 0, "COLLECTION_PAUSED_STORAGE"),
+                event(baseDay.plusDays(1), 1, "SAMPLE_QUARANTINED"),
+            ).forEach { (deviceId, _, diagnostic) ->
+                service.upload(visibleStudyId, participantId, deviceId, listOf(diagnostic))
+            }
+            service.upload(
+                hiddenStudyId,
+                participantId,
+                deviceIds[0],
+                listOf(event(baseDay, 0, "UPLOAD_FAILURE").third),
+            )
+
+            RLSRequestContext.set(
+                RLSConnectionContext(
+                    principalId = "diagnostic-history-reader",
+                    authorizedStudyIds = setOf(visibleStudyId),
+                    isAdmin = false,
+                ),
+            )
+            val exportedDay = DataDownloadService(storageResolver).getParticipantsUploadDiagnosticsData(
+                visibleStudyId,
+                setOf(participantId),
+                baseDay.atStartOfDay().atOffset(ZoneOffset.ofHours(-3)),
+                baseDay.plusDays(1).atStartOfDay().atOffset(ZoneOffset.ofHours(-3)),
+            ).toList()
+            assertEquals(1, exportedDay.size)
+            assertEquals(baseDay.toString(), exportedDay.single()["diagnostic_day"].toString())
+            val queryService = UploadDiagnosticsQueryService(storageResolver)
+            val first = queryService.getPage(visibleStudyId, participantId = participantId, limit = 1)
+            assertEquals(1, first.items.size)
+            assertEquals(baseDay.plusDays(1), first.items.single().day)
+            assertEquals(1, first.items.single().codes.size)
+            assertEquals("COLLECTION_PAUSED_STORAGE", first.items.single().codes.single().issueCode)
+            val second = queryService.getPage(
+                visibleStudyId,
+                participantId = participantId,
+                cursor = first.nextCursor,
+                limit = 1,
+            )
+            assertEquals(1, second.items.size)
+            assertEquals(baseDay.plusDays(1), second.items.single().day)
+            assertNotEquals(first.items.single().deviceId, second.items.single().deviceId)
+            val third = queryService.getPage(
+                visibleStudyId,
+                participantId = participantId,
+                cursor = second.nextCursor,
+                limit = 1,
+            )
+            assertEquals(baseDay, third.items.single().day)
+            assertTrue(third.nextCursor == null)
+            assertTrue(queryService.getPage(hiddenStudyId, limit = 10).items.isEmpty())
+        } finally {
+            RLSRequestContext.clear()
+        }
+    }
+
+    @Test
+    fun testDataQualityServiceRetainsYearOldAlerts() {
+        val studyId = UUID.randomUUID()
+        val participantId = "quality-${UUID.randomUUID()}"
+        val alertId = UUID.randomUUID()
+        val oldTime = OffsetDateTime.now(ZoneOffset.UTC).minusDays(365).truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+        val evaluationStart = oldTime.minusHours(1)
+        val evaluationEnd = oldTime
+        RLSRequestContext.set(
+            RLSConnectionContext(
+                principalId = "quality-retention-test",
+                authorizedStudyIds = setOf(studyId),
+                isAdmin = false,
+            ),
+        )
+        try {
+            getConnection().use { connection ->
+                connection.prepareStatement(
+                    """INSERT INTO data_quality_alerts
+                        (alert_id, study_id, participant_id, alert_type, message, score, created_at,
+                         evaluation_start, evaluation_end, threshold)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
+                ).use { statement ->
+                    statement.setObject(1, alertId)
+                    statement.setObject(2, studyId)
+                    statement.setString(3, participantId)
+                    statement.setString(4, "LOW_QUALITY")
+                    statement.setString(5, "private test detail")
+                    statement.setDouble(6, 12.5)
+                    statement.setObject(7, oldTime)
+                    statement.setObject(8, evaluationStart)
+                    statement.setObject(9, evaluationEnd)
+                    statement.setDouble(10, 25.0)
+                    assertEquals(1, statement.executeUpdate())
+                }
+            }
+            val studyService = Mockito.mock(StudyService::class.java)
+            Mockito.`when`(studyService.getStudy(studyId)).thenReturn(
+                Study(
+                    studyId = studyId,
+                    title = "retention test",
+                    contact = "test@example.org",
+                    settings = Study.initialSettings("retention test"),
+                ),
+            )
+            Mockito.`when`(studyService.getStudyParticipantStats(studyId)).thenReturn(emptyMap())
+            DataQualityService(storageResolver, studyService).generateAlerts(studyId)
+            val history = UploadDiagnosticsQueryService(storageResolver).getPage(
+                studyId = studyId,
+                participantId = participantId,
+                fromDay = oldTime.toLocalDate(),
+                toDay = oldTime.toLocalDate(),
+                limit = 10,
+            )
+            assertEquals(alertId, history.items.single().dataQualityAlert?.alertId)
+            val exported = DataDownloadService(storageResolver).getParticipantsDataQualityAlertsData(
+                studyId, setOf(participantId), oldTime.minusDays(1), oldTime.plusDays(1),
+            ).single()
+            assertEquals(evaluationStart.toInstant(), (exported["evaluation_start"] as OffsetDateTime).toInstant())
+            assertEquals(evaluationEnd.toInstant(), (exported["evaluation_end"] as OffsetDateTime).toInstant())
+            assertEquals(25.0, exported["threshold"])
+            getConnection().use { connection ->
+                connection.prepareStatement(
+                    "SELECT count(*) FROM data_quality_alerts WHERE alert_id = ? AND created_at < now() - interval '30 days'",
+                ).use { statement ->
+                    statement.setObject(1, alertId)
+                    statement.executeQuery().use { resultSet ->
+                        assertTrue(resultSet.next())
+                        assertEquals(1, resultSet.getInt(1))
+                    }
+                }
+            }
         } finally {
             RLSRequestContext.clear()
         }
@@ -4888,7 +5177,7 @@ class FlywayMigrationCorpusTest {
 
     @Test
     fun testDeletionMutationBarrierHonorsModeLifecycle() {
-        val guardedTables = 31 // 29 participant registry tables, study_participants, and ambient audio
+        val guardedTables = 34 // prior guards plus annotations and pseudonyms
         getConnection().use { connection ->
             connection.prepareStatement(
                 """
