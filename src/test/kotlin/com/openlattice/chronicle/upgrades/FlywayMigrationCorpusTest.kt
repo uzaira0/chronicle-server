@@ -346,6 +346,123 @@ class FlywayMigrationCorpusTest {
     }
 
     @Test
+    fun testDiagnosticUploadWaitsForDeletionBeforeReadingErasureCutoff() {
+        val studyId = UUID.randomUUID()
+        val participantId = "concurrent-purge-${UUID.randomUUID()}"
+        val deviceId = UUID.randomUUID()
+        val purgeStarted = OffsetDateTime.parse("2026-09-20T12:00:00Z")
+        fun event(at: OffsetDateTime) = AndroidUploadDiagnosticEvent(
+            id = UUID.randomUUID().toString(),
+            day = at.toLocalDate(),
+            moduleFamily = "LOCAL_STORE",
+            issueCode = "LOCAL_WRITE_FAILED",
+            count = 1,
+            firstOccurredAt = at,
+            lastOccurredAt = at,
+        )
+        val existing = event(purgeStarted.minusHours(2))
+        val erased = event(purgeStarted.minusHours(1))
+        val later = event(purgeStarted.plusHours(1))
+        RLSRequestContext.set(RLSConnectionContext("diagnostic-seed", setOf(studyId), isAdmin = false))
+        try {
+            UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, deviceId, listOf(existing))
+        } finally {
+            RLSRequestContext.clear()
+        }
+        val executor = Executors.newSingleThreadExecutor()
+        getConnection().use { deletion ->
+            deletion.autoCommit = false
+            try {
+                deletion.prepareStatement(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:' || ?::text, 0))",
+                ).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().close()
+                }
+                val upload = executor.submit<List<String>> {
+                    RLSRequestContext.set(
+                        RLSConnectionContext("diagnostic-race", setOf(studyId), isAdmin = false),
+                    )
+                    try {
+                        UploadDiagnosticsUploadService(storageResolver).upload(
+                            studyId, participantId, deviceId, listOf(erased, later),
+                        )
+                    } finally {
+                        RLSRequestContext.clear()
+                    }
+                }
+
+                // The waiting SQL must be the study lock, before the cutoff SELECT or INSERT.
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                var waitingForStudyLock = false
+                while (!waitingForStudyLock && System.nanoTime() < deadline) {
+                    getConnection().use { monitor ->
+                        monitor.prepareStatement(
+                            """SELECT EXISTS (
+                                SELECT 1 FROM pg_stat_activity
+                                WHERE pid <> pg_backend_pid()
+                                  AND wait_event_type = 'Lock' AND wait_event = 'advisory'
+                                  AND query LIKE '%SELECT pg_advisory_xact_lock_shared%'
+                            )""".trimIndent(),
+                        ).use { statement ->
+                            statement.executeQuery().use { rows ->
+                                assertTrue(rows.next())
+                                waitingForStudyLock = rows.getBoolean(1)
+                            }
+                        }
+                    }
+                    if (!waitingForStudyLock) TimeUnit.MILLISECONDS.sleep(25)
+                }
+                assertTrue("Upload must wait on the shared study lock before reading the cutoff", waitingForStudyLock)
+                assertFalse(upload.isDone)
+
+                deletion.prepareStatement(
+                    "DELETE FROM upload_diagnostics WHERE study_id = ? AND participant_id = ?",
+                ).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.setString(2, participantId)
+                    assertEquals(1, statement.executeUpdate())
+                }
+                deletion.prepareStatement(
+                    """INSERT INTO data_deletion_operations (
+                        operation_id, study_id, participant_id, participant_block_token, mode, status,
+                        requested_by, idempotency_key, registry_version, started_at, completed_at
+                    ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                              'migration-test', ?, 1, ?, ?)""".trimIndent(),
+                ).use { statement ->
+                    statement.setObject(1, UUID.randomUUID())
+                    statement.setObject(2, studyId)
+                    statement.setString(3, studyId.toString())
+                    statement.setString(4, participantId)
+                    statement.setObject(5, UUID.randomUUID())
+                    statement.setObject(6, purgeStarted)
+                    statement.setObject(7, purgeStarted.plusMinutes(5))
+                    assertEquals(1, statement.executeUpdate())
+                }
+                deletion.commit()
+
+                assertEquals(listOf(erased.id, later.id), upload.get(10, TimeUnit.SECONDS))
+                getConnection().use { connection ->
+                    connection.prepareStatement(
+                        "SELECT event_id FROM upload_diagnostics WHERE study_id = ? AND participant_id = ?",
+                    ).use { statement ->
+                        statement.setObject(1, studyId)
+                        statement.setString(2, participantId)
+                        statement.executeQuery().use { rows ->
+                            assertTrue(rows.next())
+                            assertEquals(later.id, rows.getString(1))
+                            assertFalse(rows.next())
+                        }
+                    }
+                }
+            } finally {
+                deletion.rollback()
+                executor.shutdownNow()
+            }
+        }
+    }
+
+    @Test
     fun testAndroidDiagnosticsHistoryPaginatesAndRespectsStudyRls() {
         val visibleStudyId = UUID.randomUUID()
         val hiddenStudyId = UUID.randomUUID()

@@ -253,6 +253,18 @@ class StudyControllerTest {
     }
 
     @Test
+    fun testAndroidDiagnosticsRejectsInvalidCursorDateBeforeQueryingStorage() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            com.openlattice.chronicle.services.upload.UploadDiagnosticsQueryService(storageResolver).getPage(
+                UUID.randomUUID(),
+                cursor = "bad~cA~~0~_",
+            )
+        }
+        assertTrue(error.message.orEmpty().contains("cursor date"))
+        Mockito.verifyNoInteractions(storageResolver)
+    }
+
+    @Test
     fun testCreateStudyStampsCallerDataCollectionRevisionBeforePersistenceAndAudit() {
         val studyId = UUID.randomUUID()
         val submittedSetting = AndroidDataCollectionSetting(

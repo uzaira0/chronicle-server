@@ -10,6 +10,7 @@ import com.openlattice.chronicle.study.DataQualityAlertHistoryItem
 import java.nio.charset.StandardCharsets
 import java.time.LocalDate
 import java.time.OffsetDateTime
+import java.time.format.DateTimeParseException
 import java.util.Base64
 import java.util.UUID
 
@@ -287,8 +288,13 @@ public class UploadDiagnosticsQueryService(
             }
         val rowKind = parts[3].toInt()
         require(rowKind in 0..1) { "Invalid diagnostics cursor row kind" }
+        val day = try {
+            LocalDate.parse(parts[0])
+        } catch (error: DateTimeParseException) {
+            throw IllegalArgumentException("Invalid diagnostics cursor date", error)
+        }
         return Cursor(
-            day = LocalDate.parse(parts[0]),
+            day = day,
             participantId = decoded(parts[1]),
             sortDeviceId = parts[2],
             rowKind = rowKind,

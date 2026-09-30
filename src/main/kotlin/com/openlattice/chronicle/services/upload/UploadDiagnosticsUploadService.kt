@@ -41,6 +41,12 @@ public open class UploadDiagnosticsUploadService(
               AND status = 'COMPLETED'
         """.trimIndent()
 
+        private val DELETION_STUDY_LOCK_SQL = """
+            SELECT pg_advisory_xact_lock_shared(
+                hashtextextended('chronicle-deletion:' || ?::text, 0)
+            )
+        """.trimIndent()
+
         /** Exception class names only (binary names allow `$` for nested classes). */
         private val ERROR_TYPE = Regex("^[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
     }
@@ -64,6 +70,13 @@ public open class UploadDiagnosticsUploadService(
             val previousAutoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
+                // Serialize the cutoff read and insert against completion of a study purge.
+                connection.prepareStatement(DELETION_STUDY_LOCK_SQL).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { resultSet ->
+                        check(resultSet.next()) { "Deletion study lock was not acquired" }
+                    }
+                }
                 val cutoff = erasureCutoff(connection, studyId, participantId)
                 // Events that began before a completed erasure are acknowledged but not stored, so a
                 // device replaying delivered history cannot resurrect what the purge removed.

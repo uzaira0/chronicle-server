@@ -41,6 +41,7 @@ class UploadDiagnosticsUploadServiceTest {
     }
 
     private val connection = Mockito.mock(Connection::class.java)
+    private val lockStatement = Mockito.mock(PreparedStatement::class.java)
     private val cutoffStatement = Mockito.mock(PreparedStatement::class.java)
     private val upsertStatement = Mockito.mock(PreparedStatement::class.java)
 
@@ -50,8 +51,16 @@ class UploadDiagnosticsUploadServiceTest {
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
         Mockito.`when`(dataSource.connection).thenReturn(connection)
         Mockito.`when`(connection.prepareStatement(org.mockito.ArgumentMatchers.anyString())).thenAnswer {
-            if ((it.arguments[0] as String).trimStart().startsWith("SELECT")) cutoffStatement else upsertStatement
+            val sql = it.arguments[0] as String
+            when {
+                sql.contains("pg_advisory_xact_lock_shared") -> lockStatement
+                sql.trimStart().startsWith("SELECT") -> cutoffStatement
+                else -> upsertStatement
+            }
         }
+        val lockResultSet = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(lockStatement.executeQuery()).thenReturn(lockResultSet)
+        Mockito.`when`(lockResultSet.next()).thenReturn(true)
         Mockito.`when`(cutoffStatement.executeQuery()).thenReturn(resultSet)
         Mockito.`when`(resultSet.next()).thenReturn(true)
         Mockito.`when`(resultSet.getObject(1, OffsetDateTime::class.java)).thenReturn(erasureCutoff)
@@ -70,7 +79,7 @@ class UploadDiagnosticsUploadServiceTest {
         Mockito.verify(connection, Mockito.times(2)).commit()
         Mockito.verify(upsertStatement, Mockito.times(2)).executeBatch()
         val sql = ArgumentCaptor.forClass(String::class.java)
-        Mockito.verify(connection, Mockito.times(4)).prepareStatement(sql.capture())
+        Mockito.verify(connection, Mockito.times(6)).prepareStatement(sql.capture())
         sql.allValues.forEach { query -> assertEquals(false, query.contains("DELETE FROM", ignoreCase = true)) }
     }
 
