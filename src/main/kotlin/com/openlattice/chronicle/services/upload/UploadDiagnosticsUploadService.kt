@@ -20,7 +20,13 @@ public open class UploadDiagnosticsUploadService(
                 study_id, participant_id, device_id, event_id, diagnostic_day,
                 module_family, issue_code, occurrence_count, first_occurred_at,
                 last_occurred_at, http_status, error_type, uploaded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+            ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now()
+            WHERE NOT EXISTS (
+                SELECT 1 FROM upload_diagnostic_erasures
+                WHERE study_id = ?
+                  AND participant_block_token = md5(?::text || ':' || ?)
+                  AND event_id = ?::uuid
+            )
             ON CONFLICT (study_id, participant_id, device_id, event_id)
             DO UPDATE SET
                 occurrence_count = GREATEST($TABLE.occurrence_count, EXCLUDED.occurrence_count),
@@ -78,8 +84,7 @@ public open class UploadDiagnosticsUploadService(
                     }
                 }
                 val cutoff = erasureCutoff(connection, studyId, participantId)
-                // Events that began before a completed erasure are acknowledged but not stored, so a
-                // device replaying delivered history cannot resurrect what the purge removed.
+                // Keep the cutoff for unseen events; the upsert also fences erased IDs regardless of device time.
                 val retained = if (cutoff == null) data else data.filter { !it.firstOccurredAt.isBefore(cutoff) }
                 if (retained.isNotEmpty()) persistBatch(connection, studyId, participantId, deviceId, retained)
                 connection.commit()
@@ -145,5 +150,9 @@ public open class UploadDiagnosticsUploadService(
         val httpStatus = event.httpStatus
         if (httpStatus == null) statement.setNull(11, Types.INTEGER) else statement.setInt(11, httpStatus)
         statement.setString(12, event.errorType?.takeIf { ERROR_TYPE.matches(it) })
+        statement.setObject(13, studyId)
+        statement.setString(14, studyId.toString())
+        statement.setString(15, participantId)
+        statement.setString(16, event.id)
     }
 }

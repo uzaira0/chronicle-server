@@ -4,6 +4,7 @@ import com.openlattice.chronicle.participants.ParticipantStats
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.study.DataQualityAlert
 import com.openlattice.chronicle.study.DataQualityConfig
 import com.openlattice.chronicle.study.DataQualityDashboard
@@ -31,6 +32,12 @@ public open class DataQualityService(
             VALUES (?, ?, ?, ?, ?, ?, now(), ?, ?, ?)
             ON CONFLICT (study_id, participant_id, alert_type, evaluation_start, evaluation_end)
             DO NOTHING
+        """.trimIndent()
+
+        private val DELETION_STUDY_LOCK_SQL = """
+            SELECT pg_advisory_xact_lock_shared(
+                hashtextextended('chronicle-deletion:' || ?::text, 0)
+            )
         """.trimIndent()
 
         private val GET_RECENT_ALERTS_SQL = """
@@ -81,35 +88,54 @@ public open class DataQualityService(
     }
 
     public open fun generateAlerts(studyId: UUID): Int {
-        val config = getQualityConfig(studyId)
-        val allStats = studyService.getStudyParticipantStats(studyId)
-        val (windowStart, windowEnd) = evaluationWindow(config)
-        val evaluationStart = windowStart.atStartOfDay().atOffset(ZoneOffset.UTC)
-        val evaluationEnd = windowEnd.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC)
-
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(INSERT_ALERT_SQL).use { ps ->
-                for (stats in allStats.values) {
-                    val score = computeParticipantScore(stats, config, windowStart, windowEnd)
-                    addAlertIfBelowThreshold(
-                        ps,
-                        studyId,
-                        stats,
-                        score,
-                        config,
-                        evaluationStart,
-                        evaluationEnd,
-                    )
-                }
-                val batchResults = ps.executeBatch()
-                if (batchResults == null) return@use 0
-                batchResults.sumOf { result ->
-                    when {
-                        result > 0 -> result
-                        result == Statement.SUCCESS_NO_INFO -> 1
-                        else -> 0
+        val storage = storageResolver.getPlatformStorage()
+        return storage.connection.use { connection ->
+            val previousAutoCommit = connection.autoCommit
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement(DELETION_STUDY_LOCK_SQL).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { rows ->
+                        check(rows.next()) { "Deletion study lock was not acquired" }
                     }
                 }
+                // Nested statistics reads must share the transaction holding the erasure lock.
+                val inserted = PinnedPlatformConnection.pinning(storage, connection) {
+                    val config = getQualityConfig(studyId)
+                    val allStats = studyService.getStudyParticipantStats(studyId)
+                    val (windowStart, windowEnd) = evaluationWindow(config)
+                    val evaluationStart = windowStart.atStartOfDay().atOffset(ZoneOffset.UTC)
+                    val evaluationEnd = windowEnd.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC)
+                    connection.prepareStatement(INSERT_ALERT_SQL).use { ps ->
+                        for (stats in allStats.values) {
+                            val score = computeParticipantScore(stats, config, windowStart, windowEnd)
+                            addAlertIfBelowThreshold(
+                                ps,
+                                studyId,
+                                stats,
+                                score,
+                                config,
+                                evaluationStart,
+                                evaluationEnd,
+                            )
+                        }
+                        val batchResults = ps.executeBatch() ?: intArrayOf()
+                        batchResults.sumOf { result ->
+                            when {
+                                result > 0 -> result
+                                result == Statement.SUCCESS_NO_INFO -> 1
+                                else -> 0
+                            }
+                        }
+                    }
+                }
+                connection.commit()
+                inserted
+            } catch (exception: Exception) {
+                connection.rollback()
+                throw exception
+            } finally {
+                connection.autoCommit = previousAutoCommit
             }
         }
     }

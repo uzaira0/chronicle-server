@@ -133,6 +133,24 @@ class CollectionHaltWriteAtomicityTest {
     }
 
     @Test
+    fun `nested transaction control leaves the guarded write for the owner to commit`() {
+        val studyId = newStudy(required = false, settingsVersion = 1)
+        val deviceId = UUID.randomUUID()
+        val probeId = UUID.randomUUID()
+
+        service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, deviceId) {
+            insertProbe(probeId, studyId)
+            storageResolver.getPlatformStorage().connection.use { borrowed ->
+                borrowed.commit()
+                borrowed.rollback()
+                borrowed.autoCommit = true
+            }
+            assertFalse("Only the guard owner may publish the write", probeExists(probeId))
+        }
+        assertTrue("The guard owner commits after write returns", probeExists(probeId))
+    }
+
+    @Test
     fun `halt recorded after the write commits does not affect it`() {
         val studyId = newStudy(required = false, settingsVersion = 1)
         val deviceId = UUID.randomUUID()
@@ -210,7 +228,9 @@ class CollectionHaltWriteAtomicityTest {
         )
 
         val accepted = service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, deviceId) {
-            UploadDiagnosticsUploadService(storageResolver).upload(studyId, PARTICIPANT_ID, deviceId, listOf(event))
+            val uploaded = UploadDiagnosticsUploadService(storageResolver).upload(studyId, PARTICIPANT_ID, deviceId, listOf(event))
+            assertFalse("The nested upload commit must wait for the guard owner", diagnosticExists(studyId, event.id))
+            uploaded
         }
 
         assertEquals(listOf(event.id), accepted)

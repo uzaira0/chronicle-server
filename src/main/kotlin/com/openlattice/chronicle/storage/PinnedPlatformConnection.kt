@@ -13,9 +13,9 @@ import java.sql.Connection
  * This is what makes a guard (take a lock, evaluate a predicate, then write) atomic across code
  * that was written to own its own connection: the predicate and the write end up in the same
  * transaction on the same connection, so pool occupancy stays at exactly one connection per
- * request. Only [Connection.close] is intercepted (it becomes a no-op, because the owner of the
- * pin closes the real connection); commit/rollback/autoCommit pass through unchanged so callers
- * that manage their own transaction still commit the guarded work as one unit.
+ * request. Borrowed connections ignore close, commit, rollback, and setAutoCommit: only the pin
+ * owner may end the transaction or close the real connection. Nested transaction-owning helpers
+ * therefore leave their work and locks in the owner's transaction until it commits or rolls back.
  */
 public object PinnedPlatformConnection {
     private val pinned = ThreadLocal<HikariDataSource?>()
@@ -77,7 +77,7 @@ private class PinnedHikariDataSource(
 private fun nonClosingConnection(connection: Connection): Connection {
     val handler = java.lang.reflect.InvocationHandler { proxy, method, args ->
         when (method.name) {
-            "close" -> Unit
+            "close", "setAutoCommit", "commit", "rollback" -> Unit
             "isClosed" -> false
             "equals" -> proxy === args?.getOrNull(0)
             "hashCode" -> System.identityHashCode(proxy)

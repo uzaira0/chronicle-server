@@ -3,6 +3,7 @@ package com.openlattice.chronicle.services.download
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.converters.PostgresDownloadWrapper
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -96,6 +97,25 @@ class DataDownloadServiceTest {
         assertTrue(
             DataDownloadService.diagnosticsExclusiveEndDay(OffsetDateTime.parse("2026-09-08T10:15:00+09:00"))
                 .toString() == "2026-09-09",
+        )
+    }
+
+    @Test
+    fun `diagnostic non-midnight end includes its day and offset midnight excludes it`() {
+        val end = java.time.LocalDate.parse("2026-09-06")
+            .atStartOfDay(java.time.ZoneId.of("America/Santiago")).toOffsetDateTime()
+        assertEquals(OffsetDateTime.parse("2026-09-06T01:00:00-03:00"), end)
+        assertEquals(end.toLocalDate().plusDays(1), DataDownloadService.diagnosticsExclusiveEndDay(end))
+        val offsetMidnight = end.withOffsetSameInstant(ZoneOffset.ofHours(-4))
+        assertEquals(OffsetDateTime.parse("2026-09-06T00:00:00-04:00"), offsetMidnight)
+        assertEquals(end.toLocalDate(), DataDownloadService.diagnosticsExclusiveEndDay(offsetMidnight))
+        assertEquals(
+            java.time.LocalDate.parse("2026-09-07"),
+            DataDownloadService.diagnosticsExclusiveEndDay(end.withHour(1).withMinute(1)),
+        )
+        assertEquals(
+            java.time.LocalDate.parse("2026-09-30"),
+            DataDownloadService.diagnosticsExclusiveEndDay(OffsetDateTime.parse("2026-09-29T00:30:00Z")),
         )
     }
 

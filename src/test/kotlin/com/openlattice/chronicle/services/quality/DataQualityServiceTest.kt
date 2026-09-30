@@ -30,6 +30,7 @@ class DataQualityServiceTest {
     private lateinit var mockConnection: Connection
     private lateinit var mockPs: PreparedStatement
     private lateinit var mockRs: ResultSet
+    private lateinit var lockPs: PreparedStatement
 
     @Before
     fun setUp() {
@@ -42,7 +43,14 @@ class DataQualityServiceTest {
 
         `when`(storageResolver.getPlatformStorage()).thenReturn(mockHds)
         `when`(mockHds.connection).thenReturn(mockConnection)
-        `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(mockPs)
+        lockPs = Mockito.mock(PreparedStatement::class.java)
+        val lockRs = Mockito.mock(ResultSet::class.java)
+        `when`(lockPs.executeQuery()).thenReturn(lockRs)
+        `when`(lockRs.next()).thenReturn(true)
+        `when`(mockConnection.autoCommit).thenReturn(true)
+        `when`(mockConnection.prepareStatement(kAnyString())).thenAnswer {
+            if ((it.arguments[0] as String).contains("pg_advisory_xact_lock_shared")) lockPs else mockPs
+        }
         `when`(mockPs.executeQuery()).thenReturn(mockRs)
         `when`(mockPs.executeUpdate()).thenReturn(1)
 
@@ -202,6 +210,40 @@ class DataQualityServiceTest {
 
         // Verify batch was called
         verify(mockPs).executeBatch()
+    }
+
+    @Test
+    fun testGenerateAlertsLocksBeforeReadingAndCommitsAfterInsert() {
+        val studyId = UUID.randomUUID()
+        `when`(studyService.getStudy(studyId)).thenReturn(createStudy(studyId))
+        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(mapOf(
+            "p1" to ParticipantStats(studyId, "p1", androidUniqueDates = setOf(LocalDate.now())),
+        ))
+        `when`(mockPs.executeBatch()).thenReturn(intArrayOf(1))
+
+        assertEquals(1, service.generateAlerts(studyId))
+
+        val order = Mockito.inOrder(mockConnection, lockPs, studyService, mockPs)
+        order.verify(mockConnection).autoCommit = false
+        order.verify(lockPs).executeQuery()
+        order.verify(studyService).getStudyParticipantStats(studyId)
+        order.verify(mockPs).executeBatch()
+        order.verify(mockConnection).commit()
+        order.verify(mockConnection).autoCommit = true
+    }
+
+    @Test
+    fun testGenerateAlertsRollsBackWhenStatisticsReadFails() {
+        val studyId = UUID.randomUUID()
+        `when`(studyService.getStudy(studyId)).thenReturn(createStudy(studyId))
+        `when`(studyService.getStudyParticipantStats(studyId)).thenThrow(IllegalStateException("read failed"))
+
+        org.junit.Assert.assertThrows(IllegalStateException::class.java) { service.generateAlerts(studyId) }
+
+        verify(mockConnection).rollback()
+        verify(mockConnection, Mockito.never()).commit()
+        verify(mockPs, Mockito.never()).executeBatch()
+        verify(mockConnection).autoCommit = true
     }
 
     // --- Quality score calculation tests ---

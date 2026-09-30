@@ -2390,6 +2390,7 @@ public open class DataDeletionOrchestrator(
     private fun studyTablePriority(tableName: String): Int = when (tableName) {
         "pipeline_runs" -> 80
         "jobs" -> 90
+        "upload_diagnostic_erasures" -> 110 // Sweep after upload_diagnostics creates its tombstones.
         "participant_form_submission_receipts" -> 470
         "participant_form_sessions" -> 480
         "participant_form_access_codes" -> 490

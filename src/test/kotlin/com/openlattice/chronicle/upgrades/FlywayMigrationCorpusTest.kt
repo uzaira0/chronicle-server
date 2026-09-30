@@ -346,6 +346,385 @@ class FlywayMigrationCorpusTest {
     }
 
     @Test
+    fun testErasedDiagnosticReplayWithAheadClockCannotResurrectAfterPurge() {
+        val studyId = UUID.randomUUID()
+        val participantId = "ahead-clock-${UUID.randomUUID()}"
+        val deviceId = UUID.randomUUID()
+        val cutoff = OffsetDateTime.parse("2026-09-20T12:00:00Z")
+        val erased = AndroidUploadDiagnosticEvent(
+            id = UUID.randomUUID().toString(),
+            day = cutoff.toLocalDate(),
+            moduleFamily = "LOCAL_STORE",
+            issueCode = "LOCAL_WRITE_FAILED",
+            count = 1,
+            firstOccurredAt = cutoff.plusHours(1),
+            lastOccurredAt = cutoff.plusHours(1),
+        )
+        val later = erased.copy(id = UUID.randomUUID().toString())
+        RLSRequestContext.set(RLSConnectionContext("ahead-clock-replay", setOf(studyId), isAdmin = false))
+        try {
+            val service = UploadDiagnosticsUploadService(storageResolver)
+            service.upload(studyId, participantId, deviceId, listOf(erased))
+        } finally {
+            RLSRequestContext.clear()
+        }
+        getConnection().use { deletion ->
+            deletion.autoCommit = false
+            deletion.prepareStatement(
+                "SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:' || ?::text, 0))",
+            ).use { statement ->
+                statement.setObject(1, studyId)
+                statement.executeQuery().close()
+            }
+            deletion.prepareStatement(
+                "DELETE FROM upload_diagnostics WHERE study_id = ? AND participant_id = ?",
+            ).use { statement ->
+                statement.setObject(1, studyId)
+                statement.setString(2, participantId)
+                assertEquals(1, statement.executeUpdate())
+            }
+            deletion.prepareStatement(
+                """INSERT INTO data_deletion_operations (
+                    operation_id, study_id, participant_id, participant_block_token, mode, status,
+                    requested_by, idempotency_key, registry_version, started_at, completed_at
+                ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                          'migration-test', ?, 1, ?, ?)""".trimIndent(),
+            ).use { statement ->
+                statement.setObject(1, UUID.randomUUID())
+                statement.setObject(2, studyId)
+                statement.setString(3, studyId.toString())
+                statement.setString(4, participantId)
+                statement.setObject(5, UUID.randomUUID())
+                statement.setObject(6, cutoff)
+                statement.setObject(7, cutoff.plusMinutes(5))
+                assertEquals(1, statement.executeUpdate())
+            }
+            deletion.commit()
+        }
+        RLSRequestContext.set(RLSConnectionContext("ahead-clock-replay", setOf(studyId), isAdmin = false))
+        try {
+            val service = UploadDiagnosticsUploadService(storageResolver)
+            val replay = erased.copy(firstOccurredAt = cutoff.plusHours(2), lastOccurredAt = cutoff.plusHours(2))
+            assertEquals(listOf(erased.id, later.id), service.upload(studyId, participantId, deviceId, listOf(replay, later)))
+            // Re-enrollment on another device must not bypass the participant's erasure fence.
+            assertEquals(listOf(erased.id), service.upload(studyId, participantId, UUID.randomUUID(), listOf(replay)))
+            // The same opaque ID in another participant's scope remains independent.
+            service.upload(studyId, "$participantId-other", deviceId, listOf(replay))
+            getConnection().use { connection ->
+                connection.prepareStatement(
+                    "SELECT event_id FROM upload_diagnostics WHERE study_id = ? AND participant_id = ?",
+                ).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.setString(2, participantId)
+                    statement.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        assertEquals(later.id, rows.getString(1))
+                        assertFalse(rows.next())
+                    }
+                    statement.setString(2, "$participantId-other")
+                    statement.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        assertEquals(erased.id, rows.getString(1))
+                    }
+                }
+            }
+        } finally {
+            RLSRequestContext.clear()
+        }
+    }
+
+    @Test
+    fun testDiagnosticErasureTombstonesSupportNonBypassOwnerAndTransactionalRollback() {
+        val studyId = UUID.randomUUID()
+        val participantId = "erasure-owner-${UUID.randomUUID()}"
+        val owner = "diagnostic_owner_${UUID.randomUUID().toString().replace("-", "")}"
+        val occurredAt = OffsetDateTime.now(ZoneOffset.UTC)
+        val event = AndroidUploadDiagnosticEvent(
+            id = UUID.randomUUID().toString(), day = occurredAt.toLocalDate(),
+            moduleFamily = "LOCAL_STORE", issueCode = "LOCAL_WRITE_FAILED", count = 1,
+            firstOccurredAt = occurredAt, lastOccurredAt = occurredAt,
+        )
+        RLSRequestContext.set(RLSConnectionContext("erasure-owner", setOf(studyId), isAdmin = false))
+        try {
+            UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, UUID.randomUUID(), listOf(event))
+        } finally {
+            RLSRequestContext.clear()
+        }
+        getConnection().use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.createStatement().use { statement ->
+                    statement.execute("CREATE ROLE $owner NOLOGIN NOSUPERUSER NOBYPASSRLS")
+                    statement.execute("GRANT USAGE ON SCHEMA public TO $owner")
+                    statement.execute("ALTER TABLE upload_diagnostic_erasures OWNER TO $owner")
+                    statement.execute("ALTER FUNCTION chronicle_record_erased_diagnostic_ids() OWNER TO $owner")
+                }
+                connection.prepareStatement("DELETE FROM upload_diagnostics WHERE study_id = ?").use { statement ->
+                    statement.setObject(1, studyId)
+                    assertEquals(1, statement.executeUpdate())
+                }
+                connection.prepareStatement(
+                    "SELECT event_id FROM upload_diagnostic_erasures WHERE study_id = ?",
+                ).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        assertEquals(UUID.fromString(event.id), rows.getObject(1, UUID::class.java))
+                        assertFalse(rows.next())
+                    }
+                }
+            } finally {
+                connection.rollback()
+            }
+        }
+        getConnection().use { connection ->
+            listOf("upload_diagnostics" to 1, "upload_diagnostic_erasures" to 0).forEach { (table, count) ->
+                connection.prepareStatement("SELECT count(*) FROM $table WHERE study_id = ?").use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        assertEquals("Erasure and tombstones must roll back together", count, rows.getInt(1))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun testStudyErasureRemovesDiagnosticsAndTombstonesWithNonBypassRoles() {
+        assertStudyDiagnosticErasure(resumeVerifiedDiagnostics = false)
+        assertStudyDiagnosticErasure(resumeVerifiedDiagnostics = true)
+    }
+
+    private fun assertStudyDiagnosticErasure(resumeVerifiedDiagnostics: Boolean) {
+        val studyId = UUID.randomUUID()
+        val participantId = "study-diagnostics-${UUID.randomUUID()}"
+        val owner = "study_diagnostic_owner_${UUID.randomUUID().toString().replace("-", "")}"
+        val now = OffsetDateTime.now(ZoneOffset.UTC)
+        val events = (1..2).map {
+            AndroidUploadDiagnosticEvent(
+                id = UUID.randomUUID().toString(), day = now.toLocalDate(),
+                moduleFamily = "LOCAL_STORE", issueCode = "LOCAL_WRITE_FAILED", count = 1,
+                firstOccurredAt = now, lastOccurredAt = now,
+            )
+        }
+        val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+        var operationId: UUID? = null
+        getConnection().use { connection ->
+            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, 'diagnostic erasure')").use {
+                it.setObject(1, studyId)
+                assertEquals(1, it.executeUpdate())
+            }
+            connection.createStatement().use { statement ->
+                statement.execute("CREATE ROLE $owner NOLOGIN NOSUPERUSER NOBYPASSRLS")
+                statement.execute("GRANT USAGE ON SCHEMA public TO $owner")
+                statement.execute("GRANT SELECT, DELETE ON ALL TABLES IN SCHEMA public TO $owner")
+                statement.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO $owner")
+                statement.execute("ALTER TABLE upload_diagnostic_erasures OWNER TO $owner")
+                statement.execute("ALTER FUNCTION chronicle_record_erased_diagnostic_ids() OWNER TO $owner")
+                statement.execute("ALTER FUNCTION chronicle_delete_study_rows(TEXT, UUID) OWNER TO $owner")
+                statement.execute("ALTER FUNCTION chronicle_count_study_rows_for_erasure(TEXT, UUID) OWNER TO $owner")
+            }
+        }
+        try {
+            RLSRequestContext.set(RLSConnectionContext("diagnostic-erasure-seed", setOf(studyId), isAdmin = false))
+            try {
+                UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, UUID.randomUUID(), events)
+                getConnection().use { connection ->
+                    connection.prepareStatement("DELETE FROM upload_diagnostics WHERE study_id = ? AND event_id = ?").use {
+                        it.setObject(1, studyId)
+                        it.setString(2, events.first().id)
+                        assertEquals(1, it.executeUpdate())
+                    }
+                    connection.prepareStatement("SELECT count(*) FROM upload_diagnostic_erasures WHERE study_id = ?").use {
+                        it.setObject(1, studyId)
+                        it.executeQuery().use { rows ->
+                            assertTrue(rows.next())
+                            assertEquals("Participant deletion still creates a tombstone", 1, rows.getInt(1))
+                        }
+                    }
+                    connection.createStatement().use { it.execute("SET ROLE $owner") }
+                    connection.prepareStatement("DELETE FROM upload_diagnostic_erasures WHERE study_id = ?").use {
+                        it.setObject(1, studyId)
+                        assertEquals("Study access alone must not authorize tombstone deletion", 0, it.executeUpdate())
+                    }
+                }
+            } finally {
+                RLSRequestContext.clear()
+            }
+            RLSRequestContext.withDeletionWorkerContext {
+                getConnection().use { connection ->
+                    connection.createStatement().use { statement ->
+                        statement.executeQuery(
+                            "SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+                        ).use { rows ->
+                            assertTrue(rows.next())
+                            assertEquals("chronicle_app", rows.getString(1))
+                            assertFalse(rows.getBoolean(2))
+                            assertFalse(rows.getBoolean(3))
+                        }
+                    }
+                }
+                operationId = orchestrator.quarantineStudy(studyId, "migration-test", UUID.randomUUID())
+            }
+            if (resumeVerifiedDiagnostics) {
+                // Resuming must physically sweep even a previously verified asset before committing proof.
+                getConnection().use { connection ->
+                    connection.prepareStatement(
+                        "UPDATE data_deletion_steps SET status = 'VERIFIED' WHERE operation_id = ? AND asset_id = ?",
+                    ).use {
+                        it.setObject(1, operationId)
+                        it.setString(2, "study-table:upload_diagnostics")
+                        assertEquals(1, it.executeUpdate())
+                    }
+                }
+            }
+            processDeletion(orchestrator, requireNotNull(operationId))
+            getConnection().use { connection ->
+                listOf("upload_diagnostics", "upload_diagnostic_erasures").forEach { table ->
+                    connection.prepareStatement("SELECT count(*) FROM $table WHERE study_id = ?").use {
+                        it.setObject(1, studyId)
+                        it.executeQuery().use { rows ->
+                            assertTrue(rows.next())
+                            assertEquals("Study erasure must leave no $table rows", 0, rows.getInt(1))
+                        }
+                    }
+                }
+            }
+        } finally {
+            RLSRequestContext.clear()
+            getConnection().use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("ALTER TABLE upload_diagnostic_erasures OWNER TO ${postgres.username}")
+                    statement.execute("ALTER FUNCTION chronicle_record_erased_diagnostic_ids() OWNER TO ${postgres.username}")
+                    statement.execute("ALTER FUNCTION chronicle_delete_study_rows(TEXT, UUID) OWNER TO ${postgres.username}")
+                    statement.execute("ALTER FUNCTION chronicle_count_study_rows_for_erasure(TEXT, UUID) OWNER TO ${postgres.username}")
+                    statement.execute("DROP OWNED BY $owner")
+                    statement.execute("DROP ROLE $owner")
+                }
+                operationId?.let { id ->
+                    deleteById(connection, "data_deletion_tombstones", "operation_id", id)
+                    deleteById(connection, "data_deletion_operations", "operation_id", id)
+                }
+                listOf("upload_diagnostics", "upload_diagnostic_erasures", "studies").forEach { table ->
+                    deleteById(connection, table, "study_id", studyId)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun testDataQualityEvaluationWaitsForPurgeBeforeReadingStatistics() {
+        val studyId = UUID.randomUUID()
+        val participantId = "quality-purge-${UUID.randomUUID()}"
+        val today = LocalDate.now(ZoneOffset.UTC)
+        getConnection().use { connection ->
+            connection.prepareStatement(
+                "INSERT INTO participant_stats (study_id, participant_id, android_unique_dates) VALUES (?, ?, ?)",
+            ).use { statement ->
+                statement.setObject(1, studyId)
+                statement.setString(2, participantId)
+                statement.setArray(3, connection.createArrayOf("date", arrayOf(today)))
+                assertEquals(1, statement.executeUpdate())
+            }
+        }
+        val studyService = Mockito.mock(StudyService::class.java)
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(
+            Study(studyId = studyId, title = "quality purge", contact = "test@example.org",
+                settings = Study.initialSettings("quality purge")),
+        )
+        Mockito.`when`(studyService.getStudyParticipantStats(studyId)).thenAnswer {
+            getConnection().use { connection ->
+                connection.prepareStatement(
+                    "SELECT participant_id FROM participant_stats WHERE study_id = ?",
+                ).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { rows ->
+                        if (rows.next()) mapOf(participantId to ParticipantStats(
+                            studyId, participantId, androidUniqueDates = setOf(today),
+                        )) else emptyMap<String, ParticipantStats>()
+                    }
+                }
+            }
+        }
+        val executor = Executors.newSingleThreadExecutor()
+        getConnection().use { deletion ->
+            deletion.autoCommit = false
+            try {
+                deletion.prepareStatement(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:' || ?::text, 0))",
+                ).use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().close()
+                }
+                val evaluation = executor.submit<Int> {
+                    RLSRequestContext.set(RLSConnectionContext("quality-purge", setOf(studyId), isAdmin = false))
+                    try {
+                        DataQualityService(storageResolver, studyService).generateAlerts(studyId)
+                    } finally {
+                        RLSRequestContext.clear()
+                    }
+                }
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                var waiting = false
+                while (!waiting && System.nanoTime() < deadline) {
+                    getConnection().use { monitor ->
+                        monitor.prepareStatement(
+                            """SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                                WHERE pid <> pg_backend_pid()
+                                  AND wait_event_type = 'Lock' AND wait_event = 'advisory')""".trimIndent(),
+                        ).use { statement ->
+                            statement.executeQuery().use { rows ->
+                                assertTrue(rows.next())
+                                waiting = rows.getBoolean(1)
+                            }
+                        }
+                    }
+                    if (!waiting) TimeUnit.MILLISECONDS.sleep(25)
+                }
+                assertTrue("Quality evaluation must overlap the purge", waiting)
+                assertFalse(evaluation.isDone)
+                listOf("participant_stats", "data_quality_alerts").forEach { table ->
+                    deletion.prepareStatement("DELETE FROM $table WHERE study_id = ? AND participant_id = ?").use { statement ->
+                        statement.setObject(1, studyId)
+                        statement.setString(2, participantId)
+                        statement.executeUpdate()
+                    }
+                }
+                deletion.prepareStatement(
+                    """INSERT INTO data_deletion_operations (
+                        operation_id, study_id, participant_id, participant_block_token, mode, status,
+                        requested_by, idempotency_key, registry_version, started_at, completed_at
+                    ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                              'migration-test', ?, 1, now(), now())""".trimIndent(),
+                ).use { statement ->
+                    statement.setObject(1, UUID.randomUUID())
+                    statement.setObject(2, studyId)
+                    statement.setString(3, studyId.toString())
+                    statement.setString(4, participantId)
+                    statement.setObject(5, UUID.randomUUID())
+                    assertEquals(1, statement.executeUpdate())
+                }
+                deletion.commit()
+                val inserted = evaluation.get(10, TimeUnit.SECONDS)
+                getConnection().use { connection ->
+                    connection.prepareStatement("SELECT count(*) FROM data_quality_alerts WHERE study_id = ?").use { statement ->
+                        statement.setObject(1, studyId)
+                        statement.executeQuery().use { rows ->
+                            assertTrue(rows.next())
+                            assertEquals("Erased statistics must not recreate an alert", 0, rows.getInt(1))
+                        }
+                    }
+                }
+                assertEquals(0, inserted)
+            } finally {
+                deletion.rollback()
+                executor.shutdownNow()
+            }
+        }
+    }
+
+    @Test
     fun testDiagnosticUploadWaitsForDeletionBeforeReadingErasureCutoff() {
         val studyId = UUID.randomUUID()
         val participantId = "concurrent-purge-${UUID.randomUUID()}"
@@ -522,6 +901,12 @@ class FlywayMigrationCorpusTest {
             ).toList()
             assertEquals(1, exportedDay.size)
             assertEquals(baseDay.toString(), exportedDay.single()["diagnostic_day"].toString())
+            val earlyHourExport = DataDownloadService(storageResolver).getParticipantsUploadDiagnosticsData(
+                visibleStudyId, setOf(participantId),
+                baseDay.atStartOfDay().atOffset(ZoneOffset.UTC),
+                baseDay.atStartOfDay().atOffset(ZoneOffset.UTC).plusMinutes(30),
+            ).toList()
+            assertEquals("A non-midnight end must include diagnostics from its day", 1, earlyHourExport.size)
             val queryService = UploadDiagnosticsQueryService(storageResolver)
             val first = queryService.getPage(visibleStudyId, participantId = participantId, limit = 1)
             assertEquals(1, first.items.size)
