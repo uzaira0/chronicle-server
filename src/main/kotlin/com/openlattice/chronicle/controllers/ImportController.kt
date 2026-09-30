@@ -433,8 +433,10 @@ public open class ImportController(
         // Defense-in-depth: validate table name even though Bean Validation already checked pattern
         val sourceTable = SqlIdentifierValidator.validateImportTableName(config.systemAppsTable ?: "")
         val hds = dataSourceManager.getDataSource(config.dataSourceName)
-        hds.connection.createStatement().use { statement ->
-            statement.execute("INSERT INTO ${ChroniclePostgresTables.SYSTEM_APPS.name} SELECT * FROM $sourceTable ON CONFLICT DO NOTHING")
+        hds.connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute("INSERT INTO ${ChroniclePostgresTables.SYSTEM_APPS.name} SELECT * FROM $sourceTable ON CONFLICT DO NOTHING")
+            }
         }
 
         // check inserts
@@ -490,24 +492,26 @@ public open class ImportController(
         tudEntities: List<TudSubmission>,
         legacySubmissionIdMapping: MutableMap<UUID, UUID>,
     ): Int {
-        return hds.connection.prepareStatement(INSERT_TUD_SUBMISSIONS_SQL).use { ps ->
-            tudEntities.forEach {
-                val realStudyId = studyService.getStudyId(it.studyId)
-                if (realStudyId == null) {
-                    logger.error("invalid study id ${it.studyId}")
-                    return@forEach
+        return hds.connection.use { connection ->
+            connection.prepareStatement(INSERT_TUD_SUBMISSIONS_SQL).use { ps ->
+                tudEntities.forEach {
+                    val realStudyId = studyService.getStudyId(it.studyId)
+                    if (realStudyId == null) {
+                        logger.error("invalid study id ${it.studyId}")
+                        return@forEach
+                    }
+                    var index = 0
+                    val submissionId = idGenerationService.getNextId()
+                    legacySubmissionIdMapping[it.submissionId] = submissionId
+                    ps.setObject(++index, submissionId)
+                    ps.setObject(++index, realStudyId)
+                    ps.setString(++index, it.participantId)
+                    ps.setObject(++index, it.submissionDate)
+                    ps.setString(++index, mapper.writeValueAsString(it.submission))
+                    ps.addBatch()
                 }
-                var index = 0
-                val submissionId = idGenerationService.getNextId()
-                legacySubmissionIdMapping[it.submissionId] = submissionId
-                ps.setObject(++index, submissionId)
-                ps.setObject(++index, realStudyId)
-                ps.setString(++index, it.participantId)
-                ps.setObject(++index, it.submissionDate)
-                ps.setString(++index, mapper.writeValueAsString(it.submission))
-                ps.addBatch()
+                ps.executeBatch().sum()
             }
-            ps.executeBatch().sum()
         }
     }
 
@@ -517,24 +521,26 @@ public open class ImportController(
         tudSubmissionById: Map<UUID, TudSubmission>,
         legacySubmissionIdMapping: Map<UUID, UUID>,
     ): Int {
-        return hds.connection.prepareStatement(INSERT_INTO_TUD_SUMMARIZED_SQL).use { ps ->
-            summarizedData.forEach {
-                val submissionId = legacySubmissionIdMapping[it.submissionId] ?: return@forEach
-                val tudSubmission = tudSubmissionById.getValue(it.submissionId)
-                val realStudyId = studyService.getStudyId(tudSubmission.studyId)
-                if (realStudyId == null) {
-                    logger.error("invalid study id ${tudSubmission.studyId}")
-                    return@forEach
+        return hds.connection.use { connection ->
+            connection.prepareStatement(INSERT_INTO_TUD_SUMMARIZED_SQL).use { ps ->
+                summarizedData.forEach {
+                    val submissionId = legacySubmissionIdMapping[it.submissionId] ?: return@forEach
+                    val tudSubmission = tudSubmissionById.getValue(it.submissionId)
+                    val realStudyId = studyService.getStudyId(tudSubmission.studyId)
+                    if (realStudyId == null) {
+                        logger.error("invalid study id ${tudSubmission.studyId}")
+                        return@forEach
+                    }
+                    var index = 0
+                    ps.setObject(++index, realStudyId)
+                    ps.setString(++index, tudSubmission.participantId)
+                    ps.setObject(++index, submissionId)
+                    ps.setObject(++index, tudSubmission.submissionDate)
+                    ps.setString(++index, mapper.writeValueAsString(it.entities))
+                    ps.addBatch()
                 }
-                var index = 0
-                ps.setObject(++index, realStudyId)
-                ps.setString(++index, tudSubmission.participantId)
-                ps.setObject(++index, submissionId)
-                ps.setObject(++index, tudSubmission.submissionDate)
-                ps.setString(++index, mapper.writeValueAsString(it.entities))
-                ps.addBatch()
+                ps.executeBatch().sum()
             }
-            ps.executeBatch().sum()
         }
     }
 
