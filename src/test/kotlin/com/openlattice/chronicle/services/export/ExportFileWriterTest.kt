@@ -383,8 +383,8 @@ class ExportFileWriterTest {
 
     @Test
     fun testZeroRowDownloadKeepsAdvisedHeadersAndStreams() {
-        // A study whose enabled modules produced no rows yet (the Chilean pilot's empty
-        // sheets) must still download: header-only CSV/Excel, empty JSON, no 500.
+        // A study whose enabled modules produced no rows yet must still download:
+        // header-only CSV/Excel, empty JSON, no 500.
         val advised = listOf("participant_id", "timestamp", "value")
         val exportId = UUID.randomUUID()
         val results = ExportFormat.entries.associateWith { format ->

@@ -31,7 +31,7 @@ class DataDownloadServiceTimestampTest {
         val rendered = DataDownloadService.localizedTimestamp(rs, sampleTimestamp, zone)
 
         assertEquals(ZoneId.of("America/Santiago"), zone)
-        // Chile is still on standard time (-04:00) on 2026-09-03; the pilot's usage sheet agrees.
+        // America/Santiago is on standard time (-04:00) on 2026-09-03.
         assertEquals("2026-09-03T18:59:34-04:00", rendered.toString())
     }
 
