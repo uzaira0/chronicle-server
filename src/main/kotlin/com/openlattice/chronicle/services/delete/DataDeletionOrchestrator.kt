@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.sql.Connection
+import com.openlattice.chronicle.storage.DeletionTableLockOrder
 import java.time.Clock
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -474,7 +475,7 @@ public open class DataDeletionOrchestrator(
             revokeStudyExports(connection, operation.operationId, operation.studyId)
         } else {
             val participantId = requireNotNull(operation.participantId)
-            ChronicleDataAssetRegistry.participantAssets.forEachIndexed { ordinal, asset ->
+            ChronicleDataAssetRegistry.assetsFor(operation.mode).forEachIndexed { ordinal, asset ->
                 insertStep(
                     connection,
                     operation.operationId,
@@ -649,7 +650,7 @@ public open class DataDeletionOrchestrator(
             )
         }
 
-        ChronicleDataAssetRegistry.participantAssets.forEachIndexed { ordinal, asset ->
+        ChronicleDataAssetRegistry.assetsFor(request.mode).forEachIndexed { ordinal, asset ->
             insertStep(
                 connection,
                 operationId,
@@ -1263,6 +1264,20 @@ public open class DataDeletionOrchestrator(
                     statement.setObject(3, operation.operationId)
                     check(statement.executeUpdate() == 1)
                 }
+                if (operation.mode == DataDeletionMode.COLLECTED_DATA_PURGE) {
+                    connection.prepareStatement(
+                        """
+                        INSERT INTO participant_purge_cutoffs (study_id, participant_block_token, cutoff)
+                        SELECT study_id, md5(study_id::text || ':' || participant_id), started_at
+                        FROM data_deletion_operations WHERE operation_id = ?
+                        ON CONFLICT (study_id, participant_block_token) DO UPDATE
+                        SET cutoff = GREATEST(participant_purge_cutoffs.cutoff, EXCLUDED.cutoff)
+                        """.trimIndent(),
+                    ).use { statement ->
+                        statement.setObject(1, operation.operationId)
+                        check(statement.executeUpdate() == 1)
+                    }
+                }
                 connection.commit()
                 ClaimedDeletion(operation.copy(status = "ERASING"), leaseToken)
             } catch (exception: Exception) {
@@ -1287,7 +1302,8 @@ public open class DataDeletionOrchestrator(
                 return
             }
             val participantId = requireNotNull(operation.participantId)
-            ChronicleDataAssetRegistry.participantAssets.forEach { asset ->
+            reconcileParticipantSteps(claim, participantId)
+            ChronicleDataAssetRegistry.assetsFor(operation.mode).forEach { asset ->
                 eraseAsset(claim, participantId, asset)
             }
             completeOperation(claim, participantId)
@@ -1315,6 +1331,39 @@ public open class DataDeletionOrchestrator(
             ChronicleMetrics.dataDeletionOperationDurationSeconds
                 .labels(operation.mode.name, outcome)
                 .observe((System.nanoTime() - startedAt) / 1_000_000_000.0)
+        }
+    }
+
+    private fun reconcileParticipantSteps(claim: ClaimedDeletion, participantId: String) {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                acquireDeletionStudyLock(connection, claim.operation.studyId)
+                renewDeletionLease(connection, claim)
+                val existing = connection.prepareStatement(
+                    "SELECT asset_id FROM data_deletion_steps WHERE operation_id = ?",
+                ).use { statement ->
+                    statement.setObject(1, claim.operation.operationId)
+                    statement.executeQuery().use { result -> buildSet { while (result.next()) add(result.getString(1)) } }
+                }
+                val nextOrdinal = connection.prepareStatement(
+                    "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM data_deletion_steps WHERE operation_id = ?",
+                ).use { statement ->
+                    statement.setObject(1, claim.operation.operationId)
+                    statement.executeQuery().use { result -> check(result.next()); result.getInt(1) }
+                }
+                ChronicleDataAssetRegistry.assetsFor(claim.operation.mode).filterNot { it.id in existing }
+                    .forEachIndexed { index, asset ->
+                        insertStep(connection, claim.operation.operationId, claim.operation.studyId, asset, nextOrdinal + index,
+                            countParticipantRows(connection, asset, claim.operation.studyId, participantId))
+                    }
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
         }
     }
 
@@ -1488,6 +1537,9 @@ public open class DataDeletionOrchestrator(
             try {
                 acquireDeletionStudyLock(connection, operation.studyId)
                 exportStorageLock = ExportFileWriter.acquireStudyExportLock(operation.studyId)
+                val studyTables = if (operation.mode == DataDeletionMode.STUDY_ERASURE) {
+                    reconcileAndLockStudyInventory(connection, claim)
+                } else null
                 connection.prepareStatement(
                     """
                     UPDATE data_deletion_operations
@@ -1503,7 +1555,7 @@ public open class DataDeletionOrchestrator(
                     check(statement.executeUpdate() == 1) { "Deletion operation is not finalizable" }
                 }
                 sweepRevokedExportArtifacts(connection, claim)
-                refreshFinalVerification(connection, claim, participantId)
+                refreshFinalVerification(connection, claim, participantId, studyTables)
                 if (operation.mode == DataDeletionMode.STUDY_ERASURE) {
                     requireStudyInventoryUnchanged(
                         connection,
@@ -1613,10 +1665,11 @@ public open class DataDeletionOrchestrator(
         connection: Connection,
         claim: ClaimedDeletion,
         participantId: String?,
+        studyTables: List<String>?,
     ) {
         val operation = claim.operation
         if (operation.mode == DataDeletionMode.STUDY_ERASURE) {
-            val tables = reconcileAndLockStudyInventory(connection, claim)
+            val tables = requireNotNull(studyTables)
             tables.forEach { tableName ->
                 renewDeletionLease(connection, claim)
                 val assetId = "study-table:$tableName"
@@ -1636,7 +1689,7 @@ public open class DataDeletionOrchestrator(
         }
 
         val subjectId = requireNotNull(participantId)
-        ChronicleDataAssetRegistry.participantAssets.forEach { asset ->
+        ChronicleDataAssetRegistry.assetsFor(operation.mode).forEach { asset ->
             renewDeletionLease(connection, claim)
             val deletedRows = deleteParticipantRows(connection, asset, operation.studyId, subjectId)
             val residualRows = countParticipantRows(connection, asset, operation.studyId, subjectId)
@@ -1694,7 +1747,7 @@ public open class DataDeletionOrchestrator(
         // proof and COMPLETED state commit. Lock identifiers in one global order
         // to keep concurrent erasures deadlock-free; deletion order remains the
         // registry/FK-aware order returned by discoverStudyTables().
-        discoveredTables.sorted().forEach { tableName ->
+        discoveredTables.sortedWith(DeletionTableLockOrder.comparator).forEach { tableName ->
             requireTrustedStudyTable(tableName)
             lockStudyTableForErasure(connection, tableName, operation.studyId)
         }
@@ -2304,6 +2357,7 @@ public open class DataDeletionOrchestrator(
                 download_token = NULL,
                 error_message = 'Export revoked by verified data erasure',
                 file_path = NULL,
+                request = '{}'::jsonb,
                 lease_token = NULL,
                 lease_expires_at = NULL,
                 updated_at = now()
@@ -2390,6 +2444,7 @@ public open class DataDeletionOrchestrator(
     private fun studyTablePriority(tableName: String): Int = when (tableName) {
         "pipeline_runs" -> 80
         "jobs" -> 90
+        "participant_purge_cutoffs" -> 111
         "upload_diagnostic_erasures" -> 110 // Sweep after upload_diagnostics creates its tombstones.
         "participant_form_submission_receipts" -> 470
         "participant_form_sessions" -> 480
@@ -2414,10 +2469,7 @@ public open class DataDeletionOrchestrator(
         studyId: UUID,
         participantId: String,
     ): Long {
-        val participantPredicate = when (asset.participantScope) {
-            ParticipantScope.SCALAR_COLUMN -> "participant_id = ?"
-            ParticipantScope.TEXT_ARRAY_COLUMN -> "? = ANY(participant_ids)"
-        }
+        val participantPredicate = asset.participantScope.predicate
         return connection.prepareStatement(
             "SELECT COUNT(*) FROM ${asset.tableName} WHERE study_id::text = ? AND $participantPredicate"
         ).use { statement ->
@@ -2436,10 +2488,7 @@ public open class DataDeletionOrchestrator(
         studyId: UUID,
         participantId: String,
     ): Long {
-        val participantPredicate = when (asset.participantScope) {
-            ParticipantScope.SCALAR_COLUMN -> "participant_id = ?"
-            ParticipantScope.TEXT_ARRAY_COLUMN -> "? = ANY(participant_ids)"
-        }
+        val participantPredicate = asset.participantScope.predicate
         return connection.prepareStatement(
             "DELETE FROM ${asset.tableName} WHERE study_id::text = ? AND $participantPredicate"
         ).use { statement ->

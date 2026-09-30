@@ -4,6 +4,7 @@ import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AndroidAppNetworkUsageEvent
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.util.UUID
@@ -66,9 +67,11 @@ public open class AppNetworkUsageUploadService(
         participantId: String,
         data: List<AndroidAppNetworkUsageEvent>,
     ) {
-        storageResolver.getPlatformStorage().connection.use { connection ->
+        ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { java.time.Instant.ofEpochMilli(it.bucketEndMillis).atOffset(java.time.ZoneOffset.UTC) },
+            ) { connection, retained ->
             connection.prepareStatement(INSERT_APP_NETWORK_USAGE_SQL).use { ps ->
-                data.forEach { event ->
+                retained.forEach { event ->
                     ps.setObject(1, studyId)
                     ps.setString(2, participantId)
                     ps.setString(3, event.id)

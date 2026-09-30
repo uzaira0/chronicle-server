@@ -321,7 +321,7 @@ public open class NotificationService(
                         Notification(
                             notificationId,
                             studyId,
-                            "",
+                            researcherNotification.participantId,
                             status = INITIAL_STATUS,
                             messageId = notificationId.toString(),
                             notificationType = researcherNotification.notificationType,
@@ -336,7 +336,7 @@ public open class NotificationService(
                     Notification(
                         notificationId,
                         studyId,
-                        "",
+                        researcherNotification.participantId,
                         status = INITIAL_STATUS,
                         messageId = notificationId.toString(),
                         notificationType = researcherNotification.notificationType,
@@ -347,6 +347,14 @@ public open class NotificationService(
                 }
             }.flatten().toList()
         logger.info("Queueing batch of ${notifications.size} of notifications")
+        val ownsTransaction = connection.autoCommit
+        if (ownsTransaction) connection.autoCommit = false
+        try {
+        com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
+        connection.createStatement().use { statement ->
+            listOf("jobs", "notifications").sortedWith(com.openlattice.chronicle.storage.DeletionTableLockOrder.comparator)
+                .forEach { statement.execute("LOCK TABLE public.$it IN ROW EXCLUSIVE MODE") }
+        }
         insertNotifications(connection, notifications, principal)
         notifications.forEach {
             jobService.createJob(
@@ -359,7 +367,14 @@ public open class NotificationService(
                 )
             )
         }
+        if (ownsTransaction) connection.commit()
         return notifications.size
+        } catch (failure: Exception) {
+            if (ownsTransaction) connection.rollback()
+            throw failure
+        } finally {
+            if (ownsTransaction) connection.autoCommit = true
+        }
     }
 
     override fun sendNotifications(

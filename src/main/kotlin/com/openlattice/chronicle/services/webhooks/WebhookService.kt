@@ -113,13 +113,13 @@ public open class WebhookService(
             WITH next_delivery AS (
                 SELECT delivery_id
                 FROM webhook_deliveries
-                WHERE (
+                WHERE ((
                     delivery_state = 'PENDING'
                     AND available_at <= now()
                 ) OR (
                     delivery_state = 'IN_FLIGHT'
                     AND lease_expires_at <= now()
-                )
+                )) AND chronicle_participant_mutation_allowed(study_id, participant_id)
                 ORDER BY
                     CASE
                         WHEN delivery_state = 'PENDING' THEN available_at
@@ -150,6 +150,7 @@ public open class WebhookService(
                    claimed.payload,
                    claimed.attempt_count,
                    registration.url,
+                   registration.study_id,
                    registration.secret_hash
             FROM claimed
             JOIN webhook_registrations AS registration
@@ -240,6 +241,13 @@ public open class WebhookService(
         private const val NO_HTTP_STATUS = 0
         private const val HTTP_CALL_TIMEOUT_SECONDS = 30L
         private const val MAX_RETRY_AFTER_SECONDS = 3_600L
+        // NSS lookups may ignore interruption; cap both running lookups and queued requests.
+        private val dnsExecutor = ThreadPoolExecutor(
+            4, 4, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue(4),
+            ThreadFactory { task -> Thread(task, "chronicle-webhook-dns").apply { isDaemon = true } },
+            ThreadPoolExecutor.AbortPolicy(),
+        )
+        private const val DNS_TIMEOUT_SECONDS = 3L
         private val deliveryThreadCounter = AtomicInteger()
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
@@ -544,6 +552,7 @@ public open class WebhookService(
                                 ClaimedDelivery(
                                     deliveryId = resultSet.getObject("delivery_id", UUID::class.java),
                                     webhookId = resultSet.getObject("webhook_id", UUID::class.java),
+                                    studyId = resultSet.getObject("study_id", UUID::class.java),
                                     url = resultSet.getString("url"),
                                     secretHash = resultSet.getString("secret_hash"),
                                     eventType = WebhookEventType.valueOf(resultSet.getString("event_type")),
@@ -675,8 +684,28 @@ public open class WebhookService(
         }
     }
 
+    private fun resolveWithDeadline(host: String): Array<InetAddress> {
+        val lookup = try {
+            dnsExecutor.submit<Array<InetAddress>> { hostResolver(host) }
+        } catch (_: RejectedExecutionException) {
+            throw SsrfException.dnsResolutionFailed(host)
+        }
+        return try {
+            lookup.get(DNS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            lookup.cancel(true)
+            throw SsrfException.dnsResolutionFailed(host)
+        } catch (_: InterruptedException) {
+            lookup.cancel(true)
+            Thread.currentThread().interrupt()
+            throw SsrfException.dnsResolutionFailed(host)
+        } catch (failure: java.util.concurrent.ExecutionException) {
+            throw (failure.cause ?: failure)
+        }
+    }
+
     internal fun buildDeliveryClient(httpUrl: HttpUrl): OkHttpClient {
-        val pinnedDns = SsrfValidator.createPinnedDns(httpUrl, WEBHOOK_SSRF_CONFIG, hostResolver)
+        val pinnedDns = SsrfValidator.createPinnedDns(httpUrl, WEBHOOK_SSRF_CONFIG, ::resolveWithDeadline)
         return httpClientTemplate.newBuilder()
             .dns(pinnedDns)
             .proxy(Proxy.NO_PROXY)
@@ -687,28 +716,6 @@ public open class WebhookService(
             .writeTimeout(10, TimeUnit.SECONDS)
             .callTimeout(HTTP_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .build()
-    }
-
-    @Suppress("TooGenericExceptionCaught")
-    private fun renewDeliveryLease(claim: ClaimedDelivery): Boolean {
-        return try {
-            RLSRequestContext.withSystemContext {
-                storageResolver.getPlatformStorage().connection.use { connection ->
-                    connection.prepareStatement(RENEW_DELIVERY_LEASE_SQL).use { statement ->
-                        statement.setObject(1, claim.deliveryId)
-                        statement.setObject(2, claim.leaseToken)
-                        statement.executeUpdate() == 1
-                    }
-                }
-            }
-        } catch (ex: Exception) {
-            logger.warn(
-                "Could not renew webhook delivery lease for {}; request will not be sent",
-                claim.deliveryId,
-                ex,
-            )
-            false
-        }
     }
 
     // One claim performs one HTTP attempt. Retry count and backoff live in PostgreSQL so
@@ -755,12 +762,47 @@ public open class WebhookService(
             )
         }
 
+        return RLSRequestContext.withSystemContext {
+            storageResolver.getPlatformStorage().connection.use { connection ->
+                connection.autoCommit = false
+                try {
+                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, claim.studyId)
+                    val permitted = connection.prepareStatement("""
+                        SELECT chronicle_participant_mutation_allowed(study_id, participant_id)
+                        FROM webhook_deliveries WHERE delivery_id = ? AND lease_token = ?
+                    """.trimIndent()).use { statement ->
+                        statement.setObject(1, claim.deliveryId)
+                        statement.setObject(2, claim.leaseToken)
+                        statement.executeQuery().use { result -> result.next() && result.getBoolean(1) }
+                    }
+                    val outcome = if (permitted) deliverWebhook(connection, claim, httpUrl, client) else DeliveryOutcome(
+                        status = NO_HTTP_STATUS, outcomeCode = "erasure_revoked", terminal = true,
+                    )
+                    connection.commit()
+                    outcome
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                } finally {
+                    connection.autoCommit = true
+                }
+            }
+        }
+    }
+
+    private fun deliverWebhook(connection: Connection, claim: ClaimedDelivery, httpUrl: HttpUrl, client: OkHttpClient): DeliveryOutcome {
+
         /*
          * DNS validation happens before this renewal. If it outlived the original
          * lease, another worker may already own the row; never send from a stale
          * claim. The renewed lease exceeds OkHttp's absolute call timeout.
          */
-        if (!renewDeliveryLease(claim)) {
+        val renewed = connection.prepareStatement(RENEW_DELIVERY_LEASE_SQL).use { statement ->
+            statement.setObject(1, claim.deliveryId)
+            statement.setObject(2, claim.leaseToken)
+            statement.executeUpdate() == 1
+        }
+        if (!renewed) {
             return DeliveryOutcome(
                 status = NO_HTTP_STATUS,
                 outcomeCode = "lease_lost",
@@ -911,6 +953,7 @@ public open class WebhookService(
     private data class ClaimedDelivery(
         val deliveryId: UUID,
         val webhookId: UUID,
+        val studyId: UUID,
         val url: String,
         val secretHash: String,
         val eventType: WebhookEventType,

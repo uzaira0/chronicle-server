@@ -4,6 +4,7 @@ import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.crypto.EncryptedEnvelope
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.security.MessageDigest
@@ -81,9 +82,11 @@ public open class EncryptedPayloadUploadService(
         deviceId: UUID,
         data: List<EncryptedEnvelope>,
     ) {
-        storageResolver.getPlatformStorage().connection.use { connection ->
+        ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { null },
+            ) { connection, retained ->
             connection.prepareStatement(INSERT_ENCRYPTED_PAYLOAD_SQL).use { ps ->
-                data.forEach { envelope ->
+                retained.forEach { envelope ->
                     bindEnvelope(ps, decoder, studyId, participantId, deviceId, envelope)
                 }
                 ps.executeBatch()

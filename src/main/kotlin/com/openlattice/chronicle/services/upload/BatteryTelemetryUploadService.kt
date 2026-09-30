@@ -5,6 +5,7 @@ import com.openlattice.chronicle.collection.BatterySample
 import com.openlattice.chronicle.collection.IosBatterySample
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.util.UUID
@@ -74,9 +75,11 @@ public open class BatteryTelemetryUploadService(
             level = Level.INFO,
             logger = logger,
         ).use {
-            storageResolver.getPlatformStorage().connection.use { connection ->
+            ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { it.timestamp },
+            ) { connection, retained ->
                 connection.prepareStatement(INSERT_BATTERY_TELEMETRY_SQL).use { ps ->
-                    data.forEach { sample ->
+                    retained.forEach { sample ->
                         ps.setObject(1, studyId)
                         ps.setString(2, participantId)
                         ps.setString(3, sample.id)
@@ -121,9 +124,11 @@ public open class BatteryTelemetryUploadService(
             level = Level.INFO,
             logger = logger,
         ).use {
-            storageResolver.getPlatformStorage().connection.use { connection ->
+            ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { it.timestamp },
+            ) { connection, retained ->
                 connection.prepareStatement(INSERT_IOS_BATTERY_TELEMETRY_SQL).use { ps ->
-                    data.forEach { sample ->
+                    retained.forEach { sample ->
                         ps.setObject(1, studyId)
                         ps.setString(2, participantId)
                         ps.setString(3, sample.id)

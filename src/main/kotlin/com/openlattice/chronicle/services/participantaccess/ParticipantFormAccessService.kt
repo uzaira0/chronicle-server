@@ -7,6 +7,7 @@ import com.openlattice.chronicle.participantaccess.ParticipantFormAccessCodeResp
 import com.openlattice.chronicle.participantaccess.ParticipantFormKind
 import com.openlattice.chronicle.participantaccess.ParticipantFormSessionResponse
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.DeletionStudyFence
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.sql.Connection
@@ -222,6 +223,7 @@ public class ParticipantFormAccessService(
             val originalAutoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
+                DeletionStudyFence.shared(connection, commands.map { it.studyId })
                 if (replacePrior) {
                     lockAccessCodeIssuanceScopes(connection, commands)
                 }
@@ -350,10 +352,20 @@ public class ParticipantFormAccessService(
         return storageResolver.getPlatformStorage().connection.use { connection ->
             connection.autoCommit = false
             try {
+                val studyId = connection.prepareStatement(
+                    "SELECT study_id FROM participant_form_access_codes WHERE token_hash = ?",
+                ).use { statement ->
+                    statement.setBytes(1, tokenHash)
+                    statement.executeQuery().use { result ->
+                        if (result.next()) result.getObject(1, UUID::class.java) else null
+                    }
+                } ?: run { connection.rollback(); return@use null }
+                DeletionStudyFence.shared(connection, studyId)
                 val accessCode = loadExchangeableAccessCode(connection, tokenHash) ?: run {
                     connection.rollback()
                     return@use null
                 }
+                if (accessCode.studyId != studyId) { connection.rollback(); return@use null }
                 val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
                 val absoluteExpiry = minOf(accessCode.expiresAt, now.plus(SESSION_LIFETIME))
                 val idleExpiry = minOf(absoluteExpiry, now.plus(IDLE_LIFETIME))
@@ -510,6 +522,7 @@ public class ParticipantFormAccessService(
         now: OffsetDateTime,
         predicate: (Connection, EnrollmentAccessCodeScope) -> Boolean,
     ): Boolean {
+        DeletionStudyFence.shared(connection, studyId)
         lockEnrollmentDevice(connection, binding.deviceId)
         val stored = loadEnrollmentAttempt(connection, tokenHash, studyId, participantId) ?: return false
         return when {
@@ -541,7 +554,11 @@ public class ParticipantFormAccessService(
         if (!isPlausibleToken(rawAccessCode) || participantId.isBlank()) return false
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
         return storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(
+            val originalAutoCommit = connection.autoCommit
+            connection.autoCommit = false
+            try {
+                DeletionStudyFence.shared(connection, studyId)
+                val claimed = connection.prepareStatement(
                 """
                 UPDATE participant_form_access_codes
                 SET exchanged_at = ?
@@ -557,6 +574,14 @@ public class ParticipantFormAccessService(
                 statement.setObject(5, now)
                 statement.executeUpdate() == 1
             }
+                connection.commit()
+                claimed
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = originalAutoCommit
+            }
         }
     }
 
@@ -568,7 +593,10 @@ public class ParticipantFormAccessService(
         if (!isPlausibleToken(rawSessionToken) || (requireCsrf && !isPlausibleToken(mutationCsrfToken))) return null
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
         return storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(
+            val originalAutoCommit = connection.autoCommit
+            connection.autoCommit = false
+            try {
+                val scope = connection.prepareStatement(
                 """
                 SELECT session_id, access_code_id, study_id, participant_id, form_kind, resource_id,
                        logical_date, csrf_hash, absolute_expires_at
@@ -589,6 +617,7 @@ public class ParticipantFormAccessService(
                     val absoluteExpiry = resultSet.getObject("absolute_expires_at", OffsetDateTime::class.java)
                     val refreshedIdleExpiry = minOf(absoluteExpiry, now.plus(IDLE_LIFETIME))
                     val sessionId = resultSet.getObject("session_id", UUID::class.java)
+                    DeletionStudyFence.shared(connection, resultSet.getObject("study_id", UUID::class.java))
                     connection.prepareStatement(
                         "UPDATE participant_form_sessions SET last_seen_at = ?, idle_expires_at = ? WHERE session_id = ?"
                     ).use { update ->
@@ -607,6 +636,14 @@ public class ParticipantFormAccessService(
                         absoluteExpiresAt = absoluteExpiry,
                     )
                 }
+            }
+                connection.commit()
+                scope
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = originalAutoCommit
             }
         }
     }

@@ -16,6 +16,7 @@ import com.openlattice.chronicle.util.tests.TestDataFactory
 import com.zaxxer.hikari.HikariDataSource
 import org.apache.commons.lang3.RandomStringUtils
 import org.springframework.stereotype.Service
+import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
@@ -34,6 +35,19 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
     PARTICIPANT_STATS,
     hds
 ) {
+    // Synchronous transaction owners and delayed cache writes must merge monotonically in SQL.
+    // A delayed pre-owner cache value must not overwrite the owner's newly committed dates.
+    override fun prepareInsert(connection: Connection): PreparedStatement = connection.prepareStatement(MERGE_SQL)
+
+    internal fun readUsing(connection: Connection, key: ParticipantKey): ParticipantStats? = loadUsing(key, connection)
+
+    internal fun mergeUsing(connection: Connection, stats: ParticipantStats) {
+        prepareInsert(connection).use { statement ->
+            bind(statement, ParticipantKey(stats.studyId, stats.participantId), stats)
+            statement.executeUpdate()
+        }
+    }
+
     override fun getMapStoreConfig(): MapStoreConfig {
         return super.getMapStoreConfig()
             .setInitialLoadMode(MapStoreConfig.InitialLoadMode.LAZY)
@@ -146,18 +160,6 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
         ps.setObject(offset++, value.tudLastDate)
         ps.setArray(offset++, PostgresArrays.createDateArray(ps.connection, value.tudUniqueDates))
 
-        //For update query
-        ps.setObject(offset++, value.androidLastPing)
-        ps.setObject(offset++, value.androidFirstDate)
-        ps.setObject(offset++, value.androidLastDate)
-        ps.setArray(offset++, PostgresArrays.createDateArray(ps.connection, value.androidUniqueDates))
-        ps.setObject(offset++, value.iosLastPing)
-        ps.setObject(offset++, value.iosFirstDate)
-        ps.setObject(offset++, value.iosLastDate)
-        ps.setArray(offset++, PostgresArrays.createDateArray(ps.connection, value.iosUniqueDates))
-        ps.setObject(offset++, value.tudFirstDate)
-        ps.setObject(offset++, value.tudLastDate)
-        ps.setArray(offset++, PostgresArrays.createDateArray(ps.connection, value.tudUniqueDates))
 
     }
 
@@ -228,6 +230,24 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
     }
 
     private companion object {
+        private val MERGE_SQL = run {
+            val columns = PARTICIPANT_STATS.columns.map { it.name }
+            val updates = columns.drop(2).joinToString(", ") { name ->
+                val incoming = "EXCLUDED.$name"
+                val current = "participant_stats.$name"
+                val value = when {
+                    name.endsWith("unique_dates") ->
+                        "ARRAY(SELECT DISTINCT day FROM unnest($current || $incoming) day)"
+                    name.endsWith("first_date") -> "LEAST($current, $incoming)"
+                    else -> "GREATEST($current, $incoming)"
+                }
+                "$name = $value"
+            }
+            "INSERT INTO participant_stats (${columns.joinToString(", ")}) " +
+                "VALUES (${columns.joinToString(", ") { "?" }}) " +
+                "ON CONFLICT (study_id, participant_id) DO UPDATE SET $updates"
+        }
+
         private const val RLS_REJECTION_SQL_STATE = "42501"
         private const val MUTATION_REJECTION_SQL_STATE = "55000"
         private const val PARTICIPANT_STATS_QUARANTINE_POLICY =

@@ -66,6 +66,44 @@ class RLSRequestContextTest {
     }
 
     @Test
+    fun `captured stats guard joins a one slot transaction and restores caller authorization`() {
+        hds.connectionTimeout = 300L
+        hds.connection.use { setup ->
+            setup.createStatement().use { statement ->
+                statement.execute("""
+                    CREATE TABLE IF NOT EXISTS data_deletion_operations (
+                        study_id uuid, mode text, status text, participant_id text, participant_block_token text
+                    )
+                """.trimIndent())
+                statement.execute("""
+                    CREATE OR REPLACE FUNCTION chronicle_participant_data_visible(uuid, text)
+                    RETURNS boolean LANGUAGE sql AS
+                    'SELECT current_setting(''app.is_admin'', true) = ''true'''
+                """.trimIndent())
+                statement.execute("GRANT SELECT ON data_deletion_operations TO chronicle_app")
+            }
+        }
+        val wrapped = RLSDataSources.wrapIfRequestScoped(hds)
+        val guard = com.openlattice.chronicle.mapstores.stats.ParticipantStatsDeletionGuard(
+            RLSDataSources.wrapWithSystemContext(wrapped),
+        )
+        val studyId = UUID.randomUUID()
+        RLSRequestContext.set(RLSConnectionContext("participant-request", setOf(studyId), false))
+        wrapped.connection.use { owner ->
+            owner.autoCommit = false
+            com.openlattice.chronicle.storage.PinnedPlatformConnection.pinning(wrapped, owner) {
+                assertFalse(guard.isBlocked(com.openlattice.chronicle.mapstores.stats.ParticipantKey(studyId, "participant")))
+                assertEquals("participant-request", currentSetting(owner, "app.current_user_id"))
+                assertEquals(studyId.toString(), currentSetting(owner, "app.authorized_studies"))
+                assertEquals("false", currentSetting(owner, "app.is_admin"))
+                assertFalse(owner.autoCommit)
+            }
+            owner.rollback()
+            owner.autoCommit = true
+        }
+    }
+
+    @Test
     fun `no request context returns stable wrapper that delegates unscoped connections`() {
         val wrapped = RLSDataSources.wrapIfRequestScoped(hds)
         assertSame(wrapped, RLSDataSources.wrapIfRequestScoped(hds))

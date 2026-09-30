@@ -4,6 +4,7 @@ import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AmbientAudioClassificationEvent
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.sql.Types
@@ -65,9 +66,11 @@ public open class AmbientAudioUploadService(
             level = Level.INFO,
             logger = logger,
         ).use {
-            storageResolver.getPlatformStorage().connection.use { connection ->
+            ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { it.timestamp },
+            ) { connection, retained ->
                 connection.prepareStatement(INSERT_AMBIENT_AUDIO_SQL).use { ps ->
-                    data.forEach { event ->
+                    retained.forEach { event ->
                         ps.setObject(1, studyId)
                         ps.setString(2, participantId)
                         ps.setString(3, event.id)

@@ -11,6 +11,7 @@ import com.openlattice.chronicle.android.AndroidSensorSample
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.upload.UploadType
 import com.openlattice.chronicle.storage.AndroidSensorDataWriter
+import com.openlattice.chronicle.storage.DeletionTableLockOrder
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.UPLOAD_BUFFER
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
@@ -90,11 +91,12 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
             val previousAutoCommit = platform.autoCommit
             platform.autoCommit = false
             try {
+                val fencedStudies = DeletionTableLockOrder.lockDrain(platform, "android_sensor_data")
                 logger.info("Moving android sensor data from upload buffer to storage.")
                 val result = platform.createStatement().use { stmt ->
                     platform.prepareStatement(AndroidSensorDataWriter.insertSql).use { ps ->
                         platform.prepareStatement(QUARANTINE_MALFORMED_BUFFER_SQL).use { quarantinePs ->
-                            stmt.executeQuery(ChroniclePostgresTables.getMoveSql(128, UploadType.AndroidSensor)).use { rs ->
+                            stmt.executeQuery(ChroniclePostgresTables.getMoveSql(128, UploadType.AndroidSensor, fencedStudies)).use { rs ->
                                 moveBatches(ps, quarantinePs, rs)
                             }
                         }

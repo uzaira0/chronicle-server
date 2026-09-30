@@ -4,6 +4,7 @@ import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AndroidDeviceSettingsEvent
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.sql.PreparedStatement
@@ -66,9 +67,11 @@ public open class DeviceSettingsUploadService(
             level = Level.INFO,
             logger = logger,
         ).use {
-            storageResolver.getPlatformStorage().connection.use { connection ->
+            ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { it.timestamp },
+            ) { connection, retained ->
                 connection.prepareStatement(INSERT_DEVICE_SETTINGS_SQL).use { ps ->
-                    data.forEach { event ->
+                    retained.forEach { event ->
                         bindDeviceSettings(ps, studyId, participantId, event)
                         ps.addBatch()
                     }

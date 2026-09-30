@@ -28,6 +28,9 @@ import com.openlattice.chronicle.crypto.EncryptedEnvelope
 import com.openlattice.chronicle.fixtures.FixtureFamily
 import com.openlattice.chronicle.fixtures.FixtureRegistry
 import com.openlattice.chronicle.sensorkit.SensorDataSample
+import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
+import com.openlattice.chronicle.services.delete.DataDeletionMode
+import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.upload.ActivityRecognitionEventsUploadService
@@ -407,6 +410,43 @@ class PayloadFixtureIngestionTest {
                 scopedCount(table, SHARED_STUDY_ID, participantId),
             )
         }
+        // Replay behavior uses an actual purge, including ledger minimization after completion.
+        val orchestrator = DataDeletionOrchestrator(storageResolver, mock<AuditingManager>())
+        val operation = orchestrator.quarantineParticipant(SHARED_STUDY_ID, participantId,
+            DataDeletionMode.COLLECTED_DATA_PURGE, "fixture-purge", UUID.randomUUID())
+        hds().connection.use { connection ->
+            connection.prepareStatement("UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
+                it.setObject(1, operation); it.executeUpdate()
+            }
+        }
+        assertEquals(1, orchestrator.processDueOperations(1))
+        assertEquals("COMPLETED", orchestrator.getOperation(operation).status)
+        assertEquals(expected.size, ingest(SHARED_STUDY_ID, participantId, valid))
+        assertEquals("$familyName: old-only retry must be acknowledged and dropped", 0,
+            scopedCount(table, SHARED_STUDY_ID, participantId))
+        val old = mapper.readTree(valid).first()
+        fun freshEvent(days: Long) = old.deepCopy<com.fasterxml.jackson.databind.node.ObjectNode>().apply {
+            val observed = OffsetDateTime.now().plusDays(days)
+            put("id", UUID.randomUUID().toString()); put("timestamp", observed.toString())
+            // A reread time does not make an old health record/network window fresh.
+            listOf("startMillis" to "endMillis", "bucketStartMillis" to "bucketEndMillis").forEach { (start, end) ->
+                if (has(start) && has(end)) {
+                    val duration = path(end).asLong() - path(start).asLong()
+                    val endMillis = observed.toInstant().toEpochMilli()
+                    put(start, endMillis - duration); put(end, endMillis)
+                }
+            }
+        }
+        val fresh = freshEvent(1)
+        val newest = freshEvent(2)
+        val fixtureDir = File("build/purge-fixtures").apply { mkdirs() }
+        val mixed = File(fixtureDir, "$familyName-${UUID.randomUUID()}.json")
+        try {
+            mapper.writeValue(mixed, listOf(old, fresh, newest))
+            assertEquals(3, ingest(SHARED_STUDY_ID, participantId, mixed))
+            assertEquals("$familyName: mixed retry keeps only fresh rows", 2,
+                scopedCount(table, SHARED_STUDY_ID, participantId))
+        } finally { mixed.delete() }
     }
 
     // -------------------------------------------------------------------------

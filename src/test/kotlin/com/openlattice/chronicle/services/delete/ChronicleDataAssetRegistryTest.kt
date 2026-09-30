@@ -59,7 +59,10 @@ class ChronicleDataAssetRegistryTest {
         val corpus = migrationDir.listFiles { f -> f.extension == "sql" }!!
             .joinToString("\n") { it.readText() }
 
-        ChronicleDataAssetRegistry.participantAssets.forEach { asset ->
+        // Opaque replay identities use trigger-only INSERT and deletion-worker DELETE policies.
+        ChronicleDataAssetRegistry.participantAssets.filterNot {
+            it.participantScope == ParticipantScope.BLOCK_TOKEN_COLUMN
+        }.forEach { asset ->
             assertTrue(
                 "No migration defines the deletion-quarantine policy for ${asset.tableName} " +
                     "(V50 registry literal or a later deletion_quarantine_${asset.tableName} policy)",
@@ -83,7 +86,9 @@ class ChronicleDataAssetRegistryTest {
             .map { it.groupValues[1] }
             .toSet()
 
-        ChronicleDataAssetRegistry.participantAssets.filterNot { it.tableName == "jobs" }.forEach { asset ->
+        ChronicleDataAssetRegistry.participantAssets.filterNot {
+            it.tableName == "jobs" || it.participantScope == ParticipantScope.BLOCK_TOKEN_COLUMN
+        }.forEach { asset ->
             if (asset.tableName in guardedByV68) return@forEach
             for (operation in listOf("insert", "update")) {
                 val trigger = Regex(
@@ -127,6 +132,22 @@ class ChronicleDataAssetRegistryTest {
 
         val registered = ChronicleDataAssetRegistry.participantAssets.map { it.tableName }.toSet()
         assertEquals(emptySet<String>(), participantTables - registered - retained.keys)
+    }
+
+    @Test
+    fun kotlinDefinedParticipantTablesAreDeletedOrDeliberatelyRetained() {
+        val retained = setOf("study_participants", "api_keys", "participant_collection_acknowledgment")
+        val registered = (ChronicleDataAssetRegistry.participantAssets + ChronicleDataAssetRegistry.withdrawalAssets)
+            .map { it.tableName }.toSet()
+        val tables = listOf(
+            com.openlattice.chronicle.storage.ChroniclePostgresTables::class.java,
+            com.openlattice.chronicle.storage.PostgresEventTables::class.java,
+        ).flatMap { owner -> owner.fields.mapNotNull { field ->
+            field.get(null) as? com.geekbeast.postgres.PostgresTableDefinition
+        } }.filter { table -> table.columns.any { it.name == "participant_id" } }
+            .map { it.name.lowercase() }.toSet()
+        assertTrue("Kotlin inventory must include devices", "devices" in tables)
+        assertEquals(emptySet<String>(), tables - registered - retained)
     }
 
     @Test

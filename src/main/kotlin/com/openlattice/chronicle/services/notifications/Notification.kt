@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.services.notifications
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import com.openlattice.chronicle.services.jobs.ChronicleJobDefinition
 import com.openlattice.chronicle.notifications.DeliveryType
 import com.openlattice.chronicle.notifications.NotificationType
@@ -16,7 +17,8 @@ import java.util.*
 public data class Notification(
     val id: UUID,
     val studyId: UUID,
-    val participantId: String,
+    @get:JsonInclude(JsonInclude.Include.NON_EMPTY)
+    val participantId: String = "",
     val createdAt: OffsetDateTime = OffsetDateTime.now(),
     var updatedAt: OffsetDateTime = OffsetDateTime.now(),
     var status: String,

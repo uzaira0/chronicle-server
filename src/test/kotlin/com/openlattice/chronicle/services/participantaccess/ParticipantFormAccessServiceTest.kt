@@ -90,7 +90,9 @@ class ParticipantFormAccessServiceTest {
         val insertStatement = Mockito.mock(PreparedStatement::class.java)
         `when`(resolver.getPlatformStorage()).thenReturn(dataSource)
         `when`(dataSource.connection).thenReturn(connection)
-        `when`(connection.autoCommit).thenReturn(true)
+        val autoCommit = java.util.concurrent.atomic.AtomicBoolean(true)
+        `when`(connection.autoCommit).thenAnswer { autoCommit.get() }
+        Mockito.doAnswer { autoCommit.set(it.getArgument(0)); null }.`when`(connection).setAutoCommit(Mockito.anyBoolean())
         `when`(connection.prepareStatement(Mockito.anyString())).thenAnswer { invocation ->
             when {
                 invocation.getArgument<String>(0).contains("pg_advisory_xact_lock") -> lockStatement
@@ -116,7 +118,7 @@ class ParticipantFormAccessServiceTest {
         )
 
         val order = inOrder(lockStatement, revokeStatement, insertStatement)
-        order.verify(lockStatement).execute()
+        order.verify(lockStatement, Mockito.times(2)).execute()
         order.verify(revokeStatement).executeUpdate()
         order.verify(insertStatement).executeUpdate()
     }

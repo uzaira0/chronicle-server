@@ -215,6 +215,7 @@ public open class ParticipantCollectionAcknowledgmentService(
             val originalAutoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
+                com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
                 val halted = RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
                     lockDeviceEvidence(connection, deviceId)
                     loadCollectionHaltStatus(connection, studyId, participantId, deviceId)
@@ -222,8 +223,7 @@ public open class ParticipantCollectionAcknowledgmentService(
                 if (halted) {
                     throw CollectionHaltedException(studyId, participantId, deviceId)
                 }
-                val result = PinnedPlatformConnection.pinning(dataSource, connection) { write() }
-                connection.commit()
+                val result = PinnedPlatformConnection.committing(dataSource, connection) { write() }
                 result
             } catch (exception: Exception) {
                 connection.rollback()

@@ -58,6 +58,31 @@ class DataQualityServiceTest {
     }
 
     @Test
+    fun testColdStudySettingsLoadBeforeTheAlertTransactionOccupiesThePool() {
+        val studyId = UUID.randomUUID()
+        val borrowed = java.util.concurrent.atomic.AtomicBoolean()
+        `when`(mockHds.connection).thenAnswer {
+            if (!borrowed.compareAndSet(false, true)) {
+                throw java.sql.SQLTransientConnectionException("single pool slot is owned")
+            }
+            mockConnection
+        }
+        Mockito.doAnswer { borrowed.set(false); null }.`when`(mockConnection).close()
+        `when`(studyService.getStudy(studyId)).thenAnswer {
+            val loader = java.util.concurrent.Executors.newSingleThreadExecutor()
+            try {
+                loader.submit<Study> { mockHds.connection.use { createStudy(studyId) } }.get()
+            } finally {
+                loader.shutdownNow()
+            }
+        }
+        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(emptyMap())
+
+        assertEquals(0, service.generateAlerts(studyId))
+        verify(mockConnection).commit()
+    }
+
+    @Test
     fun testServiceConstructsSuccessfully() {
         assertNotNull(service)
     }

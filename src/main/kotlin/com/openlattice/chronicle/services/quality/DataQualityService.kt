@@ -88,6 +88,8 @@ public open class DataQualityService(
     }
 
     public open fun generateAlerts(studyId: UUID): Int {
+        // A cold Hazelcast mapstore runs on another thread and cannot inherit this transaction's pin.
+        val config = getQualityConfig(studyId)
         val storage = storageResolver.getPlatformStorage()
         return storage.connection.use { connection ->
             val previousAutoCommit = connection.autoCommit
@@ -101,7 +103,6 @@ public open class DataQualityService(
                 }
                 // Nested statistics reads must share the transaction holding the erasure lock.
                 val inserted = PinnedPlatformConnection.pinning(storage, connection) {
-                    val config = getQualityConfig(studyId)
                     val allStats = studyService.getStudyParticipantStats(studyId)
                     val (windowStart, windowEnd) = evaluationWindow(config)
                     val evaluationStart = windowStart.atStartOfDay().atOffset(ZoneOffset.UTC)

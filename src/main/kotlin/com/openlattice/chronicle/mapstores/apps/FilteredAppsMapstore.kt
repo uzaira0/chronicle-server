@@ -37,6 +37,12 @@ public open class FilteredAppsMapstore(
         private val LOAD_SQL = """
             SELECT ${STUDY_ID.name}, array_agg(${PostgresEventColumns.APP_PACKAGE_NAME.name}) as $APP_PACKAGE_NAMES 
             FROM ${FILTERED_APPS.name} WHERE ${STUDY_ID.name} = ANY(?)
+              AND chronicle_participant_data_visible(${STUDY_ID.name}, '')
+              AND NOT EXISTS (
+                  SELECT 1 FROM data_deletion_operations operation
+                  WHERE operation.study_id = ${FILTERED_APPS.name}.${STUDY_ID.name}
+                    AND operation.mode = 'STUDY_ERASURE' AND operation.status = 'COMPLETED'
+              )
             GROUP BY ${STUDY_ID.name}
         """
 

@@ -1,12 +1,16 @@
 package com.openlattice.chronicle.services.upload
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.core.JacksonException
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.util.StopWatch
+import com.openlattice.chronicle.sensorkit.SensorType
 import com.openlattice.chronicle.sensorkit.SensorDataSample
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
+import com.openlattice.chronicle.storage.DeletionStudyFence
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOADED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_TYPE
@@ -14,8 +18,10 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_DATA
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.tasks.mapSensorDataToStorage
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
+import java.time.DateTimeException
 import java.util.*
 
 /**
@@ -43,6 +49,8 @@ public open class SensorDataUploadService(
             INSERT INTO ${ChroniclePostgresTables.UPLOAD_BUFFER.name} (${STUDY_ID.name},${PARTICIPANT_ID.name},${UPLOAD_DATA.name}, ${UPLOADED_AT.name}, ${UPLOAD_TYPE.name}, ${DEVICE_ID.name})
             VALUES (?,?,?::jsonb,now(),'${UploadType.Ios.name}',?)
         """.trimIndent()
+
+
     }
 
     override fun upload(
@@ -58,12 +66,35 @@ public open class SensorDataUploadService(
             logger = logger,
         ).use {
             storageResolver.getPlatformStorage().connection.use { connection ->
-                connection.prepareStatement(INSERT_UPLOAD_BUFFER_SQL).use { ps ->
-                    ps.setObject(1, studyId)
-                    ps.setString(2, participantId)
-                    ps.setString(3, mapper.writeValueAsString(data))
-                    ps.setObject(4, deviceId)
-                    ps.executeUpdate()
+                val ownsTransaction = connection.autoCommit
+                if (ownsTransaction) connection.autoCommit = false
+                try {
+                    // A guarded caller's pinned connection owns the transaction. Keep the erasure
+                    // predicate and queue write inside that transaction and its study fence.
+                    DeletionStudyFence.shared(connection, studyId)
+                    val cutoff = ParticipantPurgeCutoff.load(connection, studyId, participantId)
+                    val retained = data.filter { ParticipantPurgeCutoff.permits(cutoff, if (it.sensor == SensorType.deviceUsage) minOf(it.endDate, it.dateRecorded) else it.dateRecorded) }
+                    // Validate only admitted samples; old payloads are silently acknowledged and discarded.
+                    try {
+                        retained.forEach { mapSensorDataToStorage(listOf(it)) }
+                    } catch (invalidPayload: JacksonException) {
+                        throw IllegalArgumentException("Invalid iOS sensor payload", invalidPayload)
+                    } catch (invalidTimestamp: DateTimeException) {
+                        throw IllegalArgumentException("Invalid iOS sensor timestamp or timezone", invalidTimestamp)
+                    }
+                    if (retained.isNotEmpty()) connection.prepareStatement(INSERT_UPLOAD_BUFFER_SQL).use { ps ->
+                        ps.setObject(1, studyId)
+                        ps.setString(2, participantId)
+                        ps.setString(3, mapper.writeValueAsString(retained))
+                        ps.setObject(4, deviceId)
+                        check(ps.executeUpdate() == 1) { "iOS sensor upload was not queued" }
+                    }
+                    if (ownsTransaction) connection.commit()
+                } catch (failure: Exception) {
+                    if (ownsTransaction) connection.rollback()
+                    throw failure
+                } finally {
+                    if (ownsTransaction) connection.autoCommit = true
                 }
             }
         }
@@ -79,4 +110,3 @@ public open class SensorDataUploadService(
 
 
 }
-

@@ -162,8 +162,10 @@ class AndroidSensorDataUploadServiceTest {
         val statement = Mockito.mock(PreparedStatement::class.java)
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
         Mockito.`when`(dataSource.connection).thenReturn(connection)
-        Mockito.`when`(connection.autoCommit).thenReturn(true)
+        Mockito.`when`(connection.autoCommit).thenReturn(true, false)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
+        Mockito.`when`(statement.connection).thenReturn(connection)
+        Mockito.`when`(statement.executeQuery()).thenReturn(Mockito.mock(java.sql.ResultSet::class.java))
         Mockito.`when`(statement.executeBatch()).thenReturn(intArrayOf(1))
         val sample = sample(AndroidSensorType.accelerometer)
 
@@ -183,8 +185,10 @@ class AndroidSensorDataUploadServiceTest {
         val statement = Mockito.mock(PreparedStatement::class.java)
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
         Mockito.`when`(dataSource.connection).thenReturn(connection)
-        Mockito.`when`(connection.autoCommit).thenReturn(true)
+        Mockito.`when`(connection.autoCommit).thenReturn(true, false)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
+        Mockito.`when`(statement.connection).thenReturn(connection)
+        Mockito.`when`(statement.executeQuery()).thenReturn(Mockito.mock(java.sql.ResultSet::class.java))
         Mockito.`when`(statement.executeBatch()).thenThrow(SQLException("simulated insert failure"))
 
         try {

@@ -5,10 +5,14 @@ import com.hazelcast.map.IMap
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.participants.ParticipantStats
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.rls.RLSDataSources
+import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
 import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
+import java.sql.Connection
 import java.util.UUID
+import java.util.concurrent.ForkJoinPool
 
 /**
  * Owns access to the participant-stats cache.
@@ -41,7 +45,14 @@ public interface ParticipantStatsCache {
 public open class HazelcastParticipantStatsCache internal constructor(
     private val participantStats: IMap<ParticipantKey, ParticipantStats>,
     private val deletionBlocked: (ParticipantKey) -> Boolean,
+    private val evictStudyCaches: (UUID) -> Unit,
+    private val storage: HikariDataSource? = null,
 ) : ParticipantStatsCache {
+
+    internal constructor(
+        participantStats: IMap<ParticipantKey, ParticipantStats>,
+        deletionBlocked: (ParticipantKey) -> Boolean,
+    ) : this(participantStats, deletionBlocked, {})
 
     public constructor(
         storageResolver: StorageResolver,
@@ -51,18 +62,32 @@ public open class HazelcastParticipantStatsCache internal constructor(
         ParticipantStatsDeletionGuard(
             RLSDataSources.wrapWithSystemContext(storageResolver.getPlatformStorage()),
         )::isBlocked,
+        { studyId ->
+            listOf(HazelcastMap.STUDIES, HazelcastMap.FILTERED_APPS, HazelcastMap.STUDY_LIMITS)
+                .forEach { map ->
+                    try {
+                        map.getMap(hazelcast).evict(studyId)
+                    } catch (cacheFailure: Exception) {
+                        logger.error("Study quarantine cache {} eviction failed", map, cacheFailure)
+                    }
+                }
+        },
+        storageResolver.getPlatformStorage(),
     )
 
     override fun get(studyId: UUID, participantId: String): ParticipantStats? {
         val key = ParticipantKey(studyId, participantId)
         if (deletionBlocked(key)) {
-            participantStats.evict(key)
+            evictWithoutOwnerWait(key)
             return null
         }
 
-        val cached = participantStats[key] ?: return null
+        val owner = storage?.let(PinnedPlatformConnection::owningConnection)
+        val cached = if (owner == null) participantStats[key]
+            else ParticipantStatsMapstore(checkNotNull(storage)).readUsing(owner, key)
+        cached ?: return null
         return if (deletionBlocked(key)) {
-            participantStats.evict(key)
+            evictWithoutOwnerWait(key)
             null
         } else {
             cached
@@ -72,13 +97,33 @@ public open class HazelcastParticipantStatsCache internal constructor(
     override fun merge(stats: ParticipantStats) {
         val key = ParticipantKey(stats.studyId, stats.participantId)
         if (deletionBlocked(key)) {
-            participantStats.evict(key)
+            evictWithoutOwnerWait(key)
             return
         }
 
+        val owner = storage?.let(PinnedPlatformConnection::owningConnection)
+        if (owner != null) {
+            ParticipantStatsMapstore(checkNotNull(storage)).mergeUsing(owner, stats)
+            // Eviction can flush write-behind on a member thread. The owner must never wait for
+            // it while holding the pool checkout. SQL merges also fence that delayed stale write.
+            evictWithoutOwnerWait(key)
+            return
+        }
         mergeAtomically(key, stats)
         if (deletionBlocked(key)) {
+            evictWithoutOwnerWait(key)
+        }
+    }
+
+    private fun evictWithoutOwnerWait(key: ParticipantKey) {
+        if (storage?.let(PinnedPlatformConnection::owningConnection) == null) {
             participantStats.evict(key)
+        } else {
+            PinnedPlatformConnection.afterCommit(checkNotNull(storage), key) {
+                ForkJoinPool.commonPool().execute {
+                    evictBestEffort(key, null, "transactional stats update")
+                }
+            }
         }
     }
 
@@ -132,6 +177,11 @@ public open class HazelcastParticipantStatsCache internal constructor(
             transactionFailure = failure
             throw failure
         } finally {
+            try {
+                evictStudyCaches(studyId)
+            } catch (cacheFailure: Exception) {
+                handleCacheCleanupFailure(transactionFailure, cacheFailure, "evicting study metadata caches")
+            }
             val cachedStudyKeys = try {
                 participantStats.keys.filterTo(mutableSetOf()) { it.studyId == studyId }
             } catch (cacheFailure: Exception) {
@@ -197,19 +247,30 @@ public open class HazelcastParticipantStatsCache internal constructor(
 internal class ParticipantStatsDeletionGuard(
     private val dataSource: HikariDataSource,
 ) {
-    fun isBlocked(key: ParticipantKey): Boolean =
-        dataSource.connection.use { connection ->
-            connection.prepareStatement(IS_DELETION_BLOCKED_SQL).use { statement ->
-                statement.setObject(1, key.studyId)
-                statement.setString(2, key.participantId)
-                statement.setObject(3, key.studyId)
-                statement.setString(4, key.participantId)
-                statement.setString(5, key.studyId.toString())
-                statement.setString(6, key.participantId)
-                statement.executeQuery().use { resultSet ->
-                    check(resultSet.next()) { "Participant-stats deletion guard returned no result" }
-                    resultSet.getBoolean(1)
+    fun isBlocked(key: ParticipantKey): Boolean {
+        val resolved = PinnedPlatformConnection.resolve(dataSource)
+        return resolved.connection.use { connection ->
+            if (resolved !== dataSource && !connection.autoCommit) {
+                RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
+                    isBlocked(connection, key)
                 }
+            } else {
+                isBlocked(connection, key)
+            }
+        }
+    }
+
+    private fun isBlocked(connection: Connection, key: ParticipantKey): Boolean =
+        connection.prepareStatement(IS_DELETION_BLOCKED_SQL).use { statement ->
+            statement.setObject(1, key.studyId)
+            statement.setString(2, key.participantId)
+            statement.setObject(3, key.studyId)
+            statement.setString(4, key.participantId)
+            statement.setString(5, key.studyId.toString())
+            statement.setString(6, key.participantId)
+            statement.executeQuery().use { resultSet ->
+                check(resultSet.next()) { "Participant-stats deletion guard returned no result" }
+                resultSet.getBoolean(1)
             }
         }
 

@@ -41,10 +41,15 @@ public open class UploadDiagnosticsUploadService(
          * Completion clears participant_id, so the operation is matched by its block token.
          */
         private val ERASURE_CUTOFF_SQL = """
-            SELECT max(COALESCE(started_at, completed_at)) FROM data_deletion_operations
-            WHERE study_id = ?
-              AND participant_block_token = md5(?::text || ':' || ?)
-              AND status = 'COMPLETED'
+            WITH subject AS (SELECT ?::uuid AS study_id, md5(?::text || ':' || ?) AS token)
+            SELECT max(cutoff) FROM (
+                SELECT COALESCE(operation.started_at, operation.completed_at) AS cutoff
+                FROM data_deletion_operations operation JOIN subject USING (study_id)
+                WHERE operation.participant_block_token = subject.token AND operation.status = 'COMPLETED'
+                UNION ALL
+                SELECT purge.cutoff FROM participant_purge_cutoffs purge JOIN subject USING (study_id)
+                WHERE purge.participant_block_token = subject.token
+            ) erasures
         """.trimIndent()
 
         private val DELETION_STUDY_LOCK_SQL = """

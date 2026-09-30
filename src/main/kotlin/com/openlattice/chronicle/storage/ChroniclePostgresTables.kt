@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.storage
 
+import java.util.UUID
+
 import com.geekbeast.postgres.PostgresColumnsIndexDefinition
 import com.geekbeast.postgres.PostgresColumnDefinition
 import com.geekbeast.postgres.PostgresDatatype
@@ -1168,8 +1170,8 @@ public class ChroniclePostgresTables private constructor() {
          * occur in the same statement and transaction.
          */
         @JvmStatic
-        public fun getMoveSql(batchSize: Int = 65536, uploadType: UploadType): String {
-            return buildMoveSql(batchSize, uploadType, scoped = false)
+        public fun getMoveSql(batchSize: Int = 65536, uploadType: UploadType, fencedStudies: Collection<UUID>? = null): String {
+            return buildMoveSql(batchSize, uploadType, scoped = false, fencedStudies)
         }
 
         /**
@@ -1180,11 +1182,11 @@ public class ChroniclePostgresTables private constructor() {
          * Bind parameters are study id then participant id.
          */
         @JvmStatic
-        public fun getScopedMoveSql(batchSize: Int = 65536, uploadType: UploadType): String {
-            return buildMoveSql(batchSize, uploadType, scoped = true)
+        public fun getScopedMoveSql(batchSize: Int = 65536, uploadType: UploadType, fencedStudies: Collection<UUID>? = null): String {
+            return buildMoveSql(batchSize, uploadType, scoped = true, fencedStudies)
         }
 
-        private fun buildMoveSql(batchSize: Int, uploadType: UploadType, scoped: Boolean): String {
+        private fun buildMoveSql(batchSize: Int, uploadType: UploadType, scoped: Boolean, fencedStudies: Collection<UUID>?): String {
             require(batchSize > 0) { "Move batch size must be positive" }
             val subjectFilter = if (scoped) {
                 """
@@ -1193,6 +1195,13 @@ public class ChroniclePostgresTables private constructor() {
                 """.trimIndent()
             } else {
                 ""
+            }
+            // A newly arrived study was not part of the pre-lock census. Leave it for the next
+            // drain instead of acquiring its study fence after owning global table/row locks.
+            val studyFilter = when {
+                fencedStudies == null -> ""
+                fencedStudies.isEmpty() -> "AND false"
+                else -> "AND candidate.${STUDY_ID.name} IN (${fencedStudies.joinToString { "'$it'::uuid" }})"
             }
             val lockClause = if (scoped) "FOR UPDATE" else "FOR UPDATE SKIP LOCKED"
             return """
@@ -1206,6 +1215,7 @@ public class ChroniclePostgresTables private constructor() {
                           candidate.${PARTICIPANT_ID.name}
                       )
                     $subjectFilter
+                    $studyFilter
                     ORDER BY candidate.${UPLOADED_AT.name}, candidate.ctid
                     $lockClause
                     LIMIT $batchSize

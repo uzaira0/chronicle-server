@@ -57,9 +57,9 @@ public open class ParticipantPurgeService(
         // - devices: device enrollment metadata, preserved with enrollment; contains only
         //   server-assigned device_id (UUIDs), not real hardware identifiers (Phase 3.6
         //   removed source_device_id entirely; device_id is a deterministic UUID)
-        // - audit / audit_buffer: HIPAA requires 6-year retention of audit logs;
-        //   these tables do not contain PII or real device identifiers and must
-        //   NOT be purged even on GDPR erasure requests
+        // - audit / audit_buffer: owner policy makes audit accountability immutable.
+        //   Historical identity-bearing rows remain retained; future audit writers
+        //   minimize participant identifiers via the existing AuditService sanitizer.
     }
 
     public fun previewPurge(studyId: UUID, participantId: String): ParticipantDataPurgeSummary {
@@ -217,7 +217,8 @@ public open class ParticipantPurgeService(
         studyId: UUID,
         participantId: String,
     ): Long {
-        val sql = "SELECT COUNT(*) FROM ${asset.tableName} WHERE study_id::text = ? AND participant_id = ?"
+        val predicate = asset.participantScope.predicate
+        val sql = "SELECT COUNT(*) FROM ${asset.tableName} WHERE study_id::text = ? AND $predicate"
         return connection.prepareStatement(sql).use { ps ->
             ps.setString(1, studyId.toString())
             ps.setString(2, participantId)

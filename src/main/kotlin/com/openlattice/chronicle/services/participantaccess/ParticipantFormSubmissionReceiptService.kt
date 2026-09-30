@@ -74,6 +74,7 @@ public class ParticipantFormSubmissionReceiptService(
         return storageResolver.getPlatformStorage().connection.use { connection ->
             connection.autoCommit = false
             try {
+                com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, scope.studyId)
                 val receiptId = UUID.randomUUID()
                 val inserted = connection.prepareStatement(
                     """

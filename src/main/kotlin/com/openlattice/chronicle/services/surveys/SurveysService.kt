@@ -760,10 +760,22 @@ public open class SurveysService(
     }
 
 
+    private fun requireVisibleFilteredApps(studyId: UUID) {
+        if (com.openlattice.chronicle.services.studies.StudyDeletionGuard(storageResolver)
+                .blockedStudyIds(listOf(studyId)).isNotEmpty()) {
+            try { filteredApps.evict(studyId) } catch (failure: Exception) {
+                logger.error("Study {} is erased or quarantined, but filtered-app eviction failed", studyId, failure)
+            }
+            throw NoSuchElementException("No study found for id $studyId")
+        }
+    }
+
     @Timed
     override fun getAppsFilteredForStudyAppUsageSurvey(studyId: UUID): Collection<String> {
         val hds = storageResolver.getPlatformStorage()
+        requireVisibleFilteredApps(studyId)
         val apps = filteredApps[studyId] ?: scheduledTasksManager.systemAppPackageNames
+        requireVisibleFilteredApps(studyId)
 
         hds.connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)

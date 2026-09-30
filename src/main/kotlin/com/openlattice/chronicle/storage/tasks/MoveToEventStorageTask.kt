@@ -14,6 +14,9 @@ import com.openlattice.chronicle.services.upload.UsageEventQueueEntry
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.PostgresEventColumns
 import com.openlattice.chronicle.storage.PostgresEventTables
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
+import com.openlattice.chronicle.storage.DeletionTableLockOrder
+import com.openlattice.chronicle.storage.ErasedUsageEventFilter
 import com.openlattice.chronicle.storage.odtFromUsageEventColumn
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.util.LogSanitizer
@@ -76,35 +79,39 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
             try {
                 logger.info("Moving data from the Postgres upload buffer to event storage.")
                 val queueEntriesByFlavor: MutableMap<PostgresFlavor, MutableList<UsageEventQueueEntry>> = mutableMapOf()
-                storageResolver.getPlatformStorage().connection.use { platform ->
+                val platformStorage = storageResolver.getPlatformStorage()
+                storageResolver.requireDefaultDeletionStorageColocated()
+                platformStorage.connection.use { platform ->
                     platform.autoCommit = false
-                    platform.createStatement().use { stmt ->
-                        stmt.executeQuery(ChroniclePostgresTables.getMoveSql(128, UploadType.Android)).use { rs ->
-                            while (rs.next()) {
-                                val usageEventQueueEntries = ResultSetAdapters.usageEventQueueEntries(rs)
-                                val (flavor, _) = storageResolver.resolveAndGetFlavor(usageEventQueueEntries.studyId)
-                                queueEntriesByFlavor.getOrPut(flavor) { mutableListOf() }
-                                    .addAll(usageEventQueueEntries.toEntryList())
+                    PinnedPlatformConnection.committing(platformStorage, platform) {
+                        val fencedStudies = DeletionTableLockOrder.lockDrain(platform, "chronicle_usage_events")
+                        platform.createStatement().use { stmt ->
+                            stmt.executeQuery(ChroniclePostgresTables.getMoveSql(128, UploadType.Android, fencedStudies)).use { rs ->
+                                while (rs.next()) {
+                                    val usageEventQueueEntries = ResultSetAdapters.usageEventQueueEntries(rs)
+                                    val (flavor, _) = storageResolver.resolveAndGetFlavor(usageEventQueueEntries.studyId)
+                                    queueEntriesByFlavor.getOrPut(flavor) { mutableListOf() }
+                                        .addAll(usageEventQueueEntries.toEntryList())
+                                }
                             }
-                        }
-                        val vanillaEntryCount = (queueEntriesByFlavor[PostgresFlavor.VANILLA] ?: listOf()).size
-                        logger.info("Total number of entries for Postgres event storage: $vanillaEntryCount")
-                        queueEntriesByFlavor.forEach { (postgresFlavor, usageEventQueueEntries) ->
-                            if (usageEventQueueEntries.isEmpty()) return@forEach
-                            when (postgresFlavor) {
-                                PostgresFlavor.VANILLA -> writeToEventStorage(
-                                    storageResolver.getEventStorageWithFlavor(PostgresFlavor.VANILLA),
-                                    usageEventQueueEntries
-                                )
-                                PostgresFlavor.ANY -> writeToEventStorage(
-                                    storageResolver.getEventStorageWithFlavor(PostgresFlavor.VANILLA),
-                                    usageEventQueueEntries
-                                )
-                                else -> throw InvalidParameterException("Invalid postgres flavor: ${postgresFlavor.name}")
+                            val vanillaEntryCount = (queueEntriesByFlavor[PostgresFlavor.VANILLA] ?: listOf()).size
+                            logger.info("Total number of entries for Postgres event storage: $vanillaEntryCount")
+                            queueEntriesByFlavor.forEach { (postgresFlavor, usageEventQueueEntries) ->
+                                if (usageEventQueueEntries.isEmpty()) return@forEach
+                                when (postgresFlavor) {
+                                    PostgresFlavor.VANILLA -> writeToEventStorage(
+                                        storageResolver.getEventStorageWithFlavor(PostgresFlavor.VANILLA),
+                                        usageEventQueueEntries
+                                    )
+                                    PostgresFlavor.ANY -> writeToEventStorage(
+                                        storageResolver.getEventStorageWithFlavor(PostgresFlavor.VANILLA),
+                                        usageEventQueueEntries
+                                    )
+                                    else -> throw InvalidParameterException("Invalid postgres flavor: ${postgresFlavor.name}")
+                                }
                             }
                         }
                     }
-                    platform.commit()
                     platform.autoCommit = true
                 }
                 logger.info("Successfully moved data to event storage.")
@@ -122,12 +129,14 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
     @Suppress("LongMethod", "CyclomaticComplexMethod", "NestedBlockDepth", "TooGenericExceptionCaught")
     private fun writeToEventStorage(
         hds: HikariDataSource,
-        data: List<UsageEventQueueEntry>,
+        queuedData: List<UsageEventQueueEntry>,
         includeOnConflict: Boolean = false,
     ): Int {
-        if (data.isEmpty()) return 0
+        if (queuedData.isEmpty()) return 0
 
-        return hds.connection.use { connection ->
+        return PinnedPlatformConnection.resolve(hds).connection.use { connection ->
+            val data = ErasedUsageEventFilter.retainPermitted(connection, queuedData)
+            if (data.isEmpty()) return@use 0
             //Create the temporary merge table
             try {
                 //Future: May base this off data being inserted instead?

@@ -17,4 +17,5 @@ public data class ResearcherNotification(
     val subject: String,
     val message: String,
     val dateTime: OffsetDateTime = OffsetDateTime.now(),
+    val participantId: String = "",
 )

@@ -74,12 +74,16 @@ class AppDataUploadServiceTest {
         val hds = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
         val connection = Mockito.mock(java.sql.Connection::class.java)
         val statement = Mockito.mock(java.sql.PreparedStatement::class.java)
+        val permitted = Mockito.mock(java.sql.ResultSet::class.java)
         Mockito.`when`(storageResolver.resolveAndGetFlavor(studyId))
             .thenReturn(com.geekbeast.configuration.postgres.PostgresFlavor.VANILLA to hds)
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(hds)
         Mockito.`when`(hds.connection).thenReturn(connection)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
         Mockito.`when`(statement.executeUpdate()).thenReturn(1)
+        Mockito.`when`(statement.executeQuery()).thenReturn(permitted)
+        Mockito.`when`(permitted.next()).thenReturn(false)
+        Mockito.`when`(permitted.getInt(1)).thenReturn(1)
 
         val stored = service.uploadAndroidUsageEvents(
             studyId,

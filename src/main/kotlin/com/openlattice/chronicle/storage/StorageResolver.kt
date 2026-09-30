@@ -61,6 +61,20 @@ public open class StorageResolver constructor(
     }
 
     public fun resolveDataSourceName(studyId: UUID): String {
+        if (studyStorage != null) {
+            val platform = dataSourceManager.getDataSource(storageConfiguration.platformStorage)
+            val owner = PinnedPlatformConnection.activeConnection(platform)
+            if (owner != null) {
+                // A cold STUDIES entry processor loads on a member thread and cannot reuse this pin.
+                return owner.prepareStatement("SELECT storage FROM studies WHERE study_id = ?").use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { rows ->
+                        if (rows.next()) rows.getString(1) ?: storageConfiguration.defaultEventStorage
+                        else storageConfiguration.defaultEventStorage
+                    }
+                }
+            }
+        }
         return studyStorage?.executeOnKey(studyId, StudyStorageRead()) ?: storageConfiguration.defaultEventStorage
     }
 
@@ -81,6 +95,15 @@ public open class StorageResolver constructor(
     public fun getEventStorageWithFlavor(requiredFlavor: PostgresFlavor = PostgresFlavor.VANILLA): HikariDataSource {
         val (flavor, hds) = getDefaultEventStorage()
         check(flavor == PostgresFlavor.ANY || flavor == requiredFlavor) { "Configured flavor $flavor does not match required flavor $requiredFlavor" }
+        // Distinct pools in a verified colocated database must materialize on the study-fence
+        // owner. A second connection can queue behind an eraser that is waiting for this owner.
+        val platform = getPlatformStorage()
+        if (PinnedPlatformConnection.owningConnection(platform) != null) {
+            if (storageConfiguration.defaultEventStorage !in validatedEventStorages) {
+                requireDefaultDeletionStorageColocated()
+            }
+            return platform
+        }
         return hds
     }
 
@@ -169,7 +192,7 @@ public open class StorageResolver constructor(
      * datastore.
      */
     public fun requireDefaultDeletionStorageColocated() {
-        requireDeletionStorageColocated(getDefaultEventStorage().second)
+        requireDeletionStorageColocated(storageConfiguration.defaultEventStorage, getDefaultEventStorage().second)
     }
 
     /**
@@ -195,7 +218,10 @@ public open class StorageResolver constructor(
     }
 
     private fun requireDeletionStorageColocated(eventStorage: HikariDataSource) {
-        getPlatformStorage().connection.use { platformConnection ->
+        val platformStorage = getPlatformStorage()
+        // Aliases of one physical pool necessarily share its database, schema and lock domain.
+        if (RLSDataSources.samePool(platformStorage, eventStorage)) return
+        platformStorage.connection.use { platformConnection ->
             eventStorage.connection.use { eventConnection ->
                 requireSamePostgresLockDomain(platformConnection, eventConnection, UUID.randomUUID().mostSignificantBits)
             }

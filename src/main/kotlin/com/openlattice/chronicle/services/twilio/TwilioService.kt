@@ -16,6 +16,7 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.net.URI
+import java.sql.Connection
 import java.util.*
 
 /**
@@ -47,7 +48,9 @@ public open class TwilioService(
         }
     }
 
-    public fun sendNotification(notification: Notification): Notification {
+    public fun sendNotification(notification: Notification): Notification = sendNotification(notification, null)
+
+    internal fun sendNotification(notification: Notification, connection: Connection?): Notification {
         val participantRef = LogSanitizer.stableFingerprint(notification.participantId, "participant")
         if (!enabled) {
             logger.warn("Twilio is disabled; notification for {} was not sent", participantRef)
@@ -56,7 +59,11 @@ public open class TwilioService(
         }
         try {
             val message = Message
-                .creator(PhoneNumber(notification.destination), getStudyPhoneNumber(notification.studyId), notification.body)
+                .creator(
+                    PhoneNumber(notification.destination),
+                    getStudyPhoneNumber(notification.studyId, connection),
+                    notification.body,
+                )
                 .setStatusCallback(URI.create(callbackURL))
                 .create()
             logger.info(
@@ -83,8 +90,14 @@ public open class TwilioService(
         return notifications.map { notification -> sendNotification(notification) }
     }
 
-    override fun getStudyPhoneNumber(studyId: UUID): PhoneNumber {
-        val phoneNumber = studyService.getStudyPhoneNumber(studyId)
+    override fun getStudyPhoneNumber(studyId: UUID): PhoneNumber = getStudyPhoneNumber(studyId, null)
+
+    private fun getStudyPhoneNumber(studyId: UUID, connection: Connection?): PhoneNumber {
+        val phoneNumber = if (connection == null) {
+            studyService.getStudyPhoneNumber(studyId)
+        } else {
+            studyService.getStudyPhoneNumber(connection, studyId)
+        }
 
         //Default phone number is only for one way communication.
         return if (StringUtils.isBlank(phoneNumber)) {

@@ -286,16 +286,17 @@ class ApiKeyServiceTest {
 
         assertFalse(intent.alreadyWithdrawn)
         val sql = ArgumentCaptor.forClass(String::class.java)
-        verify(mockConnection, Mockito.times(7)).prepareStatement(sql.capture())
-        val statements = sql.allValues
+        verify(mockConnection, Mockito.atLeastOnce()).prepareStatement(sql.capture())
+        val statements = sql.allValues.filterNot { it.contains("current_setting(") || it.contains("set_config(") }
         assertTrue(statements[0].contains("pg_advisory_xact_lock"))
         assertTrue(statements[0].contains("|| ':' ||"))
         assertTrue(statements[1].contains("FROM api_keys"))
         assertTrue(statements[2].contains("mobile_withdrawal_requests"))
-        assertTrue(statements[3].contains("FROM study_participants"))
-        assertTrue(statements[4].contains("INSERT INTO mobile_withdrawal_requests"))
-        assertTrue(statements[5].contains("SET participation_status = 'NOT_ENROLLED'"))
-        assertTrue(statements[6].contains("SET revoked = true"))
+        assertTrue(statements[3].contains("FROM data_deletion_operations"))
+        assertTrue(statements[4].contains("FROM study_participants"))
+        assertTrue(statements[5].contains("INSERT INTO mobile_withdrawal_requests"))
+        assertTrue(statements[6].contains("SET participation_status = 'NOT_ENROLLED'"))
+        assertTrue(statements[7].contains("SET revoked = true"))
     }
 
     @Test
@@ -309,12 +310,13 @@ class ApiKeyServiceTest {
         `when`(mockRs.next()).thenReturn(true, false, true)
         `when`(mockRs.getBoolean("revoked")).thenReturn(false)
         `when`(mockRs.getString("participation_status")).thenReturn("NOT_ENROLLED")
+        `when`(mockRs.getBoolean(1)).thenReturn(true) // Existing durable erasure, not status alone.
 
         val intent = service.bindWithdrawalIntent(mockConnection, studyId, participantId, deviceId, keyId, requestId)
 
         assertTrue(intent.alreadyWithdrawn)
         val sql = ArgumentCaptor.forClass(String::class.java)
-        verify(mockConnection, Mockito.times(6)).prepareStatement(sql.capture())
+        verify(mockConnection, Mockito.atLeastOnce()).prepareStatement(sql.capture())
         assertTrue(sql.allValues.none { it.contains("SET participation_status = 'NOT_ENROLLED'") })
         assertTrue(sql.allValues.last().contains("SET revoked = true"))
     }

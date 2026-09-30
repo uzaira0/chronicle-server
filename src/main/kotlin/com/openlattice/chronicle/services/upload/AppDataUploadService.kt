@@ -48,6 +48,10 @@ import com.openlattice.chronicle.storage.PostgresEventTables.Companion.createTem
 import com.openlattice.chronicle.storage.PostgresEventTables.Companion.getDeleteUsageEventsFromTempTable
 import com.openlattice.chronicle.storage.PostgresEventTables.Companion.getInsertUsageEventColumnIndex
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.DeletionStudyFence
+import com.openlattice.chronicle.storage.ErasedUsageEventFilter
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
+import com.openlattice.chronicle.storage.DeletionTableLockOrder
 import com.openlattice.chronicle.storage.odtFromUsageEventColumn
 import com.openlattice.chronicle.storage.zdtFromAndroidColumns
 import com.openlattice.chronicle.util.LogSanitizer
@@ -273,19 +277,33 @@ public open class AppDataUploadService(
             level = Level.INFO,
             logger = logger,
         ).use {
-            storageResolver.getPlatformStorage().connection.use { connection ->
-                connection.prepareStatement(INSERT_USAGE_EVENTS_SQL).use { ps ->
-                    ps.setObject(1, studyId)
-                    ps.setString(2, participantId)
-                    ps.setString(3, mapper.writeValueAsString(dataList))
-                    ps.setObject(4, uploadedAt)
-                    ps.setObject(5, deviceId)
-                    ps.executeUpdate()
+            val platformStorage = storageResolver.getPlatformStorage()
+            platformStorage.connection.use { connection ->
+                val originalAutoCommit = connection.autoCommit
+                connection.autoCommit = false
+                try {
+                    PinnedPlatformConnection.committing(platformStorage, connection) {
+                    DeletionStudyFence.shared(connection, studyId)
+                    val queued = dataList.map { UsageEventQueueEntry(studyId, participantId, it, uploadedAt) }
+                    val retainedData = ErasedUsageEventFilter.retainPermitted(connection, queued).map { it.data }
+                    if (retainedData.isNotEmpty()) connection.prepareStatement(INSERT_USAGE_EVENTS_SQL).use { ps ->
+                        ps.setObject(1, studyId)
+                        ps.setString(2, participantId)
+                        ps.setString(3, mapper.writeValueAsString(retainedData))
+                        ps.setObject(4, uploadedAt)
+                        ps.setObject(5, deviceId)
+                        ps.executeUpdate()
+                    }
+                    if (retainedData.isNotEmpty()) updateParticipantStats(retainedData, studyId, participantId)
+                    }
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                } finally {
+                    connection.autoCommit = originalAutoCommit
                 }
             }
         }
-
-        updateParticipantStats(dataList, studyId, participantId)
 
         // We may write fewer entities than provided; we return the number processed so the client knows all is good.
         if (expectedSize != dataList.size) {
@@ -293,7 +311,7 @@ public open class AppDataUploadService(
             logger.warn("Wrote ${dataList.size} entities, but expected to write $expectedSize entities")
         }
 
-        // The number of events actually persisted, which is what the client is acknowledged for.
+        // Acknowledge handled events, including pre-purge rows intentionally discarded.
         // The prepared statement's update count is the number of buffer rows (always 1) and says
         // nothing about how many events survived filter().
         return dataList.size
@@ -351,14 +369,18 @@ public open class AppDataUploadService(
         )
         val queueEntriesByFlavor: MutableMap<PostgresFlavor, MutableList<UsageEventQueueEntry>> = mutableMapOf()
         var claimedRows = 0
-        storageResolver.getPlatformStorage().connection.use { platform ->
+        val platformStorage = storageResolver.getPlatformStorage()
+        storageResolver.requireDefaultDeletionStorageColocated()
+        platformStorage.connection.use { platform ->
             val previousAutoCommit = platform.autoCommit
             platform.autoCommit = false
             try {
+                PinnedPlatformConnection.committing(platformStorage, platform) {
+                val fencedStudies = DeletionTableLockOrder.lockDrain(platform, "chronicle_usage_events", MOVE_BATCH_SIZE, scope?.studyId, scope?.participantId)
                 val moveSql = if (scope == null) {
-                    getMoveSql(MOVE_BATCH_SIZE, UploadType.Android)
+                    getMoveSql(MOVE_BATCH_SIZE, UploadType.Android, fencedStudies)
                 } else {
-                    getScopedMoveSql(MOVE_BATCH_SIZE, UploadType.Android)
+                    getScopedMoveSql(MOVE_BATCH_SIZE, UploadType.Android, fencedStudies)
                 }
                 platform.prepareStatement(moveSql).use { statement ->
                     if (scope != null) {
@@ -393,7 +415,7 @@ public open class AppDataUploadService(
                         else -> throw InvalidParameterException("Invalid postgres flavor: ${postgresFlavor.name}")
                     }
                 }
-                platform.commit()
+                }
             } catch (ex: Exception) {
                 try {
                     platform.rollback()
@@ -508,12 +530,14 @@ public open class AppDataUploadService(
     @Suppress("LongMethod", "CyclomaticComplexMethod", "NestedBlockDepth", "TooGenericExceptionCaught")
     private fun writeToEventStorage(
         hds: HikariDataSource,
-        data: List<UsageEventQueueEntry>,
+        queuedData: List<UsageEventQueueEntry>,
         includeOnConflict: Boolean = false,
     ): Int {
-        if (data.isEmpty()) return 0
+        if (queuedData.isEmpty()) return 0
 
-        return hds.connection.use { connection ->
+        return PinnedPlatformConnection.resolve(hds).connection.use { connection ->
+            val data = ErasedUsageEventFilter.retainPermitted(connection, queuedData)
+            if (data.isEmpty()) return@use 0
             //Create the temporary merge table
             try {
                 var minEventTimestamp: OffsetDateTime = OffsetDateTime.MAX

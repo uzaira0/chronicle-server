@@ -79,6 +79,9 @@ public open class AuditService(
             "userid"
         )
 
+        internal fun participantReference(participantId: String): String =
+            sanitizeAdditionalDataValue("participantId", participantId).toString()
+
         internal fun sanitizeForPersistence(entry: AuditLogEntry): AuditLogEntry {
             return entry.copy(
                 ipAddress = LogSanitizer.stableFingerprint(entry.ipAddress, prefix = "ip"),

@@ -14,9 +14,10 @@ public data class ParticipantDataAsset(
     val participantScope: ParticipantScope = ParticipantScope.SCALAR_COLUMN,
 )
 
-public enum class ParticipantScope {
-    SCALAR_COLUMN,
-    TEXT_ARRAY_COLUMN,
+public enum class ParticipantScope(internal val predicate: String) {
+    SCALAR_COLUMN("participant_id = ?"),
+    TEXT_ARRAY_COLUMN("? = ANY(participant_ids)"),
+    BLOCK_TOKEN_COLUMN("participant_block_token = md5(study_id::text || ':' || ?)"),
 }
 
 public object ChronicleDataAssetRegistry {
@@ -55,11 +56,22 @@ public object ChronicleDataAssetRegistry {
         ParticipantDataAsset("participant-form-sessions", "participant_form_sessions", false),
         ParticipantDataAsset("usage-event-annotations", "usage_event_annotations", false),
         ParticipantDataAsset("participant-pseudonyms", "participant_pseudonyms", false),
+        ParticipantDataAsset("notifications", "notifications", false),
+        ParticipantDataAsset("webhook-deliveries", "webhook_deliveries", false),
         ParticipantDataAsset("jobs", "jobs", false, ParticipantScope.TEXT_ARRAY_COLUMN),
         // Keep access codes last: deleting one cascades sessions and receipts, which would
         // otherwise make their independently verified step counts inaccurate.
         ParticipantDataAsset("participant-form-access-codes", "participant_form_access_codes", false),
     )
+
+    /** Enrollment metadata and replay fences survive collected-data purge, then leave with enrollment. */
+    public val withdrawalAssets: List<ParticipantDataAsset> = listOf(
+        ParticipantDataAsset("devices", "devices", false),
+        ParticipantDataAsset("purge-cutoffs", "participant_purge_cutoffs", false, ParticipantScope.BLOCK_TOKEN_COLUMN),
+    )
+
+    internal fun assetsFor(mode: DataDeletionMode): List<ParticipantDataAsset> =
+        participantAssets + if (mode == DataDeletionMode.WITHDRAW_AND_ERASE) withdrawalAssets else emptyList()
 
     init {
         check(participantAssets.map { it.id }.distinct().size == participantAssets.size) {

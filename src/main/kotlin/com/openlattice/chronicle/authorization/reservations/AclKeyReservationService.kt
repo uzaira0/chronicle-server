@@ -106,14 +106,17 @@ public open class AclKeyReservationService(private val resolver: StorageResolver
     @Suppress("NestedBlockDepth")
     public fun tryGetId(name: String): UUID? {
         resolver.getPlatformStorage().connection.use { conn ->
-            conn.prepareStatement(SELECT_SQL).use { ps ->
-                ps.setString(1, name)
-                ps.executeQuery().use { rs ->
-                    return if (rs.next()) ResultSetAdapters.securableObjectId(rs) else null
-                }
-            }
+            return tryGetId(conn, name)
         }
     }
+
+    private fun tryGetId(connection: java.sql.Connection, name: String): UUID? =
+        connection.prepareStatement(SELECT_SQL).use { statement ->
+            statement.setString(1, name)
+            statement.executeQuery().use { rows ->
+                if (rows.next()) ResultSetAdapters.securableObjectId(rows) else null
+            }
+        }
 
     public fun getId(name: String): UUID {
         resolver.getPlatformStorage().connection.use { conn ->
@@ -224,13 +227,15 @@ public open class AclKeyReservationService(private val resolver: StorageResolver
         ps.setObject(2, obj.category.name)
         ps.setObject(3, obj.id)
         ps.setObject(4, proposedName)
-        val rs = ps.executeQuery()
         //We check if the id and proposed name have been inserted appropriately
-        return if (rs.next()) {
-            obj.id = ResultSetAdapters.securableObjectId(rs)
+        val assignedId = ps.executeQuery().use { rs ->
+            if (rs.next()) ResultSetAdapters.securableObjectId(rs) else null
+        }
+        return if (assignedId != null) {
+            obj.id = assignedId
             obj.id
         } else {
-            val maybeId = tryGetId(proposedName)
+            val maybeId = tryGetId(conn, proposedName)
             obj.id = maybeId ?: UUID.randomUUID()
             if (maybeId != null) obj.id else null
         }

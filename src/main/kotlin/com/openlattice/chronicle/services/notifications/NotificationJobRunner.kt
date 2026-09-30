@@ -33,7 +33,7 @@ public open class NotificationJobRunner(
 
         val notification = job.definition as Notification
         when (notification.deliveryType) {
-            DeliveryType.SMS -> updateWithMessageId(connection, twilioService.sendNotification(notification))
+            DeliveryType.SMS -> updateWithMessageId(connection, twilioService.sendNotification(notification, connection))
             DeliveryType.EMAIL -> {
                 logger.warn("Email delivery is not supported. Dropping EMAIL notification for participant {} in study {}.",
                     notification.participantId, notification.studyId)

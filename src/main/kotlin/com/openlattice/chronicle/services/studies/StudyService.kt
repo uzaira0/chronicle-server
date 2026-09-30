@@ -75,6 +75,7 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.TITLE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPDATED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.USER_ID
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudySetting
 import com.openlattice.chronicle.study.StudySettingType
@@ -603,6 +604,20 @@ public open class StudyService(
         return getStudy(realStudyId).phoneNumber
     }
 
+    /** Job runners already own a connection; bypass cold Hazelcast mapstore borrowing. */
+    internal fun getStudyPhoneNumber(connection: Connection, studyId: UUID): String? =
+        PinnedPlatformConnection.pinning(storageResolver.getPlatformStorage(), connection) {
+            val resolvedStudyId = checkNotNull(getStudyId(studyId)) { "invalid study id" }
+            connection.prepareStatement("SELECT ${STUDY_PHONE_NUMBER.name} FROM ${STUDIES.name} WHERE ${STUDY_ID.name} = ?")
+                .use { statement ->
+                    statement.setObject(1, resolvedStudyId)
+                    statement.executeQuery().use { rows ->
+                        check(rows.next()) { "invalid study id" }
+                        rows.getString(1)
+                    }
+                }
+        }
+
     override fun updateParticipationStatus(
         studyId: UUID,
         participantId: String,
@@ -616,6 +631,7 @@ public open class StudyService(
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
                 .transaction { conn ->
+                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
                     conn.prepareStatement(SET_PARTICIPATION_STATUS_SQL).use { ps ->
                         ps.setString(1, participationStatus.name)
                         ps.setObject(2, studyId)
@@ -627,7 +643,7 @@ public open class StudyService(
                         AuditableEvent(
                             aclKey = AclKey(studyId),
                             eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
-                            description = "Set participation status of participant $participantId in study $studyId to $participationStatus"
+                            description = "Set participation status of participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId to $participationStatus"
                         )
                     )
                 }.buildAndRun()
@@ -651,6 +667,7 @@ public open class StudyService(
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
                 .transaction { conn ->
+                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
                     conn.prepareStatement(SET_PARTICIPANT_ANNOTATIONS_SQL).use { ps ->
                         ps.setString(1, notes)
                         ps.setArray(2, conn.createArrayOf("text", tags))
@@ -663,7 +680,7 @@ public open class StudyService(
                         AuditableEvent(
                             aclKey = AclKey(studyId),
                             eventType = AuditEventType.UPDATE_PARTICIPANT_ANNOTATIONS,
-                            description = "Updated annotations for participant $participantId in study $studyId"
+                            description = "Updated annotations for participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId"
                         )
                     )
                 }.buildAndRun()

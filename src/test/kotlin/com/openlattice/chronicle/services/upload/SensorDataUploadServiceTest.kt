@@ -1,13 +1,22 @@
 package com.openlattice.chronicle.services.upload
 
 import com.openlattice.chronicle.sensorkit.SensorDataSample
+import com.openlattice.chronicle.sensorkit.SensorType
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.storage.StorageResolver
+import com.zaxxer.hikari.HikariDataSource
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
+import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
+import java.sql.SQLException
+import java.time.OffsetDateTime
 import java.util.UUID
 
 /**
@@ -48,14 +57,58 @@ class SensorDataUploadServiceTest {
 
     @Test
     fun uploadAcceptsExactlyTenThousandSamplesAtTheBatchBoundary() {
-        val sample = Mockito.mock(SensorDataSample::class.java)
+        val dataSource = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val rows = Mockito.mock(ResultSet::class.java)
+        val ids = Mockito.mock(java.sql.Array::class.java)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
+        Mockito.`when`(connection.createArrayOf(Mockito.anyString(), Mockito.any(Array<Any>::class.java))).thenReturn(ids)
+        Mockito.`when`(statement.executeQuery()).thenReturn(rows)
+        Mockito.`when`(statement.executeUpdate()).thenReturn(1)
+        val timestamp = OffsetDateTime.parse("2026-09-01T00:00:00Z")
+        val sample = SensorDataSample(
+            UUID.randomUUID(), timestamp, 0.0,
+            """{"totalIncomingCalls":0,"totalOutgoingCalls":0,"totalPhoneDuration":0.0,"totalUniqueContacts":0}""",
+            """{"model":"iPhone","name":"test","systemName":"iOS","systemVersion":"26"}""",
+            "UTC", SensorType.phoneUsage, timestamp, timestamp,
+        )
         val atLimit = List(10_000) { sample }
-        try {
-            service.upload(UUID.randomUUID(), "p1", UUID.randomUUID(), atLimit)
-        } catch (e: IllegalArgumentException) {
-            fail("A batch of exactly 10,000 samples must pass the size guard, was rejected: ${e.message}")
-        } catch (_: Exception) {
-            // Expected: storage is mocked, so the call fails after the size guard passes.
+        assertEquals(10_000, service.upload(UUID.randomUUID(), "p1", UUID.randomUUID(), atLimit))
+        Mockito.verify(statement).executeUpdate()
+    }
+
+    @Test
+    fun erasurePredicateFailureNeverAcknowledgesOrQueuesAndRollsBackOwnedTransaction() {
+        val dataSource = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val ids = Mockito.mock(java.sql.Array::class.java)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenReturn(connection)
+        Mockito.`when`(connection.autoCommit).thenReturn(true, false)
+        Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
+        Mockito.`when`(connection.createArrayOf(Mockito.anyString(), Mockito.any(Array<Any>::class.java))).thenReturn(ids)
+        Mockito.`when`(statement.executeQuery()).thenThrow(SQLException("simulated erasure lookup outage"))
+        Mockito.`when`(statement.executeUpdate()).thenReturn(1)
+        val timestamp = OffsetDateTime.parse("2026-09-01T00:00:00Z")
+        val sample = SensorDataSample(
+            UUID.randomUUID(), timestamp, 0.0,
+            """{"totalIncomingCalls":0,"totalOutgoingCalls":0,"totalPhoneDuration":0.0,"totalUniqueContacts":0}""",
+            """{"model":"iPhone","name":"test","systemName":"iOS","systemVersion":"26"}""",
+            "UTC", SensorType.phoneUsage, timestamp, timestamp,
+        )
+
+        assertThrows(SQLException::class.java) {
+            service.upload(UUID.randomUUID(), "p1", UUID.randomUUID(), listOf(sample))
         }
+
+        Mockito.verify(statement, Mockito.never()).executeUpdate()
+        Mockito.verify(connection).rollback()
+        Mockito.verify(connection, Mockito.never()).commit()
+        Mockito.verify(connection).setAutoCommit(true)
+        Mockito.verify(dataSource).connection
     }
 }

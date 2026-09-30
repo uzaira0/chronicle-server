@@ -94,7 +94,8 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
             val studyEmails = study.contact.split(",").toSet()
             val phoneNumbers = (study.settings[StudySettingType.Notifications] as? StudyNotificationSettings)
                 ?.researcherPhoneNumbers?.split(",")?.toSet() ?: emptySet()
-            val researcherNotification = ResearcherNotification(
+            val researcherNotifications = participantViolations.map { (participantId, violations) ->
+                ResearcherNotification(
                 studyEmails,
                 phoneNumbers,
                 NotificationType.PASSIVE_DATA_COLLECTION_COMPLIANCE,
@@ -103,16 +104,18 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
                 buildMessage(
                     studyId,
                     study.title,
-                    participantViolations
+                    mapOf(participantId to violations)
+                ),
+                participantId = participantId,
                 )
-            )
+            }
             storageResolver.getPlatformStorage().connection.use { connection ->
                 try {
                     connection.autoCommit = false
                     notificationService.sendResearcherNotifications(
                         connection,
                         studyId,
-                        listOf(researcherNotification),
+                        researcherNotifications,
                         true,
                         Principals.getChroniclePrincipal()
                     )

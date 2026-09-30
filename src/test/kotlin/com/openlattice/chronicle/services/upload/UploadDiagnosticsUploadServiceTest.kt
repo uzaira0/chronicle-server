@@ -54,7 +54,7 @@ class UploadDiagnosticsUploadServiceTest {
             val sql = it.arguments[0] as String
             when {
                 sql.contains("pg_advisory_xact_lock_shared") -> lockStatement
-                sql.trimStart().startsWith("SELECT") -> cutoffStatement
+                sql.contains("SELECT max(cutoff)") -> cutoffStatement
                 else -> upsertStatement
             }
         }

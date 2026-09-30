@@ -65,7 +65,15 @@ class WebhookServiceTest {
 
         `when`(storageResolver.getPlatformStorage()).thenReturn(mockHds)
         `when`(mockHds.connection).thenReturn(mockConnection)
-        `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(mockPs)
+        val erasureCheck = Mockito.mock(PreparedStatement::class.java)
+        val erasureResult = Mockito.mock(ResultSet::class.java)
+        `when`(erasureCheck.executeQuery()).thenReturn(erasureResult)
+        `when`(erasureResult.next()).thenReturn(true)
+        `when`(erasureResult.getBoolean(1)).thenReturn(true)
+        `when`(mockConnection.prepareStatement(kAnyString())).thenAnswer { invocation ->
+            if (invocation.getArgument<String>(0).contains("SELECT chronicle_participant_mutation_allowed")) erasureCheck else mockPs
+        }
+        `when`(mockRs.getObject("study_id", UUID::class.java)).thenReturn(UUID.randomUUID())
         `when`(mockPs.executeQuery()).thenReturn(mockRs)
         `when`(mockPs.executeUpdate()).thenReturn(1)
 
@@ -511,6 +519,42 @@ class WebhookServiceTest {
 
         assertEquals(0, requests.get())
         verify(mockPs).setString(1, "lease_lost")
+    }
+
+    @Test
+    fun testStalledDnsExpiresBeforeBorrowingOrTakingDeletionFence() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val template = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(204).message("No Content").body(ByteArray(0).toResponseBody(null)).build()
+        }.build()
+        service = WebhookService(storageResolver, idGenerationService, deliveryExecutor, template) {
+            entered.countDown()
+            release.await(20, TimeUnit.SECONDS)
+            arrayOf(InetAddress.getByName("93.184.216.34"))
+        }
+        `when`(mockRs.next()).thenReturn(true, false)
+        `when`(mockRs.getObject("delivery_id", UUID::class.java)).thenReturn(UUID.randomUUID())
+        `when`(mockRs.getObject("webhook_id", UUID::class.java)).thenReturn(UUID.randomUUID())
+        `when`(mockRs.getString("event_type")).thenReturn(WebhookEventType.DATA_SUBMITTED.name)
+        `when`(mockRs.getString("payload")).thenReturn("{}")
+        `when`(mockRs.getString("url")).thenReturn("https://example.com/callback")
+        `when`(mockRs.getString("secret_hash")).thenReturn("secret-hash")
+        val task = ArgumentCaptor.forClass(Runnable::class.java)
+        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, emptyMap())
+        verify(deliveryExecutor).execute(task.capture())
+        Mockito.clearInvocations(mockHds, mockConnection)
+        val running = worker.submit { task.value.run() }
+        try {
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            // The claim checkout has closed; delivery must not borrow a second connection during DNS.
+            verify(mockHds, Mockito.times(1)).getConnection()
+            verify(mockConnection, never()).setAutoCommit(false)
+            running.get(6, TimeUnit.SECONDS)
+            verify(mockPs).setString(2, "dns_resolution")
+        } finally { release.countDown(); running.get(5, TimeUnit.SECONDS); worker.shutdownNow() }
     }
 
     @Test

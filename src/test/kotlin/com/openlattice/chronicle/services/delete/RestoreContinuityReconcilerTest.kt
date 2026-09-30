@@ -119,6 +119,51 @@ class RestoreContinuityReconcilerTest {
     }
 
     @Test
+    fun `restore replay routes cold studies using a single platform pool slot`() {
+        seedRestoredOlderState()
+        seedContinuityCheckpoint()
+        val properties = Properties().apply {
+            setProperty("jdbcUrl", postgres.jdbcUrl)
+            setProperty("username", postgres.username)
+            setProperty("password", postgres.password)
+            setProperty("maximumPoolSize", "1")
+            setProperty("connectionTimeout", "300")
+        }
+        val configuration = PostgresConfiguration(
+            hikariConfiguration = properties, usingCitus = false, flavor = PostgresFlavor.VANILLA,
+            initializeIndices = false, initializeTables = false,
+        )
+        val manager = DataSourceManager(
+            mapOf("default" to configuration, "chronicle" to configuration),
+            HealthCheckRegistry(), MetricRegistry(),
+        )
+        try {
+            val oneSlotResolver = StorageResolver(manager, ChronicleStorageConfiguration())
+            val member = Mockito.mock(com.hazelcast.core.HazelcastInstance::class.java)
+            @Suppress("UNCHECKED_CAST")
+            val studies = Mockito.mock(com.hazelcast.map.IMap::class.java) as com.hazelcast.map.IMap<UUID, com.openlattice.chronicle.study.Study>
+            Mockito.`when`(member.getMap<UUID, com.openlattice.chronicle.study.Study>("STUDIES")).thenReturn(studies)
+            Mockito.`when`(studies.executeOnKey(org.mockito.kotlin.any(),
+                org.mockito.kotlin.any<com.openlattice.chronicle.hazelcast.processors.storage.StudyStorageRead>())).thenAnswer {
+                manager.getDataSource("default").connection.use { "chronicle" }
+            }
+            oneSlotResolver.setStudyStorage(member)
+            val orchestrator = DataDeletionOrchestrator(
+                oneSlotResolver, Mockito.mock(AuditingManager::class.java),
+                Clock.fixed(Instant.parse("2026-08-21T20:00:00Z"), ZoneOffset.UTC),
+            )
+            val result = RestoreContinuityReconciler(oneSlotResolver, orchestrator).reconcile()
+            assertNotNull(result)
+            assertEquals(1L, result!!.replayedCompletedDeletionCount)
+            assertFalse(schemaExists("chronicle_restore_continuity"))
+            Mockito.verify(studies, Mockito.never()).executeOnKey(org.mockito.kotlin.any(),
+                org.mockito.kotlin.any<com.openlattice.chronicle.hazelcast.processors.storage.StudyStorageRead>())
+        } finally {
+            manager.dataSources.values.forEach { it.close() }
+        }
+    }
+
+    @Test
     fun `completed withdrawal is contained re-erased and receipted before checkpoint removal`() {
         seedRestoredOlderState()
         seedContinuityCheckpoint()

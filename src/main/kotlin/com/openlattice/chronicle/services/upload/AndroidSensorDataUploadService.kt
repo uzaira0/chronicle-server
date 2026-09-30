@@ -6,6 +6,7 @@ import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.android.AndroidSensorSample
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.storage.AndroidSensorDataWriter
+import com.openlattice.chronicle.storage.DeletionStudyFence
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
@@ -47,6 +48,7 @@ public open class AndroidSensorDataUploadService(
                     val previousAutoCommit = connection.autoCommit
                     connection.autoCommit = false
                     try {
+                        DeletionStudyFence.shared(connection, studyId)
                         val inserted = AndroidSensorDataWriter.write(
                             connection,
                             studyId,

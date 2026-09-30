@@ -696,107 +696,105 @@ public open class ExportService(
         request: ExportRequest,
         dataByType: Map<String, Iterable<Map<String, Any>>>,
     ): ExportWriteResult? {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            val previousAutoCommit = connection.autoCommit
-            var primaryFailure: Exception? = null
-            var capacityReserved = false
-            var exportStorageLock: AutoCloseable? = null
-            acquireExportStudyLock(connection, claim.studyId)
-            try {
-                if (!reserveExportCapacity(claim)) {
-                    return null
-                }
-                capacityReserved = true
-                connection.autoCommit = false
-                val revoked = connection.prepareStatement(LOCK_EXPORT_FOR_COMPLETION_SQL).use { statement ->
-                    statement.setObject(1, claim.exportId)
-                    statement.setObject(2, claim.studyId)
-                    statement.setObject(3, claim.leaseToken)
-                    statement.executeQuery().use { resultSet ->
-                        if (!resultSet.next()) {
-                            connection.rollback()
-                            return null
+        if (!reserveExportCapacity(claim)) return null
+        try {
+            storageResolver.getPlatformStorage().connection.use { connection ->
+                val previousAutoCommit = connection.autoCommit
+                var primaryFailure: Exception? = null
+                var exportStorageLock: AutoCloseable? = null
+                acquireExportStudyLock(connection, claim.studyId)
+                try {
+                    connection.autoCommit = false
+                    val revoked = connection.prepareStatement(LOCK_EXPORT_FOR_COMPLETION_SQL).use { statement ->
+                        statement.setObject(1, claim.exportId)
+                        statement.setObject(2, claim.studyId)
+                        statement.setObject(3, claim.leaseToken)
+                        statement.executeQuery().use { resultSet ->
+                            if (!resultSet.next()) {
+                                connection.rollback()
+                                return null
+                            }
+                            resultSet.getBoolean("revoked")
                         }
-                        resultSet.getBoolean("revoked")
                     }
-                }
 
-                exportStorageLock = ExportFileWriter.acquireStudyExportLock(claim.studyId)
-                ExportFileWriter.deleteExportArtifactsForErasure(claim.exportId, null)
-                if (revoked) {
-                    failRevokedExport(connection, claim)
+                    exportStorageLock = ExportFileWriter.acquireStudyExportLock(claim.studyId)
+                    ExportFileWriter.deleteExportArtifactsForErasure(claim.exportId, null)
+                    if (revoked) {
+                        failRevokedExport(connection, claim)
+                        connection.commit()
+                        ChronicleMetrics.exportJobsTotal.labels("failed").inc()
+                        return null
+                    }
+
+                    val result = ExportFileWriter.writeMultiDataTypeExport(
+                        dataByType,
+                        claim.format,
+                        claim.exportId,
+                        claim.leaseToken,
+                    )
+                    connection.prepareStatement(COMPLETE_EXPORT_SQL).use { statement ->
+                        statement.setLong(1, result.rowCount)
+                        statement.setString(2, result.path.toString())
+                        statement.setObject(3, claim.exportId)
+                        statement.setObject(4, claim.leaseToken)
+                        check(statement.executeUpdate() == 1) { "Export lease was lost during completion" }
+                    }
+                    webhookService.enqueueEvent(
+                        connection,
+                        claim.studyId,
+                        WebhookEventType.EXPORT_COMPLETED,
+                        mapOf(
+                            "exportId" to claim.exportId.toString(),
+                            "format" to claim.format.name,
+                            "dataTypes" to request.dataTypes.map { it.name }.sorted(),
+                            "rowCount" to result.rowCount,
+                        ),
+                    )
                     connection.commit()
-                    ChronicleMetrics.exportJobsTotal.labels("failed").inc()
-                    return null
-                }
-
-                val result = ExportFileWriter.writeMultiDataTypeExport(
-                    dataByType,
-                    claim.format,
-                    claim.exportId,
-                    claim.leaseToken,
-                )
-                connection.prepareStatement(COMPLETE_EXPORT_SQL).use { statement ->
-                    statement.setLong(1, result.rowCount)
-                    statement.setString(2, result.path.toString())
-                    statement.setObject(3, claim.exportId)
-                    statement.setObject(4, claim.leaseToken)
-                    check(statement.executeUpdate() == 1) { "Export lease was lost during completion" }
-                }
-                webhookService.enqueueEvent(
-                    connection,
-                    claim.studyId,
-                    WebhookEventType.EXPORT_COMPLETED,
-                    mapOf(
-                        "exportId" to claim.exportId.toString(),
-                        "format" to claim.format.name,
-                        "dataTypes" to request.dataTypes.map { it.name }.sorted(),
-                        "rowCount" to result.rowCount,
-                    ),
-                )
-                connection.commit()
-                ChronicleMetrics.exportJobsTotal.labels("completed").inc()
-                return result
-            } catch (ex: Exception) {
-                primaryFailure = ex
-                try {
-                    connection.rollback()
-                } catch (rollbackFailure: Exception) {
-                    ex.addSuppressed(rollbackFailure)
-                }
-                throw ex
-            } finally {
-                try {
-                    exportStorageLock?.close()
-                } catch (lockFailure: Exception) {
-                    if (primaryFailure != null) {
-                        primaryFailure.addSuppressed(lockFailure)
-                    } else {
-                        logger.error(
-                            "Failed to release export storage lock after completing export {}",
-                            claim.exportId,
-                            lockFailure,
-                        )
+                    ChronicleMetrics.exportJobsTotal.labels("completed").inc()
+                    return result
+                } catch (ex: Exception) {
+                    primaryFailure = ex
+                    try {
+                        connection.rollback()
+                    } catch (rollbackFailure: Exception) {
+                        ex.addSuppressed(rollbackFailure)
                     }
-                }
-                try {
-                    connection.autoCommit = previousAutoCommit
-                } catch (restoreFailure: Exception) {
-                    if (primaryFailure != null) {
-                        primaryFailure.addSuppressed(restoreFailure)
-                    } else {
-                        logger.error(
-                            "Failed to restore autocommit after completing export {}",
-                            claim.exportId,
-                            restoreFailure,
-                        )
+                    throw ex
+                } finally {
+                    try {
+                        exportStorageLock?.close()
+                    } catch (lockFailure: Exception) {
+                        if (primaryFailure != null) {
+                            primaryFailure.addSuppressed(lockFailure)
+                        } else {
+                            logger.error(
+                                "Failed to release export storage lock after completing export {}",
+                                claim.exportId,
+                                lockFailure,
+                            )
+                        }
                     }
-                }
-                releaseExportStudyLock(connection, claim.studyId, claim.exportId)
-                if (capacityReserved) {
-                    releaseExportCapacityReservation(claim)
+                    try {
+                        connection.autoCommit = previousAutoCommit
+                    } catch (restoreFailure: Exception) {
+                        if (primaryFailure != null) {
+                            primaryFailure.addSuppressed(restoreFailure)
+                        } else {
+                            logger.error(
+                                "Failed to restore autocommit after completing export {}",
+                                claim.exportId,
+                                restoreFailure,
+                            )
+                        }
+                    }
+                    releaseExportStudyLock(connection, claim.studyId, claim.exportId)
                 }
             }
+        } finally {
+            // Independent reservation cleanup must run after the completion checkout closes.
+            releaseExportCapacityReservation(claim)
         }
     }
 

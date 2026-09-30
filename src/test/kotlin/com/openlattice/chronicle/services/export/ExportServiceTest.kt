@@ -199,6 +199,47 @@ class ExportServiceTest {
     }
 
     @Test
+    fun testCompletionAndReservationReleaseWorkWithOnePoolSlot() {
+        val borrowed = AtomicBoolean()
+        `when`(mockHds.connection).thenAnswer {
+            if (!borrowed.compareAndSet(false, true)) {
+                throw java.sql.SQLTransientConnectionException("single pool slot is owned")
+            }
+            mockConnection
+        }
+        Mockito.doAnswer { borrowed.set(false); null }.`when`(mockConnection).close()
+        val oneSlotService = object : ExportService(
+            storageResolver, downloadManager, idGenerationService, webhookService, mockExecutor, mockLeaseExecutor,
+        ) {
+            override fun freshStorageCapacityForExportAdmission(): ExportStorageCapacity =
+                ExportStorageCapacity(usableBytes = Long.MAX_VALUE, managedArtifactBytesAtSample = 0L)
+        }
+        val studyId = UUID.randomUUID()
+        val exportId = UUID.randomUUID()
+        val request = ExportRequest(dataTypes = setOf(ParticipantDataType.UsageEvents), format = ExportFormat.CSV)
+        org.mockito.kotlin.whenever(downloadManager.getParticipantsUsageEventsData(
+            org.mockito.kotlin.eq(studyId), org.mockito.kotlin.eq(emptySet<String>()),
+            org.mockito.kotlin.any(), org.mockito.kotlin.any(),
+        )).thenReturn(emptyList())
+        `when`(mockRs.next()).thenReturn(true)
+        `when`(mockRs.getBoolean("revoked")).thenReturn(false)
+        `when`(mockRs.getBoolean(1)).thenReturn(true)
+        try {
+            oneSlotService.executeExport(exportId, studyId, request)
+            verify(webhookService).enqueueEvent(
+                org.mockito.kotlin.eq(mockConnection), org.mockito.kotlin.eq(studyId),
+                org.mockito.kotlin.eq(WebhookEventType.EXPORT_COMPLETED), org.mockito.kotlin.any(),
+            )
+            verify(mockPs, Mockito.atLeastOnce()).executeUpdate()
+            org.junit.Assert.assertFalse(borrowed.get())
+            verify(mockHds, Mockito.times(3)).connection
+        } finally {
+            oneSlotService.shutdown()
+            ExportFileWriter.deleteExportArtifactsForErasure(exportId, null)
+        }
+    }
+
+    @Test
     fun testCapacitySnapshotOccursOnlyAfterAdvisoryLockEliminatingPublicationRace() {
         val advisoryLockAcquired = AtomicBoolean()
         `when`(mockStatement.executeQuery(kAnyString())).thenAnswer {

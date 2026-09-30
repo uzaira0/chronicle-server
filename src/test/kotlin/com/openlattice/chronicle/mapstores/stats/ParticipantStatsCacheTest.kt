@@ -23,6 +23,57 @@ import java.time.OffsetDateTime
 import java.util.UUID
 
 class ParticipantStatsCacheTest {
+    @Test
+    fun `captured guard joins the owner transaction without a second checkout`() {
+        val pool = mock<HikariDataSource>()
+        val connection = mock<Connection>()
+        val statement = mock<PreparedStatement>()
+        val rows = mock<ResultSet>()
+        whenever(pool.connection).thenThrow(java.sql.SQLTransientConnectionException("single pool slot is owned"))
+        whenever(connection.autoCommit).thenReturn(false)
+        whenever(connection.prepareStatement(any())).thenReturn(statement)
+        whenever(connection.createStatement()).thenReturn(mock())
+        whenever(statement.executeQuery()).thenReturn(rows)
+        whenever(rows.next()).thenReturn(true)
+        whenever(rows.getString(1)).thenReturn("caller-context")
+        whenever(rows.getBoolean(1)).thenReturn(false)
+        val guard = ParticipantStatsDeletionGuard(pool)
+
+        com.openlattice.chronicle.storage.PinnedPlatformConnection.pinning(pool, connection) {
+            org.junit.Assert.assertFalse(guard.isBlocked(ParticipantKey(UUID.randomUUID(), "participant-a")))
+        }
+
+        verify(pool, never()).connection
+        verify(connection, never()).close()
+        verify(connection, never()).commit()
+        verify(connection, never()).rollback()
+    }
+
+    @Test
+    fun `study quarantine evicts all study metadata caches even if one cache fails`() {
+        val hazelcast = mock<com.hazelcast.core.HazelcastInstance>()
+        val resolver = mock<com.openlattice.chronicle.storage.StorageResolver>()
+        whenever(resolver.getPlatformStorage()).thenReturn(mock())
+        val stats = mock<IMap<ParticipantKey, ParticipantStats>>()
+        val studies = mock<IMap<UUID, com.openlattice.chronicle.study.Study>>()
+        val apps = mock<IMap<UUID, com.geekbeast.rhizome.KotlinDelegatedStringSet>>()
+        val limits = mock<IMap<UUID, com.openlattice.chronicle.study.StudyLimits>>()
+        whenever(hazelcast.getMap<ParticipantKey, ParticipantStats>("PARTICIPANT_STATS")).thenReturn(stats)
+        whenever(hazelcast.getMap<UUID, com.openlattice.chronicle.study.Study>("STUDIES")).thenReturn(studies)
+        whenever(hazelcast.getMap<UUID, com.geekbeast.rhizome.KotlinDelegatedStringSet>("FILTERED_APPS")).thenReturn(apps)
+        whenever(hazelcast.getMap<UUID, com.openlattice.chronicle.study.StudyLimits>("STUDY_LIMITS")).thenReturn(limits)
+        whenever(stats.keys).thenReturn(mutableSetOf())
+        val studyId = UUID.randomUUID()
+        doAnswer { throw IllegalStateException("cache unavailable") }.whenever(studies).evict(studyId)
+
+        val result = HazelcastParticipantStatsCache(resolver, hazelcast).quarantineStudy(studyId) { "committed" }
+
+        assertEquals("committed", result)
+        verify(studies).evict(studyId)
+        verify(apps).evict(studyId)
+        verify(limits).evict(studyId)
+    }
+
     private val participantStats = mock<IMap<ParticipantKey, ParticipantStats>>()
 
     @Test

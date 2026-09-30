@@ -1,6 +1,7 @@
 package com.openlattice.chronicle.services.delete
 
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import java.sql.Connection
@@ -145,60 +146,63 @@ public open class RestoreContinuityReconciler(
 
     internal fun reconcile(): RestoreContinuityResult? {
         if (!recoverySchemaExists()) return null
-        return storageResolver.getPlatformStorage().connection.use { coordinationConnection ->
+        val storage = storageResolver.getPlatformStorage()
+        return storage.connection.use { coordinationConnection ->
             coordinationConnection.createStatement().use { it.execute(COORDINATION_LOCK_SQL) }
-            try {
-                if (!recoverySchemaExists()) return@use null
-                val checkpoint = loadAndValidateCheckpoint()
-                val operations = loadOperations()
-                val holds = loadHolds().groupBy(RestoredRetentionHold::operationId)
-                validatePublicConflicts(operations)
-                validateAuthorityConflicts()
-                val alreadyProtectedOperationIds = loadAlreadyProtectedCompletedOperationIds()
-                applyRestoredAuthorities(checkpoint)
-                applyContainmentAndReceipts()
+            PinnedPlatformConnection.sharing(storage, coordinationConnection) {
+                try {
+                    if (!recoverySchemaExists()) return@sharing null
+                    val checkpoint = loadAndValidateCheckpoint()
+                    val operations = loadOperations()
+                    val holds = loadHolds().groupBy(RestoredRetentionHold::operationId)
+                    validatePublicConflicts(operations)
+                    validateAuthorityConflicts()
+                    val alreadyProtectedOperationIds = loadAlreadyProtectedCompletedOperationIds()
+                    applyRestoredAuthorities(checkpoint)
+                    applyContainmentAndReceipts()
 
-                var completedDeletionCount = 0L
-                operations.forEach { operation ->
-                    if (operation.operationId in alreadyProtectedOperationIds) return@forEach
-                    val requiresCompletedReplay = dataDeletionOrchestrator.reconcileRestoredOperation(
-                        operation,
-                        holds[operation.operationId].orEmpty(),
-                    )
-                    if (requiresCompletedReplay) {
-                        dataDeletionOrchestrator.processRestoredCompletedOperation(operation.operationId)
-                        completedDeletionCount += 1
+                    var completedDeletionCount = 0L
+                    operations.forEach { operation ->
+                        if (operation.operationId in alreadyProtectedOperationIds) return@forEach
+                        val requiresCompletedReplay = dataDeletionOrchestrator.reconcileRestoredOperation(
+                            operation,
+                            holds[operation.operationId].orEmpty(),
+                        )
+                        if (requiresCompletedReplay) {
+                            dataDeletionOrchestrator.processRestoredCompletedOperation(operation.operationId)
+                            completedDeletionCount += 1
+                        }
                     }
-                }
-                check(
-                    completedDeletionCount + alreadyProtectedOperationIds.size ==
-                        checkpoint.sourceTombstoneCount,
-                ) {
-                    "Restore continuity tombstone replay count does not match the checkpoint"
-                }
-                finalizeReconciliation(
-                    checkpoint,
-                    alreadyProtectedOperationIds.size.toLong(),
-                    completedDeletionCount,
-                )
-                logger.info(
-                    "restore_continuity outcome=reconciled checkpoint={} withdrawals={} protected={} replayed={}",
-                    LogSanitizer.stableFingerprint(checkpoint.checkpointId.toString(), "checkpoint"),
-                    checkpoint.withdrawalReceiptCount,
-                    alreadyProtectedOperationIds.size,
-                    completedDeletionCount,
-                )
-                RestoreContinuityResult(
-                    checkpoint.checkpointId,
-                    checkpoint.withdrawalReceiptCount,
-                    completedDeletionCount,
-                    alreadyProtectedOperationIds.size.toLong(),
-                )
-            } finally {
-                runCatching {
-                    coordinationConnection.createStatement().use { it.execute(COORDINATION_UNLOCK_SQL) }
-                }.onFailure { failure ->
-                    logger.error("Failed to release restore-continuity coordination lock", failure)
+                    check(
+                        completedDeletionCount + alreadyProtectedOperationIds.size ==
+                            checkpoint.sourceTombstoneCount,
+                    ) {
+                        "Restore continuity tombstone replay count does not match the checkpoint"
+                    }
+                    finalizeReconciliation(
+                        checkpoint,
+                        alreadyProtectedOperationIds.size.toLong(),
+                        completedDeletionCount,
+                    )
+                    logger.info(
+                        "restore_continuity outcome=reconciled checkpoint={} withdrawals={} protected={} replayed={}",
+                        LogSanitizer.stableFingerprint(checkpoint.checkpointId.toString(), "checkpoint"),
+                        checkpoint.withdrawalReceiptCount,
+                        alreadyProtectedOperationIds.size,
+                        completedDeletionCount,
+                    )
+                    RestoreContinuityResult(
+                        checkpoint.checkpointId,
+                        checkpoint.withdrawalReceiptCount,
+                        completedDeletionCount,
+                        alreadyProtectedOperationIds.size.toLong(),
+                    )
+                } finally {
+                    runCatching {
+                        coordinationConnection.createStatement().use { it.execute(COORDINATION_UNLOCK_SQL) }
+                    }.onFailure { failure ->
+                        logger.error("Failed to release restore-continuity coordination lock", failure)
+                    }
                 }
             }
         }

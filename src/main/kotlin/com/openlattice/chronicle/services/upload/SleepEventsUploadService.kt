@@ -4,6 +4,7 @@ import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AndroidSleepEvent
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.sql.PreparedStatement
@@ -66,9 +67,11 @@ public open class SleepEventsUploadService(
             level = Level.INFO,
             logger = logger,
         ).use {
-            storageResolver.getPlatformStorage().connection.use { connection ->
+            ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { it.timestamp },
+            ) { connection, retained ->
                 connection.prepareStatement(INSERT_SLEEP_EVENTS_SQL).use { ps ->
-                    data.forEach { event -> bindEvent(ps, studyId, participantId, event) }
+                    retained.forEach { event -> bindEvent(ps, studyId, participantId, event) }
                     ps.executeBatch()
                 }
             }

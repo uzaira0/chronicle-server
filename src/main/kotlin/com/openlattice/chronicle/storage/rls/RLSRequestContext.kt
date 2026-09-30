@@ -146,7 +146,24 @@ public object RLSDataSources {
         }
 
     public fun wrapIfRequestScoped(hds: HikariDataSource): HikariDataSource {
-        return wrappers.getOrPut(hds) { RLSAwareHikariDataSource(hds, RLSRequestContext::current) }
+        return wrappers.getOrPut(hds) { wrapUncachedRequestScoped(hds) }
+    }
+
+    /** Transient session-sharing sources must not remain in the process-wide pool-wrapper cache. */
+    internal fun wrapUncachedRequestScoped(hds: HikariDataSource): HikariDataSource =
+        RLSAwareHikariDataSource(hds, RLSRequestContext::current)
+
+    /** Compares the actual pool beneath request/system wrappers, including configured aliases. */
+    internal fun samePool(first: HikariDataSource, second: HikariDataSource): Boolean =
+        poolDelegate(first) === poolDelegate(second)
+
+    private fun poolDelegate(dataSource: HikariDataSource): HikariDataSource {
+        var current = dataSource
+        while (true) {
+            val next = current.unwrap(HikariDataSource::class.java) ?: return current
+            if (next === current) return current
+            current = next
+        }
     }
 
     /**
