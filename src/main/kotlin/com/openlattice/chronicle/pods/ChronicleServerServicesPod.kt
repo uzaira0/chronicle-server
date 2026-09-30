@@ -342,7 +342,7 @@ public open class ChronicleServerServicesPod {
 
     @Bean
     public fun idGenerationService(): HazelcastIdGenerationService {
-        return HazelcastIdGenerationService(hazelcastClientProvider)
+        return HazelcastIdGenerationService(hazelcastClientProvider, random = true)
     }
 
     @Bean

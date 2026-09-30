@@ -42,6 +42,22 @@ class HazelcastIdGenerationServiceTest {
     }
 
     @Test
+    fun `random mode issues version 4 ids and never touches the sequential ranges`() {
+        withService(random = true) { _, queue, block, available ->
+            Mockito.doAnswer { invocation ->
+                available.put(invocation.getArgument(0))
+                if (available.size >= 3) block.await()
+                null
+            }.`when`(queue).put(any())
+        }.use { fixture ->
+            val ids = List(3) { fixture.service.getNextId() }
+            ids.forEach { assertEquals(4, it.version()) }
+            Mockito.verify(fixture.scrolls, Mockito.never()).lock(any())
+            Mockito.verify(fixture.scrolls, Mockito.never()).isEmpty
+        }
+    }
+
+    @Test
     fun `producer retries an interrupted distributed queue put`() {
         val expected = UUID.randomUUID()
         val attempts = AtomicInteger()
@@ -137,7 +153,7 @@ class HazelcastIdGenerationServiceTest {
         }
     }
 
-    private fun withService(configure: (IMap<Long, Range>, IQueue<UUID>, CountDownLatch, LinkedBlockingQueue<UUID>) -> Unit): Fixture {
+    private fun withService(random: Boolean = false, configure: (IMap<Long, Range>, IQueue<UUID>, CountDownLatch, LinkedBlockingQueue<UUID>) -> Unit): Fixture {
         val clients = mock<IHazelcastClientProvider>()
         val instance = mock<HazelcastInstance>()
         val scrolls = mock<IMap<Long, Range>>()
@@ -153,7 +169,7 @@ class HazelcastIdGenerationServiceTest {
             available.poll(invocation.getArgument(0), invocation.getArgument(1))
         }
         configure(scrolls, queue, block, available)
-        return Fixture(HazelcastIdGenerationService(clients), scrolls, available, block)
+        return Fixture(HazelcastIdGenerationService(clients, random), scrolls, available, block)
     }
 
     private class Fixture(

@@ -20,16 +20,14 @@ import java.util.concurrent.ArrayBlockingQueue
 
 /**
  * @author Matthew Tamayo-Rios &lt;matthew@openlattice.com&gt;
+ * @param random issue random UUIDs. The sequential mode hands out consecutive ids per partition,
+ * so a study id predicts the next one; it is kept for tests.
+ * Set in the constructor so the producer thread started by `init` never sees the default.
  */
-public open class HazelcastIdGenerationService(clients: IHazelcastClientProvider) {
-    public var random: Boolean = false
-
-    /**
-     * For testing only
-     */
-    internal constructor(clients: IHazelcastClientProvider, random: Boolean) : this(clients) {
-        this.random = random
-    }
+public open class HazelcastIdGenerationService(
+    clients: IHazelcastClientProvider,
+    private val random: Boolean = false,
+) {
 
     /*
      * This should be good enough until we scale past 65536 Hazelcast nodes.
@@ -60,7 +58,7 @@ public open class HazelcastIdGenerationService(clients: IHazelcastClientProvider
     )
 
     init {
-        if (scrolls.isEmpty) {
+        if (!random && scrolls.isEmpty) {
             //Initialize the ranges
             scrolls.putAll((0L until NUM_PARTITIONS).associateWith { Range(it shl 48) })
         }
