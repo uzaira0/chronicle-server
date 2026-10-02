@@ -1354,11 +1354,7 @@ public open class StudyController @Inject constructor(
     ) {
         try {
             val changedBy = Principals.getCurrentUser().id
-            val sourceIp = try {
-                com.openlattice.chronicle.audit.AuditRequestContext.getClientIpAddress()
-            } catch (_: Exception) {
-                null
-            }
+            val sourceIp = com.openlattice.chronicle.audit.AuditRequestContext.getStaffClientIpReference()
             for (settingType in (before.keys + after.keys)) {
                 val beforeValue = before[settingType]
                 val afterValue = after[settingType] ?: continue

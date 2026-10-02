@@ -17,7 +17,6 @@
 package com.openlattice.chronicle.configuration
 
 import com.openlattice.chronicle.util.LogSanitizer
-import com.openlattice.chronicle.util.ClientIpResolver
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -39,7 +38,6 @@ import java.util.regex.Pattern
  * - studyId: stable one-way reference extracted from URL path
  * - participantId: stable one-way reference extracted from URL path
  * - userId: authenticated principal (if available)
- * - clientIp: client IP from X-Forwarded-For or remoteAddr
  * - httpMethod: GET, POST, etc.
  * - httpPath: sanitized route shape with sensitive path segments redacted
  *
@@ -137,10 +135,6 @@ public class ObservabilityFilter : OncePerRequestFilter() {
         } catch (_: Exception) {
             // Security context not available yet — skip
         }
-
-        // Client IP from proxy headers only when the direct peer is trusted.
-        val clientIp = ClientIpResolver.resolve(request)
-        MDC.put("clientIp", LogSanitizer.sanitizeIp(clientIp))
 
         // HTTP method and sanitized path
         MDC.put("httpMethod", request.method)

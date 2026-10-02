@@ -82,21 +82,6 @@ class LogSanitizerFuzzTest {
     }
 
     @FuzzTest(maxDuration = "5m")
-    fun fuzzSanitizeIp(input: String) {
-        val result = LogSanitizer.sanitizeIp(input)
-
-        // Must never contain raw dangerous characters
-        assert(!dangerousPattern.containsMatchIn(result)) {
-            "sanitizeIp() output contains dangerous characters: $result"
-        }
-
-        // Output must be bounded in length
-        assert(result.length <= LogSanitizer.MAX_IP_OUTPUT_LENGTH) {
-            "sanitizeIp() output unexpectedly long: ${result.length} > ${LogSanitizer.MAX_IP_OUTPUT_LENGTH}"
-        }
-    }
-
-    @FuzzTest(maxDuration = "5m")
     fun fuzzSanitizeUri(input: String) {
         val result = LogSanitizer.sanitizeUri(input)
 

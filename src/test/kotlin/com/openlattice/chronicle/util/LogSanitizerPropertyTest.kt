@@ -93,15 +93,6 @@ class LogSanitizerPropertyTest {
     } }
 
     @Test
-    fun `sanitizeIp rejects strings with newlines or special chars`() { runBlocking {
-        forAll(Arb.string(1..20)) { input ->
-            val injected = "$input\nfake-log-entry"
-            val sanitized = LogSanitizer.sanitizeIp(injected)
-            !sanitized.contains('\n')
-        }
-    } }
-
-    @Test
     fun `sanitizeMap returns bracket-null for null maps`() {
         assertEquals("[null]", LogSanitizer.sanitizeMap(null))
     }

@@ -19,6 +19,7 @@
 
 package com.openlattice.chronicle.configuration
 
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
@@ -132,7 +133,7 @@ public open class ParameterPollutionConfig {
                     }
                     is PollutionResult.DuplicateDetected -> {
                         logger.warn(
-                            "HTTP Parameter Pollution detected - IP: ${LogSanitizer.sanitizeIp(request.remoteAddr)}, " +
+                            "HTTP Parameter Pollution detected - IP: ${ClientIpRecord.logReference(request)}, " +
                             "URI: ${LogSanitizer.sanitizeRequestPath(request.requestURI)}, " +
                             "Parameter: ${LogSanitizer.sanitize(pollutionResult.paramName, 100)}, " +
                             "Count: ${pollutionResult.count}"
@@ -144,7 +145,7 @@ public open class ParameterPollutionConfig {
                     }
                     is PollutionResult.ExcessiveDuplicates -> {
                         logger.warn(
-                            "Excessive duplicate parameters detected - IP: ${LogSanitizer.sanitizeIp(request.remoteAddr)}, " +
+                            "Excessive duplicate parameters detected - IP: ${ClientIpRecord.logReference(request)}, " +
                             "URI: ${LogSanitizer.sanitizeRequestPath(request.requestURI)}, " +
                             "Parameter: ${LogSanitizer.sanitize(pollutionResult.paramName, 100)}, " +
                             "Count: ${pollutionResult.count} (max: $MAX_ALLOWED_DUPLICATES)"

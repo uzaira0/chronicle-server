@@ -15,7 +15,7 @@ import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
 import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.services.auth.RefreshTokenException
 import com.openlattice.chronicle.services.auth.RefreshTokenService
-import com.openlattice.chronicle.util.ClientIpResolver
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.ChronicleServerUtil
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.users.UserListingService
@@ -527,7 +527,7 @@ public open class AuthTokenController(
         auditService.logAuthEvent(
             userId = subject?.let { runCatching { UUID.fromString(it) }.getOrNull() },
             userRole = null,
-            ipAddress = ClientIpResolver.resolve(request),
+            ipAddress = ClientIpRecord.staffSurfaceReference(request),
             userAgent = request.getHeader(HttpHeaders.USER_AGENT),
             eventType = if (failure == null) AuditAction.LOGIN else AuditAction.LOGIN_FAILED,
             success = failure == null,
@@ -536,10 +536,8 @@ public open class AuthTokenController(
         )
     }
 
-    private fun dashboardClientReference(request: HttpServletRequest): String = LogSanitizer.stableFingerprint(
-        ClientIpResolver.resolve(request),
-        prefix = "ip",
-    )
+    private fun dashboardClientReference(request: HttpServletRequest): String =
+        ClientIpRecord.staffSurfaceReference(request)
 
     /**
      * The single response every dashboard-login failure returns. Identical status and body
@@ -594,7 +592,7 @@ public open class AuthTokenController(
             ?: return ResponseEntity.badRequest().body(mapOf("error" to "missing 'refreshToken' field" as Any))
 
         return try {
-            val ipAddress = ClientIpResolver.resolve(request)
+            val ipAddress = ClientIpRecord.staffSurfaceReference(request)
             val userAgent = request.getHeader("User-Agent")
 
             val result = refreshTokenService.rotateRefreshToken(rawRefreshToken, ipAddress, userAgent)

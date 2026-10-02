@@ -29,6 +29,7 @@ import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.configuration.ErrorSanitizationConfig
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.ids.IdConstants
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.SsrfException
 import jakarta.validation.ConstraintViolationException
@@ -494,7 +495,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
             errorId,
             e.violationType,
             LogSanitizer.stableFingerprint(e.targetUrl, prefix = "ssrf"),
-            LogSanitizer.stableFingerprint(req.remoteAddr ?: "", prefix = "ip"),
+            ClientIpRecord.logReference(req),
             safeErrorPath(req)
         )
 
@@ -638,7 +639,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
                 errorId,
                 sanitizeLogValue(req.method),
                 safeErrorPath(req),
-                LogSanitizer.stableFingerprint(req.remoteAddr ?: "", prefix = "ip"),
+                ClientIpRecord.logReference(req),
                 e.javaClass.name,
                 errorSanitizationConfig.sanitizeMessage(e.message)
             )

@@ -124,12 +124,6 @@ public object ChronicleMetrics {
         .labelNames("key_name", "source_ip")
         .register()
 
-    public val apiKeySourceIpHash: io.prometheus.client.Gauge = io.prometheus.client.Gauge.build()
-        .name("chronicle_api_key_source_ip_hash")
-        .help("Tracks distinct source IP hashes per API key prefix for anomaly detection")
-        .labelNames("key_prefix")
-        .register()
-
     public val participantFormAccessTotal: Counter = Counter.build()
         .name("chronicle_participant_form_access_total")
         .help("Participant capability-session decisions by form kind and outcome")

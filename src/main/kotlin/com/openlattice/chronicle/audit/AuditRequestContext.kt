@@ -18,7 +18,7 @@
 package com.openlattice.chronicle.audit
 
 import com.openlattice.chronicle.authorization.principals.Principals
-import com.openlattice.chronicle.util.ClientIpResolver
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.web.context.request.RequestContextHolder
@@ -44,14 +44,11 @@ public object AuditRequestContext {
         return (requestAttributes as? ServletRequestAttributes)?.request
     }
 
-    /**
-     * Gets the client IP address from the current request.
-     * Handles proxied requests only when the direct peer is trusted.
-     */
-    public fun getClientIpAddress(): String {
-        val request = getCurrentRequest() ?: return "0.0.0.0"
-        return ClientIpResolver.resolve(request)
-    }
+    /** Keyed client IP reference for a staff request; null for participants. See [ClientIpRecord]. */
+    public fun getStaffClientIpReference(): String? = ClientIpRecord.staffReference(getCurrentRequest())
+
+    /** [getStaffClientIpReference] for an audit row, which always carries a value. */
+    public fun getAuditIpReference(): String = ClientIpRecord.logReference(getCurrentRequest())
 
     /**
      * Gets the User-Agent header from the current request.
@@ -136,7 +133,7 @@ public object AuditRequestContext {
      */
     public fun createAuditBuilder(): AuditLogEntryBuilder {
         return AuditLogEntryBuilder()
-            .ipAddress(getClientIpAddress())
+            .ipAddress(getAuditIpReference())
             .userAgent(getUserAgent())
             .requestPath(getRequestPath())
             .requestMethod(getRequestMethod())
@@ -149,7 +146,7 @@ public object AuditRequestContext {
      */
     internal fun AuditLogEntryBuilder.withRequestContext(): AuditLogEntryBuilder {
         return this
-            .ipAddress(getClientIpAddress())
+            .ipAddress(getAuditIpReference())
             .userAgent(getUserAgent())
             .requestPath(getRequestPath())
             .requestMethod(getRequestMethod())

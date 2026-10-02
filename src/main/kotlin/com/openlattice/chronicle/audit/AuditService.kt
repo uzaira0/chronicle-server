@@ -19,6 +19,7 @@ package com.openlattice.chronicle.audit
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.openlattice.chronicle.configuration.ErrorSanitizationConfig
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -84,7 +85,7 @@ public open class AuditService(
 
         internal fun sanitizeForPersistence(entry: AuditLogEntry): AuditLogEntry {
             return entry.copy(
-                ipAddress = LogSanitizer.stableFingerprint(entry.ipAddress, prefix = "ip"),
+                ipAddress = entry.ipAddress.takeIf(ClientIpRecord::isReference) ?: ClientIpRecord.WITHHELD,
                 userAgent = entry.userAgent?.let { LogSanitizer.sanitize(it, MAX_AUDIT_STRING_LENGTH) },
                 errorMessage = sanitizeAuditErrorMessage(entry.errorMessage),
                 requestPath = entry.requestPath?.let { LogSanitizer.sanitizeRequestPath(it) },

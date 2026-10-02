@@ -7,6 +7,7 @@ import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
 import com.openlattice.chronicle.services.auth.RefreshTokenService
 import com.openlattice.chronicle.users.UserListingService
+import com.openlattice.chronicle.util.ClientIpRecord
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.core.Appender
 import org.apache.logging.log4j.core.LogEvent
@@ -218,7 +219,7 @@ class AuthTokenControllerTest {
         assertEquals("Strict", csrfCookie.getAttribute("SameSite"))
         assertEquals(csrfCookie.value, result.body?.get("csrfToken"))
         Mockito.verify(auditService).logAuthEvent(
-            null, null, "127.0.0.1", null, AuditAction.LOGIN, true, null,
+            null, null, ClientIpRecord.staffSurfaceReference(MockHttpServletRequest()), null, AuditAction.LOGIN, true, null,
             mapOf("method" to "dashboard", "subject" to "local-admin"),
         )
     }
@@ -238,7 +239,7 @@ class AuthTokenControllerTest {
         assertEquals("invalid dashboard password", result.body?.get("error"))
         assertEquals(0, response.cookies.size)
         Mockito.verify(auditService).logAuthEvent(
-            null, null, "127.0.0.1", null, AuditAction.LOGIN_FAILED, false, "password_mismatch",
+            null, null, ClientIpRecord.staffSurfaceReference(MockHttpServletRequest()), null, AuditAction.LOGIN_FAILED, false, "password_mismatch",
             mapOf("method" to "dashboard"),
         )
     }

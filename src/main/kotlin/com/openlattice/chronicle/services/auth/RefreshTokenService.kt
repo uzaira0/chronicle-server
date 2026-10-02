@@ -2,6 +2,7 @@ package com.openlattice.chronicle.services.auth
 
 import com.openlattice.chronicle.configuration.JwtKeyMaterial
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.auth0.jwt.JWT
 import com.auth0.jwt.algorithms.Algorithm
 import org.slf4j.LoggerFactory
@@ -102,7 +103,7 @@ public class RefreshTokenService(
                 ps.setString(3, tokenHash)
                 ps.setObject(4, familyId)
                 ps.setObject(5, expiresAt)
-                ps.setString(6, ipAddress?.take(45))
+                ps.setString(6, ipAddress?.takeIf(ClientIpRecord::isReference))
                 ps.setString(7, userAgent?.take(512))
                 ps.executeUpdate()
             }
@@ -179,7 +180,7 @@ public class RefreshTokenService(
                     ps.setString(3, newTokenHash)
                     ps.setObject(4, record.familyId)
                     ps.setObject(5, newExpiresAt)
-                    ps.setString(6, ipAddress?.take(45))
+                    ps.setString(6, ipAddress?.takeIf(ClientIpRecord::isReference))
                     ps.setString(7, userAgent?.take(512))
                     ps.executeUpdate()
                 }

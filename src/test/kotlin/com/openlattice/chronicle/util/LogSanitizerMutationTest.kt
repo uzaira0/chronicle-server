@@ -136,37 +136,6 @@ class LogSanitizerMutationTest {
     }
 
     @Test
-    fun `sanitizeIp null marker`() = assertEquals("[null-ip]", LogSanitizer.sanitizeIp(null))
-
-    @Test
-    fun `sanitizeIp valid ipv4 unchanged`() = assertEquals("192.168.1.1", LogSanitizer.sanitizeIp("192.168.1.1"))
-
-    @Test
-    fun `sanitizeIp valid ipv6 unchanged`() {
-        assertEquals("2001:db8::1", LogSanitizer.sanitizeIp("2001:db8::1"))
-    }
-
-    @Test
-    fun `sanitizeIp at exactly 45 chars is accepted`() {
-        val ip45 = "f".repeat(45) // all valid hex chars, length == 45 boundary
-        assertEquals(ip45, LogSanitizer.sanitizeIp(ip45))
-    }
-
-    @Test
-    fun `sanitizeIp over 45 chars is marked invalid`() {
-        val ip46 = "f".repeat(46)
-        val out = LogSanitizer.sanitizeIp(ip46)
-        assertTrue(out.startsWith("[invalid-ip:"))
-        assertTrue(out.endsWith("]"))
-    }
-
-    @Test
-    fun `sanitizeIp with invalid characters is marked invalid`() {
-        val out = LogSanitizer.sanitizeIp("10.0.0.1; rm -rf")
-        assertTrue(out.startsWith("[invalid-ip:"))
-    }
-
-    @Test
     fun `sanitizeUri null marker`() = assertEquals("[null-uri]", LogSanitizer.sanitizeUri(null))
 
     @Test

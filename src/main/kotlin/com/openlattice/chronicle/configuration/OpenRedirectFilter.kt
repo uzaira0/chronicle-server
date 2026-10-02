@@ -16,6 +16,7 @@
  */
 package com.openlattice.chronicle.configuration
 
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.RedirectValidator
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
@@ -159,7 +160,7 @@ public open class RedirectValidatingResponseWrapper(
         } else {
             logger.warn(
                 "Blocked open redirect attempt from IP: {}, requested redirect to: {}, using fallback: {}",
-                request.remoteAddr,
+                ClientIpRecord.logReference(request),
                 sanitizeForLogging(location),
                 fallbackUrl
             )
@@ -229,7 +230,7 @@ public open class RedirectParameterValidatingRequestWrapper(
                 logger.warn(
                     "Blocked malicious redirect parameter '{}' from IP: {}: {}",
                     name,
-                    request.remoteAddr,
+                    ClientIpRecord.logReference(this),
                     sanitizeForLogging(value)
                 )
                 return null
@@ -252,7 +253,7 @@ public open class RedirectParameterValidatingRequestWrapper(
                     logger.warn(
                         "Blocked malicious redirect parameter '{}' from IP: {}: {}",
                         name,
-                        request.remoteAddr,
+                        ClientIpRecord.logReference(this),
                         sanitizeForLogging(value)
                     )
                 }

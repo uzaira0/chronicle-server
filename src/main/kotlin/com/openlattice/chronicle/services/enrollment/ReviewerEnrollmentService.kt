@@ -13,6 +13,7 @@ import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.studies.StudyLifecycleService
 import com.openlattice.chronicle.study.EnrollmentPreviewResponse
 import com.openlattice.chronicle.study.StudyLifecycleStatus
+import com.openlattice.chronicle.util.ClientIpRecord
 import jakarta.annotation.PostConstruct
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
@@ -140,7 +141,7 @@ public open class ReviewerEnrollmentService(
     private fun audit(studyId: UUID, success: Boolean, status: HttpStatus, outcome: String) {
         auditService.log(
             AuditLogEntryBuilder()
-                .ipAddress(AuditRequestContext.getClientIpAddress())
+                .ipAddress(ClientIpRecord.WITHHELD)
                 .userAgent(AuditRequestContext.getUserAgent())
                 .requestPath(AuditRequestContext.getRequestPath())
                 .requestMethod(AuditRequestContext.getRequestMethod())

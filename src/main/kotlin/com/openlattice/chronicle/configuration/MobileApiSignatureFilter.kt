@@ -25,7 +25,7 @@ import com.openlattice.chronicle.filters.MobileApiHmacAuthenticationToken
 import com.openlattice.chronicle.filters.MobileEnrollmentAuthenticationToken
 import com.openlattice.chronicle.filters.MobileReviewerAuthenticationToken
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
-import com.openlattice.chronicle.util.ClientIpResolver
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -216,7 +216,7 @@ public open class MobileApiSignatureFilter(
             return
         }
 
-        val ipRef = LogSanitizer.stableFingerprint(ClientIpResolver.resolve(request), prefix = "ip")
+        val ipRef = ClientIpRecord.logReference(request)
         val safePath = LogSanitizer.sanitizeRequestPath(request.requestURI)
 
         // Reject malformed requests before reading or buffering their bodies.
@@ -479,7 +479,7 @@ public open class MobileApiSignatureFilter(
     ) {
         val service = auditService ?: return
         val event = AuditLogEntryBuilder()
-            .ipAddress(ClientIpResolver.resolve(request))
+            .ipAddress(ClientIpRecord.WITHHELD)
             .userAgent(request.getHeader("User-Agent"))
             .requestPath(LogSanitizer.sanitizeRequestPath(request.requestURI))
             .requestMethod(request.method)

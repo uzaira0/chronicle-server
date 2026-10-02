@@ -19,6 +19,7 @@ package com.openlattice.chronicle.configuration
 import com.google.common.net.InetAddresses
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.ClientIpResolver
 import com.openlattice.chronicle.util.LogSanitizer
 import io.github.bucket4j.Bandwidth
@@ -139,7 +140,7 @@ public open class RateLimitFilter(
 
         // Check if IP is whitelisted
         if (isIpWhitelisted(clientIp)) {
-            log.debug("Rate limit bypass - whitelisted IP: {}", clientIp)
+            log.debug("Rate limit bypass - whitelisted IP")
             filterChain.doFilter(request, response)
             return
         }
@@ -547,7 +548,7 @@ public open class RateLimitFilter(
 
         log.warn(
             "Rate limit exceeded - IP: {}, Path: {}, Wait: {} seconds",
-            LogSanitizer.sanitizeIp(clientIp),
+            ClientIpRecord.WITHHELD,
             LogSanitizer.sanitizeRequestPath(path),
             retryAfterSeconds
         )

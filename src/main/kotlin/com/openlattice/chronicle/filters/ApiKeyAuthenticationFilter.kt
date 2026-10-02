@@ -6,7 +6,7 @@ import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.apikeys.ApiKeyService
 import com.openlattice.chronicle.services.apikeys.MobileWithdrawalRequestIds
 import com.openlattice.chronicle.services.security.HoneyTokenService
-import com.openlattice.chronicle.util.ClientIpResolver
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.DeviceIdUtils
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
@@ -70,12 +70,11 @@ public open class ApiKeyAuthenticationFilter(
         filterChain: FilterChain
     ) {
         val rawKey = request.getHeader(API_KEY_HEADER)
-        val sourceIp = ClientIpResolver.resolve(request)
 
         // Honey token detection: check before normal authentication.
         // Any use of a honey token means unauthorized access or credential theft.
         if (honeyTokenService != null && honeyTokenService.isProbablyHoneyToken(rawKey)) {
-            honeyTokenService.checkAndAlert(rawKey, sourceIp)
+            honeyTokenService.checkAndAlert(rawKey, ClientIpRecord.staffSurfaceReference(request))
             // Respond with generic 401 (do not reveal that we detected the canary)
             ChronicleMetrics.apiKeyUsageTotal.labels("honey", "rejected").inc()
             response.sendError(HttpStatus.UNAUTHORIZED.value(), Messages.get("error.enrollment.apiKeyInvalid", request))
@@ -95,10 +94,7 @@ public open class ApiKeyAuthenticationFilter(
             apiKeyService.authenticateApiKey(rawKey)
         }
         if (keyInfo == null) {
-            log.warn(
-                "Invalid API key from ipRef: {}",
-                LogSanitizer.stableFingerprint(sourceIp, prefix = "ip")
-            )
+            log.warn("Invalid API key")
             ChronicleMetrics.apiKeyUsageTotal.labels("unknown", "invalid").inc()
             response.sendError(HttpStatus.UNAUTHORIZED.value(), Messages.get("error.enrollment.apiKeyInvalid", request))
             return
@@ -106,7 +102,6 @@ public open class ApiKeyAuthenticationFilter(
 
         // Track successful API key usage for anomaly detection
         ChronicleMetrics.apiKeyUsageTotal.labels(keyInfo.prefix, "success").inc()
-        ChronicleMetrics.apiKeySourceIpHash.labels(keyInfo.prefix).set(sourceIp.hashCode().toDouble())
 
         // H-2: Enforce scope based on HTTP method
         val requiredScope = getRequiredScope(request.method)

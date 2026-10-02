@@ -18,6 +18,7 @@ package com.openlattice.chronicle.controllers
 
 import com.openlattice.chronicle.configuration.ErrorSanitizationConfig
 import com.openlattice.chronicle.i18n.Messages
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -295,7 +296,7 @@ public object GlobalExceptionHandler {
         request: HttpServletRequest,
         config: ErrorSanitizationConfig
     ) {
-        val ipRef = LogSanitizer.stableFingerprint(request.remoteAddr ?: "", prefix = "ip")
+        val ipRef = ClientIpRecord.logReference(request)
         val sanitizedUri = LogSanitizer.sanitizeRequestPath(request.requestURI)
         val sanitizedMethod = sanitizeLogValue(request.method)
 

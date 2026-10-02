@@ -16,6 +16,7 @@
  */
 package com.openlattice.chronicle.configuration
 
+import com.openlattice.chronicle.util.ClientIpRecord
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -175,12 +176,12 @@ public open class CorsValidationFilter(
     private fun logBlockedRequest(request: HttpServletRequest, origin: String, reason: String) {
         log.warn(
             "Blocked cross-origin request: origin='{}', reason='{}', " +
-                    "method='{}', uri='{}', remoteAddr='{}', userAgent='{}'",
+                    "method='{}', uri='{}', ipRef='{}', userAgent='{}'",
             sanitizeLogValue(origin),
             reason,
             request.method,
             sanitizeLogValue(request.requestURI),
-            request.remoteAddr,
+            ClientIpRecord.logReference(request),
             sanitizeLogValue(request.getHeader("User-Agent") ?: "unknown")
         )
     }

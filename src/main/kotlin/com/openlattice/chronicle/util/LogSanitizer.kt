@@ -16,7 +16,10 @@
  */
 package com.openlattice.chronicle.util
 
-import java.security.MessageDigest
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
+import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * Utility object for sanitizing user input before logging.
@@ -56,14 +59,6 @@ public object LogSanitizer {
      * Used by [sanitizeUri] when no explicit maxLength is provided.
      */
     public const val DEFAULT_URI_MAX_LENGTH: Int = 500
-
-    /**
-     * Maximum possible output length for [sanitizeIp].
-     * Valid IPs are at most 45 chars (IPv6). Invalid IPs produce
-     * "[invalid-ip:" + sanitize(ip, 20) + "]" which is at most 34 chars.
-     * This constant provides a safe upper bound for both cases.
-     */
-    public const val MAX_IP_OUTPUT_LENGTH: Int = 45
 
     /**
      * Truncation suffix appended to strings that exceed max length.
@@ -107,6 +102,36 @@ public object LogSanitizer {
 
     private const val DEFAULT_FINGERPRINT_PREFIX = "id"
     private const val FINGERPRINT_HEX_LENGTH = 12
+    private const val FINGERPRINT_ALGORITHM = "HmacSHA256"
+    private const val FINGERPRINT_KEY_LABEL = "chronicle-log-fingerprint-v1"
+
+    /** Environment variable the fingerprint key is derived from; every deployment sets it. */
+    public const val FINGERPRINT_KEY_SOURCE: String = "CHRONICLE_INTERNAL_WEB_SECRET"
+
+    /**
+     * Fingerprints are keyed so a copied log or table cannot be reversed by hashing guesses:
+     * every IPv4 address takes minutes, and participant labels are often guessable. The key is
+     * derived from the deployment secret, so references stay stable across restarts; without
+     * it (tests, local runs) each process gets its own random key.
+     */
+    private val fingerprintKey: ByteArray = fingerprintKey(System.getenv(FINGERPRINT_KEY_SOURCE))
+
+    @JvmStatic
+    @SuppressFBWarnings(
+        value = ["DMI_RANDOM_USED_ONLY_ONCE"],
+        justification = "One-shot random fallback key when no deployment secret is configured.",
+    )
+    internal fun fingerprintKey(secret: String?): ByteArray =
+        if (secret.isNullOrBlank()) {
+            ByteArray(32).also { SecureRandom().nextBytes(it) }
+        } else {
+            hmac(secret.toByteArray(Charsets.UTF_8), FINGERPRINT_KEY_LABEL)
+        }
+
+    private fun hmac(key: ByteArray, input: String): ByteArray =
+        Mac.getInstance(FINGERPRINT_ALGORITHM)
+            .apply { init(SecretKeySpec(key, FINGERPRINT_ALGORITHM)) }
+            .doFinal(input.toByteArray(Charsets.UTF_8))
     private val uuidPathSegmentPattern = Regex(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     )
@@ -194,8 +219,11 @@ public object LogSanitizer {
             return "${sanitize(prefix, 32)}:[null]"
         }
 
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest(input.toByteArray(Charsets.UTF_8))
+        return keyedFingerprint(fingerprintKey, input, prefix)
+    }
+
+    internal fun keyedFingerprint(key: ByteArray, input: String, prefix: String): String {
+        val digest = hmac(key, input)
             .joinToString("") { byte -> "%02x".format(byte) }
             .take(FINGERPRINT_HEX_LENGTH)
         return "${sanitize(prefix, 32)}:$digest"
@@ -285,28 +313,6 @@ public object LogSanitizer {
         val suffix = if (collection.size > maxItems) ", ...[${collection.size - maxItems} more items]" else ""
 
         return "[$items$suffix]"
-    }
-
-    /**
-     * Sanitizes an IP address for logging.
-     * Validates the format and prevents log injection through IP fields.
-     *
-     * @param ip The IP address string
-     * @return A sanitized IP address or "[invalid-ip]" marker
-     */
-    @JvmStatic
-    public fun sanitizeIp(ip: String?): String {
-        if (ip == null) {
-            return "[null-ip]"
-        }
-
-        // Basic validation - only allow expected characters
-        val ipPattern = Regex("^[0-9a-fA-F.:]+$")
-        return if (ipPattern.matches(ip) && ip.length <= 45) {
-            ip
-        } else {
-            "[invalid-ip:${sanitize(ip, 20)}]"
-        }
     }
 
     /**

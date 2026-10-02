@@ -16,6 +16,7 @@
  */
 package com.openlattice.chronicle.configuration
 
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
@@ -87,7 +88,7 @@ public open class SecurityHardeningConfig {
             ) {
                 if (HttpMethod.TRACE.matches(request.method)) {
                     logger.warn(
-                        "Blocked TRACE request from IP: ${LogSanitizer.sanitizeIp(request.remoteAddr)}, " +
+                        "Blocked TRACE request from IP: ${ClientIpRecord.logReference(request)}, " +
                             "URI: ${LogSanitizer.sanitizeRequestPath(request.requestURI)}"
                     )
                     response.status = HttpStatus.METHOD_NOT_ALLOWED.value()
@@ -173,7 +174,7 @@ public open class SecurityHardeningConfig {
                     // matches the variable name "uri", not unsanitized request input. Documented FP.
                     logger.warn( // nosemgrep: chronicle-log-injection
                         "Blocked request with null byte in URI from IP: " +
-                            "${LogSanitizer.sanitizeIp(request.remoteAddr)}, URI: $sanitizedUri"
+                            "${ClientIpRecord.logReference(request)}, URI: $sanitizedUri"
                     )
                     response.sendError(HttpStatus.BAD_REQUEST.value(), "Invalid request URI")
                     return
@@ -182,7 +183,7 @@ public open class SecurityHardeningConfig {
                 // Check for null bytes in query string
                 request.queryString?.let { queryString ->
                     if (queryString.contains('\u0000')) {
-                        logger.warn("Blocked request with null byte in query string from IP: ${LogSanitizer.sanitizeIp(request.remoteAddr)}")
+                        logger.warn("Blocked request with null byte in query string from IP: ${ClientIpRecord.logReference(request)}")
                         response.sendError(HttpStatus.BAD_REQUEST.value(), "Invalid query string")
                         return
                     }
@@ -196,7 +197,7 @@ public open class SecurityHardeningConfig {
                                 logger.warn(
                                     "Blocked request with null byte in parameter " +
                                         "'${LogSanitizer.sanitize(paramName)}' from IP: " +
-                                        LogSanitizer.sanitizeIp(request.remoteAddr)
+                                        ClientIpRecord.logReference(request)
                                 )
                                 response.sendError(HttpStatus.BAD_REQUEST.value(),
                                     "Invalid parameter value")
@@ -206,7 +207,7 @@ public open class SecurityHardeningConfig {
                                 logger.warn(
                                     "Blocked request with oversized parameter " +
                                         "'${LogSanitizer.sanitize(paramName)}' (${value.length} chars) " +
-                                        "from IP: ${LogSanitizer.sanitizeIp(request.remoteAddr)}"
+                                        "from IP: ${ClientIpRecord.logReference(request)}"
                                 )
                                 response.sendError(HttpStatus.BAD_REQUEST.value(),
                                     "Parameter value too long")
@@ -217,7 +218,7 @@ public open class SecurityHardeningConfig {
                 } catch (e: Exception) {
                     logger.warn(
                         "Error validating request parameters from IP: " +
-                            "${LogSanitizer.sanitizeIp(request.remoteAddr)}: " +
+                            "${ClientIpRecord.logReference(request)}: " +
                             LogSanitizer.sanitize(e.message)
                     )
                     response.sendError(HttpStatus.BAD_REQUEST.value(), "Invalid request parameters")
@@ -251,7 +252,7 @@ public open class SecurityHardeningConfig {
                 if (contentLength > MAX_REQUEST_SIZE_BYTES) {
                     logger.warn(
                         "Blocked oversized request (${contentLength} bytes) from IP: " +
-                            "${LogSanitizer.sanitizeIp(request.remoteAddr)}, " +
+                            "${ClientIpRecord.logReference(request)}, " +
                             "URI: ${LogSanitizer.sanitizeRequestPath(request.requestURI)}"
                     )
                     response.sendError(HttpStatus.PAYLOAD_TOO_LARGE.value(),
