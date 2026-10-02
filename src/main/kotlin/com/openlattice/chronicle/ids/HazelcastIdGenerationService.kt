@@ -5,6 +5,7 @@ import com.google.common.collect.Queues
 import com.openlattice.chronicle.hazelcast.HazelcastClient
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.hazelcast.HazelcastQueue
+import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.mapstores.ids.IdsGeneratingEntryProcessor
 import com.openlattice.chronicle.mapstores.ids.Range
 import jakarta.annotation.PreDestroy
@@ -139,7 +140,7 @@ public open class HazelcastIdGenerationService(
                     localQueue.poll() ?: boundedDistributedPoll(deadline)
                 } else null
                 if (id == null) {
-                    throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "ID allocation is temporarily unavailable")
+                    throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, Messages.get("error.ids.unavailable"))
                 }
                 // Reserved IDs must be skipped within the same bounded allocation wait.
                 if ((id.mostSignificantBits != 0L) || (id.leastSignificantBits <= 0L) || (id.leastSignificantBits >= IdConstants.RESERVED_IDS_BASE)) {
@@ -148,11 +149,11 @@ public open class HazelcastIdGenerationService(
             }
         } catch (failure: InterruptedException) {
             Thread.currentThread().interrupt()
-            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "ID allocation was interrupted", failure)
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, Messages.get("error.ids.interrupted"), failure)
         } catch (failure: ResponseStatusException) {
             throw failure
         } catch (failure: Exception) {
-            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "ID allocation is temporarily unavailable", failure)
+            throw ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, Messages.get("error.ids.unavailable"), failure)
         }
     }
 }
