@@ -224,7 +224,13 @@ internal fun stampDataCollectionSettingsVersion(
         settings = StudySettings(
             requestedSettings.mapValues { (type, setting) ->
                 if (type == StudySettingType.DataCollection) {
-                    requested.copy(settingsVersion = stampedVersion)
+                    // Unchanged: keep the stored value. The same sets in another order would
+                    // serialize differently and conflict with the immutable revision evidence.
+                    if (prior != null && stampedVersion == prior.settingsVersion) {
+                        prior
+                    } else {
+                        requested.copy(settingsVersion = stampedVersion)
+                    }
                 } else {
                     setting
                 }

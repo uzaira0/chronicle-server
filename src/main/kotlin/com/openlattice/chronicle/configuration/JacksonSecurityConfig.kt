@@ -26,6 +26,7 @@ import com.fasterxml.jackson.datatype.jdk8.Jdk8Module
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.blackbird.BlackbirdModule
 import com.fasterxml.jackson.module.kotlin.KotlinModule
+import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.serializers.FullQualifiedNameJacksonSerializer.registerWithMapper
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
@@ -119,6 +120,7 @@ public open class JacksonSecurityConfig {
         mapper.registerModule(GuavaModule())
         mapper.registerModule(BlackbirdModule())
         mapper.registerModule(KotlinModule.Builder().build())
+        mapper.registerModule(ObjectMappers.setOrderModule())
 
         // Standard serialization settings
         mapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)

@@ -105,6 +105,31 @@ class DataCollectionSettingsVersionTest {
         assertEquals(4, dataCollection(stamped).settingsVersion)
     }
 
+    @Test fun testUnchangedPolicyKeepsStoredSetOrder() {
+        fun withRecordTypes(vararg types: HealthConnectRecordType) = baseSetting.copy(
+            modules = mapOf(
+                CollectionModuleId.HEALTH_CONNECT to CollectionModuleSetting(
+                    enabled = true,
+                    healthConnectRecordTypes = linkedSetOf(*types),
+                ),
+            ),
+        )
+        val mapper = ObjectMappers.getJsonMapper()
+        val stored = mapper.writeValueAsString(
+            settings(withRecordTypes(HealthConnectRecordType.SLEEP, HealthConnectRecordType.STEPS)),
+        )
+        val prior = mapper.readValue(stored, StudySettings::class.java)
+        val reordered = withRecordTypes(HealthConnectRecordType.STEPS, HealthConnectRecordType.SLEEP)
+
+        val stamped = stampDataCollectionSettingsVersion(prior, update(reordered.copy(settingsVersion = 99)))
+
+        // jsonb array equality is ordered: the revision trigger refuses any other order.
+        assertEquals(
+            mapper.readTree(stored).get("DataCollection"),
+            mapper.readTree(mapper.writeValueAsString(stamped.settings)).get("DataCollection"),
+        )
+    }
+
     @Test fun testFirstDataCollectionSettingStartsAtInitialRevision() {
         val stamped = stampDataCollectionSettingsVersion(null, update(baseSetting.copy(settingsVersion = 99)))
 

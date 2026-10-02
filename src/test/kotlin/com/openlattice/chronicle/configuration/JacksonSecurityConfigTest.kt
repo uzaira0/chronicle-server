@@ -34,4 +34,13 @@ class JacksonSecurityConfigTest {
 
         assertEquals(expected, decoded)
     }
+
+    @Test
+    fun `sets keep their json order`() {
+        // A HashSet iterates "a" before "b"; stored settings must survive a read and write unchanged.
+        val json = """["b","a"]"""
+        val values = mapper.readValue(json, object : com.fasterxml.jackson.core.type.TypeReference<Set<String>>() {})
+
+        assertEquals(json, mapper.writeValueAsString(values))
+    }
 }
