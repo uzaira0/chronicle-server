@@ -55,6 +55,34 @@ class MoveToIosEventStorageTaskTest {
     }
 
     @Test
+    fun deviceNameIsNeverStored() {
+        val timestamp = OffsetDateTime.parse("2026-07-12T03:10:17Z")
+        val deviceId = UUID.randomUUID()
+        val sample = SensorDataSample(
+            id = UUID.randomUUID(),
+            dateRecorded = timestamp,
+            duration = 0.02,
+            data = """{"schemaVersion":1,"frequencyHz":50.0,"provenance":"system_recorded","samples":[]}""",
+            device = """{"model":"iPhone16,1","name":"Alex's iPhone","systemName":"iOS","systemVersion":"26.5"}""",
+            timezone = "America/Chicago",
+            sensor = SensorType.accelerometer,
+            startDate = timestamp,
+            endDate = timestamp.plusNanos(20_000_000),
+        )
+
+        val queued = withoutDeviceName(sample)
+        assertTrue(!queued.device.contains("Alex"))
+
+        val stored = SensorDataEntries(UUID.randomUUID(), "p1", listOf(queued), timestamp, deviceId)
+            .toSensorDataRows()
+            .single()
+            .row
+            .associate { it.col.name to it.value }
+        assertEquals(deviceId.toString(), stored.getValue(PostgresEventColumns.DEVICE_NAME.name))
+        assertEquals("iOS", stored.getValue(PostgresEventColumns.DEVICE_SYSTEM_NAME.name))
+    }
+
+    @Test
     fun preservesAccelerometerBatchPayload() {
         val timestamp = OffsetDateTime.parse("2026-07-12T03:10:17Z")
         val payload = """{"schemaVersion":1,"frequencyHz":50.0,"provenance":"system_recorded","samples":[{"offsetSeconds":0.0,"xG":0.1,"yG":0.2,"zG":0.9}]}"""

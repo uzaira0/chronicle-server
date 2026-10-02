@@ -2,6 +2,7 @@ package com.openlattice.chronicle.storage.tasks
 
 import com.fasterxml.jackson.core.JacksonException
 import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.postgres.PostgresArrays
@@ -921,9 +922,20 @@ private fun mapSharedColumns(dataSample: SensorDataSample): List<SensorDataColum
         SensorDataColumn(PostgresEventColumns.DEVICE_VERSION, device.systemVersion),
         SensorDataColumn(PostgresEventColumns.DEVICE_NAME, device.name),
         SensorDataColumn(PostgresEventColumns.DEVICE_MODEL, device.model),
-        SensorDataColumn(PostgresEventColumns.DEVICE_SYSTEM_NAME, device.name),
+        SensorDataColumn(PostgresEventColumns.DEVICE_SYSTEM_NAME, device.systemName),
         SensorDataColumn(PostgresEventColumns.EXACT_RECORDED_DATE_TIME, dataSample.dateRecorded)
     )
+}
+
+/**
+ * Older iOS apps send the user-assigned device name ("Alex's iPhone"), which identifies the
+ * participant. It is blanked before the sample is queued; storage keys rows by device id instead.
+ */
+internal fun withoutDeviceName(sample: SensorDataSample): SensorDataSample {
+    val device = SensorDataUploadService.mapper.readTree(sample.device) as? ObjectNode ?: return sample
+    if (device.path("name").asText().isEmpty()) return sample
+    device.put("name", "")
+    return sample.copy(device = SensorDataUploadService.mapper.writeValueAsString(device))
 }
 
 private inline fun <reified T : Any> readSensorPayload(data: String): T =
@@ -963,7 +975,11 @@ public data class SensorDataEntries(
                     studyId,
                     participantId,
                     sensorType,
-                    row,
+                    // device_name holds the enrolled device id: it separates one participant's
+                    // devices (screen_time_usage_deltas partitions on it) without naming anyone.
+                    row.map {
+                        if (it.col == PostgresEventColumns.DEVICE_NAME) it.copy(value = deviceId.toString()) else it
+                    },
                     uploadedAt,
                     deviceId
                 )

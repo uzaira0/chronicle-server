@@ -64,6 +64,8 @@ public open class EnrollmentService(
 
         public abstract class IOSDeviceStorageMixIn {
             @get:JsonIgnore public abstract val deviceId: String
+            // User-assigned ("Alex's iPhone"); identifies the participant.
+            @get:JsonIgnore public abstract val name: String
             @get:JsonIgnore public abstract val apnDeviceToken: String
         }
 

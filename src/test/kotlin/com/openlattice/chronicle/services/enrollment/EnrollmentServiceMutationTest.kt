@@ -5,6 +5,7 @@ import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.services.candidates.CandidateManager
 import com.openlattice.chronicle.sources.AndroidDevice
+import com.openlattice.chronicle.sources.IOSDevice
 import com.openlattice.chronicle.storage.StorageResolver
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
@@ -32,6 +33,15 @@ import java.util.UUID
  * conditionals, and the check(rs.next()) failure paths so PIT mutants are killed.
  */
 class EnrollmentServiceMutationTest {
+    @Test
+    fun `stored ios device omits the user-assigned name`() {
+        val stored = EnrollmentService.serializeForStorage(
+            IOSDevice("Alex's iPhone", "iOS", "iPhone", "iPhone", "17.0", "device-1")
+        )
+        assertFalse(stored.contains("Alex"))
+        assertFalse(stored.contains("\"name\""))
+    }
+
 
     private val storageResolver: StorageResolver = mock()
     private val idGenerationService: HazelcastIdGenerationService = mock()

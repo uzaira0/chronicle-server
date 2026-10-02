@@ -19,6 +19,7 @@ import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.PARTICIP
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.tasks.mapSensorDataToStorage
+import com.openlattice.chronicle.storage.tasks.withoutDeviceName
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.time.DateTimeException
@@ -85,7 +86,7 @@ public open class SensorDataUploadService(
                     if (retained.isNotEmpty()) connection.prepareStatement(INSERT_UPLOAD_BUFFER_SQL).use { ps ->
                         ps.setObject(1, studyId)
                         ps.setString(2, participantId)
-                        ps.setString(3, mapper.writeValueAsString(retained))
+                        ps.setString(3, mapper.writeValueAsString(retained.map(::withoutDeviceName)))
                         ps.setObject(4, deviceId)
                         check(ps.executeUpdate() == 1) { "iOS sensor upload was not queued" }
                     }
