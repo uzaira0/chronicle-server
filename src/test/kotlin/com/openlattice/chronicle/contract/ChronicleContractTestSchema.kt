@@ -157,6 +157,8 @@ object ChronicleContractTestSchema {
                     "data_collection_settings_revisions FROM chronicle_app"
             )
             stmt.execute("REVOKE ALL ON restore_continuity_reconciliations FROM chronicle_app")
+            stmt.execute("REVOKE SELECT ON audit, audit_buffer FROM chronicle_app")
+            stmt.execute("REVOKE DELETE, TRUNCATE ON data_deletion_audit_outbox FROM chronicle_app")
             stmt.execute(
                 "REVOKE EXECUTE ON FUNCTION record_data_collection_settings_revision() FROM chronicle_app"
             )
