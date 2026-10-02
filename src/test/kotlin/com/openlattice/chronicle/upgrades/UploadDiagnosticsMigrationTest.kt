@@ -24,6 +24,9 @@ class UploadDiagnosticsMigrationTest {
     private val retainedCatalogMigration = requireNotNull(
         javaClass.getResourceAsStream("/db/migration/V107__retain_and_extend_upload_diagnostics.sql"),
     ).bufferedReader().use { it.readText() }
+    private val accessMissingMigration = requireNotNull(
+        javaClass.getResourceAsStream("/db/migration/V113__add_access_missing_diagnostic_code.sql"),
+    ).bufferedReader().use { it.readText() }
 
     private fun event(moduleFamily: String, issueCode: String) = AndroidUploadDiagnosticEvent(
         id = UUID.randomUUID().toString(),
@@ -109,5 +112,15 @@ class UploadDiagnosticsMigrationTest {
             }
         }
         assertTrue("ON upload_diagnostics (study_id, participant_id, diagnostic_day)" in retainedCatalogMigration)
+    }
+
+    @Test
+    fun `access-missing code is accepted by the model and V113 keeps every V107 code`() {
+        event("INTERACTION", "COLLECTION_ACCESS_MISSING")
+        assertTrue("'COLLECTION_ACCESS_MISSING'" in accessMissingMigration)
+        val v107Codes = retainedCatalogMigration
+            .substringAfter("ADD CONSTRAINT upload_diagnostics_issue_code_check").substringBefore("));")
+        Regex("'([A-Z_]+)'").findAll(v107Codes).map { it.groupValues[1] }.toList().also { assertTrue(it.size > 30) }
+            .forEach { code -> assertTrue(code, "'$code'" in accessMissingMigration) }
     }
 }
