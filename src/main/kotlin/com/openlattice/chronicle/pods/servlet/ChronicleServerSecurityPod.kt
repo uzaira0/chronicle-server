@@ -27,6 +27,7 @@ import com.openlattice.chronicle.configuration.ChronicleJwtClientConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
 import com.openlattice.chronicle.configuration.roleClientIdForClaims
 import com.openlattice.chronicle.configuration.JwtKeyMaterial
+import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.JwtBlocklist
 import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.authorization.SystemRole
@@ -111,6 +112,12 @@ public open class ChronicleServerSecurityPod {
 
     @Autowired(required = false)
     private var apiKeyService: ApiKeyService? = null
+
+    @Autowired(required = false)
+    private var authorizationManager: AuthorizationManager? = null
+
+    @Autowired
+    private lateinit var creatorPrincipalResolver: com.openlattice.chronicle.authorization.CreatorPrincipalResolver
 
     @Autowired(required = false)
     private var jwtBlocklist: JwtBlocklist? = null
@@ -399,9 +406,12 @@ public open class ChronicleServerSecurityPod {
 
         // H-1/H-2: Register API key authentication filter before JWT auth
         // Includes honey token detection for canary API key alerting.
-        apiKeyService?.let { service ->
+        // Without the authorization manager a key's creator cannot be checked, so keys are not admitted at all.
+        val service = apiKeyService
+        val keyAuthorization = authorizationManager
+        if (service != null && keyAuthorization != null) {
             http.addFilterBefore(
-                ApiKeyAuthenticationFilter(service, honeyTokenService),
+                ApiKeyAuthenticationFilter(service, keyAuthorization, honeyTokenService, creatorPrincipalResolver::resolve),
                 BearerTokenAuthenticationFilter::class.java
             )
         }

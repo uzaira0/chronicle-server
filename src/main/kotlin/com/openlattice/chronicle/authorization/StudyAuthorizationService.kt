@@ -346,6 +346,14 @@ public open class StudyAuthorizationService(
      * @throws ForbiddenException if the permission is not granted.
      */
     public fun requirePermission(studyId: UUID, permission: StudyPermission) {
+        // A researcher API key holds no ACEs: its scope decides, on its own study only.
+        ApiKeyStudyAuthority.current()?.let { key ->
+            if (!ApiKeyStudyAuthority.permits(key, studyId, permission)) {
+                logUnauthorizedAccess(studyId, permission)
+                throw ForbiddenException("Access denied to study $studyId")
+            }
+            return
+        }
         when (permission) {
             StudyPermission.READ_STUDY,
             StudyPermission.READ_PARTICIPANT_DATA -> requireStudyAccess(studyId, permission)

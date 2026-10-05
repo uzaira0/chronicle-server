@@ -246,11 +246,14 @@ class ApiKeyServiceTest {
         `when`(mockRs.getObject("expires_at", OffsetDateTime::class.java)).thenReturn(now.plusDays(90))
         `when`(mockRs.getObject("last_used_at", OffsetDateTime::class.java)).thenReturn(null)
         `when`(mockRs.getLong("usage_count")).thenReturn(0L)
+        `when`(mockRs.getString("created_by")).thenReturn("key-creator")
 
         val result = service.authenticateApiKey("ck_test_rawkey")
 
         assertNotNull(result)
         assertEquals(keyId, result!!.keyId)
+        // The filter caps the key at its creator's current study access, so the lookup must carry who that is.
+        assertEquals("key-creator", result.createdBy)
     }
 
     @Test

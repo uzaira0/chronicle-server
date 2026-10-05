@@ -25,6 +25,8 @@ import com.openlattice.chronicle.collection.CollectionModuleSetting
 import com.openlattice.chronicle.candidates.Candidate
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.util.DeviceIdUtils
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.deletion.DeleteStudyTableData
@@ -867,6 +869,51 @@ class StudyControllerTest {
         val result = controller.getStudy(studyId)
         assertNotNull(result)
         verify(studyService).getStudy(studyId)
+    }
+
+    @Test
+    fun testResearcherApiKeyActsOnItsOwnStudyWithinScopeAndIsAuditedAsTheKey() {
+        val studyId = UUID.randomUUID()
+        val otherStudyId = UUID.randomUUID()
+        val keyId = UUID.randomUUID()
+        // The key holds no ACEs, so the ACL store refuses it everywhere.
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(false)
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(Mockito.mock(Study::class.java))
+        Mockito.`when`(studyService.isValidStudy(kAny())).thenReturn(true)
+        val participant = Participant(
+            participantId = "participant-001",
+            candidate = Candidate(UUID.randomUUID()),
+            participationStatus = ParticipationStatus.ENROLLED,
+        )
+        fun authenticate(scope: ApiKeyScope) {
+            SecurityContextHolder.getContext().authentication = ApiKeyAuthenticationToken(
+                principal = "apikey:$keyId",
+                keyId = keyId,
+                studyId = studyId,
+                participantId = null,
+                deviceId = null,
+                scope = scope,
+                authorities = emptyList(),
+            )
+        }
+
+        authenticate(ApiKeyScope.READ_ONLY)
+        assertNotNull(controller.getStudy(studyId))
+        assertThrows(ForbiddenException::class.java) { controller.registerParticipant(studyId, participant) }
+        assertThrows(ForbiddenException::class.java) { controller.getStudy(otherStudyId) }
+
+        authenticate(ApiKeyScope.WRITE)
+        controller.registerParticipant(studyId, participant)
+        verify(studyService).registerParticipant(studyId, participant)
+
+        val events = argumentCaptor<List<AuditableEvent>>()
+        verify(auditingManager, Mockito.atLeastOnce()).recordEvents(events.capture())
+        val studyRead = events.allValues.flatten().first { it.eventType == AuditEventType.GET_STUDY }
+        assertEquals("apikey:$keyId", studyRead.principal.id)
+        assertEquals(keyId, studyRead.securablePrincipalId)
+        val logged = argumentCaptor<AuditLogEntry>()
+        verify(auditService, Mockito.atLeastOnce()).log(logged.capture())
+        assertTrue(logged.allValues.isNotEmpty() && logged.allValues.all { it.userId == keyId })
     }
 
     // ===================== Collection loop closure: acknowledgments =====================

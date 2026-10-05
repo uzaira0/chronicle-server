@@ -3,22 +3,34 @@ package com.openlattice.chronicle.controllers
 import com.openlattice.chronicle.apikey.ApiKeyCreateRequest
 import com.openlattice.chronicle.apikey.ApiKeyCreateResponse
 import com.openlattice.chronicle.apikey.ApiKeyInfo
+import com.openlattice.chronicle.apikey.ApiKeyScope
+import com.openlattice.chronicle.authorization.AclKey
+import com.openlattice.chronicle.authorization.AuthorizationManager
+import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.base.OK
 import com.openlattice.chronicle.services.apikeys.ApiKeyService
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
 import org.mockito.Mockito.verify
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
+import java.time.OffsetDateTime
 import java.util.*
 
 class ApiKeyControllerTest {
 
     private val apiKeyService = Mockito.mock(ApiKeyService::class.java)
-    private val controller = ApiKeyController(apiKeyService)
+    private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
+    private val creatorPrincipalResolver = Mockito.mock(com.openlattice.chronicle.authorization.CreatorPrincipalResolver::class.java).also {
+        Mockito.`when`(it.resolve(org.mockito.kotlin.any())).thenAnswer { com.openlattice.chronicle.authorization.principals.Principals.getCurrentPrincipals() }
+    }
+    private val controller = ApiKeyController(apiKeyService, authorizationManager, creatorPrincipalResolver)
 
     @Before
     fun setUp() {
@@ -35,7 +47,7 @@ class ApiKeyControllerTest {
     @Test
     fun testControllerAcceptsApiKeyService() {
         val svc = Mockito.mock(ApiKeyService::class.java)
-        val ctrl = ApiKeyController(svc)
+        val ctrl = ApiKeyController(svc, authorizationManager, creatorPrincipalResolver)
         assertNotNull(ctrl)
     }
 
@@ -44,7 +56,7 @@ class ApiKeyControllerTest {
     @Test
     fun testCreateApiKeyDelegatesToService() {
         val studyId = UUID.randomUUID()
-        val request = Mockito.mock(ApiKeyCreateRequest::class.java)
+        val request = ApiKeyCreateRequest(name = "key")
         val response = Mockito.mock(ApiKeyCreateResponse::class.java)
         Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kEq(request)))
             .thenReturn(response)
@@ -56,7 +68,7 @@ class ApiKeyControllerTest {
     @Test
     fun testCreateApiKeyReturnsServiceResponse() {
         val studyId = UUID.randomUUID()
-        val request = Mockito.mock(ApiKeyCreateRequest::class.java)
+        val request = ApiKeyCreateRequest(name = "key")
         val response = Mockito.mock(ApiKeyCreateResponse::class.java)
         Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kEq(request)))
             .thenReturn(response)
@@ -68,7 +80,7 @@ class ApiKeyControllerTest {
     @Test
     fun testCreateApiKeyPassesStudyId() {
         val studyId = UUID.randomUUID()
-        val request = Mockito.mock(ApiKeyCreateRequest::class.java)
+        val request = ApiKeyCreateRequest(name = "key")
         val response = Mockito.mock(ApiKeyCreateResponse::class.java)
         Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kEq(request)))
             .thenReturn(response)
@@ -80,7 +92,7 @@ class ApiKeyControllerTest {
     @Test(expected = RuntimeException::class)
     fun testCreateApiKeyPropagatesServiceException() {
         val studyId = UUID.randomUUID()
-        val request = Mockito.mock(ApiKeyCreateRequest::class.java)
+        val request = ApiKeyCreateRequest(name = "key")
         Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kEq(request)))
             .thenThrow(RuntimeException("create failed"))
 
@@ -91,7 +103,7 @@ class ApiKeyControllerTest {
     fun testCreateApiKeyForDifferentStudies() {
         val studyId1 = UUID.randomUUID()
         val studyId2 = UUID.randomUUID()
-        val request = Mockito.mock(ApiKeyCreateRequest::class.java)
+        val request = ApiKeyCreateRequest(name = "key")
         val response1 = Mockito.mock(ApiKeyCreateResponse::class.java)
         val response2 = Mockito.mock(ApiKeyCreateResponse::class.java)
         Mockito.`when`(apiKeyService.createApiKey(kEq(studyId1), kAnyString(), kEq(request)))
@@ -284,7 +296,7 @@ class ApiKeyControllerTest {
     @Test
     fun testServiceCalledOnceForCreate() {
         val studyId = UUID.randomUUID()
-        val request = Mockito.mock(ApiKeyCreateRequest::class.java)
+        val request = ApiKeyCreateRequest(name = "key")
         val response = Mockito.mock(ApiKeyCreateResponse::class.java)
         Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kEq(request)))
             .thenReturn(response)
@@ -300,5 +312,50 @@ class ApiKeyControllerTest {
 
         controller.listApiKeys(studyId)
         verify(apiKeyService, Mockito.times(1)).listApiKeys(studyId)
+    }
+
+    // --- a key never outranks its creator ---
+
+    @Test
+    fun testKeyScopeIsCappedAtTheCreatorsOwnStudyAccess() {
+        val studyId = UUID.randomUUID()
+        var held: Set<Permission> = EnumSet.of(Permission.READ, Permission.WRITE)
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenAnswer { call ->
+            call.getArgument<AclKey>(0) == AclKey(studyId) && held.containsAll(call.getArgument<EnumSet<Permission>>(2))
+        }
+        fun create(scope: ApiKeyScope) = controller.createApiKey(studyId, ApiKeyCreateRequest(name = "k", scope = scope))
+        Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kAny()))
+            .thenReturn(Mockito.mock(ApiKeyCreateResponse::class.java))
+        TestSecurityUtils.setupSecurityContext("collaborator", admin = false)
+
+        // A WRITE collaborator (MODIFY_STUDY) may mint READ_ONLY and WRITE keys, never ADMIN, and may not
+        // rotate someone else's ADMIN key into one of their own.
+        assertNotNull(create(ApiKeyScope.READ_ONLY))
+        assertNotNull(create(ApiKeyScope.WRITE))
+        val refused = assertThrows(ResponseStatusException::class.java) { create(ApiKeyScope.ADMIN) }
+        assertEquals(HttpStatus.FORBIDDEN, refused.statusCode)
+        assertEquals(
+            "You cannot give an API key the ADMIN scope: it exceeds your own access to this study",
+            refused.reason,
+        )
+        val adminKeyId = UUID.randomUUID()
+        val now = OffsetDateTime.now()
+        Mockito.`when`(apiKeyService.listApiKeys(studyId))
+            .thenReturn(listOf(ApiKeyInfo(adminKeyId, studyId, "p", "k", ApiKeyScope.ADMIN, now, now.plusDays(30))))
+        assertThrows(ResponseStatusException::class.java) { controller.rotateApiKey(studyId, adminKeyId) }
+        verify(apiKeyService, Mockito.never()).rotateApiKey(kAny(), kAny(), kAnyString())
+        verify(apiKeyService, Mockito.times(2)).createApiKey(kEq(studyId), kAnyString(), kAny())
+
+        // An OWNER may.
+        held = EnumSet.of(Permission.READ, Permission.WRITE, Permission.OWNER)
+        assertNotNull(create(ApiKeyScope.ADMIN))
+
+        // No access at all: not even READ_ONLY.
+        held = emptySet()
+        assertThrows(ResponseStatusException::class.java) { create(ApiKeyScope.READ_ONLY) }
+
+        // A system admin holds every study right.
+        TestSecurityUtils.setupSecurityContext("admin-user", admin = true)
+        assertNotNull(create(ApiKeyScope.ADMIN))
     }
 }

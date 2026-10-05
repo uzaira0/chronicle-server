@@ -43,6 +43,12 @@ public open class StudyAuthorizationPod {
     @Inject
     private lateinit var auditingManager: AuditingManager
 
+    @Bean
+    public fun creatorPrincipalResolver(storageResolver: com.openlattice.chronicle.storage.StorageResolver,
+        configuration: com.openlattice.chronicle.configuration.ChronicleAuthConfiguration):
+        com.openlattice.chronicle.authorization.CreatorPrincipalResolver =
+        com.openlattice.chronicle.authorization.CreatorPrincipalResolver(storageResolver, configuration)
+
     /**
      * Creates the StudyAuthorizationService that provides role-based access control
      * for study operations.

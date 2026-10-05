@@ -91,7 +91,7 @@ public open class ApiKeyService(
             WHERE ${KEY_HASH.name} = ? AND ${REVOKED.name} = false AND ${EXPIRES_AT.name} > now()
             RETURNING ${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name},
                       ${CREATED_AT.name}, ${EXPIRES_AT.name}, ${LAST_USED_AT.name}, ${USAGE_COUNT.name},
-                      participant_id, device_id
+                      participant_id, device_id, ${CREATED_BY.name}
         """.trimIndent()
 
         // Revoked mobile credentials remain usable only for an idempotent withdrawal retry.
@@ -318,7 +318,7 @@ public open class ApiKeyService(
                     ps.setString(1, hash)
                     val rs = ps.executeQuery()
                     if (rs.next()) {
-                        mapApiKeyInfo(rs)
+                        mapApiKeyInfo(rs).copy(createdBy = rs.getString(CREATED_BY.name))
                     } else {
                         null
                     }

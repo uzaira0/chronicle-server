@@ -1,6 +1,9 @@
 package com.openlattice.chronicle.filters
 
 import com.openlattice.chronicle.apikey.ApiKeyScope
+import com.openlattice.chronicle.authorization.ApiKeyStudyAuthority
+import com.openlattice.chronicle.authorization.AuthorizationManager
+import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.apikeys.ApiKeyService
@@ -28,7 +31,7 @@ import java.nio.charset.StandardCharsets
  * API keys are passed in the X-Api-Key header. The filter:
  * 1. Checks for the X-Api-Key header
  * 2. Validates the key against the database
- * 3. Enforces scope (READ_ONLY, WRITE, ADMIN) based on HTTP method
+ * 3. Enforces scope (READ_ONLY, WRITE, ADMIN): per route for researcher keys, by HTTP method for device keys
  * 4. Sets the SecurityContext authentication if valid
  *
  * H-1: Registers API key auth in the filter chain
@@ -36,7 +39,10 @@ import java.nio.charset.StandardCharsets
  */
 public open class ApiKeyAuthenticationFilter(
     private val apiKeyService: ApiKeyService,
-    private val honeyTokenService: HoneyTokenService? = null
+    private val authorizationManager: AuthorizationManager,
+    private val honeyTokenService: HoneyTokenService? = null,
+    private val creatorPrincipals: (String) -> Set<com.openlattice.chronicle.authorization.Principal> =
+        Principals::getStoredUserPrincipals,
 ) : OncePerRequestFilter() {
 
     internal companion object {
@@ -44,6 +50,9 @@ public open class ApiKeyAuthenticationFilter(
         private val log = LoggerFactory.getLogger(ApiKeyAuthenticationFilter::class.java)
         private const val API_KEY_HEADER = "X-Api-Key"
         private const val DEVICE_ID_HEADER = "X-Chronicle-Device-Id"
+        private const val AUTHORIZATION_HEADER = "Authorization"
+        // The cookies ChronicleCookieOrBearerTokenResolver reads a person's token from.
+        private val PERSON_CREDENTIAL_COOKIES = setOf("chronicle_auth", "authorization")
         public const val WITHDRAWAL_REQUEST_ID_HEADER: String = "X-Chronicle-Withdrawal-Request-Id"
         // Cap on request-derived identifiers (studyId/participantId) when logged, to bound
         // log-entry size after CR/LF sanitization (defense against log injection / log flooding).
@@ -54,7 +63,15 @@ public open class ApiKeyAuthenticationFilter(
             """/chronicle/v[34]/study/([0-9a-fA-F-]+)/participant/([^/]+)(?:/.*)?"""
         )
         public const val CURRENT_ENROLLMENT_PATH: String = "/chronicle/v4/mobile/enrollments/current"
+        // With the withdrawal route, the only route a key deleted by erasure may still reach: it answers NOT_ENROLLED.
+        private val PARTICIPATION_STATUS_PATH_REGEX = Regex(
+            """/chronicle/v4/study/[0-9a-fA-F-]+/participant/[^/]+/status"""
+        )
     }
+
+    private fun carriesPersonCredential(request: HttpServletRequest): Boolean =
+        !request.getHeader(AUTHORIZATION_HEADER).isNullOrBlank() ||
+            request.cookies?.any { it.name in PERSON_CREDENTIAL_COOKIES } == true
 
     override fun shouldNotFilter(request: HttpServletRequest): Boolean {
         // Only process requests that have an API key header
@@ -81,8 +98,19 @@ public open class ApiKeyAuthenticationFilter(
             return
         }
 
+        // A request authenticates as one principal. The bearer-token filter runs after this one and would
+        // replace the key's identity with the person's, so a key sent with a bearer token or an auth cookie
+        // is refused before any handler.
+        if (carriesPersonCredential(request)) {
+            ChronicleMetrics.apiKeyUsageTotal.labels("unknown", "mixed_credentials").inc()
+            response.sendError(HttpStatus.BAD_REQUEST.value(), Messages.get("error.apiKey.mixedCredentials", request))
+            return
+        }
+
         val currentEnrollmentRequest = request.method.equals(HttpMethod.DELETE.name(), ignoreCase = true) &&
             request.requestURI == CURRENT_ENROLLMENT_PATH
+        val statusRequest = request.method.equals(HttpMethod.GET.name(), ignoreCase = true) &&
+            PARTICIPATION_STATUS_PATH_REGEX.matches(request.requestURI)
         val keyInfo = if (currentEnrollmentRequest) {
             val requestId = MobileWithdrawalRequestIds.parse(request.getHeader(WITHDRAWAL_REQUEST_ID_HEADER))
             if (requestId == null) {
@@ -103,12 +131,41 @@ public open class ApiKeyAuthenticationFilter(
         // Track successful API key usage for anomaly detection
         ChronicleMetrics.apiKeyUsageTotal.labels(keyInfo.prefix, "success").inc()
 
-        // H-2: Enforce scope based on HTTP method
-        val requiredScope = getRequiredScope(request.method)
-        if (!isScopeAllowed(keyInfo.scope, requiredScope)) {
+        // H-2: a researcher key reaches only the study-scoped routes in ResearcherApiKeyRoutes, on its own
+        // study, with the scope each route needs; a device key keeps the HTTP-method rule below.
+        var scope = keyInfo.scope
+        val requiredScope = if (keyInfo.participantId == null) {
+            val route = ResearcherApiKeyRoutes.match(request.method, request.requestURI)
+            if (route == null || route.studyId != keyInfo.studyId) {
+                log.warn(
+                    "Researcher API key {} refused on {} {}",
+                    keyInfo.keyId,
+                    request.method,
+                    LogSanitizer.sanitizeRequestPath(request.requestURI)
+                )
+                ChronicleMetrics.apiKeyUsageTotal.labels(keyInfo.prefix, "path_mismatch").inc()
+                val message = if (route == null) "error.enrollment.apiKeyEndpoint" else "error.enrollment.apiKeyStudyScope"
+                response.sendError(HttpStatus.FORBIDDEN.value(), Messages.get(message, request))
+                return
+            }
+            // A researcher key acts with its scope cut down to what its creator holds on the study right now.
+            val ceiling = keyInfo.createdBy?.let {
+                ApiKeyStudyAuthority.ceiling(authorizationManager, keyInfo.studyId, creatorPrincipals(it))
+            }
+            if (ceiling == null) {
+                log.warn("Researcher API key {} refused: its creator no longer has access to the study", keyInfo.keyId)
+                response.sendError(HttpStatus.FORBIDDEN.value(), Messages.get("error.enrollment.apiKeyCreatorAccess", request))
+                return
+            }
+            scope = minOf(scope, ceiling)
+            route.scope
+        } else {
+            getRequiredScope(request.method)
+        }
+        if (!ApiKeyStudyAuthority.covers(scope, requiredScope)) {
             log.warn(
                 "API key scope {} insufficient for {} request on studyRef {}",
-                keyInfo.scope,
+                scope,
                 request.method,
                 LogSanitizer.stableFingerprint(keyInfo.studyId.toString(), prefix = "study")
             )
@@ -187,7 +244,7 @@ public open class ApiKeyAuthenticationFilter(
         // Set authentication in SecurityContext
         val authorities = listOf(
             SimpleGrantedAuthority("ROLE_API_KEY"),
-            SimpleGrantedAuthority("SCOPE_${keyInfo.scope.name}")
+            SimpleGrantedAuthority("SCOPE_${scope.name}")
         )
         val authentication = ApiKeyAuthenticationToken(
             principal = "apikey:${keyInfo.keyId}",
@@ -195,8 +252,9 @@ public open class ApiKeyAuthenticationFilter(
             studyId = keyInfo.studyId,
             participantId = keyInfo.participantId,
             deviceId = keyInfo.deviceId,
-            scope = keyInfo.scope,
-            authorities = authorities
+            scope = scope,
+            authorities = authorities,
+            creatorUserId = keyInfo.createdBy,
         )
         SecurityContextHolder.getContext().authentication = authentication
 
@@ -208,14 +266,6 @@ public open class ApiKeyAuthenticationFilter(
             HttpMethod.GET.name(), HttpMethod.HEAD.name(), HttpMethod.OPTIONS.name() -> ApiKeyScope.READ_ONLY
             HttpMethod.POST.name(), HttpMethod.PUT.name(), HttpMethod.PATCH.name(), HttpMethod.DELETE.name() -> ApiKeyScope.WRITE
             else -> ApiKeyScope.ADMIN
-        }
-    }
-
-    private fun isScopeAllowed(granted: ApiKeyScope, required: ApiKeyScope): Boolean {
-        return when (granted) {
-            ApiKeyScope.ADMIN -> true // ADMIN can do everything
-            ApiKeyScope.WRITE -> required != ApiKeyScope.ADMIN
-            ApiKeyScope.READ_ONLY -> required == ApiKeyScope.READ_ONLY
         }
     }
 }
@@ -230,7 +280,8 @@ public open class ApiKeyAuthenticationToken(
     public val participantId: String?,
     public val deviceId: java.util.UUID?,
     public val scope: ApiKeyScope,
-    authorities: List<SimpleGrantedAuthority>
+    authorities: List<SimpleGrantedAuthority>,
+    public val creatorUserId: String? = null,
 ) : AbstractAuthenticationToken(authorities) {
     init {
         isAuthenticated = true

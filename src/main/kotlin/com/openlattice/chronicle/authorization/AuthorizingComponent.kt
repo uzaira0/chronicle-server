@@ -73,12 +73,14 @@ public interface AuthorizingComponent : AuditingComponent {
     }
 
     public fun isAuthorized(requiredPermissions: EnumSet<Permission>): Predicate<AclKey> {
+        val apiKey = ApiKeyStudyAuthority.current()
         return Predicate { aclKey: AclKey ->
-            authorizationManager.checkIfHasPermissions(
-                aclKey,
-                Principals.getCurrentPrincipals(),
-                requiredPermissions
-            )
+            apiKey?.let { ApiKeyStudyAuthority.permits(it, aclKey, requiredPermissions) }
+                ?: authorizationManager.checkIfHasPermissions(
+                    aclKey,
+                    Principals.getCurrentPrincipals(),
+                    requiredPermissions
+                )
         }
     }
 
@@ -135,9 +137,14 @@ public interface AuthorizingComponent : AuditingComponent {
     }
 
     public fun accessCheck(requiredPermissionsByAclKey: Map<AclKey, EnumSet<Permission>>) {
-        val authorized = authorizationManager
-            .authorize(requiredPermissionsByAclKey, Principals.getCurrentPrincipals())
-            .values.all { pm -> pm.values.all { it } }
+        val apiKey = ApiKeyStudyAuthority.current()
+        val authorized = if (apiKey != null) {
+            requiredPermissionsByAclKey.all { (aclKey, required) -> ApiKeyStudyAuthority.permits(apiKey, aclKey, required) }
+        } else {
+            authorizationManager
+                .authorize(requiredPermissionsByAclKey, Principals.getCurrentPrincipals())
+                .values.all { pm -> pm.values.all { it } }
+        }
         if (!authorized) {
             logger.warn("Authorization failed for required permissions: {}", requiredPermissionsByAclKey)
             throw ForbiddenException("Insufficient permissions to perform operation.")
@@ -146,12 +153,10 @@ public interface AuthorizingComponent : AuditingComponent {
 
     public fun accessCheck(aclKey: AclKey, requiredPermissions: EnumSet<Permission>) {
         val currentPrincipals = Principals.getCurrentPrincipals()
-        if (!authorizationManager.checkIfHasPermissions(
-                aclKey,
-                currentPrincipals,
-                requiredPermissions
-            )
-        ) {
+        val authorized = ApiKeyStudyAuthority.current()
+            ?.let { ApiKeyStudyAuthority.permits(it, aclKey, requiredPermissions) }
+            ?: authorizationManager.checkIfHasPermissions(aclKey, currentPrincipals, requiredPermissions)
+        if (!authorized) {
             val currentUser = Principals.getCurrentSecurablePrincipal()
             recordEvent(
                 AuditableEvent(

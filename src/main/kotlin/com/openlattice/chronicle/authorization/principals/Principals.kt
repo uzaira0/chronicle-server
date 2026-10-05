@@ -28,6 +28,7 @@ import com.openlattice.chronicle.authorization.SecurablePrincipal
 import com.openlattice.chronicle.authorization.SortedPrincipalSet
 import com.openlattice.chronicle.authorization.SystemRole
 import com.openlattice.chronicle.authorization.SystemUser
+import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import org.slf4j.LoggerFactory
 import org.springframework.security.core.Authentication
@@ -98,7 +99,11 @@ public class Principals private constructor() {
         public fun getCurrentSecurablePrincipal(): SecurablePrincipal {
             val principalId = getCurrentPrincipalId()
             return securablePrincipals[principalId] ?: SecurablePrincipal(
-                Optional.of(UUID.randomUUID()),
+                // An API key has no stored principal; its key id keeps audit rows traceable to the key.
+                Optional.of(
+                    (SecurityContextHolder.getContext().authentication as? ApiKeyAuthenticationToken)?.keyId
+                        ?: UUID.randomUUID()
+                ),
                 Principal(PrincipalType.USER, principalId),
                 principalId,
                 Optional.of("Auto-provisioned local user")
@@ -127,6 +132,13 @@ public class Principals private constructor() {
         public fun getUserPrincipals(principalId: String): NavigableSet<Principal> {
             return principals[principalId]!!
         }
+
+        /**
+         * What a user who is not making this request holds: their resolved principal tree, or just their user
+         * principal. Roles that only arrive in a login token are not known here.
+         */
+        public fun getStoredUserPrincipals(principalId: String): NavigableSet<Principal> =
+            TreeSet<Principal>(principals[principalId] ?: emptySet()).apply { add(getUserPrincipal(principalId)) }
 
         public fun getCurrentPrincipals(): NavigableSet<Principal> {
             val principalId = getCurrentPrincipalId()
