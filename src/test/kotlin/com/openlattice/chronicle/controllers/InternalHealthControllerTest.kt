@@ -20,6 +20,23 @@ class InternalHealthControllerTest {
     private val controller = InternalHealthController(storageResolver, hazelcastInstance)
 
     @Test
+    fun stalledCheckoutHasOneBoundedProbeAndClosesDelayedConnection() {
+        Mockito.`when`(hazelcastInstance.lifecycleService).thenReturn(lifecycleService)
+        Mockito.`when`(lifecycleService.isRunning).thenReturn(true)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenAnswer { Thread.sleep(2500); connection }
+        Mockito.`when`(connection.isValid(2)).thenReturn(true)
+        val started = System.nanoTime()
+        assertEquals(503, controller.ready().statusCode.value())
+        org.junit.Assert.assertTrue(java.time.Duration.ofNanos(System.nanoTime() - started).toMillis() < 2300)
+        assertEquals(503, controller.ready().statusCode.value())
+        Thread.sleep(700)
+        verify(dataSource, Mockito.times(1)).connection
+        verify(connection).close()
+        assertEquals(204, controller.live().statusCode.value())
+    }
+
+    @Test
     fun livenessDoesNotTouchDependencies() {
         assertEquals(204, controller.live().statusCode.value())
 

@@ -18,6 +18,22 @@ public class InternalHealthController(
         private const val DATABASE_VALIDATION_TIMEOUT_SECONDS = 2
     }
 
+    private val probeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "chronicle-readiness-probe").apply { isDaemon = true }
+    }
+    private var probe: java.util.concurrent.Future<Boolean>? = null
+
+    @Synchronized
+    private fun startProbe(): java.util.concurrent.Future<Boolean>? {
+        if (probe?.isDone == false) return null
+        return probeExecutor.submit<Boolean> {
+            storageResolver.getPlatformStorage().connection.use { it.isValid(DATABASE_VALIDATION_TIMEOUT_SECONDS) }
+        }.also { probe = it }
+    }
+
+    @jakarta.annotation.PreDestroy
+    public fun close() { probeExecutor.shutdownNow() }
+
     @GetMapping("/internal/health/live")
     public fun live(): ResponseEntity<Void> = ResponseEntity.noContent().build()
 
@@ -32,9 +48,10 @@ public class InternalHealthController(
             if (!hazelcastInstance.lifecycleService.isRunning) {
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build()
             }
-            val databaseReady = storageResolver.getPlatformStorage().connection.use { connection ->
-                connection.isValid(DATABASE_VALIDATION_TIMEOUT_SECONDS)
-            }
+            // A stuck checkout keeps the sole probe occupied; requests never spawn replacements.
+            // The worker closes a connection even if checkout completes after the response deadline.
+            val databaseReady = startProbe()?.get(DATABASE_VALIDATION_TIMEOUT_SECONDS.toLong(),
+                java.util.concurrent.TimeUnit.SECONDS) ?: false
             if (databaseReady) {
                 ResponseEntity.noContent().build()
             } else {
