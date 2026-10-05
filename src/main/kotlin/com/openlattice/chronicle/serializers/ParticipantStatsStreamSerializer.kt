@@ -43,6 +43,8 @@ public open class ParticipantStatsStreamSerializer : TestableSelfRegisteringStre
         )
     }
 
+    // Sets are written sorted: reads rebuild them as HashSets, and IMap.replace(key, old, new)
+    // compares serialized bytes, so insertion-ordered bytes made the stats CAS loop spin forever.
     override fun write(out: ObjectDataOutput, obj: ParticipantStats) {
         uuidSerializer.write(out, obj.studyId)
         out.writeString(obj.participantId)
@@ -50,18 +52,18 @@ public open class ParticipantStatsStreamSerializer : TestableSelfRegisteringStre
         writeDt(out, obj.androidLastPing)
         writeDt(out, obj.androidFirstDate)
         writeDt(out, obj.androidLastDate)
-        SetStreamSerializers.serialize(out, obj.androidUniqueDates) { output, elem ->
+        SetStreamSerializers.serialize(out, obj.androidUniqueDates.toSortedSet()) { output, elem ->
             IOUtil.writeLocalDate(output, elem)
         }
         writeDt(out, obj.iosLastPing)
         writeDt(out, obj.iosFirstDate)
         writeDt(out, obj.iosLastDate)
-        SetStreamSerializers.serialize(out, obj.iosUniqueDates) { output, elem ->
+        SetStreamSerializers.serialize(out, obj.iosUniqueDates.toSortedSet()) { output, elem ->
             IOUtil.writeLocalDate(output, elem)
         }
         writeDt(out, obj.tudFirstDate)
         writeDt(out, obj.tudLastDate)
-        SetStreamSerializers.serialize(out, obj.tudUniqueDates) { output, elem ->
+        SetStreamSerializers.serialize(out, obj.tudUniqueDates.toSortedSet()) { output, elem ->
             IOUtil.writeLocalDate(output, elem)
 
         }

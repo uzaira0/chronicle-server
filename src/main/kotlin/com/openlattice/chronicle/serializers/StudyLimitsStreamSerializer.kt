@@ -94,7 +94,10 @@ public open class StudyLimitsStreamSerializer : TestableSelfRegisteringStreamSer
 
     override fun read(input: ObjectDataInput): StudyLimits {
         val participantLimit = input.readInt()
-        val studyFeatures = EnumSet.copyOf(SetStreamSerializers.deserialize(input) { deserialize(input) })
+        // copyOf(Collection) throws on an empty set, and features may legitimately be empty.
+        val studyFeatures = EnumSet.noneOf(StudyFeature::class.java).apply {
+            addAll(SetStreamSerializers.deserialize(input) { deserialize(input) })
+        }
         val studyDuration = deserializeStudyDuration(input)
         val dataRetention = deserializeStudyDuration(input)
         val studyEnds = odtSerializer.read(input)

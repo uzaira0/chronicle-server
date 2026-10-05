@@ -15,7 +15,8 @@ public data class DelegatedPermissionEnumSet( val permissions: EnumSet<Permissio
 
         @JvmStatic
         public fun wrap(permissions: Set<Permission>): DelegatedPermissionEnumSet {
-            return DelegatedPermissionEnumSet(EnumSet.copyOf(permissions))
+            // copyOf(Collection) throws on an empty non-EnumSet collection.
+            return DelegatedPermissionEnumSet(EnumSet.noneOf(Permission::class.java).apply { addAll(permissions) })
         }
 
     }

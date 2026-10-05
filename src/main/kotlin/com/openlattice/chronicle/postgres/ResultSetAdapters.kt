@@ -374,7 +374,9 @@ public class ResultSetAdapters private constructor() {
                 rs.getObject(STUDY_ENDS.name, OffsetDateTime::class.java),
                 rs.getObject(DATA_EXPIRES.name, OffsetDateTime::class.java),
                 rs.getInt(PARTICIPANT_LIMIT.name),
-                EnumSet.copyOf(PostgresArrays.getTextArray(rs, FEATURES.name).map(StudyFeature::valueOf))
+                EnumSet.noneOf(StudyFeature::class.java).apply {
+                    addAll(PostgresArrays.getTextArray(rs, FEATURES.name).map(StudyFeature::valueOf))
+                }
             )
         }
 

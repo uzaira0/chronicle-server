@@ -384,7 +384,7 @@ public open class HazelcastAuthorizationService(
 
                 val securableObjectType = getDefaultObjectType(types, aclKey)
                 val updates = acl.aces.associate { ace ->
-                    val permissions = EnumSet.copyOf(ace.permissions)
+                    val permissions = EnumSet.noneOf(Permission::class.java).apply { addAll(ace.permissions) }
                     AceKey(aclKey, ace.principal) to
                             AceValue(permissions, securableObjectType, ace.expirationDate)
                 }
@@ -785,7 +785,7 @@ public open class HazelcastAuthorizationService(
 
             acl.aces.forEach {
                 map.put(
-                    AceValue(EnumSet.copyOf(it.permissions), getDefaultObjectType(types, aclKey), it.expirationDate),
+                    AceValue(EnumSet.noneOf(Permission::class.java).apply { addAll(it.permissions) }, getDefaultObjectType(types, aclKey), it.expirationDate),
                     AceKey(aclKey, it.principal)
                 )
             }
