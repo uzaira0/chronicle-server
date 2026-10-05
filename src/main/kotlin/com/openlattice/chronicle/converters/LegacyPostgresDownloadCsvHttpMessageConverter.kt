@@ -58,7 +58,7 @@ public open class LegacyPostgresDownloadCsvHttpMessageConverter : AbstractGeneri
 
     @Throws(IOException::class, HttpMessageNotWritableException::class)
     override fun writeInternal(t: LegacyPostgresDownloadWrapper, type: Type?, outputMessage: HttpOutputMessage) {
-        csvMapper.writer(getSchema(t)).writeValues(outputMessage.body).writeAll(t)
+        writeCsvRows(csvMapper.writer(getSchema(t)), outputMessage.body, t)
     }
 
     override fun supports(clazz: Class<*>): Boolean {

@@ -18,6 +18,7 @@
  */
 package com.openlattice.chronicle.converters
 
+import com.fasterxml.jackson.databind.ObjectWriter
 import com.fasterxml.jackson.databind.SerializationFeature
 import com.fasterxml.jackson.dataformat.csv.CsvGenerator
 import com.fasterxml.jackson.dataformat.csv.CsvMapper
@@ -27,6 +28,7 @@ import com.fasterxml.jackson.datatype.jdk8.Jdk8Module
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.blackbird.BlackbirdModule
 import com.geekbeast.postgres.PostgresDatatype
+import com.openlattice.chronicle.services.export.ExportFileWriter
 import com.openlattice.chronicle.constants.CustomMediaType
 import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresEventColumns
@@ -36,6 +38,7 @@ import org.springframework.http.converter.AbstractGenericHttpMessageConverter
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.http.converter.HttpMessageNotWritableException
 import java.io.IOException
+import java.io.OutputStream
 import java.lang.reflect.Type
 import java.util.*
 import java.util.function.Consumer
@@ -84,7 +87,7 @@ public open class PostgresDownloadCsvHttpMessageConverter : AbstractGenericHttpM
 
     @Throws(IOException::class, HttpMessageNotWritableException::class)
     override fun writeInternal(t: PostgresDownloadWrapper, type: Type?, outputMessage: HttpOutputMessage) {
-        csvMapper.writer(getSchema(t)).writeValues(outputMessage.body).writeAll(t)
+        writeCsvRows(csvMapper.writer(getSchema(t)), outputMessage.body, t)
     }
 
     override fun supports(clazz: Class<*>): Boolean {
@@ -108,5 +111,30 @@ public open class PostgresDownloadCsvHttpMessageConverter : AbstractGenericHttpM
         })
 
         return schemaBuilder.setUseHeader(true).build()
+    }
+}
+
+/**
+ * Streams [rows] as CSV and finalizes the writer (header for an empty result, flush, end of stream)
+ * only on success. A query, mapping or client-write failure must not be closed into what looks like a
+ * complete 200 download, so it propagates with the writer unclosed. The row iterator is closed on every
+ * path so its pooled connection is returned at once instead of at the iterator watchdog's expiry.
+ */
+internal fun spreadsheetSafeCsvValue(value: Any?): Any? = when (value) {
+    is String -> ExportFileWriter.spreadsheetSafeString(value)
+    is Map<*, *> -> value.mapValues { spreadsheetSafeCsvValue(it.value) }
+    is Iterable<*> -> value.map(::spreadsheetSafeCsvValue)
+    is Array<*> -> value.map(::spreadsheetSafeCsvValue)
+    else -> value
+}
+
+internal fun writeCsvRows(writer: ObjectWriter, out: OutputStream, rows: Iterable<*>) {
+    val iterator = rows.iterator()
+    try {
+        val sequence = writer.writeValues(out)
+        iterator.forEach { sequence.write(spreadsheetSafeCsvValue(it)) }
+        sequence.close()
+    } finally {
+        (iterator as? AutoCloseable)?.close()
     }
 }

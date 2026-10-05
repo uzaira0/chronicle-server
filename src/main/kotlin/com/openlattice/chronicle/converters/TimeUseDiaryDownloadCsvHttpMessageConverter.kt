@@ -47,7 +47,7 @@ public open class TimeUseDiaryDownloadCsvHttpMessageConverter : AbstractGenericH
     }
 
     override fun writeInternal(t: TimeUseDiaryPostgresDownloadWrapper, type: Type?, outputMessage: HttpOutputMessage) {
-       csvMapper.writer(getSchema(t)).writeValues(outputMessage.body).writeAll(t)
+        writeCsvRows(csvMapper.writer(getSchema(t)), outputMessage.body, t)
     }
 
     private fun getSchema(iterable: TimeUseDiaryPostgresDownloadWrapper): CsvSchema {

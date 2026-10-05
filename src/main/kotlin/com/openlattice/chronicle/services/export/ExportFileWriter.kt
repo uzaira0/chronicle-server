@@ -957,7 +957,7 @@ public class ExportFileWriter private constructor() {
             }
         }
 
-        private fun spreadsheetSafeString(value: String): String {
+        internal fun spreadsheetSafeString(value: String): String {
             if (value.isEmpty()) return value
             val first = value.first()
             val firstNonSpace = value.firstOrNull { it != ' ' }
