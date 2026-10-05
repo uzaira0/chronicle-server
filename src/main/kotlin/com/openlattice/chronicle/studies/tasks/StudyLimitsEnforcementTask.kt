@@ -19,7 +19,7 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
         private val logger = LoggerFactory.getLogger(StudyLimitsEnforcementTask::class.java)
     }
 
-    override fun getInitialDelay(): Long = 10_000
+    override fun getInitialDelay(): Long = 0
 
     override fun getPeriod(): Long = 1
 
