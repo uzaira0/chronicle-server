@@ -4,6 +4,8 @@ import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.auditing.AuditingManager
+import com.openlattice.chronicle.candidates.Candidate
+import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.Permission
@@ -14,6 +16,7 @@ import com.openlattice.chronicle.authorization.SystemRole
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.mapstores.stats.ParticipantStatsCache
+import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.services.candidates.CandidateManager
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.surveys.SurveysManager
@@ -351,7 +354,21 @@ class StudyServiceCachePublicationTest {
         verify(authorizationService, never()).ensureAceIsLoaded(AclKey(studyId), SystemRole.adminRole)
     }
 
-    private fun newService(): StudyService =
+    @Test
+    fun `register rejects participant ids that enrollment codes would later refuse`() {
+        val studyLimits = mock<StudyLimitsManager>()
+        val service = newService(studyLimits)
+        for (badId in listOf("CL 001", "niño-07")) {
+            val participant = Participant(badId, Candidate(), ParticipationStatus.ENROLLED)
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                service.registerParticipant(connection, UUID.randomUUID(), participant)
+            }
+            assertEquals("Invalid participant ID format", error.message)
+        }
+        org.mockito.Mockito.verifyNoInteractions(studyLimits)
+    }
+
+    private fun newService(studyLimitsMgr: StudyLimitsManager = mock()): StudyService =
         StudyService(
             storageResolver = storageResolver,
             authorizationService = authorizationService,
@@ -359,7 +376,7 @@ class StudyServiceCachePublicationTest {
             enrollmentService = mock<EnrollmentManager>(),
             surveysManager = mock<SurveysManager>(),
             idGenerationService = idGenerationService,
-            studyLimitsMgr = mock<StudyLimitsManager>(),
+            studyLimitsMgr = studyLimitsMgr,
             auditingManager = auditingManager,
             hazelcast = hazelcast,
             participantStatsCache = mock<ParticipantStatsCache>(),

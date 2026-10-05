@@ -400,7 +400,8 @@ public open class StudyService(
     }
 
     override fun createStudy(study: Study): UUID {
-        val (flavor, hds) = storageResolver.getDefaultPlatformStorage()
+        val (flavor, baseStorage) = storageResolver.getDefaultPlatformStorage()
+        val hds = com.openlattice.chronicle.storage.PinnedPlatformConnection.resolve(baseStorage)
         check(flavor == PostgresFlavor.VANILLA) { "Only vanilla postgres supported for studies." }
         val creator = Principals.getCurrentUser()
         val adminRole = Principals.getAdminRole()
@@ -437,6 +438,7 @@ public open class StudyService(
         // not turn a durable success into a failed create response, because a
         // retry would create a second study. Specific-key reads remain
         // read-through and can recover from a missed warm.
+        val warmCaches = {
         listOf(creator, adminRole).forEach { principal ->
             try {
                 authorizationService.ensureAceIsLoaded(aclKey, principal)
@@ -449,6 +451,10 @@ public open class StudyService(
                 )
             }
         }
+        }
+        if (com.openlattice.chronicle.storage.PinnedPlatformConnection.owningConnection(baseStorage) != null) {
+            com.openlattice.chronicle.storage.PinnedPlatformConnection.afterCommit(baseStorage, aclKey, warmCaches)
+        } else warmCaches()
         return study.id
     }
 

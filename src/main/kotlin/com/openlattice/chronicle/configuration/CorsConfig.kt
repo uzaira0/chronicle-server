@@ -111,7 +111,8 @@ public data class CorsConfiguration(
         "X-Chronicle-Timestamp",
         "X-Chronicle-Nonce",
         // Optimistic-concurrency precondition for study-settings writes (V103).
-        "If-Match"
+        "If-Match",
+        "Idempotency-Key"
     ),
 
     /**

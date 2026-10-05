@@ -447,6 +447,8 @@ public open class ChronicleServerSecurityPod {
 
         http.addFilterAfter(com.openlattice.chronicle.filters.ConcurrentEditFilter(storageResolver, studyAuthorizationService),
             org.springframework.security.web.access.intercept.AuthorizationFilter::class.java)
+        http.addFilterAfter(com.openlattice.chronicle.filters.CreateReceiptFilter(storageResolver, studyAuthorizationService),
+            com.openlattice.chronicle.filters.ConcurrentEditFilter::class.java)
         return http.build()
     }
 
