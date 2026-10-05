@@ -14,6 +14,7 @@ import com.openlattice.chronicle.timeusediary.TimeUseDiaryDownloadDataType
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryResponse
 import com.openlattice.chronicle.timeusediary.TimeUseDiarySettings
 import com.zaxxer.hikari.HikariDataSource
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -31,6 +32,9 @@ import java.time.ZoneOffset
 import java.util.*
 
 class TimeUseDiaryControllerTest {
+    // A leaked login makes later filter tests in the same JVM skip their authentication checks.
+    @After
+    fun clearSecurityContext() = TestSecurityUtils.clearSecurityContext()
 
     private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
     private val auditingManager = Mockito.mock(AuditingManager::class.java)

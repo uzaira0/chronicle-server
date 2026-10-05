@@ -38,6 +38,24 @@ import java.time.temporal.ChronoUnit
 import java.util.*
 
 /**
+ * The day a diary describes: the participant's own `activityDate` answer, falling back to the
+ * server's submission day for a client that does not send one.
+ */
+internal fun tudDiaryDay(responses: List<TimeUseDiaryResponse>, submissionDate: OffsetDateTime): LocalDate =
+    responses.firstOrNull { it.code == TimeUseDiaryQuestionCodes.ACTIVITY_DATE }?.response?.singleOrNull()
+        ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        ?: submissionDate.toLocalDate()
+
+/**
+ * Groups a submission on the caller's calendar, read from the offset of the requested range
+ * start, so a group's day matches the local-day window the web downloads it with.
+ * One offset for the whole range; a range spanning a DST change shifts groups on the
+ * far side by an hour near midnight. Pass a zone id through the API if that matters.
+ */
+internal fun tudSubmissionDay(submittedAt: OffsetDateTime, rangeStart: OffsetDateTime): LocalDate =
+    submittedAt.atZoneSameInstant(rangeStart.offset).toLocalDate()
+
+/**
  * @author Andrew Carter andrew@openlattice.com
  */
 public open class TimeUseDiaryService(
@@ -69,7 +87,7 @@ public open class TimeUseDiaryService(
             responses,
             submissionDate
         )
-        updateParticipantStats(studyId, participantId, submissionDate)
+        updateParticipantStats(studyId, participantId, submissionDate, tudDiaryDay(responses, submissionDate))
         logger.info(
             "submitted time use diary responses studyId={} participant={}",
             studyId,
@@ -78,10 +96,15 @@ public open class TimeUseDiaryService(
         return timeUseDiaryId
     }
 
-    private fun updateParticipantStats(studyId: UUID, participantId: String, submissionDate: OffsetDateTime) {
+    private fun updateParticipantStats(
+        studyId: UUID,
+        participantId: String,
+        submissionDate: OffsetDateTime,
+        diaryDay: LocalDate,
+    ) {
         val currentStats = studyService.getParticipantStats(studyId, participantId)
         val uniqueDates: MutableSet<LocalDate> = (currentStats?.tudUniqueDates?.toMutableSet() ?: mutableSetOf())
-        uniqueDates += submissionDate.toLocalDate()
+        uniqueDates += diaryDay
 
         val participantStats = ParticipantStats(
             studyId = studyId,
@@ -165,7 +188,7 @@ public open class TimeUseDiaryService(
             ) {
                 val date = ResultSetAdapters.submissionDate(it)
                 val id = ResultSetAdapters.submissionId(it)
-                Pair(date.toLocalDate(), id)
+                Pair(tudSubmissionDay(date, startDate), id)
             }.toList()
 
             val submissionsByDate: MutableMap<LocalDate, Set<UUID>> = mutableMapOf()
@@ -335,7 +358,7 @@ public open class TimeUseDiaryService(
         }
     }
 
-    // reason: TUD night-time mapping preserves a deliberate legacy-compatibility bug +
+    // reason: TUD night-time mapping combines legacy and current answers with
     // interdependent time arithmetic; restructuring risks altering exported data
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun getNightTimeDataColumnMapping(rs: ResultSet): List<Map<String, Any>> {
@@ -391,10 +414,10 @@ public open class TimeUseDiaryService(
                 .atZone(zoneIdOfPrimaryActivity)
         } else null
 
-        //This bug remains for compatibility with legacy downloads.
+        // Legacy wake-up answers describe the morning following the diary day.
         val todayWakeUpDateTime = if (todayWakeUpTime != null) {
             LocalTime
-                .parse(todayWakeUpTime).atDate(LocalDate.now())
+                .parse(todayWakeUpTime).atDate(activityDate.plusDays(1))
                 .atZone(zoneIdOfPrimaryActivity)
         } else null
 
@@ -546,14 +569,14 @@ public open class TimeUseDiaryService(
      * @param studyId           Identifies the study from which to retrieve submissions
      * @param participantId     Identifies the participant for whom to retrieve submissions
      * @param startDate         Date that submissions must be submitted after or on
-     * @param endDate           Date that submissions must be submitted before or on
+     * @param endDate           Exclusive end, as for downloads: a group must hold what its download returns
      */
     private val getSubmissionsByDateSql = """
         SELECT ${SUBMISSION_ID.name}, ${SUBMISSION_DATE.name}
         FROM ${TIME_USE_DIARY_SUBMISSIONS.name}
         WHERE ${STUDY_ID.name} = ?
         AND ${PARTICIPANT_ID.name} = ?
-        AND ${SUBMISSION_DATE.name} BETWEEN ? AND ?
+        AND ${SUBMISSION_DATE.name} >= ? AND ${SUBMISSION_DATE.name} < ?
         ORDER BY ${SUBMISSION_DATE.name} ASC
     """.trimIndent()
 
@@ -562,13 +585,13 @@ public open class TimeUseDiaryService(
      *
      * @param studyId           Identifies the study from which to retrieve submissions
      * @param startDate         Date that submissions must be submitted after or on
-     * @param endDate           Date that submissions must be submitted before or on
+     * @param endDate           Exclusive end, as for downloads: a group must hold what its download returns
      */
     private val getStudyTUDSubmissionsByDateSql = """
         SELECT ${SUBMISSION_ID.name}, ${SUBMISSION_DATE.name}
         FROM ${TIME_USE_DIARY_SUBMISSIONS.name}
         WHERE ${STUDY_ID.name} = ?
-        AND ${SUBMISSION_DATE.name} BETWEEN ? AND ?
+        AND ${SUBMISSION_DATE.name} >= ? AND ${SUBMISSION_DATE.name} < ?
         ORDER BY ${SUBMISSION_DATE.name} ASC
     """.trimIndent()
 

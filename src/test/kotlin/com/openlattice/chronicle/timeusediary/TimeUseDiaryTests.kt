@@ -89,6 +89,29 @@ class TimeUseDiaryTests : ChronicleServerTests() {
         Assert.assertTrue("Should return empty for past date range", submissions.isEmpty())
     }
 
+    /** A group lists only what its download returns: the range end is exclusive for both. */
+    @Test
+    fun testSubmissionAtRangeEndIsNotListed() {
+        val (studyId, participantId) = createStudyWithParticipant()
+        val submissionId = clientUser1.testTimeUseDiaryApi.submitTimeUseDiary(
+            studyId, participantId, TestDataFactory.timeUseDiaryResponses()
+        )
+        val end = OffsetDateTime.parse("2026-10-02T00:00:00Z")
+        hds.connection.use { connection ->
+            connection.prepareStatement("UPDATE time_use_diary_submissions SET submission_date = ? WHERE submission_id = ?").use {
+                it.setObject(1, end)
+                it.setObject(2, submissionId)
+                Assert.assertEquals(1, it.executeUpdate())
+            }
+        }
+
+        val listed = clientUser1.timeUseDiaryApi.getStudyTUDSubmissionIdsByDate(studyId, end.minusDays(1), end)
+        val nextDay = clientUser1.timeUseDiaryApi.getStudyTUDSubmissionIdsByDate(studyId, end, end.plusDays(1))
+
+        Assert.assertTrue(listed.values.none { submissionId in it })
+        Assert.assertTrue(nextDay.values.any { submissionId in it })
+    }
+
     @Test(expected = RhizomeRetrofitCallException::class)
     fun testSubmitInvalidStudy() {
         clientUser1.testTimeUseDiaryApi.submitTimeUseDiary(
