@@ -11,6 +11,7 @@ import com.openlattice.chronicle.storage.DeletionStudyFence
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.sql.Connection
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.time.Clock
@@ -228,6 +229,7 @@ public class ParticipantFormAccessService(
                     lockAccessCodeIssuanceScopes(connection, commands)
                 }
                 val responses = commands.map { command ->
+                    com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(connection, command.studyId, command.participantId)
                     createAccessCode(connection, command, now, replacePrior)
                 }
                 connection.commit()

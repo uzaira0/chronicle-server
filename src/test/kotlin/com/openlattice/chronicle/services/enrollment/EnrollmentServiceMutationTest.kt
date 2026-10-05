@@ -71,12 +71,21 @@ class EnrollmentServiceMutationTest {
     /** A mocked Connection + the PreparedStatement it returns, so callers can verify on the ps. */
     private class Wired(val connection: Connection, val ps: PreparedStatement, val rs: ResultSet)
 
+    private fun allowReuse(connection: Connection) {
+        val fence: PreparedStatement = mock()
+        val rows: ResultSet = mock()
+        whenever(rows.next()).doReturn(true)
+        whenever(fence.executeQuery()).doReturn(rows)
+        whenever(connection.prepareStatement(org.mockito.kotlin.argThat { contains("AS erased") || contains("pg_advisory_xact_lock") })).doReturn(fence)
+    }
+
     private fun wirePlatformStorage(): Wired {
         val rs: ResultSet = mock()
         val ps: PreparedStatement = mock()
         whenever(ps.executeQuery()).doReturn(rs)
         val connection: Connection = mock()
         whenever(connection.prepareStatement(any())).doReturn(ps)
+        allowReuse(connection)
         val hds: HikariDataSource = mock()
         whenever(hds.connection).doReturn(connection)
         whenever(storageResolver.getPlatformStorage()).doReturn(hds)
@@ -267,6 +276,7 @@ class EnrollmentServiceMutationTest {
         whenever(ps.executeUpdate()).doReturn(1)
         val connection: Connection = mock()
         whenever(connection.prepareStatement(any())).doReturn(ps)
+        allowReuse(connection)
 
         service.registerParticipant(connection, studyId, participantId, candidateId, ParticipationStatus.ENROLLED)
 
@@ -304,6 +314,7 @@ class EnrollmentServiceMutationTest {
         whenever(knownPs.executeQuery()).doReturn(knownRs)
         val knownConn: Connection = mock()
         whenever(knownConn.prepareStatement(any())).doReturn(knownPs)
+        allowReuse(knownConn)
         val knownHds: HikariDataSource = mock()
         whenever(knownHds.connection).doReturn(knownConn)
 
@@ -315,6 +326,7 @@ class EnrollmentServiceMutationTest {
         whenever(insertPs.executeQuery()).doReturn(insertRs)
         val insertConn: Connection = mock()
         whenever(insertConn.prepareStatement(any())).doReturn(insertPs)
+        allowReuse(insertConn)
         val insertHds: HikariDataSource = mock()
         whenever(insertHds.connection).doReturn(insertConn)
 
@@ -342,6 +354,7 @@ class EnrollmentServiceMutationTest {
         whenever(knownPs.executeQuery()).doReturn(knownRs)
         val knownConn: Connection = mock()
         whenever(knownConn.prepareStatement(any())).doReturn(knownPs)
+        allowReuse(knownConn)
         val knownHds: HikariDataSource = mock()
         whenever(knownHds.connection).doReturn(knownConn)
 
@@ -352,6 +365,7 @@ class EnrollmentServiceMutationTest {
         whenever(insertPs.executeQuery()).doReturn(insertRs)
         val insertConn: Connection = mock()
         whenever(insertConn.prepareStatement(any())).doReturn(insertPs)
+        allowReuse(insertConn)
         val insertHds: HikariDataSource = mock()
         whenever(insertHds.connection).doReturn(insertConn)
 

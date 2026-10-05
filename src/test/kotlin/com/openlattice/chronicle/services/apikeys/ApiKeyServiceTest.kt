@@ -57,9 +57,14 @@ class ApiKeyServiceTest {
         `when`(mockHds.connection).thenReturn(mockConnection)
         `when`(mockConnection.createStatement()).thenReturn(mockStatement)
         `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(mockPs)
+        val erasure = Mockito.mock(PreparedStatement::class.java)
+        val erasureRows = Mockito.mock(ResultSet::class.java)
+        `when`(erasureRows.next()).thenReturn(true)
+        `when`(erasure.executeQuery()).thenReturn(erasureRows)
+        `when`(mockConnection.prepareStatement(Mockito.argThat { sql: String -> sql.contains("AS erased") || sql.contains("pg_advisory_xact_lock") })).thenReturn(erasure)
         `when`(mockPs.executeQuery()).thenReturn(mockRs)
         `when`(mockPs.executeUpdate()).thenReturn(1)
-        `when`(mockConnection.autoCommit).thenReturn(true)
+        `when`(mockConnection.autoCommit).thenReturn(false)
 
         service = ApiKeyService(storageResolver, idGenerationService, auditingManager)
     }
@@ -499,7 +504,8 @@ class ApiKeyServiceTest {
             "f".repeat(64),
         )
         `when`(mockRs.next()).thenReturn(true, true)
-        `when`(mockRs.getBoolean(1)).thenReturn(true)
+        // The attempt is authorized; the proposed key material was never used before.
+        `when`(mockRs.getBoolean(1)).thenReturn(true, false)
         `when`(idGenerationService.getNextId()).thenReturn(replacementKeyId)
 
         val result = service.installMobileApiKey(studyId, "participant-1", deviceId, attemptId, proposed)
@@ -553,5 +559,29 @@ class ApiKeyServiceTest {
         `when`(mockRs.getLong("usage_count")).thenReturn(0L)
         `when`(mockRs.getString("participant_id")).thenReturn(participantId)
         `when`(mockRs.getObject("device_id", UUID::class.java)).thenReturn(deviceId)
+    }
+
+    // Regression V-20/V-21: nothing renews a device key, so its fixed 365-day expiry stopped every
+    // upload on day 366. A successful lookup slides only device-bound keys forward.
+    @Test
+    fun successfulLookupSlidesOnlyDeviceBoundKeyExpiry() {
+        `when`(mockRs.next()).thenReturn(false)
+        val sql = ArgumentCaptor.forClass(String::class.java)
+
+        service.authenticateApiKey("ck_device_key")
+
+        verify(mockConnection, Mockito.atLeastOnce()).prepareStatement(sql.capture())
+        val normalized = sql.allValues.single { it.contains("UPDATE api_keys") }.replace(Regex("\\s+"), " ")
+        assertTrue(
+            normalized.contains(
+                "expires_at = CASE WHEN participant_id IS NOT NULL AND device_id IS NOT NULL AND EXISTS ( " +
+                    "SELECT 1 FROM study_participants sp WHERE sp.study_id = api_keys.study_id " +
+                    "AND sp.participant_id = api_keys.participant_id " +
+                    "AND sp.participation_status IN ('ENROLLED', 'PAUSED') ) AND NOT EXISTS ( " +
+                    "SELECT 1 FROM data_deletion_operations erasure WHERE erasure.study_id = api_keys.study_id " +
+                    "AND erasure.status NOT IN ('PREVIEW', 'CANCELLED') ",
+            ),
+        )
+        assertTrue(normalized.contains("THEN now() + interval '365 days' ELSE expires_at END"))
     }
 }

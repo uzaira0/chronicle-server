@@ -10,6 +10,7 @@ import com.openlattice.chronicle.authorization.AuthorizingComponent
 import com.openlattice.chronicle.configuration.RateLimit
 import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
 import com.openlattice.chronicle.configuration.RateLimitType
+import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
 import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
 import com.openlattice.chronicle.i18n.Messages
@@ -77,6 +78,11 @@ public open class ParticipantFormAccessController(
             }
             if (request.formKind !in setOf(ParticipantFormKind.APP_USAGE, ParticipantFormKind.QUESTIONNAIRE)) {
                 throw ResponseStatusException(HttpStatus.FORBIDDEN, Messages.get("error.form.kindNotIssuableByReminder"))
+            }
+            // Like the reminder manifest, a device mints codes only while enrolled; this also covers a
+            // researcher deletion before its quarantine hides the row.
+            if (enrollmentManager.getDeviceParticipationStatus(studyId, participantId) != ParticipationStatus.ENROLLED) {
+                throw ResponseStatusException(HttpStatus.FORBIDDEN, Messages.get("error.enrollment.notEnrolled"))
             }
             ParticipantAccessCodeIssuerType.DEVICE to "device:${authentication.keyId}"
         } else {

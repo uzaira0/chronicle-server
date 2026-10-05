@@ -426,6 +426,66 @@ class ApiKeyAuthenticationFilterTest {
     }
 
     @Test
+    fun erasedDeviceKeyReachesOnlyTheStatusReadAndWithdrawalAcknowledgment() {
+        val rawKey = "ck_abc12345_keyvalue"
+        Mockito.`when`(apiKeyService.authenticateApiKey(rawKey)).thenReturn(null)
+        Mockito.`when`(apiKeyService.authenticateWithdrawalApiKey(rawKey, withdrawalRequestId)).thenReturn(null)
+        Mockito.`when`(apiKeyService.isErasedDeviceKey(rawKey)).thenReturn(true)
+        val base = "/chronicle/v4/study/$studyA/participant/$participantP"
+        try {
+            for ((method, path) in listOf("GET" to "$base/status", "DELETE" to ApiKeyAuthenticationFilter.CURRENT_ENROLLMENT_PATH)) {
+                val (response, chain) = runFilter(path, method = method)
+                assertEquals(200, response.status)
+                assertNotNull(chain.request)
+                val token = SecurityContextHolder.getContext().authentication as ApiKeyAuthenticationToken
+                assertTrue("$method $path: an erased key must be marked so the route answers NOT_ENROLLED", token.erased)
+                assertNull("an erased key binds no participant", token.participantId)
+                SecurityContextHolder.clearContext()
+            }
+
+            for ((method, path) in listOf(
+                "GET" to "$base/reminders",
+                "POST" to "$base/reminders",
+                "POST" to "$base/status",
+                "GET" to "$base/status/extra",
+                "POST" to "$base/android",
+            )) {
+                val (response, chain) = runFilter(path, method = method)
+                assertEquals("$method $path must stay 401 for an erased key", 401, response.status)
+                assertNull(chain.request)
+            }
+            Mockito.verify(apiKeyService, Mockito.times(2)).isErasedDeviceKey(rawKey)
+        } finally {
+            SecurityContextHolder.clearContext()
+        }
+    }
+
+    @Test
+    fun revokedKeyWithoutTombstoneStaysUnauthorizedOnTheStatusRead() {
+        Mockito.`when`(apiKeyService.authenticateApiKey("ck_abc12345_keyvalue")).thenReturn(null)
+        Mockito.`when`(apiKeyService.isErasedDeviceKey("ck_abc12345_keyvalue")).thenReturn(false)
+
+        val (response, chain) = runFilter("/chronicle/v4/study/$studyA/participant/$participantP/status", method = "GET")
+
+        assertEquals(401, response.status)
+        assertNull(chain.request)
+    }
+
+    @Test
+    fun liveDeviceKeyOnStatusReadIsNotMarkedErased() {
+        Mockito.`when`(apiKeyService.authenticateApiKey("ck_abc12345_keyvalue"))
+            .thenReturn(mobileKey(studyA, participantP, deviceX))
+        try {
+            val (response, _) = runFilter("/chronicle/v4/study/$studyA/participant/$participantP/status", method = "GET")
+            assertEquals(200, response.status)
+            assertFalse((SecurityContextHolder.getContext().authentication as ApiKeyAuthenticationToken).erased)
+            Mockito.verify(apiKeyService, Mockito.never()).isErasedDeviceKey(Mockito.anyString())
+        } finally {
+            SecurityContextHolder.clearContext()
+        }
+    }
+
+    @Test
     fun deviceOrResearcherKeySentWithABearerTokenOrAuthCookieIsRefusedBeforeLookup() {
         SecurityContextHolder.clearContext()
         Mockito.`when`(apiKeyService.authenticateApiKey("ck_abc12345_keyvalue"))

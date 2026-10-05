@@ -121,6 +121,14 @@ public open class ApiKeyAuthenticationFilter(
         } else {
             apiKeyService.authenticateApiKey(rawKey)
         }
+        // A device key that participant or study erasure deleted keeps only a hash tombstone. It reaches the
+        // status read (NOT_ENROLLED) and the withdrawal acknowledgment; a merely revoked key stays 401.
+        if (keyInfo == null && (statusRequest || currentEnrollmentRequest) && apiKeyService.isErasedDeviceKey(rawKey)) {
+            ChronicleMetrics.apiKeyUsageTotal.labels("erased", "success").inc()
+            SecurityContextHolder.getContext().authentication = ApiKeyAuthenticationToken.erased()
+            filterChain.doFilter(request, response)
+            return
+        }
         if (keyInfo == null) {
             log.warn("Invalid API key")
             ChronicleMetrics.apiKeyUsageTotal.labels("unknown", "invalid").inc()
@@ -281,10 +289,28 @@ public open class ApiKeyAuthenticationToken(
     public val deviceId: java.util.UUID?,
     public val scope: ApiKeyScope,
     authorities: List<SimpleGrantedAuthority>,
+    /** True only for a key deleted by erasure, admitted to the status read and withdrawal acknowledgment. */
+    public val erased: Boolean = false,
     public val creatorUserId: String? = null,
 ) : AbstractAuthenticationToken(authorities) {
     init {
         isAuthenticated = true
+    }
+
+    public companion object {
+        private val NO_ID = java.util.UUID(0L, 0L)
+
+        /** The tombstone holds no identifiers, so the token binds no key, study, participant or device. */
+        public fun erased(): ApiKeyAuthenticationToken = ApiKeyAuthenticationToken(
+            principal = "apikey:erased",
+            keyId = NO_ID,
+            studyId = NO_ID,
+            participantId = null,
+            deviceId = null,
+            scope = ApiKeyScope.READ_ONLY,
+            authorities = listOf(SimpleGrantedAuthority("ROLE_API_KEY")),
+            erased = true,
+        )
     }
 
     override fun getCredentials(): Any = ""

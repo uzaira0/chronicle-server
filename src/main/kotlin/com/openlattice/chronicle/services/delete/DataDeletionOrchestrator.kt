@@ -12,6 +12,7 @@ import com.openlattice.chronicle.ids.IdConstants
 import com.openlattice.chronicle.mapstores.stats.ParticipantStatsCache
 import com.openlattice.chronicle.mapstores.stats.TransactionOnlyParticipantStatsCache
 import com.openlattice.chronicle.observability.ChronicleMetrics
+import com.openlattice.chronicle.services.apikeys.ApiKeyService
 import com.openlattice.chronicle.services.export.ExportFileWriter
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
@@ -153,6 +154,8 @@ public open class DataDeletionOrchestrator(
         private val SQL_IDENTIFIER = Regex("^[a-z][a-z0-9_]*$")
         private const val REGISTRY_VERSION = 1
         private const val QUARANTINE_DAYS = 7L
+        // How long an erased device key can still learn NOT_ENROLLED, counted from erasure.
+        private const val ERASED_DEVICE_KEY_TOMBSTONE_DAYS = 365
         private const val MAX_PROCESS_BATCH = 25
         private const val DELETION_LEASE_MINUTES = 30L
         private const val MAX_AUDIT_PUBLISH_BATCH = 25
@@ -485,7 +488,7 @@ public open class DataDeletionOrchestrator(
                     countParticipantRows(connection, asset, operation.studyId, participantId),
                 )
             }
-            revokeParticipantFormAccess(connection, operation.studyId, participantId, now())
+            revokeParticipantFormAccess(connection, operation.studyId, participantId, now(), operation.mode)
             revokeParticipantExports(connection, operation.operationId, operation.studyId, participantId)
         }
         activateQuarantine(connection, operation.operationId)
@@ -660,7 +663,7 @@ public open class DataDeletionOrchestrator(
                 countParticipantRows(connection, asset, request.studyId, request.participantId),
             )
         }
-        revokeParticipantFormAccess(connection, request.studyId, request.participantId, request.now)
+        revokeParticipantFormAccess(connection, request.studyId, request.participantId, request.now, request.mode)
         revokeParticipantExports(connection, operationId, request.studyId, request.participantId)
         activateQuarantine(connection, operationId)
         return StudyQuarantineResult(operationId, inserted = true)
@@ -1125,8 +1128,17 @@ public open class DataDeletionOrchestrator(
     public open fun processDueOperations(limit: Int = MAX_PROCESS_BATCH): Int =
         RLSRequestContext.withDeletionWorkerContext {
             publishPendingDeletionAuditEvents()
+            expireErasedDeviceKeyTombstones()
             processDueOperationsAsDeletionWorker(limit)
         }
+
+    private fun expireErasedDeviceKeyTombstones() {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use {
+                it.executeUpdate("DELETE FROM erased_device_key_tombstones WHERE expires_at <= now()")
+            }
+        }
+    }
 
     private fun processDueOperationsAsDeletionWorker(limit: Int): Int {
         require(limit in 1..MAX_PROCESS_BATCH)
@@ -1705,6 +1717,59 @@ public open class DataDeletionOrchestrator(
         renewDeletionLease(connection, claim)
         if (operation.mode == DataDeletionMode.WITHDRAW_AND_ERASE) {
             deleteEnrollment(connection, operation.studyId, subjectId)
+            tombstoneDeviceKeys(connection, operation.studyId, subjectId, operation.mode)
+            connection.prepareStatement("DELETE FROM api_keys WHERE study_id = ? AND participant_id = ?").use { statement ->
+                statement.setObject(1, operation.studyId)
+                statement.setString(2, subjectId)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * Run at erasure, never at quarantine: during the quarantine the phone keeps polling with its live
+     * key and learns NOT_ENROLLED. Every device key (live, revoked or expired) of the participant, or of
+     * the whole study when [participantId] is null, leaves only its hash, kind and expiry in
+     * erased_device_key_tombstones, so a phone offline through the quarantine still reads NOT_ENROLLED.
+     * The tombstone lives [ERASED_DEVICE_KEY_TOMBSTONE_DAYS] from erasure, whatever the key's own expiry:
+     * a key that expired during the quarantine or a hold still learns its terminal status.
+     * The caller deletes the api_keys rows in the same transaction. Each hash is first locked, in hash
+     * order, with the lock key installation holds, so no device can take over the material meanwhile.
+     */
+    private fun tombstoneDeviceKeys(connection: Connection, studyId: UUID, participantId: String?, mode: DataDeletionMode) {
+        connection.prepareStatement(
+            """
+            SELECT DISTINCT key_hash FROM api_keys
+            WHERE study_id = ? AND (?::text IS NULL OR participant_id = ?::text)
+              AND participant_id IS NOT NULL AND device_id IS NOT NULL
+            ORDER BY key_hash
+            """.trimIndent()
+        ).use { statement ->
+            statement.setObject(1, studyId)
+            statement.setString(2, participantId)
+            statement.setString(3, participantId)
+            statement.executeQuery().use { resultSet -> buildList { while (resultSet.next()) add(resultSet.getString(1)) } }
+        }.forEach { keyHash ->
+            connection.prepareStatement(ApiKeyService.LOCK_KEY_MATERIAL_SQL).use { statement ->
+                statement.setString(1, keyHash)
+                statement.execute()
+            }
+        }
+        connection.prepareStatement(
+            """
+            INSERT INTO erased_device_key_tombstones (key_hash, kind, expires_at)
+            SELECT DISTINCT key_hash, ?, now() + interval '$ERASED_DEVICE_KEY_TOMBSTONE_DAYS days'
+            FROM api_keys
+            WHERE study_id = ? AND (?::text IS NULL OR participant_id = ?::text)
+              AND participant_id IS NOT NULL AND device_id IS NOT NULL
+            ON CONFLICT (key_hash) DO NOTHING
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, mode.name)
+            statement.setObject(2, studyId)
+            statement.setString(3, participantId)
+            statement.setString(4, participantId)
+            statement.executeUpdate()
         }
     }
 
@@ -2001,12 +2066,16 @@ public open class DataDeletionOrchestrator(
         studyId: UUID,
         participantId: String,
         revokedAt: OffsetDateTime,
+        mode: DataDeletionMode,
     ) {
+        // A purge leaves the device enrolled; revoking its enrollment code would fail every later acknowledgment.
+        val keepEnrollmentEvidence =
+            if (mode == DataDeletionMode.COLLECTED_DATA_PURGE) " AND NOT $EXCHANGED_ENROLLMENT_CODE" else ""
         connection.prepareStatement(
             """
             UPDATE participant_form_access_codes
             SET revoked_at = COALESCE(revoked_at, ?)
-            WHERE study_id = ? AND participant_id = ? AND revoked_at IS NULL
+            WHERE study_id = ? AND participant_id = ? AND revoked_at IS NULL$keepEnrollmentEvidence
             """.trimIndent()
         ).use { statement ->
             statement.setObject(1, revokedAt)
@@ -2531,6 +2600,7 @@ public open class DataDeletionOrchestrator(
 
     private fun deleteStudyRows(connection: Connection, tableName: String, studyId: UUID): Long {
         requireTrustedStudyTable(tableName)
+        if (tableName == "api_keys") tombstoneDeviceKeys(connection, studyId, null, DataDeletionMode.STUDY_ERASURE)
         return connection.prepareStatement(
             "SELECT chronicle_delete_study_rows(?, ?)"
         ).use { statement ->

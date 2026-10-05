@@ -67,7 +67,7 @@ public open class ParticipantPurgeService(
         val token = generateConfirmationToken(studyId, participantId, expiresAt)
 
         val summary = storageResolver.getPlatformStorage().connection.use { connection ->
-            val counts = ChronicleDataAssetRegistry.participantAssets.associate { asset ->
+            val counts = ChronicleDataAssetRegistry.assetsFor(DataDeletionMode.COLLECTED_DATA_PURGE).associate { asset ->
                 asset.tableName to countParticipantRows(connection, asset, studyId, participantId)
             }
             ParticipantDataPurgeSummary(

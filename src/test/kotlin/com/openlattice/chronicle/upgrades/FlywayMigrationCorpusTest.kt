@@ -49,6 +49,7 @@ import com.openlattice.chronicle.services.download.DataDownloadManager
 import com.openlattice.chronicle.services.export.ExportFileWriter
 import com.openlattice.chronicle.services.export.ExportResourceLimitException
 import com.openlattice.chronicle.services.export.ExportService
+import com.openlattice.chronicle.services.export.ExportStorageCapacity
 import com.openlattice.chronicle.services.jobs.ChronicleJob
 import com.openlattice.chronicle.services.jobs.ChronicleJobRunner
 import com.openlattice.chronicle.services.jobs.EmptyJobDefinition
@@ -220,6 +221,81 @@ class FlywayMigrationCorpusTest {
                         }
                     }
                 }
+            }
+            assertEquals(0, ChronicleContractTestSchema.migrate(legacy).migrationsExecuted)
+        }
+    }
+
+    @Test
+    fun testV115TombstonesAndDeletesKeysRetainedByErasuresCompletedBeforeV114() {
+        ChronicleContractTestSchema.prodPostgresContainer("completed_erasure_keys_upgrade").use { legacy ->
+            legacy.start()
+            ChronicleContractTestSchema.waitForQueryReady(legacy)
+            legacy.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
+            assertTrue(FlywayMigrationService.baseConfiguration()
+                .dataSource(legacy.jdbcUrl, legacy.username, legacy.password).target("114").load().migrate().success)
+            val scopes = listOf("WITHDRAW_AND_ERASE", "STUDY_ERASURE", "COLLECTED_DATA_PURGE").associateWith { UUID.randomUUID() }
+            // Per study: the erased subject's revoked and expired device key, a live control device key, a researcher key.
+            fun keyHash(study: UUID, owner: String) = "$study:$owner"
+            val reuseStudy = UUID.randomUUID()
+            legacy.createConnection("").use { connection ->
+                scopes.forEach { (mode, study) ->
+                    connection.createStatement().use { statement ->
+                        statement.execute("INSERT INTO studies (study_id, title) VALUES ('$study', 'retained keys')")
+                        statement.execute("""INSERT INTO api_keys (key_id, study_id, key_hash, key_prefix, name, scope,
+                                created_by, expires_at, revoked, participant_id, device_id) VALUES
+                            ('${UUID.randomUUID()}', '$study', '${keyHash(study, "erased")}', 'erased00', 'd', 'WRITE',
+                             'device', now() - interval '1 day', true, 'erased-subject', '${UUID.randomUUID()}'),
+                            ('${UUID.randomUUID()}', '$study', '${keyHash(study, "control")}', 'control0', 'd', 'WRITE',
+                             'device', now() + interval '1 day', false, 'control-subject', '${UUID.randomUUID()}'),
+                            ('${UUID.randomUUID()}', '$study', '${keyHash(study, "researcher")}', 'research', 'r', 'READ_ONLY',
+                             'researcher', now() + interval '1 day', false, NULL, NULL)""")
+                        statement.execute("""INSERT INTO data_deletion_operations
+                            (operation_id, study_id, participant_ref, participant_block_token, mode, status,
+                             requested_by, idempotency_key, registry_version, started_at, completed_at)
+                            VALUES ('${UUID.randomUUID()}', '$study', 'opaque-ref', md5('$study:erased-subject'),
+                             '$mode', 'COMPLETED', 'migration-test', '${UUID.randomUUID()}', 1,
+                             now() - interval '1 day', now())""")
+                    }
+                }
+                // Legacy collision: the erased subject's revoked key material was later installed for a
+                // live subject of another study. That retained row still owns the hash.
+                connection.createStatement().use { statement ->
+                    statement.execute("INSERT INTO studies (study_id, title) VALUES ('$reuseStudy', 'reused key')")
+                    statement.execute("""INSERT INTO api_keys (key_id, study_id, key_hash, key_prefix, name, scope,
+                            created_by, expires_at, revoked, participant_id, device_id) VALUES
+                        ('${UUID.randomUUID()}', '$reuseStudy', '${keyHash(scopes.getValue("STUDY_ERASURE"), "erased")}',
+                         'reused00', 'd', 'WRITE', 'device', now() + interval '1 day', false, 'live-subject',
+                         '${UUID.randomUUID()}')""")
+                }
+            }
+            assertTrue(ChronicleContractTestSchema.migrate(legacy).success)
+            legacy.createConnection("").use { connection ->
+                fun remaining(study: UUID) = connection.prepareStatement(
+                    "SELECT key_prefix FROM api_keys WHERE study_id = ? ORDER BY key_prefix",
+                ).use { statement ->
+                    statement.setObject(1, study)
+                    statement.executeQuery().use { buildList { while (it.next()) add(it.getString(1)) } }
+                }
+                fun tombstone(hash: String) = connection.prepareStatement(
+                    "SELECT kind, expires_at > now() + interval '364 days' FROM erased_device_key_tombstones WHERE key_hash = ?",
+                ).use { statement ->
+                    statement.setString(1, hash)
+                    statement.executeQuery().use { if (it.next()) it.getString(1) to it.getBoolean(2) else null }
+                }
+                val withdrawal = scopes.getValue("WITHDRAW_AND_ERASE")
+                assertEquals(listOf("control0", "research"), remaining(withdrawal))
+                assertEquals("WITHDRAW_AND_ERASE" to true, tombstone(keyHash(withdrawal, "erased")))
+                assertNull(tombstone(keyHash(withdrawal, "control")))
+                val studyErasure = scopes.getValue("STUDY_ERASURE")
+                assertEquals(emptyList<String>(), remaining(studyErasure))
+                assertNull("a hash a retained row still owns gets no tombstone", tombstone(keyHash(studyErasure, "erased")))
+                assertEquals("the live subject keeps its credential", listOf("reused00"), remaining(reuseStudy))
+                assertEquals("STUDY_ERASURE" to true, tombstone(keyHash(studyErasure, "control")))
+                assertNull("researcher keys get no device tombstone", tombstone(keyHash(studyErasure, "researcher")))
+                val purge = scopes.getValue("COLLECTED_DATA_PURGE")
+                assertEquals(listOf("control0", "erased00", "research"), remaining(purge))
+                assertNull(tombstone(keyHash(purge, "erased")))
             }
             assertEquals(0, ChronicleContractTestSchema.migrate(legacy).migrationsExecuted)
         }
@@ -1184,10 +1260,18 @@ class FlywayMigrationCorpusTest {
                 seedConcurrentWithdrawalFixture(fixture)
                 val service = createParticipantPurgeService(Mockito.mock(AuditingManager::class.java))
                 val first = fixture.devices.first()
+                val secondKey = installRawDeviceKey(fixture.devices.last().keyId)
                 val owner = service.executeSelfWithdrawal(fixture.studyId, fixture.participantId,
                     first.deviceId, first.keyId, first.requestId)
-                if (complete) processDeletion(DataDeletionOrchestrator(storageResolver,
-                    Mockito.mock(AuditingManager::class.java)), requireNotNull(owner.deletionOperationId))
+                if (complete) {
+                    processDeletion(DataDeletionOrchestrator(storageResolver,
+                        Mockito.mock(AuditingManager::class.java)), requireNotNull(owner.deletionOperationId))
+                    // Completion deleted the second device's key; its tombstone carries the acknowledgment
+                    // (MobileEnrollmentController answers an erased key as already withdrawn).
+                    assertNull(apiKeys().authenticateWithdrawalApiKey(secondKey, fixture.devices.last().requestId))
+                    assertTrue(apiKeys().isErasedDeviceKey(secondKey))
+                    continue
+                }
                 getConnection().use { connection ->
                     connection.createStatement().use { it.execute("SET ROLE chronicle_app") }
                     try {
@@ -1215,8 +1299,610 @@ class FlywayMigrationCorpusTest {
                     }
                 }
             } finally {
+                deleteTombstones(fixture)
                 cleanupConcurrentWithdrawalFixture(fixture)
                 TestSecurityUtils.clearSecurityContext()
+            }
+        }
+    }
+
+    @Test
+    fun testResearcherDeletedParticipantDeviceLearnsNotEnrolledAndKeyIsTombstonedAtCompletion() {
+        val fixture = ConcurrentWithdrawalFixture()
+        val device = fixture.devices.first()
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            val rawKey = installRawDeviceKey(device.keyId)
+            val otherKey = installRawDeviceKey(fixture.devices.last().keyId)
+            fun authenticate() = asDeviceApplication(fixture, device.keyId) { apiKeys(it).authenticateApiKey(rawKey) }
+
+            assertTrue("a live enrollment slides its device key",
+                requireNotNull(authenticate()).expiresAt.isAfter(OffsetDateTime.now().plusDays(300)))
+            assertFalse("a live key has no tombstone", apiKeys().isErasedDeviceKey(rawKey))
+            resetDeviceKeyExpiry(device.keyId)
+
+            // The two steps of StudyController.deleteStudyParticipants.
+            getConnection().use { connection ->
+                executeSingleUpdate(connection,
+                    "UPDATE study_participants SET participation_status = 'NOT_ENROLLED' WHERE study_id = ? AND participant_id = ?",
+                ) {
+                    it.setObject(1, fixture.studyId)
+                    it.setString(2, fixture.participantId)
+                }
+            }
+            val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+            val operationId = orchestrator.quarantineParticipant(
+                fixture.studyId, fixture.participantId, DataDeletionMode.WITHDRAW_AND_ERASE,
+                "migration-test", UUID.randomUUID(),
+            )
+
+            assertDeletedForDevice(fixture, device.keyId)
+            val quarantined = requireNotNull(authenticate()) { "the phone keeps its key through the quarantine" }
+            assertTrue("a deleted participant's key must not slide",
+                quarantined.expiresAt.isBefore(OffsetDateTime.now().plusDays(2)))
+            assertEquals("keys are kept through the quarantine", fixture.devices.size, deviceKeyRows(fixture))
+            assertNull("nothing is tombstoned at quarantine", tombstoneKind(rawKey))
+
+            processDeletion(orchestrator, operationId)
+
+            assertDeletedForDevice(fixture, device.keyId)
+            assertEquals("completion deletes every device key", 0, deviceKeyRows(fixture))
+            assertEquals("WITHDRAW_AND_ERASE", tombstoneKind(rawKey))
+            assertEquals("WITHDRAW_AND_ERASE", tombstoneKind(otherKey))
+            assertNull("an erased key fails ordinary authentication", authenticate())
+            assertNull("an erased key fails the withdrawal lookup", asDeviceApplication(fixture, device.keyId) {
+                apiKeys(it).authenticateWithdrawalApiKey(rawKey, UUID.randomUUID())
+            })
+            assertTrue("the tombstone still admits the status read and withdrawal acknowledgment",
+                apiKeys().isErasedDeviceKey(rawKey))
+            assertTombstonesCarryNoIdentifiers()
+        } finally {
+            deleteTombstones(fixture)
+            cleanupConcurrentWithdrawalFixture(fixture)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    @Test
+    fun testStudyErasureTellsDevicesNotEnrolledStopsKeySlidingAndTombstonesKeys() {
+        val fixture = ConcurrentWithdrawalFixture()
+        val device = fixture.devices.first()
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            val rawKey = installRawDeviceKey(device.keyId)
+            val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+            val operationId = orchestrator.quarantineStudy(fixture.studyId, "migration-test", UUID.randomUUID())
+
+            // Study erasure leaves the row ENROLLED but hides it; the device still reads NOT_ENROLLED.
+            assertDeletedForDevice(fixture, device.keyId)
+            for (key in listOf(
+                asDeviceApplication(fixture, device.keyId) { apiKeys(it).authenticateApiKey(rawKey) },
+                apiKeys().authenticateApiKey(rawKey), // the pool owner, as before RLSContextFilter runs
+            )) {
+                assertTrue("a key under study erasure must not slide",
+                    requireNotNull(key).expiresAt.isBefore(OffsetDateTime.now().plusDays(2)))
+            }
+
+            processDeletion(orchestrator, operationId)
+
+            assertEquals("study erasure deletes every device key", 0, deviceKeyRows(fixture))
+            assertEquals("STUDY_ERASURE", tombstoneKind(rawKey))
+            assertNull(apiKeys().authenticateApiKey(rawKey))
+            assertTrue(apiKeys().isErasedDeviceKey(rawKey))
+            assertTombstonesCarryNoIdentifiers()
+        } finally {
+            deleteTombstones(fixture)
+            cleanupConcurrentWithdrawalFixture(fixture)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    @Test
+    fun testCollectedDataPurgeKeepsTheDeviceEnrolledAndItsKeySliding() {
+        val fixture = ConcurrentWithdrawalFixture()
+        val device = fixture.devices.first()
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            val rawKey = installRawDeviceKey(device.keyId)
+            DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java)).quarantineParticipant(
+                fixture.studyId, fixture.participantId, DataDeletionMode.COLLECTED_DATA_PURGE,
+                "migration-test", UUID.randomUUID(),
+            )
+
+            asDeviceApplication(fixture, device.keyId) { resolver ->
+                val enrollment = com.openlattice.chronicle.services.enrollment.EnrollmentService(
+                    resolver,
+                    Mockito.mock(HazelcastIdGenerationService::class.java),
+                    Mockito.mock(com.openlattice.chronicle.services.candidates.CandidateManager::class.java),
+                )
+                assertFalse("the purge quarantine hides the row from the device context",
+                    enrollment.isKnownParticipant(fixture.studyId, fixture.participantId))
+                assertEquals("a purge keeps the enrollment, so the phone keeps collecting",
+                    com.openlattice.chronicle.data.ParticipationStatus.ENROLLED,
+                    enrollment.getDeviceParticipationStatus(fixture.studyId, fixture.participantId))
+            }
+            assertTrue("a purged participant's key keeps sliding", requireNotNull(
+                asDeviceApplication(fixture, device.keyId) { apiKeys(it).authenticateApiKey(rawKey) },
+            ).expiresAt.isAfter(OffsetDateTime.now().plusDays(300)))
+        } finally {
+            cleanupConcurrentWithdrawalFixture(fixture)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    @Test
+    fun testManuallyRevokedKeyOfLiveParticipantGetsNoErasureAnswer() {
+        val fixture = ConcurrentWithdrawalFixture()
+        val device = fixture.devices.first()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            val rawKey = installRawDeviceKey(device.keyId)
+            getConnection().use { connection ->
+                executeSingleUpdate(connection, "UPDATE api_keys SET revoked = true WHERE key_id = ?") {
+                    it.setObject(1, device.keyId)
+                }
+            }
+            assertNull(apiKeys().authenticateApiKey(rawKey))
+            assertFalse("a revoked key of a live participant must stay 401 on the status read",
+                apiKeys().isErasedDeviceKey(rawKey))
+        } finally {
+            cleanupConcurrentWithdrawalFixture(fixture)
+        }
+    }
+
+    @Test
+    fun testDeviceStatusOfMissingEnrollmentWithoutErasureEvidenceThrows() {
+        val fixture = ConcurrentWithdrawalFixture()
+        val device = fixture.devices.first()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            getConnection().use { connection ->
+                executeSingleUpdate(connection, "DELETE FROM study_participants WHERE study_id = ?") {
+                    it.setObject(1, fixture.studyId)
+                }
+            }
+            asDeviceApplication(fixture, device.keyId) { resolver ->
+                val enrollment = com.openlattice.chronicle.services.enrollment.EnrollmentService(
+                    resolver,
+                    Mockito.mock(HazelcastIdGenerationService::class.java),
+                    Mockito.mock(com.openlattice.chronicle.services.candidates.CandidateManager::class.java),
+                )
+                assertThrows("a missing row without erasure evidence must not read as NOT_ENROLLED",
+                    IllegalStateException::class.java) {
+                    enrollment.getDeviceParticipationStatus(fixture.studyId, fixture.participantId)
+                }
+            }
+        } finally {
+            cleanupConcurrentWithdrawalFixture(fixture)
+        }
+    }
+
+    @Test
+    fun testExpiredErasedKeyTombstonesAreDeletedOnLookupAndByTheDeletionWorker() {
+        val onLookup = "expired-lookup-${UUID.randomUUID()}"
+        val byWorker = "expired-worker-${UUID.randomUUID()}"
+        val live = "live-${UUID.randomUUID()}"
+        fun insertTombstone(hash: String, expiresIn: String) = getConnection().use { connection ->
+            executeSingleUpdate(connection,
+                "INSERT INTO erased_device_key_tombstones (key_hash, kind, expires_at) VALUES (?, 'STUDY_ERASURE', now() + ?::interval)",
+            ) {
+                it.setString(1, hash)
+                it.setString(2, expiresIn)
+            }
+        }
+        fun exists(hash: String) = getConnection().use { connection ->
+            connection.prepareStatement("SELECT count(*) FROM erased_device_key_tombstones WHERE key_hash = ?").use {
+                it.setString(1, hash)
+                it.executeQuery().use { result -> check(result.next()); result.getInt(1) == 1 }
+            }
+        }
+        try {
+            insertTombstone(onLookup, "-1 second")
+            insertTombstone(live, "1 day")
+            assertFalse(apiKeys().isErasedDeviceKey("ck_unknown_${UUID.randomUUID()}"))
+            assertFalse("a lookup deletes expired tombstones", exists(onLookup))
+            assertTrue("a lookup keeps unexpired tombstones", exists(live))
+
+            insertTombstone(byWorker, "-1 second")
+            DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+                .processDueOperations(limit = 1)
+            assertFalse("the deletion worker deletes expired tombstones", exists(byWorker))
+            assertTrue(exists(live))
+        } finally {
+            getConnection().use { connection ->
+                executeSingleUpdate(connection, "DELETE FROM erased_device_key_tombstones WHERE key_hash IN (?, ?, ?)",
+                    expected = null) {
+                    it.setString(1, onLookup)
+                    it.setString(2, byWorker)
+                    it.setString(3, live)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun testErasedKeyTombstoneNeverAnswersForAHashAnApiKeyRowStillOwns() {
+        val fixture = ConcurrentWithdrawalFixture()
+        val device = fixture.devices.first()
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            val rawKey = installRawDeviceKey(device.keyId)
+            getConnection().use { connection ->
+                executeSingleUpdate(connection,
+                    "INSERT INTO erased_device_key_tombstones (key_hash, kind, expires_at) VALUES (?, 'WITHDRAW_AND_ERASE', now() + interval '1 day')",
+                ) { it.setString(1, sha256Hex(rawKey)) }
+                executeSingleUpdate(connection, "UPDATE api_keys SET revoked = true WHERE key_id = ?") { it.setObject(1, device.keyId) }
+            }
+            assertFalse("a revoked row still owns the hash", apiKeys().isErasedDeviceKey(rawKey))
+            getConnection().use { connection ->
+                executeSingleUpdate(connection, "DELETE FROM api_keys WHERE key_id = ?") { it.setObject(1, device.keyId) }
+            }
+            assertTrue("once no row owns the hash the tombstone answers", apiKeys().isErasedDeviceKey(rawKey))
+        } finally {
+            deleteTombstones(fixture)
+            cleanupConcurrentWithdrawalFixture(fixture)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    @Test
+    fun testDeviceKeyThatExpiresDuringTheQuarantineIsStillTombstonedForAYear() {
+        val fixture = ConcurrentWithdrawalFixture()
+        val device = fixture.devices.first()
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            val rawKey = installRawDeviceKey(device.keyId)
+            val (orchestrator, operationId) = deleteParticipantForDevices(fixture)
+            // The phone stays offline past its key's own expiry while the quarantine runs.
+            getConnection().use { connection ->
+                executeSingleUpdate(connection, "UPDATE api_keys SET expires_at = now() - interval '1 minute' WHERE study_id = ?",
+                    expected = null) { it.setObject(1, fixture.studyId) }
+            }
+            assertNull(apiKeys().authenticateApiKey(rawKey))
+            assertFalse("nothing is tombstoned before completion", apiKeys().isErasedDeviceKey(rawKey))
+
+            processDeletion(orchestrator, operationId)
+
+            assertEquals(0, deviceKeyRows(fixture))
+            assertEquals("the expired key is tombstoned too", "WITHDRAW_AND_ERASE", tombstoneKind(rawKey))
+            assertTrue("the tombstone lives a year from erasure, not from the key's expiry",
+                requireNotNull(tombstoneExpiry(rawKey)).isAfter(OffsetDateTime.now().plusDays(364)))
+            assertTrue(apiKeys().isErasedDeviceKey(rawKey))
+            assertDeletedForDevice(fixture, device.keyId)
+        } finally {
+            deleteTombstones(fixture)
+            cleanupConcurrentWithdrawalFixture(fixture)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    @Test
+    fun testTombstonedOrRevokedDeviceKeyMaterialIsNeverInstalledAgain() {
+        val erased = ConcurrentWithdrawalFixture()
+        val live = ConcurrentWithdrawalFixture()
+        val liveDevice = live.devices.first().deviceId
+        val ids = Mockito.mock(HazelcastIdGenerationService::class.java)
+        Mockito.`when`(ids.getNextId()).thenAnswer { UUID.randomUUID() }
+        val installer = ApiKeyService(storageResolver, ids, Mockito.mock(AuditingManager::class.java))
+        fun proposedKey() = UUID.randomUUID().toString().replace("-", "").let { "ck_${it.take(8)}_$it" }
+        fun install(rawKey: String): Boolean {
+            val attemptId = UUID.randomUUID()
+            bindEnrollmentAttempt(live, liveDevice, attemptId, sha256Hex(rawKey))
+            return try {
+                installer.installMobileApiKey(live.studyId, live.participantId, liveDevice, attemptId, rawKey)
+                true
+            } catch (_: com.openlattice.chronicle.services.apikeys.InvalidEnrollmentAttemptException) {
+                false
+            }
+        }
+        val erasedKeys = erased.devices.map { proposedKey() }
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(erased)
+            seedConcurrentWithdrawalFixture(live)
+            getConnection().use { connection ->
+                erased.devices.zip(erasedKeys).forEach { (device, rawKey) ->
+                    executeSingleUpdate(connection, "UPDATE api_keys SET key_hash = ? WHERE key_id = ?") {
+                        it.setString(1, sha256Hex(rawKey))
+                        it.setObject(2, device.keyId)
+                    }
+                }
+                executeSingleUpdate(connection, "UPDATE api_keys SET revoked = true WHERE key_id = ?") {
+                    it.setObject(1, erased.devices.last().keyId)
+                }
+            }
+            assertFalse("a revoked key's material is never installed again", install(erasedKeys.last()))
+
+            val (orchestrator, operationId) = deleteParticipantForDevices(erased)
+            processDeletion(orchestrator, operationId)
+            erasedKeys.forEach { assertEquals("WITHDRAW_AND_ERASE", tombstoneKind(it)) }
+            assertFalse("a tombstoned key is never installed for another participant", install(erasedKeys.first()))
+
+            val fresh = proposedKey()
+            assertTrue(install(fresh))
+            assertEquals(live.participantId, requireNotNull(apiKeys().authenticateApiKey(fresh)).participantId)
+            getConnection().use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery(
+                        "SELECT count(*) FROM api_keys JOIN erased_device_key_tombstones USING (key_hash)",
+                    ).use { assertTrue(it.next()); assertEquals("no key shares its hash with a tombstone", 0, it.getInt(1)) }
+                }
+                executeSingleUpdate(connection, "UPDATE api_keys SET revoked = true WHERE key_hash = ?") {
+                    it.setString(1, sha256Hex(fresh))
+                }
+            }
+            assertNull(apiKeys().authenticateApiKey(fresh))
+            assertFalse("a manually revoked live key never reaches the tombstone path", apiKeys().isErasedDeviceKey(fresh))
+        } finally {
+            getConnection().use { connection ->
+                erasedKeys.forEach { rawKey ->
+                    executeSingleUpdate(connection, "DELETE FROM erased_device_key_tombstones WHERE key_hash = ?",
+                        expected = null) { it.setString(1, sha256Hex(rawKey)) }
+                }
+            }
+            cleanupConcurrentWithdrawalFixture(erased)
+            cleanupConcurrentWithdrawalFixture(live)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    @Test
+    fun testInstallingKeyMaterialWaitsForAnotherDeviceThatOwnsTheSameHash() {
+        val other = ConcurrentWithdrawalFixture()
+        val live = ConcurrentWithdrawalFixture()
+        val liveDevice = live.devices.first().deviceId
+        val ids = Mockito.mock(HazelcastIdGenerationService::class.java)
+        Mockito.`when`(ids.getNextId()).thenAnswer { UUID.randomUUID() }
+        val installer = ApiKeyService(storageResolver, ids, Mockito.mock(AuditingManager::class.java))
+        val rawKey = UUID.randomUUID().toString().replace("-", "").let { "ck_${it.take(8)}_$it" }
+        val hash = sha256Hex(rawKey)
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(other)
+            seedConcurrentWithdrawalFixture(live)
+            val attemptId = UUID.randomUUID()
+            bindEnrollmentAttempt(live, liveDevice, attemptId, hash)
+            getConnection().use { owner ->
+                owner.autoCommit = false
+                // Another device's installation of the same material, paused after its used-material check.
+                owner.prepareStatement(ApiKeyService.LOCK_KEY_MATERIAL_SQL).use { it.setString(1, hash); it.execute() }
+                val install = java.util.concurrent.CompletableFuture.supplyAsync {
+                    try {
+                        installer.installMobileApiKey(live.studyId, live.participantId, liveDevice, attemptId, rawKey)
+                        true
+                    } catch (_: com.openlattice.chronicle.services.apikeys.InvalidEnrollmentAttemptException) {
+                        false
+                    }
+                }
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20)
+                while (!install.isDone && waitingAdvisoryLocks() == 0 && System.nanoTime() < deadline) Thread.onSpinWait()
+                assertFalse("the second installation waits for the hash lock", install.isDone)
+                executeSingleUpdate(owner, "UPDATE api_keys SET key_hash = ? WHERE key_id = ?") {
+                    it.setString(1, hash)
+                    it.setObject(2, other.devices.first().keyId)
+                }
+                owner.commit()
+                assertFalse("material another device owns is never installed", install.get(20, java.util.concurrent.TimeUnit.SECONDS))
+            }
+            getConnection().use { connection ->
+                connection.prepareStatement("SELECT count(*) FROM api_keys WHERE key_hash = ?").use { statement ->
+                    statement.setString(1, hash)
+                    statement.executeQuery().use { assertTrue(it.next()); assertEquals(1, it.getInt(1)) }
+                }
+            }
+        } finally {
+            cleanupConcurrentWithdrawalFixture(other)
+            cleanupConcurrentWithdrawalFixture(live)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    @Test
+    fun testErasureTombstoningWaitsForAnInstallationHoldingTheHash() {
+        val fixture = ConcurrentWithdrawalFixture()
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            seedConcurrentWithdrawalFixture(fixture)
+            val rawKey = installRawDeviceKey(fixture.devices.first().keyId)
+            val (orchestrator, operationId) = deleteParticipantForDevices(fixture)
+            makeDeletionDue(operationId)
+            getConnection().use { installer ->
+                installer.autoCommit = false
+                installer.prepareStatement(ApiKeyService.LOCK_KEY_MATERIAL_SQL).use {
+                    it.setString(1, sha256Hex(rawKey))
+                    it.execute()
+                }
+                val erasure = java.util.concurrent.CompletableFuture.supplyAsync { orchestrator.processDueOperations(limit = 1) }
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20)
+                while (!erasure.isDone && waitingAdvisoryLocks() == 0 && System.nanoTime() < deadline) Thread.onSpinWait()
+                assertFalse("tombstoning waits for the installation holding the hash", erasure.isDone)
+                installer.commit()
+                assertEquals(1, erasure.get(60, java.util.concurrent.TimeUnit.SECONDS))
+            }
+            assertEquals("WITHDRAW_AND_ERASE", tombstoneKind(rawKey))
+        } finally {
+            deleteTombstones(fixture)
+            cleanupConcurrentWithdrawalFixture(fixture)
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    private fun waitingAdvisoryLocks(): Int = getConnection().use { connection ->
+        connection.createStatement().use { statement ->
+            statement.executeQuery("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted").use {
+                check(it.next())
+                it.getInt(1)
+            }
+        }
+    }
+
+    /** The two steps of StudyController.deleteStudyParticipants: NOT_ENROLLED, then a WITHDRAW_AND_ERASE quarantine. */
+    private fun deleteParticipantForDevices(fixture: ConcurrentWithdrawalFixture): Pair<DataDeletionOrchestrator, UUID> {
+        getConnection().use { connection ->
+            executeSingleUpdate(connection,
+                "UPDATE study_participants SET participation_status = 'NOT_ENROLLED' WHERE study_id = ? AND participant_id = ?",
+            ) {
+                it.setObject(1, fixture.studyId)
+                it.setString(2, fixture.participantId)
+            }
+        }
+        val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+        return orchestrator to orchestrator.quarantineParticipant(
+            fixture.studyId, fixture.participantId, DataDeletionMode.WITHDRAW_AND_ERASE,
+            "migration-test", UUID.randomUUID(),
+        )
+    }
+
+    private fun tombstoneExpiry(rawKey: String): OffsetDateTime? = getConnection().use { connection ->
+        connection.prepareStatement("SELECT expires_at FROM erased_device_key_tombstones WHERE key_hash = ?").use { statement ->
+            statement.setString(1, sha256Hex(rawKey))
+            statement.executeQuery().use { if (it.next()) it.getObject(1, OffsetDateTime::class.java) else null }
+        }
+    }
+
+    /** A bound enrollment invitation that authorizes installing [keyHash] for this device and attempt. */
+    private fun bindEnrollmentAttempt(fixture: ConcurrentWithdrawalFixture, deviceId: UUID, attemptId: UUID, keyHash: String) =
+        getConnection().use { connection ->
+            executeSingleUpdate(
+                connection,
+                """
+                INSERT INTO participant_form_access_codes (
+                    access_code_id, token_hash, study_id, participant_id, form_kind, issuer_type, issued_by,
+                    expires_at, exchanged_at, enrollment_attempt_id, enrollment_source_device_hash,
+                    enrollment_device_id, enrollment_manifest_digest, enrollment_request_hash,
+                    enrollment_proposed_key_hash, enrollment_replay_expires_at, enrollment_settings_version,
+                    enrollment_disclosure_version, enrollment_enabled_modules, enrollment_required_modules
+                ) VALUES (?, decode(md5(?::text), 'hex'), ?, ?, 'ENROLLMENT', 'RESEARCHER', 'migration-test',
+                          now() + interval '1 day', now(), ?, repeat('1', 64), ?, repeat('2', 64), repeat('3', 64),
+                          ?, now() + interval '1 hour', 1, 'disclosure-v1', '[]'::jsonb, '[]'::jsonb)
+                """.trimIndent(),
+            ) {
+                it.setObject(1, attemptId)
+                it.setObject(2, attemptId)
+                it.setObject(3, fixture.studyId)
+                it.setString(4, fixture.participantId)
+                it.setObject(5, attemptId)
+                it.setObject(6, deviceId)
+                it.setString(7, keyHash)
+            }
+        }
+
+    private fun apiKeys(resolver: StorageResolver = storageResolver) =
+        ApiKeyService(resolver, Mockito.mock(HazelcastIdGenerationService::class.java), Mockito.mock(AuditingManager::class.java))
+
+    private fun deviceKeyRows(fixture: ConcurrentWithdrawalFixture): Int = getConnection().use { connection ->
+        connection.prepareStatement("SELECT count(*) FROM api_keys WHERE study_id = ?").use { statement ->
+            statement.setObject(1, fixture.studyId)
+            statement.executeQuery().use { resultSet ->
+                assertTrue(resultSet.next())
+                resultSet.getInt(1)
+            }
+        }
+    }
+
+    private fun tombstoneKind(rawKey: String): String? = getConnection().use { connection ->
+        connection.prepareStatement("SELECT kind FROM erased_device_key_tombstones WHERE key_hash = ?").use { statement ->
+            statement.setString(1, sha256Hex(rawKey))
+            statement.executeQuery().use { resultSet -> if (resultSet.next()) resultSet.getString(1) else null }
+        }
+    }
+
+    /** The tombstone table holds the key hash, the erasure kind and the expiry: no study, participant or device. */
+    private fun assertTombstonesCarryNoIdentifiers() = getConnection().use { connection ->
+        connection.prepareStatement(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'erased_device_key_tombstones' ORDER BY column_name",
+        ).use { statement ->
+            statement.executeQuery().use { resultSet ->
+                val columns = buildList { while (resultSet.next()) add(resultSet.getString(1)) }
+                assertEquals(listOf("expires_at", "key_hash", "kind"), columns)
+            }
+        }
+    }
+
+    private fun deleteTombstones(fixture: ConcurrentWithdrawalFixture) = getConnection().use { connection ->
+        connection.prepareStatement("DELETE FROM erased_device_key_tombstones WHERE key_hash = ?").use { statement ->
+            fixture.devices.forEach { device ->
+                statement.setString(1, sha256Hex("ck_status__${device.keyId.toString().replace("-", "")}"))
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    private fun sha256Hex(rawKey: String): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(rawKey.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
+    /** Status, reminders and uploads read NOT_ENROLLED; form-access-code minting finds no participant. */
+    private fun assertDeletedForDevice(fixture: ConcurrentWithdrawalFixture, keyId: UUID) {
+        asDeviceApplication(fixture, keyId) { resolver ->
+            val enrollment = com.openlattice.chronicle.services.enrollment.EnrollmentService(
+                resolver,
+                Mockito.mock(HazelcastIdGenerationService::class.java),
+                Mockito.mock(com.openlattice.chronicle.services.candidates.CandidateManager::class.java),
+            )
+            assertEquals(
+                com.openlattice.chronicle.data.ParticipationStatus.NOT_ENROLLED,
+                enrollment.getDeviceParticipationStatus(fixture.studyId, fixture.participantId),
+            )
+            assertFalse(enrollment.isKnownParticipant(fixture.studyId, fixture.participantId))
+        }
+    }
+
+    private fun installRawDeviceKey(keyId: UUID): String {
+        val rawKey = "ck_status__${keyId.toString().replace("-", "")}"
+        val hash = sha256Hex(rawKey)
+        getConnection().use { connection ->
+            executeSingleUpdate(connection, "UPDATE api_keys SET key_hash = ? WHERE key_id = ?") {
+                it.setString(1, hash)
+                it.setObject(2, keyId)
+            }
+        }
+        return rawKey
+    }
+
+    private fun resetDeviceKeyExpiry(keyId: UUID) = getConnection().use { connection ->
+        executeSingleUpdate(connection, "UPDATE api_keys SET expires_at = now() + interval '1 day' WHERE key_id = ?") {
+            it.setObject(1, keyId)
+        }
+    }
+
+    /** Runs as the application role with the mobile RLS context RLSContextManager gives a device key. */
+    private fun <T> asDeviceApplication(
+        fixture: ConcurrentWithdrawalFixture,
+        keyId: UUID,
+        block: (StorageResolver) -> T,
+    ): T = getConnection().use { connection ->
+        connection.createStatement().use { it.execute("SET ROLE chronicle_app") }
+        try {
+            val nonclosing = java.lang.reflect.Proxy.newProxyInstance(Connection::class.java.classLoader,
+                arrayOf(Connection::class.java)) { _, method, args ->
+                if (method.name == "close") null else try {
+                    method.invoke(connection, *(args ?: emptyArray()))
+                } catch (error: java.lang.reflect.InvocationTargetException) { throw error.targetException }
+            } as Connection
+            val borrowed = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
+            Mockito.`when`(borrowed.connection).thenAnswer {
+                connection.prepareStatement(
+                    "SELECT set_config('app.current_user_id', ?, false), set_config('app.authorized_studies', ?, false), " +
+                        "set_config('app.is_admin', 'false', false)",
+                ).use { statement ->
+                    statement.setString(1, "apikey:$keyId")
+                    statement.setString(2, fixture.studyId.toString())
+                    statement.execute()
+                }
+                nonclosing
+            }
+            val resolver = Mockito.mock(StorageResolver::class.java)
+            Mockito.`when`(resolver.getPlatformStorage()).thenReturn(borrowed)
+            block(resolver)
+        } finally {
+            connection.createStatement().use { statement ->
+                statement.execute("RESET ROLE")
+                statement.execute(com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer.CONNECTION_INIT_SQL)
             }
         }
     }
@@ -1260,6 +1946,61 @@ class FlywayMigrationCorpusTest {
                 assertEquals(if (mode == DataDeletionMode.COLLECTED_DATA_PURGE) 1L else 0L, sweepCount(fixture, "devices"))
             } finally {
                 sweepCleanupRows(fixture, listOf("devices"))
+                cleanupConcurrentWithdrawalFixture(fixture)
+            }
+        }
+    }
+
+    @Test
+    fun testCollectedPurgeKeepsExchangedEnrollmentCodeThatWithdrawalErases() {
+        for (mode in listOf(DataDeletionMode.COLLECTED_DATA_PURGE, DataDeletionMode.WITHDRAW_AND_ERASE)) {
+            val fixture = ConcurrentWithdrawalFixture()
+            val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+            val enrollmentCode = UUID.randomUUID()
+            val questionnaireCode = UUID.randomUUID()
+            try {
+                seedConcurrentWithdrawalFixture(fixture)
+                getConnection().use { connection ->
+                    connection.prepareStatement(
+                        """
+                        INSERT INTO participant_form_access_codes (
+                            access_code_id, token_hash, study_id, participant_id, form_kind,
+                            issuer_type, issued_by, expires_at, exchanged_at
+                        ) VALUES (?, ?, ?, ?, ?, 'RESEARCHER', 'sweep', now() + interval '1 day', ?)
+                        """.trimIndent(),
+                    ).use { statement ->
+                        for ((codeId, kind) in listOf(enrollmentCode to "ENROLLMENT", questionnaireCode to "QUESTIONNAIRE")) {
+                            statement.setObject(1, codeId)
+                            statement.setBytes(2, codeId.toString().toByteArray())
+                            statement.setObject(3, fixture.studyId)
+                            statement.setString(4, fixture.participantId)
+                            statement.setString(5, kind)
+                            statement.setObject(6, OffsetDateTime.now())
+                            statement.executeUpdate()
+                        }
+                    }
+                }
+                val operation = orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId, mode,
+                    "sweep", UUID.randomUUID())
+                val activeCodes = { kind: String ->
+                    getConnection().use { connection ->
+                        connection.prepareStatement(
+                            "SELECT count(*) FROM participant_form_access_codes WHERE study_id = ? AND form_kind = ? AND revoked_at IS NULL",
+                        ).use {
+                            it.setObject(1, fixture.studyId); it.setString(2, kind)
+                            it.executeQuery().use { result -> check(result.next()); result.getLong(1) }
+                        }
+                    }
+                }
+                val keepsEvidence = if (mode == DataDeletionMode.COLLECTED_DATA_PURGE) 1L else 0L
+                // Collection acknowledgments require the exchanged enrollment code unrevoked.
+                assertEquals(keepsEvidence, activeCodes("ENROLLMENT"))
+                assertEquals(0L, activeCodes("QUESTIONNAIRE"))
+                processDeletion(orchestrator, operation)
+                assertEquals(keepsEvidence, activeCodes("ENROLLMENT"))
+                assertEquals(keepsEvidence, sweepCount(fixture, "participant_form_access_codes"))
+            } finally {
+                sweepCleanupRows(fixture, listOf("participant_form_access_codes"))
                 cleanupConcurrentWithdrawalFixture(fixture)
             }
         }

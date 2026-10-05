@@ -33,11 +33,15 @@ public open class MobileEnrollmentController(
     ): EnrollmentWithdrawalResponse {
         val token = authentication as? ApiKeyAuthenticationToken
             ?: throw IllegalStateException("A mobile API key is required")
-        val participantId = requireNotNull(token.participantId) { "API key is not participant-bound" }
-        val deviceId = requireNotNull(token.deviceId) { "API key is not device-bound" }
         val requestId = requireNotNull(MobileWithdrawalRequestIds.parse(withdrawalRequestId)) {
             "Withdrawal request id must be a canonical lowercase UUID"
         }
+        // Erasure already deleted this key's participant: acknowledge so the phone finishes its local erasure.
+        if (token.erased) {
+            return EnrollmentWithdrawalResponse(requestId = requestId, deletionJobIds = emptyList(), alreadyWithdrawn = true)
+        }
+        val participantId = requireNotNull(token.participantId) { "API key is not participant-bound" }
+        val deviceId = requireNotNull(token.deviceId) { "API key is not device-bound" }
         val withdrawal = try {
             participantPurgeService.executeSelfWithdrawal(
                 token.studyId,

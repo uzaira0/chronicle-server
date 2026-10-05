@@ -645,7 +645,7 @@ class StudyControllerTest {
             )
         )
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
         Mockito.`when`(
@@ -697,7 +697,26 @@ class StudyControllerTest {
     fun testAndroidSensorUploadRejectsNotEnrolledParticipantWithoutAcknowledgingData() {
         val studyId = UUID.randomUUID()
         val participantId = "not-enrolled"
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
+            .thenReturn(ParticipationStatus.NOT_ENROLLED)
+
+        val error = assertThrows(ResponseStatusException::class.java) {
+            controller.uploadAndroidSensorData(studyId, participantId, "device-1", emptyList())
+        }
+
+        assertEquals(HttpStatus.FORBIDDEN, error.statusCode)
+        assertEquals("Participant or data source is not enrolled", error.reason)
+        verify(androidSensorDataUploadService, never()).upload(kAny(), kAnyString(), kAny(), kAnyList())
+    }
+
+    @Test
+    fun testResearcherDeletedParticipantUploadGetsNotEnrolledInsteadOfConflict() {
+        val studyId = UUID.randomUUID()
+        val participantId = "deleted-by-researcher"
+        // The deletion quarantine hides the row, so the researcher read throws (mapped to 409).
         Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+            .thenThrow(IllegalStateException("No row returned"))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.NOT_ENROLLED)
 
         val error = assertThrows(ResponseStatusException::class.java) {
@@ -715,7 +734,7 @@ class StudyControllerTest {
         val participantId = "enrolled"
         val sourceDeviceId = "unknown-device"
         val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(false)
 
@@ -739,7 +758,7 @@ class StudyControllerTest {
 
         var expectedAuditCount = 0
         ParticipationStatus.values().filter { it != ParticipationStatus.ENROLLED }.forEach { status ->
-            Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId)).thenReturn(status)
+            Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(status)
             val calls = mobileUploadCalls(studyId, participantId, sourceDeviceId)
             expectedAuditCount += calls.size
 
@@ -765,7 +784,7 @@ class StudyControllerTest {
         val sourceDeviceId = "unknown-device"
         val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(false)
 
@@ -791,7 +810,7 @@ class StudyControllerTest {
         val sourceDeviceId = "device-1"
         val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
         Mockito.`when`(
@@ -813,7 +832,7 @@ class StudyControllerTest {
         val participantId = "participant-phi-sentinel"
         val sourceDeviceId = "source-device-phi-sentinel"
         val derivedDeviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.NOT_ENROLLED)
 
         val captured = CopyOnWriteArrayList<String>()
@@ -946,7 +965,7 @@ class StudyControllerTest {
         val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
         val apiKeyId = UUID.randomUUID()
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
         Mockito.`when`(
@@ -992,7 +1011,7 @@ class StudyControllerTest {
         val studyId = UUID.randomUUID()
         val participantId = "p-123"
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.NOT_ENROLLED)
         val ack = CollectionAcknowledgment(
             acknowledgedModules = setOf(CollectionModuleId.HARDWARE_SENSORS),
@@ -1017,7 +1036,7 @@ class StudyControllerTest {
         val sourceDeviceId = "unknown-device"
         val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(false)
         val ack = CollectionAcknowledgment(
@@ -1064,7 +1083,7 @@ class StudyControllerTest {
                 )
             ),
         )
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
         Mockito.`when`(
@@ -1108,7 +1127,7 @@ class StudyControllerTest {
                 )
             ),
         )
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.NOT_ENROLLED)
 
         val error = assertThrows(ResponseStatusException::class.java) {
@@ -1142,7 +1161,7 @@ class StudyControllerTest {
         }
 
         assertEquals(HttpStatus.BAD_REQUEST, error.statusCode)
-        verify(enrollmentManager, never()).getParticipationStatus(kAny(), kAnyString())
+        verify(enrollmentManager, never()).getDeviceParticipationStatus(kAny(), kAnyString())
         verify(sensorDataUploadService, never()).upload(kAny(), kAnyString(), kAny(), kAnyList<SensorDataSample>())
     }
 
@@ -1169,7 +1188,7 @@ class StudyControllerTest {
                 )
             ),
         )
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
         Mockito.`when`(
@@ -1208,7 +1227,7 @@ class StudyControllerTest {
                 )
             ),
         )
-        Mockito.`when`(enrollmentManager.getParticipationStatus(studyId, participantId))
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.NOT_ENROLLED)
 
         val error = assertThrows(ResponseStatusException::class.java) {
@@ -1242,7 +1261,7 @@ class StudyControllerTest {
         }
 
         assertEquals(HttpStatus.BAD_REQUEST, error.statusCode)
-        verify(enrollmentManager, never()).getParticipationStatus(kAny(), kAnyString())
+        verify(enrollmentManager, never()).getDeviceParticipationStatus(kAny(), kAnyString())
         verify(sensorDataUploadService, never()).upload(kAny(), kAnyString(), kAny(), kAnyList<SensorDataSample>())
     }
 

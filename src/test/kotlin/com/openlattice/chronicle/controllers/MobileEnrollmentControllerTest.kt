@@ -132,6 +132,18 @@ class MobileEnrollmentControllerTest {
         assertEquals(listOf(existingOperationId), response.deletionJobIds)
     }
 
+    @Test
+    fun keyDeletedByErasureIsAcknowledgedAsAlreadyWithdrawnWithoutDeletionWork() {
+        val requestId = UUID.randomUUID()
+
+        val response = controller.withdrawCurrentEnrollment(requestId.toString(), ApiKeyAuthenticationToken.erased())
+
+        assertTrue(response.alreadyWithdrawn)
+        assertEquals(requestId, response.requestId)
+        assertEquals(emptyList<UUID>(), response.deletionJobIds)
+        Mockito.verifyNoInteractions(participantPurgeService)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun nonCanonicalWithdrawalRequestIdIsRejectedBeforeAnyDestructiveWork() {
         controller.withdrawCurrentEnrollment(UUID.randomUUID().toString().uppercase(), token)

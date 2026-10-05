@@ -698,7 +698,8 @@ public open class StudyController @Inject constructor(
         operation: String,
         allowCollectionHaltResolution: Boolean = false,
     ) {
-        val participationStatus = enrollmentManager.getParticipationStatus(studyId, participantId)
+        // A deleted participant (row quarantined or erased) gets notEnrolled, not a 409.
+        val participationStatus = enrollmentManager.getDeviceParticipationStatus(studyId, participantId)
         var responseReasonKey = "error.enrollment.notEnrolled"
         val (rejectionLog, logAsError) = when {
             participationStatus != ParticipationStatus.ENROLLED ->

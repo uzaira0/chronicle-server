@@ -69,7 +69,7 @@ class MobileReminderControllerTest {
     @Test
     fun enrolledDeviceReceivesOnlySurveyAndActiveRecurringQuestionnaire() {
         val includedQuestionnaireId = UUID.randomUUID()
-        whenever(enrollmentManager.getParticipationStatus(studyId, participantId))
+        whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
         whenever(studyService.isNotificationsEnabled(studyId)).thenReturn(true)
         whenever(surveysManager.getStudyQuestionnaires(studyId)).thenReturn(
@@ -115,7 +115,7 @@ class MobileReminderControllerTest {
 
     @Test
     fun unenrolledDeviceReceivesNoReminderCodes() {
-        whenever(enrollmentManager.getParticipationStatus(studyId, participantId))
+        whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.NOT_ENROLLED)
 
         val result = controller.getReminderConfiguration(
@@ -142,7 +142,88 @@ class MobileReminderControllerTest {
         }
 
         assertEquals(403, error.statusCode.value())
-        verify(enrollmentManager, never()).getParticipationStatus(any(), any())
+        verify(enrollmentManager, never()).getDeviceParticipationStatus(any(), any())
+    }
+
+    @Test
+    fun statusReadReportsPauseWithoutMintingCodes() {
+        whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
+            .thenReturn(ParticipationStatus.PAUSED)
+
+        val status = controller.getParticipationStatus(studyId, participantId, deviceToken(), MockHttpServletResponse())
+
+        assertEquals(ParticipationStatus.PAUSED, status)
+        verify(accessService, never()).createAccessCodes(any())
+    }
+
+    @Test
+    fun statusReadRejectsCredentialBoundToAnotherParticipant() {
+        val error = assertThrows(ResponseStatusException::class.java) {
+            controller.getParticipationStatus(
+                studyId,
+                participantId,
+                deviceToken(boundParticipantId = "participant-2"),
+                MockHttpServletResponse(),
+            )
+        }
+
+        assertEquals(403, error.statusCode.value())
+        verify(enrollmentManager, never()).getDeviceParticipationStatus(any(), any())
+    }
+
+    @Test
+    fun reminderScheduleReadReturnsFormMetadataWithoutMintingCodes() {
+        whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
+            .thenReturn(ParticipationStatus.ENROLLED)
+        whenever(studyService.isNotificationsEnabled(studyId)).thenReturn(true)
+        whenever(surveysManager.getStudyQuestionnaires(studyId)).thenReturn(emptyList())
+
+        val response = MockHttpServletResponse()
+        val result = controller.getReminderSchedule(studyId, participantId, deviceToken(), response)
+
+        assertEquals(ParticipationStatus.ENROLLED, result.participationStatus)
+        assertEquals(1, result.forms.size)
+        assertEquals(ParticipantFormKind.APP_USAGE, result.forms.single().formKind)
+        assertEquals("FREQ=DAILY;BYHOUR=19;BYMINUTE=0;BYSECOND=0", result.forms.single().recurrenceRule)
+        assertEquals("", result.forms.single().accessCode)
+        assertEquals("no-store", response.getHeader("Cache-Control"))
+        verify(accessService, never()).createAccessCodes(any())
+    }
+
+    @Test
+    fun researcherDeletedParticipantReadsNotEnrolledOnEveryDeviceRoute() {
+        // The quarantine hides the row (and completion deletes it): the researcher read throws.
+        whenever(enrollmentManager.getParticipationStatus(studyId, participantId))
+            .thenThrow(IllegalStateException("No row returned"))
+        whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
+            .thenReturn(ParticipationStatus.NOT_ENROLLED)
+
+        val status = controller.getParticipationStatus(studyId, participantId, deviceToken(), MockHttpServletResponse())
+        val schedule = controller.getReminderSchedule(studyId, participantId, deviceToken(), MockHttpServletResponse())
+        val manifest = controller.getReminderConfiguration(studyId, participantId, deviceToken(), MockHttpServletResponse())
+
+        assertEquals(ParticipationStatus.NOT_ENROLLED, status)
+        assertEquals(ParticipationStatus.NOT_ENROLLED, schedule.participationStatus)
+        assertEquals(emptyList<Any>(), schedule.forms)
+        assertEquals(ParticipationStatus.NOT_ENROLLED, manifest.participationStatus)
+        assertEquals(emptyList<Any>(), manifest.forms)
+        verify(accessService, never()).createAccessCodes(any())
+    }
+
+    @Test
+    fun erasedDeviceKeyReadsNotEnrolledWithoutStatusLookup() {
+        whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
+            .thenReturn(ParticipationStatus.ENROLLED)
+
+        val status = controller.getParticipationStatus(
+            studyId,
+            participantId,
+            ApiKeyAuthenticationToken.erased(),
+            MockHttpServletResponse(),
+        )
+
+        assertEquals(ParticipationStatus.NOT_ENROLLED, status)
+        verify(enrollmentManager, never()).getDeviceParticipationStatus(any(), any())
     }
 
     private fun deviceToken(boundParticipantId: String = participantId) = ApiKeyAuthenticationToken(

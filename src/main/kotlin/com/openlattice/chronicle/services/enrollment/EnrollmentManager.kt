@@ -26,6 +26,13 @@ public interface EnrollmentManager {
 
     public fun getParticipant(studyId: UUID, participantId: String): Participant
     public fun getParticipationStatus(studyId: UUID, participantId: String): ParticipationStatus
+
+    /**
+     * Status for a caller that already proved a device key bound to this study and participant.
+     * A row hidden by the deletion quarantine, or already erased, reads as NOT_ENROLLED so the
+     * phone stops; researcher reads keep using [getParticipationStatus] and its quarantine policy.
+     */
+    public fun getDeviceParticipationStatus(studyId: UUID, participantId: String): ParticipationStatus
     public fun getStudyParticipantIds(studyId: UUID): Set<String>
     public fun getStudyParticipants(studyId: UUID): Set<Participant>
     public fun studyExists(studyId: UUID): Boolean

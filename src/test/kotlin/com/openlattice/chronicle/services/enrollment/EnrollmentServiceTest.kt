@@ -52,7 +52,16 @@ class EnrollmentServiceTest {
         `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(mockPs)
         `when`(mockPs.executeQuery()).thenReturn(mockRs)
 
+        allowReuse(mockConnection)
         service = EnrollmentService(storageResolver, idGenerationService, candidateManager)
+    }
+
+    private fun allowReuse(connection: Connection) {
+        val fence = Mockito.mock(PreparedStatement::class.java)
+        val rows = Mockito.mock(ResultSet::class.java)
+        `when`(rows.next()).thenReturn(true)
+        `when`(fence.executeQuery()).thenReturn(rows)
+        `when`(connection.prepareStatement(Mockito.argThat { sql: String? -> sql != null && (sql.contains("AS erased") || sql.contains("pg_advisory_xact_lock")) })).thenReturn(fence)
     }
 
     @Test
@@ -274,6 +283,7 @@ class EnrollmentServiceTest {
 
         // isKnownParticipant check — returns count > 0
         val countRs = Mockito.mock(ResultSet::class.java)
+        allowReuse(mockConnection)
         `when`(countRs.next()).thenReturn(true)
         `when`(countRs.getLong("count")).thenReturn(1L)
 
@@ -292,6 +302,7 @@ class EnrollmentServiceTest {
         `when`(mockConnection.prepareStatement(kAnyString()))
             .thenReturn(countPs)
             .thenReturn(insertPs)
+        allowReuse(mockConnection)
 
         val device = AndroidDevice("dev", "model", "code", "brand", "11", "30", "product", "did-1", fcmRegistrationToken = "fcm-token-123")
 
@@ -305,6 +316,7 @@ class EnrollmentServiceTest {
         val newDeviceId: UUID = UUID.randomUUID()
 
         val countRs = Mockito.mock(ResultSet::class.java)
+        allowReuse(mockConnection)
         `when`(countRs.next()).thenReturn(true)
         `when`(countRs.getLong("count")).thenReturn(1L)
 
@@ -322,6 +334,7 @@ class EnrollmentServiceTest {
         `when`(mockConnection.prepareStatement(kAnyString()))
             .thenReturn(countPs)
             .thenReturn(insertPs)
+        allowReuse(mockConnection)
 
         val device = IOSDevice("iPhone", "iOS", "iPhone13,2", "iPhone", "15.0", "dev-id-1", apnDeviceToken = "apn-token-456")
 
@@ -404,6 +417,7 @@ class EnrollmentServiceTest {
         val conn = Mockito.mock(Connection::class.java)
         val ps = Mockito.mock(PreparedStatement::class.java)
         `when`(conn.prepareStatement(kAnyString())).thenReturn(ps)
+        allowReuse(conn)
         `when`(ps.executeUpdate()).thenReturn(1)
 
         service.registerParticipant(
@@ -411,7 +425,7 @@ class EnrollmentServiceTest {
         )
 
         // Verify the provided connection was used (not storageResolver)
-        verify(conn).prepareStatement(kAnyString())
+        verify(conn, Mockito.atLeastOnce()).prepareStatement(kAnyString())
     }
 
     @Test

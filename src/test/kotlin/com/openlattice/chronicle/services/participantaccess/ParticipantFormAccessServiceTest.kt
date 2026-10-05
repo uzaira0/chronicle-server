@@ -88,6 +88,10 @@ class ParticipantFormAccessServiceTest {
         val lockStatement = Mockito.mock(PreparedStatement::class.java)
         val revokeStatement = Mockito.mock(PreparedStatement::class.java)
         val insertStatement = Mockito.mock(PreparedStatement::class.java)
+        val erasureStatement = Mockito.mock(PreparedStatement::class.java)
+        val erasureRows = Mockito.mock(java.sql.ResultSet::class.java)
+        `when`(erasureRows.next()).thenReturn(true)
+        `when`(erasureStatement.executeQuery()).thenReturn(erasureRows)
         `when`(resolver.getPlatformStorage()).thenReturn(dataSource)
         `when`(dataSource.connection).thenReturn(connection)
         val autoCommit = java.util.concurrent.atomic.AtomicBoolean(true)
@@ -96,6 +100,7 @@ class ParticipantFormAccessServiceTest {
         `when`(connection.prepareStatement(Mockito.anyString())).thenAnswer { invocation ->
             when {
                 invocation.getArgument<String>(0).contains("pg_advisory_xact_lock") -> lockStatement
+                invocation.getArgument<String>(0).contains("AS erased") -> erasureStatement
                 invocation.getArgument<String>(0).contains("UPDATE participant_form_access_codes") -> revokeStatement
                 else -> insertStatement
             }

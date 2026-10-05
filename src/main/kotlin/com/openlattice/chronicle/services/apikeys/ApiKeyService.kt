@@ -85,16 +85,46 @@ public open class ApiKeyService(
 
         // Atomically validate, increment counter, and return key metadata in a single
         // round-trip. Removes the prior LOOKUP + UPDATE_USAGE two-statement pattern.
+        // A device-bound mobile key slides its expiry on every successful use while its enrollment is
+        // live: nothing on the device renews it, so a fixed expiry silently stopped collection on day
+        // 366 of a long study. The key slides only while the participant is ENROLLED/PAUSED and no
+        // participant or study erasure (quarantined, held, failed, erasing or completed) covers it;
+        // both are explicit predicates, read in the deletion-worker context, so neither depends on
+        // RLS (a superuser pool bypasses it before RLSContextFilter runs). A collected-data purge
+        // keeps the enrollment, so its key keeps sliding. Other keys keep their fixed expiry.
         private val LOOKUP_AND_TOUCH_SQL = """
             UPDATE ${API_KEYS.name}
-            SET ${LAST_USED_AT.name} = now(), ${USAGE_COUNT.name} = ${USAGE_COUNT.name} + 1
+            SET ${LAST_USED_AT.name} = now(), ${USAGE_COUNT.name} = ${USAGE_COUNT.name} + 1,
+                ${EXPIRES_AT.name} = CASE
+                    WHEN participant_id IS NOT NULL AND device_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM study_participants sp
+                        WHERE sp.study_id = ${API_KEYS.name}.${STUDY_ID.name}
+                          AND sp.participant_id = ${API_KEYS.name}.participant_id
+                          AND sp.participation_status IN ('ENROLLED', 'PAUSED')
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM data_deletion_operations erasure
+                        WHERE erasure.${STUDY_ID.name} = ${API_KEYS.name}.${STUDY_ID.name}
+                          AND erasure.status NOT IN ('PREVIEW', 'CANCELLED')
+                          AND (
+                              erasure.mode = 'STUDY_ERASURE'
+                              OR (
+                                  erasure.mode = 'WITHDRAW_AND_ERASE'
+                                  AND erasure.participant_block_token =
+                                      md5(${API_KEYS.name}.${STUDY_ID.name}::text || ':' || ${API_KEYS.name}.participant_id)
+                              )
+                          )
+                    )
+                        THEN now() + interval '$MAX_MOBILE_KEY_TTL_DAYS days'
+                    ELSE ${EXPIRES_AT.name}
+                END
             WHERE ${KEY_HASH.name} = ? AND ${REVOKED.name} = false AND ${EXPIRES_AT.name} > now()
             RETURNING ${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name},
                       ${CREATED_AT.name}, ${EXPIRES_AT.name}, ${LAST_USED_AT.name}, ${USAGE_COUNT.name},
                       participant_id, device_id, ${CREATED_BY.name}
         """.trimIndent()
 
-        // Revoked mobile credentials remain usable only for an idempotent withdrawal retry.
+        // Revoked mobile credentials remain usable only for an idempotent withdrawal retry. A key
+        // deleted by erasure reaches the withdrawal route through its tombstone instead.
         private val LOOKUP_WITHDRAWAL_KEY_SQL = """
             SELECT candidate.${KEY_ID.name}, candidate.${STUDY_ID.name}, candidate.${KEY_PREFIX.name},
                    candidate.${NAME.name}, candidate.${SCOPE.name}, candidate.${CREATED_AT.name},
@@ -126,6 +156,22 @@ public open class ApiKeyService(
               )
         """.trimIndent()
 
+        // Erasure deletes a device key's api_keys row and keeps only its hash here (V114). A matching
+        // unexpired tombstone reaches the status read and the withdrawal acknowledgment, nothing else.
+        // It never answers for a hash an api_keys row (live or revoked) still owns: a credential that
+        // shared its material with an erased key before V115 stays an ordinary credential.
+        private const val EXPIRE_ERASED_KEY_TOMBSTONES_SQL =
+            "DELETE FROM erased_device_key_tombstones WHERE expires_at <= now()"
+        private val LOOKUP_ERASED_KEY_TOMBSTONE_SQL = """
+            SELECT EXISTS (
+                SELECT 1 FROM erased_device_key_tombstones tombstone
+                WHERE tombstone.key_hash = ? AND tombstone.expires_at > now()
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ${API_KEYS.name} owner WHERE owner.${KEY_HASH.name} = tombstone.key_hash
+                  )
+            )
+        """.trimIndent()
+
         // On re-enrollment, revoke any prior unrevoked mobile key for the same
         // (study, participant, device) tuple before issuing a new one. Prevents
         // unbounded credential accumulation if a device re-enrolls repeatedly.
@@ -135,8 +181,22 @@ public open class ApiKeyService(
             WHERE ${STUDY_ID.name} = ? AND participant_id = ? AND device_id = ? AND ${REVOKED.name} = false
         """.trimIndent()
 
+        // Key material an erasure tombstoned, or any api_keys row (live or revoked) already holds, is never
+        // installed again, so a live key never shares its hash with a tombstone. One statement reads both
+        // tables, and erasure inserts the tombstone and deletes the row in one transaction, so a concurrent
+        // erasure shows this check either the row or the tombstone.
+        private val USED_KEY_MATERIAL_SQL = """
+            SELECT EXISTS (SELECT 1 FROM erased_device_key_tombstones WHERE key_hash = ?)
+                OR EXISTS (SELECT 1 FROM ${API_KEYS.name} WHERE ${KEY_HASH.name} = ?)
+        """.trimIndent()
+
         private const val LOCK_MOBILE_KEY_INSTALL_SQL =
             "SELECT pg_advisory_xact_lock(hashtextextended(?::text, 0))"
+
+        // Serializes ownership of one key hash across devices: installation holds it from the used-material
+        // check to the insert, and erasure takes the same lock (in hash order) before tombstoning.
+        internal const val LOCK_KEY_MATERIAL_SQL =
+            "SELECT pg_advisory_xact_lock(hashtextextended('chronicle-key-material:' || ?, 0))"
 
         private val AUTHORIZED_ENROLLMENT_ATTEMPT_SQL = """
             SELECT EXISTS (
@@ -314,6 +374,11 @@ public open class ApiKeyService(
         val hash = hashKey(rawKey)
         storageResolver.getPlatformStorage().connection.use { connection ->
             return RLSConnectionCustomizer.withAdminContext(connection) {
+                // The sliding predicate reads the enrollment row itself, past the deletion-quarantine
+                // RLS policy, so a collected-data purge does not freeze a live participant's key.
+                connection.createStatement().use { statement ->
+                    statement.execute("SELECT set_config('app.current_user_id', 'chronicle-deletion-worker', false)")
+                }
                 connection.prepareStatement(LOOKUP_AND_TOUCH_SQL).use { ps ->
                     ps.setString(1, hash)
                     val rs = ps.executeQuery()
@@ -322,6 +387,23 @@ public open class ApiKeyService(
                     } else {
                         null
                     }
+                }
+            }
+        }
+    }
+
+    /**
+     * True when erasure deleted this device key within its lifetime. The caller admits it only to the
+     * participation-status read and the withdrawal acknowledgment. Expired tombstones are deleted here.
+     */
+    public open fun isErasedDeviceKey(rawKey: String): Boolean {
+        val hash = hashKey(rawKey)
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            return RLSConnectionCustomizer.withAdminContext(connection) {
+                connection.createStatement().use { it.executeUpdate(EXPIRE_ERASED_KEY_TOMBSTONES_SQL) }
+                connection.prepareStatement(LOOKUP_ERASED_KEY_TOMBSTONE_SQL).use { ps ->
+                    ps.setString(1, hash)
+                    ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }
                 }
             }
         }
@@ -421,6 +503,8 @@ public open class ApiKeyService(
             RLSConnectionCustomizer.withAdminContext(connection) {
                 AuditedTransactionBuilder<Unit>(connection, auditingManager)
                     .transaction { conn ->
+                        com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
+                        com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(conn, studyId, participantId)
                         conn.prepareStatement(REVOKE_PRIOR_MOBILE_KEYS_SQL).use { ps ->
                             ps.setObject(1, studyId)
                             ps.setString(2, participantId)
@@ -508,6 +592,8 @@ public open class ApiKeyService(
             RLSConnectionCustomizer.withAdminContext(connection) {
                 AuditedTransactionBuilder<MobileKeyInstallation>(connection, auditingManager)
                     .transaction { conn ->
+                        com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
+                        com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(conn, studyId, participantId)
                         lockMobileKeyInstallation(conn, deviceId)
                         if (!isAuthorizedEnrollmentAttempt(
                                 conn,
@@ -528,6 +614,8 @@ public open class ApiKeyService(
                                 revokedCount = 0,
                             )
                         } else {
+                            lockKeyMaterial(conn, proposedHash)
+                            if (isUsedKeyMaterial(conn, proposedHash)) throw InvalidEnrollmentAttemptException()
                             createProposedMobileApiKey(
                                 conn,
                                 studyId,
@@ -565,6 +653,13 @@ public open class ApiKeyService(
         }
     }
 
+    private fun lockKeyMaterial(connection: java.sql.Connection, keyHash: String) {
+        connection.prepareStatement(LOCK_KEY_MATERIAL_SQL).use { statement ->
+            statement.setString(1, keyHash)
+            statement.execute()
+        }
+    }
+
     private fun isAuthorizedEnrollmentAttempt(
         connection: java.sql.Connection,
         studyId: UUID,
@@ -580,6 +675,13 @@ public open class ApiKeyService(
         statement.setString(5, proposedApiKeyHash)
         statement.executeQuery().use { resultSet -> resultSet.next() && resultSet.getBoolean(1) }
     }
+
+    private fun isUsedKeyMaterial(connection: java.sql.Connection, keyHash: String): Boolean =
+        connection.prepareStatement(USED_KEY_MATERIAL_SQL).use { statement ->
+            statement.setString(1, keyHash)
+            statement.setString(2, keyHash)
+            statement.executeQuery().use { resultSet -> resultSet.next() && resultSet.getBoolean(1) }
+        }
 
     private fun findMobileApiKey(
         connection: java.sql.Connection,

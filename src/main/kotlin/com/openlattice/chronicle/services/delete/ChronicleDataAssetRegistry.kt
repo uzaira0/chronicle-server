@@ -18,7 +18,13 @@ public enum class ParticipantScope(internal val predicate: String) {
     SCALAR_COLUMN("participant_id = ?"),
     TEXT_ARRAY_COLUMN("? = ANY(participant_ids)"),
     BLOCK_TOKEN_COLUMN("participant_block_token = md5(study_id::text || ':' || ?)"),
+
+    /** Access codes minus the exchanged enrollment code a still-enrolled device acknowledges against. */
+    NON_ENROLLMENT_EVIDENCE_CODES("participant_id = ? AND NOT $EXCHANGED_ENROLLMENT_CODE"),
 }
+
+/** The device's enrollment evidence: collection acknowledgments require this row unrevoked. */
+internal const val EXCHANGED_ENROLLMENT_CODE = "(form_kind = 'ENROLLMENT' AND exchanged_at IS NOT NULL)"
 
 public object ChronicleDataAssetRegistry {
     private val SQL_IDENTIFIER = Regex("^[a-z][a-z0-9_]*$")
@@ -70,8 +76,18 @@ public object ChronicleDataAssetRegistry {
         ParticipantDataAsset("purge-cutoffs", "participant_purge_cutoffs", false, ParticipantScope.BLOCK_TOKEN_COLUMN),
     )
 
-    internal fun assetsFor(mode: DataDeletionMode): List<ParticipantDataAsset> =
-        participantAssets + if (mode == DataDeletionMode.WITHDRAW_AND_ERASE) withdrawalAssets else emptyList()
+    internal fun assetsFor(mode: DataDeletionMode): List<ParticipantDataAsset> = when (mode) {
+        DataDeletionMode.WITHDRAW_AND_ERASE -> participantAssets + withdrawalAssets
+        // A purge keeps the participant enrolled, so it keeps the enrollment evidence too.
+        DataDeletionMode.COLLECTED_DATA_PURGE -> participantAssets.map {
+            if (it.tableName == "participant_form_access_codes") {
+                it.copy(participantScope = ParticipantScope.NON_ENROLLMENT_EVIDENCE_CODES)
+            } else {
+                it
+            }
+        }
+        DataDeletionMode.STUDY_ERASURE -> participantAssets
+    }
 
     init {
         check(participantAssets.map { it.id }.distinct().size == participantAssets.size) {
