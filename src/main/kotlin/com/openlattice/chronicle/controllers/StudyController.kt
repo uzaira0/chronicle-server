@@ -251,7 +251,7 @@ internal fun stampInitialDataCollectionSettings(study: Study): Study {
     val stampedSettings = checkNotNull(
         stampDataCollectionSettingsVersion(
             priorSettings = null,
-            requestedUpdate = StudyUpdate(settings = initialSettings),
+            requestedUpdate = StudyUpdate(settings = collectionSettingsForFeatures(initialSettings, study.modules.keys.map { it.name }.toSet())),
         ).settings,
     )
     if (stampedSettings == study.settings) return study
@@ -315,11 +315,13 @@ internal fun stampDataCollectionSettingsVersionLocked(
     studyId: UUID,
     requestedUpdate: StudyUpdate,
 ): LockedStudyUpdate {
-    if (requestedUpdate.settings == null) return LockedStudyUpdate(null, requestedUpdate)
+    if (requestedUpdate.settings == null && requestedUpdate.modules == null) return LockedStudyUpdate(null, requestedUpdate)
     val priorSettings = loadLockedStudySettings(connection, studyId)
+    val features = requestedUpdate.modules?.keys ?: loadLockedStudyFeatures(connection, studyId)
+    val settings = collectionSettingsForFeatures(requestedUpdate.settings ?: priorSettings, features)
     return LockedStudyUpdate(
         priorSettings,
-        stampDataCollectionSettingsVersion(priorSettings, requestedUpdate),
+        stampDataCollectionSettingsVersion(priorSettings, requestedUpdate.copy(settings = settings)),
     )
 }
 
@@ -388,7 +390,7 @@ internal fun applyLockedSettingsMutation(
     if (expectedRevision != null && expectedRevision != currentRevision) {
         throw StudySettingsRevisionMismatchException(currentRevision, priorSettings)
     }
-    val requestedStudy = StudyUpdate(settings = mutation(priorSettings))
+    val requestedStudy = StudyUpdate(settings = collectionSettingsForFeatures(mutation(priorSettings), loadLockedStudyFeatures(transaction, studyId)))
     val lockedUpdate = LockedStudyUpdate(
         priorSettings,
         stampDataCollectionSettingsVersion(priorSettings, requestedStudy),
@@ -3138,7 +3140,10 @@ public open class StudyController @Inject constructor(
         // let a subsequent If-Match PATCH silently clobber the concurrent change (V103 lost
         // update). Reading it first can only produce a stale-low token, which fails safe with 412.
         val revision = studyService.getStudySettingsRevision(realStudyId)
-        val settings = studyService.getStudySettings(realStudyId)
+        val settings = collectionSettingsForFeatures(
+            StudySettings(studyService.getStudySettings(realStudyId)),
+            studyService.getStudy(realStudyId).modules.keys.map { it.name }.toSet(),
+        )
         setSettingsRevisionEtag(revision)
         auditService.logWithContext {
             action(AuditAction.VIEW)
@@ -3184,7 +3189,15 @@ public open class StudyController @Inject constructor(
         // Revision first — see getStudySettings above: a revision read after the settings can be
         // newer than them, turning a later If-Match PATCH into a silent lost update.
         val revision = studyService.getStudySettingsRevision(studyId)
-        val settings = studyService.getStudySettings(studyId)
+        val rawSettings = StudySettings(studyService.getStudySettings(studyId))
+        val settings = if (settingsKey == StudySettingType.DataCollection) {
+            val collection = rawSettings[settingsKey] as? AndroidDataCollectionSetting
+                ?: AndroidDataCollectionSetting.fromLegacy(rawSettings[StudySettingType.AndroidSensor] as? AndroidSensorSetting)
+            collectionSettingsForFeatures(
+                StudySettings(rawSettings + (settingsKey to collection)),
+                studyService.getStudy(studyId).modules.keys.map { it.name }.toSet(),
+            )
+        } else rawSettings
         setSettingsRevisionEtag(revision)
         val setting = when (settingsKey) {
             StudySettingType.AndroidSensor -> settings[settingsKey] ?: AndroidSensorSetting.NO_SENSORS

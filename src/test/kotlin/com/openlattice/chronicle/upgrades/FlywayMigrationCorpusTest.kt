@@ -6794,16 +6794,7 @@ class FlywayMigrationCorpusTest {
         val executor = Executors.newFixedThreadPool(competingSettings.size)
 
         try {
-            getConnection().use { connection ->
-                executeSingleUpdate(
-                    connection,
-                    "INSERT INTO studies (study_id, title, settings) VALUES (?, ?, ?::jsonb)",
-                ) { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setString(2, "locked-revision-$studyId")
-                    statement.setString(3, ObjectMappers.getJsonMapper().writeValueAsString(initialSettings))
-                }
-            }
+            insertStudySettings(studyId, "locked-revision-$studyId", initialSettings, collectionEnabled = true)
             val updates = competingSettings.map { setting ->
                 executor.submit<Int> {
                     ready.countDown()
@@ -6847,7 +6838,7 @@ class FlywayMigrationCorpusTest {
         val executor = Executors.newFixedThreadPool(2)
 
         try {
-            insertStudySettings(studyId, "locked-delta-$studyId", initialSettings)
+            insertStudySettings(studyId, "locked-delta-$studyId", initialSettings, collectionEnabled = true)
 
             val dataCollectionUpdate = executor.submit<Int> {
                 persistLockedDataCollectionUpdate(studyId, committedDataCollection) {
@@ -6945,15 +6936,16 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-    private fun insertStudySettings(studyId: UUID, title: String, settings: StudySettings) {
+    private fun insertStudySettings(studyId: UUID, title: String, settings: StudySettings, collectionEnabled: Boolean = false) {
         getConnection().use { connection ->
             executeSingleUpdate(
                 connection,
-                "INSERT INTO studies (study_id, title, settings) VALUES (?, ?, ?::jsonb)",
+                "INSERT INTO studies (study_id, title, settings, modules) VALUES (?, ?, ?::jsonb, ?::jsonb)",
             ) { statement ->
                 statement.setObject(1, studyId)
                 statement.setString(2, title)
                 statement.setString(3, ObjectMappers.getJsonMapper().writeValueAsString(settings))
+                statement.setString(4, if (collectionEnabled) """{"CHRONICLE_DATA_COLLECTION":{}}""" else "{}")
             }
         }
     }

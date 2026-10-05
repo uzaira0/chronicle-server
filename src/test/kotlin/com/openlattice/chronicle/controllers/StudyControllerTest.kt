@@ -280,6 +280,7 @@ class StudyControllerTest {
         )
         val submittedStudy = Study(
             title = "server-stamped study",
+            modules = mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()),
             contact = "research@example.org",
             settings = StudySettings(mapOf(StudySettingType.DataCollection to submittedSetting)),
         )
@@ -1332,9 +1333,32 @@ class StudyControllerTest {
         Mockito.`when`(studyService.getStudySettings(studyId))
             .thenReturn(mapOf(StudySettingType.DataCollection to stored))
 
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(Study(
+            title = "Collection enabled", contact = "research@example.org",
+            modules = mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()),
+        ))
         val result = controller.getStudySetting(studyId, StudySettingType.DataCollection)
         assertTrue(result is AndroidDataCollectionSetting)
         assertEquals(stored, result)
+    }
+
+    @Test
+    fun testFeatureOffPublicCollectionReadStopsVersionedAndLegacySensors() {
+        val studyId = UUID.randomUUID()
+        Mockito.`when`(studyService.isValidStudy(studyId)).thenReturn(true)
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(Study(
+            title = "Collection disabled", contact = "research@example.org", modules = emptyMap(),
+        ))
+        val versioned = CollectionDefaults.androidDataCollectionSetting()
+        val legacy = AndroidSensorSetting(sensors = setOf(AndroidSensorType.gyroscope))
+        Mockito.`when`(studyService.getStudySettings(studyId)).thenReturn(
+            mapOf(StudySettingType.DataCollection to versioned),
+            mapOf(StudySettingType.AndroidSensor to legacy),
+        )
+        repeat(2) {
+            val read = controller.getStudySetting(studyId, StudySettingType.DataCollection) as AndroidDataCollectionSetting
+            assertEquals(setOf(CollectionModuleId.UPLOAD_TELEMETRY), read.effectiveEnabledModuleIds())
+        }
     }
 
     @Test
@@ -1397,6 +1421,10 @@ class StudyControllerTest {
         Mockito.`when`(studyService.getStudySettings(studyId))
             .thenReturn(mapOf(StudySettingType.AndroidSensor to legacy))
 
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(Study(
+            title = "Collection enabled", contact = "research@example.org",
+            modules = mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()),
+        ))
         val result = controller.getStudySetting(studyId, StudySettingType.DataCollection)
         assertTrue(result is AndroidDataCollectionSetting)
         val setting = result as AndroidDataCollectionSetting
@@ -1413,6 +1441,10 @@ class StudyControllerTest {
         Mockito.`when`(studyService.isValidStudy(studyId)).thenReturn(true)
         Mockito.`when`(studyService.getStudySettings(studyId)).thenReturn(emptyMap())
 
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(Study(
+            title = "Collection enabled", contact = "research@example.org",
+            modules = mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()),
+        ))
         val result = controller.getStudySetting(studyId, StudySettingType.DataCollection)
         assertTrue(result is AndroidDataCollectionSetting)
         val setting = result as AndroidDataCollectionSetting

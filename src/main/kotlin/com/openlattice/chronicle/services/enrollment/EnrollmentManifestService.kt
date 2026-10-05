@@ -6,6 +6,7 @@ import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.controllers.validatePlayCollectionPolicy
+import com.openlattice.chronicle.controllers.collectionSettingsForFeatures
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.services.participantaccess.EnrollmentAccessCodeScope
 import com.openlattice.chronicle.services.participantaccess.EnrollmentAttemptBinding
@@ -125,7 +126,7 @@ public open class EnrollmentManifestService(
         val policy = (study.settings[StudySettingType.ParticipantPolicy] as? StudyParticipantPolicy)
             ?.validate()
             ?: throw incompleteEnrollmentConfiguration("participant policy")
-        val collectionSettings = study.settings[StudySettingType.DataCollection] as? AndroidDataCollectionSetting
+        val collectionSettings = collectionSettingsForFeatures(study.settings, study.modules.keys.map { it.name }.toSet())[StudySettingType.DataCollection] as? AndroidDataCollectionSetting
             ?: throw incompleteEnrollmentConfiguration("versioned DataCollection settings")
         validatePlayCollectionPolicy(collectionSettings)
         val manifest = EnrollmentManifest(

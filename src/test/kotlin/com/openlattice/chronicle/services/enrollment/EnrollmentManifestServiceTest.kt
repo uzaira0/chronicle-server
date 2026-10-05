@@ -107,6 +107,16 @@ class EnrollmentManifestServiceTest {
     }
 
     @Test
+    fun featureOffManifestDisablesStoredCollectorsBeforeEnrollment() {
+        val service = serviceWithStudy(collectionSettings, collectionEnabled = false)
+        val preview = service.getPreview(studyId, participantId, accessCode)
+
+        assertEquals(setOf(CollectionModuleId.UPLOAD_TELEMETRY), preview.manifest.collectionSettings.effectiveEnabledModuleIds())
+        assertEquals(collectionSettings.settingsVersion, preview.manifest.settingsVersion)
+        assertTrue(authorize(service, preview.manifestDigest))
+    }
+
+    @Test
     fun `preview rejects a signed collection policy the Play client cannot enforce`() {
         val unsupportedSettings = AndroidDataCollectionSetting(
             modules = mapOf(
@@ -131,6 +141,7 @@ class EnrollmentManifestServiceTest {
         val incompleteStudy = Study(
             studyId = studyId,
             title = "Mobility Study",
+        modules = mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()),
             description = "Study description",
             contact = "research@example.org",
             settings = StudySettings(
@@ -366,8 +377,8 @@ class EnrollmentManifestServiceTest {
         )
     }
 
-    private fun serviceWithStudy(settings: AndroidDataCollectionSetting): EnrollmentManifestService {
-        val currentStudy = study(settings)
+    private fun serviceWithStudy(settings: AndroidDataCollectionSetting, collectionEnabled: Boolean = true): EnrollmentManifestService {
+        val currentStudy = study(settings, collectionEnabled)
         Mockito.`when`(accessService.resolveEnrollmentAccessCode(accessCode, studyId, participantId)).thenReturn(scope)
         Mockito.`when`(
             accessService.resolveEnrollmentAccessCodeForRequest(accessCode, studyId, participantId),
@@ -404,9 +415,10 @@ class EnrollmentManifestServiceTest {
             proposedKey,
         )
 
-    private fun study(settings: AndroidDataCollectionSetting): Study = Study(
+    private fun study(settings: AndroidDataCollectionSetting, collectionEnabled: Boolean = true): Study = Study(
         studyId = studyId,
         title = "Mobility Study",
+        modules = if (collectionEnabled) mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()) else emptyMap(),
         description = "Study description",
         contact = "research@example.org",
         settings = StudySettings(

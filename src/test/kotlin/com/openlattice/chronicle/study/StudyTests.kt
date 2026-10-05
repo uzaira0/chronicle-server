@@ -323,6 +323,24 @@ class StudyTests : ChronicleServerTests() {
 
     // ===================== Phase 9A: generalized DataCollection settings =====================
 
+    private fun createCollectionStudy(): UUID = chronicleClient.studyApi.createStudy(
+        Study(
+            title = "collection settings test",
+            contact = "test@openlattice.com",
+            modules = mapOf(StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()),
+        ),
+    )
+
+    /** New creates publish collection settings; remove them to model an actual legacy study. */
+    private fun createLegacyCollectionStudy(): UUID = createCollectionStudy().also { studyId ->
+        hds.connection.use { connection ->
+            connection.prepareStatement("UPDATE studies SET settings = settings - 'DataCollection' WHERE study_id = ?").use {
+                it.setObject(1, studyId)
+                Assert.assertEquals(1, it.executeUpdate())
+            }
+        }
+    }
+
     @Test
     fun testGetAndroidSensorSettingsUnchangedForMissingSetting() {
         // Regression baseline (compatibility matrix row 1): a current mobile client
@@ -357,11 +375,11 @@ class StudyTests : ChronicleServerTests() {
         // New setting storage round-trip (controller -> service -> Postgres -> back),
         // RLS-enforced: the owning client writes and reads its own study's setting.
         val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(TestDataFactory.study())
+        val studyId = createCollectionStudy()
         val setting = AndroidDataCollectionSetting(
             modules = mapOf(
                 CollectionModuleId.USAGE_EVENTS to CollectionDefaults.moduleSetting(CollectionModuleId.USAGE_EVENTS),
-                CollectionModuleId.HARDWARE_SENSORS to CollectionModuleSetting(
+                CollectionModuleId.SENSOR_LIGHT to CollectionModuleSetting(
                     enabled = true,
                     sensorPolicy = AndroidSensorSetting(sensors = setOf(AndroidSensorType.light)),
                 ),
@@ -372,10 +390,10 @@ class StudyTests : ChronicleServerTests() {
         val read = studyApi.getStudySetting(studyId, StudySettingType.DataCollection)
         Assert.assertTrue("DataCollection must read back as AndroidDataCollectionSetting", read is AndroidDataCollectionSetting)
         val dc = read as AndroidDataCollectionSetting
-        Assert.assertTrue(dc.modules.getValue(CollectionModuleId.HARDWARE_SENSORS).enabled)
+        Assert.assertTrue(dc.modules.getValue(CollectionModuleId.SENSOR_LIGHT).enabled)
         Assert.assertEquals(
             setOf(AndroidSensorType.light),
-            dc.modules.getValue(CollectionModuleId.HARDWARE_SENSORS).sensorPolicy?.sensors,
+            dc.modules.getValue(CollectionModuleId.SENSOR_LIGHT).sensorPolicy?.sensors,
         )
     }
 
@@ -388,7 +406,7 @@ class StudyTests : ChronicleServerTests() {
         // write, and (c) the settings-audit trail records the DataCollection changes with a
         // module-granular summary.
         val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(TestDataFactory.study())
+        val studyId = createCollectionStudy()
 
         // First settings write: legacy AndroidSensor.
         val sensorSetting = AndroidSensorSetting(
@@ -405,7 +423,7 @@ class StudyTests : ChronicleServerTests() {
             AndroidDataCollectionSetting(
                 modules = mapOf(
                     CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = true),
-                    CollectionModuleId.HARDWARE_SENSORS to CollectionModuleSetting(enabled = false),
+                    CollectionModuleId.SENSOR_ACCELEROMETER to CollectionModuleSetting(enabled = false),
                 ),
             ),
         )
@@ -415,7 +433,7 @@ class StudyTests : ChronicleServerTests() {
             AndroidDataCollectionSetting(
                 modules = mapOf(
                     CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = false),
-                    CollectionModuleId.HARDWARE_SENSORS to CollectionModuleSetting(enabled = true),
+                    CollectionModuleId.SENSOR_ACCELEROMETER to CollectionModuleSetting(enabled = true),
                 ),
             ),
         )
@@ -423,7 +441,7 @@ class StudyTests : ChronicleServerTests() {
         // (a) The per-module toggles read back.
         val readDc = studyApi.getStudySetting(studyId, StudySettingType.DataCollection) as AndroidDataCollectionSetting
         Assert.assertFalse(readDc.modules.getValue(CollectionModuleId.BATTERY_TELEMETRY).enabled)
-        Assert.assertTrue(readDc.modules.getValue(CollectionModuleId.HARDWARE_SENSORS).enabled)
+        Assert.assertTrue(readDc.modules.getValue(CollectionModuleId.SENSOR_ACCELEROMETER).enabled)
 
         // (b) The AndroidSensor setting survived the DataCollection writes (no clobber).
         Assert.assertEquals(sensorSetting, studyApi.getStudySetting(studyId, StudySettingType.AndroidSensor))
@@ -445,7 +463,7 @@ class StudyTests : ChronicleServerTests() {
         Assert.assertTrue(
             "A DataCollection audit entry must carry a module-granular summary, got: $dataCollectionSummaries",
             dataCollectionSummaries.any {
-                it.contains("disabled 'battery_telemetry'") && it.contains("enabled 'hardware_sensors'")
+                it.contains("disabled 'battery_telemetry'") && it.contains("enabled 'sensor_accelerometer'")
             },
         )
     }
@@ -455,7 +473,7 @@ class StudyTests : ChronicleServerTests() {
         // old -> new fallback (compatibility matrix row 4): a study with only a legacy
         // AndroidSensor setting and no DataCollection setting derives the named per-sensor module.
         val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(TestDataFactory.study())
+        val studyId = createLegacyCollectionStudy()
         studyApi.updateStudySettings(
             studyId,
             StudySettingType.AndroidSensor,
@@ -474,7 +492,7 @@ class StudyTests : ChronicleServerTests() {
         // Missing-setting fallback: no DataCollection and no AndroidSensor setting
         // yields a safe default — no sensor enabled, never silently enabled.
         val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(TestDataFactory.study())
+        val studyId = createLegacyCollectionStudy()
 
         val read = studyApi.getStudySetting(studyId, StudySettingType.DataCollection)
         Assert.assertTrue(read is AndroidDataCollectionSetting)
@@ -491,7 +509,7 @@ class StudyTests : ChronicleServerTests() {
         // AndroidSensor, NOT through ensureReadAccess. The DTO carries no secrets, so
         // a non-owning client may read it just as a mobile client reads AndroidSensor.
         // The read is still study-scoped: getStudySettings keys strictly on studyId.
-        val studyId = chronicleClient.studyApi.createStudy(TestDataFactory.study())
+        val studyId = createCollectionStudy()
         val setting = AndroidDataCollectionSetting(
             modules = mapOf(
                 CollectionModuleId.USAGE_EVENTS to CollectionDefaults.moduleSetting(CollectionModuleId.USAGE_EVENTS),
@@ -503,7 +521,7 @@ class StudyTests : ChronicleServerTests() {
         // exactly the study-scoped value — mirrors getAndroidSensorSettings reachability.
         val readByOther = chronicleClient2.studyApi.getStudySetting(studyId, StudySettingType.DataCollection)
         Assert.assertTrue(readByOther is AndroidDataCollectionSetting)
-        Assert.assertEquals(setting, readByOther)
+        Assert.assertEquals(setting.copy(settingsVersion = 2), readByOther)
     }
 
     @Test
