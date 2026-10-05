@@ -30,11 +30,17 @@
                 <TimeBasedTriggeringPolicy interval="86400" modulate="true"/>
                 <SizeBasedTriggeringPolicy size="5GB"/>
             </Policies>
-            <!-- max counts %i within one timestamp only; delete archives by age so daily files do not accumulate forever. -->
+            <!-- max counts %i within one timestamp only. Delete archives by age or once all of them
+                 exceed 10GB (newest kept first), including a raw .log left when the JVM stopped
+                 mid-compression. The regex never matches the active ${serviceName}(-json).log. -->
             <DefaultRolloverStrategy max="30">
                 <Delete basePath="${rollingDir}" maxDepth="1">
-                    <IfFileName glob="${serviceName}-*.log.gz"/>
-                    <IfLastModified age="30d"/>
+                    <IfFileName regex="${serviceName}-(json-)?\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d+\.log(\.gz)?">
+                        <IfAny>
+                            <IfAccumulatedFileSize exceeds="10GB"/>
+                            <IfLastModified age="30d"/>
+                        </IfAny>
+                    </IfFileName>
                 </Delete>
             </DefaultRolloverStrategy>
         </RollingFile>
@@ -48,11 +54,17 @@
                 <TimeBasedTriggeringPolicy interval="86400" modulate="true"/>
                 <SizeBasedTriggeringPolicy size="5GB"/>
             </Policies>
-            <!-- max counts %i within one timestamp only; delete archives by age so daily files do not accumulate forever. -->
+            <!-- max counts %i within one timestamp only. Delete archives by age or once all of them
+                 exceed 10GB (newest kept first), including a raw .log left when the JVM stopped
+                 mid-compression. The regex never matches the active ${serviceName}(-json).log. -->
             <DefaultRolloverStrategy max="30">
                 <Delete basePath="${rollingDir}" maxDepth="1">
-                    <IfFileName glob="${serviceName}-*.log.gz"/>
-                    <IfLastModified age="30d"/>
+                    <IfFileName regex="${serviceName}-(json-)?\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d+\.log(\.gz)?">
+                        <IfAny>
+                            <IfAccumulatedFileSize exceeds="10GB"/>
+                            <IfLastModified age="30d"/>
+                        </IfAny>
+                    </IfFileName>
                 </Delete>
             </DefaultRolloverStrategy>
         </RollingFile>
@@ -94,7 +106,15 @@
                 <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
                 <SizeBasedTriggeringPolicy size="10GB"/>
             </Policies>
-            <DefaultRolloverStrategy max="2190"/>
+            <!-- max does not apply to a date-only pattern; delete by age at the documented 6 years,
+                 raw .log rollover leftovers included. No size cap: it could cut retention short. -->
+            <DefaultRolloverStrategy max="2190">
+                <Delete basePath="${auditDir}" maxDepth="1">
+                    <IfFileName regex="audit\.\d{4}-\d{2}-\d{2}\.log(\.gz)?">
+                        <IfLastModified age="2190d"/>
+                    </IfFileName>
+                </Delete>
+            </DefaultRolloverStrategy>
         </RollingFile>
     </Appenders>
 
