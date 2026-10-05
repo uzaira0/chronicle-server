@@ -70,6 +70,18 @@ class ChronicleServerExceptionHandlerLogRedactionTest {
     private fun mockRequest() = MockHttpServletRequest("POST", "/chronicle/v4/study/x/participant/p/android/sleep")
 
     @Test
+    fun postgresDiagnosticsNeverLogPayloadIncludingWrappedCauses() {
+        val sentinel = "uploadedDiaryPayloadUniqueSentinel"
+        val error = org.postgresql.util.PSQLException(
+            org.postgresql.util.ServerErrorMessage("SERROR\u0000C22021\u0000M$sentinel\u0000D$sentinel\u0000W$sentinel\u0000\u0000"),
+        )
+        handler.handleSqlException(mockRequest(), error)
+        handler.handleOtherExceptions(mockRequest(), IllegalStateException(sentinel, error))
+        assertTrue(captured.isNotEmpty())
+        assertFalse(captured.joinToString("\n").contains(sentinel))
+    }
+
+    @Test
     fun jsonMappingErrorLogsFieldPathNeverValue() {
         val phi = "PATIENT-SSN-987654321"
         val e = Mockito.mock(JsonMappingException::class.java)

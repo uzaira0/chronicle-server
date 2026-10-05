@@ -38,6 +38,8 @@ import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import org.springframework.web.HttpMediaTypeNotSupportedException
+import org.springframework.web.HttpRequestMethodNotSupportedException
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.security.access.AccessDeniedException
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException
@@ -84,6 +86,8 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      */
     @ExceptionHandler(NullPointerException::class)
     public fun handleNullPointerException(req: HttpServletRequest, e: NullPointerException): ResponseEntity<ApiError> {
+        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+            ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
         logExceptionWithId(errorId, req, e)
 
@@ -164,6 +168,8 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     @Suppress("TooGenericExceptionCaught")
     @ExceptionHandler(IllegalArgumentException::class, HttpMessageNotReadableException::class)
     public fun handleIllegalArgumentException(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
+        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+            ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
 
         when (e) {
@@ -349,6 +355,13 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      */
     @ExceptionHandler(IllegalStateException::class)
     public fun handleIllegalStateException(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
+        if (e.message == "Participant is already registered for this study" && (e.cause as? SQLException)?.sqlState == "23505") {
+            logExceptionWithId(ApiError.generateErrorId(), req, e)
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiError(409, "Conflict",
+                "Participant is already registered for this study", path = safeErrorPath(req)))
+        }
+        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+            ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
         logExceptionWithId(errorId, req, e)
 
@@ -520,21 +533,27 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         // Log SQL diagnostics without raw SQL/error text. Error messages can include
         // query fragments, table names, connection strings, or values.
         logger.error(
-            "Database error [ErrorId: {}] - SQLState: {}, ErrorCode: {}, Message: {}",
+            "Database error [ErrorId: {}] - SQLState: {}, ErrorCode: {}",
             errorId,
             e.sqlState,
             e.errorCode,
-            errorSanitizationConfig.sanitizeMessage(e.message)
         )
 
-        // ALWAYS return generic error for SQL exceptions - never expose SQL details
-        return ResponseEntity(
-            ApiError.internalServerError(
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                path = safeErrorPath(req)
-            ),
-            HttpStatus.INTERNAL_SERVER_ERROR
-        )
+        val failures = generateSequence(e) { it.nextException }.take(32).toList()
+        val status = failures.mapNotNull { failure ->
+            when {
+                failure is java.sql.SQLTransientConnectionException -> HttpStatus.SERVICE_UNAVAILABLE
+                failure.sqlState?.startsWith("22") == true -> HttpStatus.BAD_REQUEST
+                failure.sqlState == "42501" -> HttpStatus.FORBIDDEN
+                failure.sqlState?.take(2) in setOf("08", "40", "53") || failure.sqlState == "57P01" ->
+                    HttpStatus.SERVICE_UNAVAILABLE
+                else -> null
+            }
+        }.firstOrNull() ?: HttpStatus.INTERNAL_SERVER_ERROR
+        val response = ResponseEntity.status(status)
+        if (status == HttpStatus.SERVICE_UNAVAILABLE) response.header("Retry-After", "5")
+        return response.body(ApiError(status.value(), status.reasonPhrase, status.reasonPhrase,
+            if (errorSanitizationConfig.includeErrorId) errorId else null, path = safeErrorPath(req)))
     }
 
     /**
@@ -561,11 +580,43 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     }
 
     /**
+     * 405 for a mapped path called with the wrong method, 415 for an unsupported body type.
+     *
+     * Without these the catch-all answered 500, so a client probing a newer method on an older
+     * server (GET /reminders against a POST-only release) could not tell "not supported" from a
+     * server fault and never fell back.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException::class, HttpMediaTypeNotSupportedException::class)
+    public fun handleUnsupportedRequest(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
+        val errorId = ApiError.generateErrorId()
+        logExceptionWithId(errorId, req, e)
+        val status = if (e is HttpRequestMethodNotSupportedException) {
+            HttpStatus.METHOD_NOT_ALLOWED
+        } else {
+            HttpStatus.UNSUPPORTED_MEDIA_TYPE
+        }
+        val builder = ResponseEntity.status(status)
+        val allowed = (e as? HttpRequestMethodNotSupportedException)?.supportedHttpMethods
+        if (!allowed.isNullOrEmpty()) builder.allow(*allowed.toTypedArray())
+        return builder.body(
+            ApiError(
+                status = status.value(),
+                error = status.reasonPhrase,
+                message = status.reasonPhrase,
+                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
+                path = safeErrorPath(req)
+            )
+        )
+    }
+
+    /**
      * Catch-all handler for unhandled exceptions.
      * Always returns generic 500 error in production to prevent information disclosure.
      */
     @ExceptionHandler(Exception::class)
     public fun handleOtherExceptions(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
+        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+            ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
         logExceptionWithId(errorId, req, e)
 
@@ -611,6 +662,13 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         // by the caller.
         logMessage: Boolean = true,
     ) {
+        val databaseFailure = generateSequence(e as Throwable?) { it.cause }
+            .take(32).filterIsInstance<SQLException>().firstOrNull()
+        if (databaseFailure != null) {
+            logger.error("Database error [ErrorId: {}] - SQLState: {}, ErrorCode: {}",
+                errorId, databaseFailure.sqlState, databaseFailure.errorCode)
+            return
+        }
         // Spring builds NoHandlerFoundException messages from the raw request URI. That URI can
         // contain arbitrary participant content, so never pass this framework-generated message,
         // stack, or URI to an application logger. A one-way route reference retains correlation

@@ -3601,7 +3601,7 @@ public open class StudyController @Inject constructor(
                 phiFields(listOf("participantId", "participationStatus"))
                 additionalData(mapOf("participantId" to participantId, "newStatus" to participationStatus.name))
             }
-            OK("Successfully updated participation status ${ChronicleServerUtil.STUDY_PARTICIPANT}")
+            OK("Successfully updated participation status")
         } catch (ex: Exception) {
             auditService.logWithContext {
                 action(AuditAction.PARTICIPANT_WITHDRAW)
@@ -3635,7 +3635,7 @@ public open class StudyController @Inject constructor(
                 phiFields(listOf("participantId", "annotations"))
                 additionalData(mapOf("participantId" to participantId))
             }
-            OK("Successfully updated participant annotations ${ChronicleServerUtil.STUDY_PARTICIPANT}")
+            OK("Successfully updated participant annotations")
         } catch (ex: Exception) {
             auditService.logWithContext {
                 action(AuditAction.UPDATE)

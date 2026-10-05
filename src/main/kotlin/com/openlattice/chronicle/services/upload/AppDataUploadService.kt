@@ -589,11 +589,11 @@ public open class AppDataUploadService(
 
                             //Should only need to set these once for prepared statement.
                             StopWatch(
-                                log = "Inserting ${data.size} entries into ${CHRONICLE_USAGE_EVENTS.name} with studies = {} and participants = {}",
+                                log = "Inserting ${data.size} entries into ${CHRONICLE_USAGE_EVENTS.name} with studies = {} and participantRefs = {}",
                                 level = Level.INFO,
                                 logger = logger,
                                 studies,
-                                participants
+                                LogSanitizer.stableFingerprints(participants, "participant")
                             ).use {
                                 var indexBase = 0
                                 subList.forEach { usageEventCols ->
@@ -719,11 +719,11 @@ public open class AppDataUploadService(
 
                 //Delete the duplicates, if any from chronicle_usage_events and drop the temporary table.
                 StopWatch(
-                    log = "Deleting duplicates for studies = {} and participants = {} ",
+                    log = "Deleting duplicates for studies = {} and participantRefs = {} ",
                     level = Level.INFO,
                     logger = logger,
                     studies,
-                    participants
+                    LogSanitizer.stableFingerprints(participants, "participant")
                 ).use {
                     connection.createStatement().use { stmt ->
                         stmt.execute(getDeleteUsageEventsFromTempTable(tempTableName))

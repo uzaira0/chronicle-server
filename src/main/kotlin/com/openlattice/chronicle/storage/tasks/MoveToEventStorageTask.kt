@@ -176,11 +176,11 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
                             StopWatch(
                                 log = "Inserting ${data.size} entries into " +
                                     "${PostgresEventTables.CHRONICLE_USAGE_EVENTS.name} " +
-                                    "with studies = {} and participants = {}",
+                                    "with studies = {} and participantRefs = {}",
                                 level = Level.INFO,
                                 logger = logger,
                                 studies,
-                                participants
+                                LogSanitizer.stableFingerprints(participants, "participant")
                             ).use {
                                 var indexBase = 0
                                 subList.forEach { usageEventCols ->
@@ -248,11 +248,11 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
                                 StopWatch(
                                     log = "Executing update on ${subList.size} entries into " +
                                         "${PostgresEventTables.CHRONICLE_USAGE_EVENTS.name} " +
-                                        "with studies = {} and participants = {}",
+                                        "with studies = {} and participantRefs = {}",
                                     level = Level.INFO,
                                     logger = logger,
                                     studies,
-                                    participants
+                                    LogSanitizer.stableFingerprints(participants, "participant")
                                 ).use {
                                     val insertCount = ps.executeUpdate()
                                     logger.info(
@@ -290,11 +290,11 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
 
                 //Create a table that contains any duplicate values introduced by this latest upload for the minimum upload_at value
                 StopWatch(
-                    log = "Creating duplicates table for studies = {} and participants = {} ",
+                    log = "Creating duplicates table for studies = {} and participantRefs = {} ",
                     level = Level.INFO,
                     logger = logger,
                     studies,
-                    participants
+                    LogSanitizer.stableFingerprints(participants, "participant")
                 ).use {
                     connection.createStatement()
                         .use { stmt -> stmt.execute(PostgresEventTables.createTempTableOfDuplicates(tempTableName)) }
@@ -310,11 +310,11 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
 
                 //Delete the duplicates, if any from chronicle_usage_events and drop the temporary table.
                 StopWatch(
-                    log = "Deleting duplicates for studies = {} and participants = {} ",
+                    log = "Deleting duplicates for studies = {} and participantRefs = {} ",
                     level = Level.INFO,
                     logger = logger,
                     studies,
-                    participants
+                    LogSanitizer.stableFingerprints(participants, "participant")
                 ).use {
                     connection.createStatement().use { stmt ->
                         stmt.execute(PostgresEventTables.getDeleteUsageEventsFromTempTable(tempTableName))

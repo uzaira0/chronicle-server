@@ -377,6 +377,7 @@ ext.odata_version = '4.2.0'
 ext.chronicle_api_version = '0.0.17'
 
 dependencies {
+    implementation "org.eclipse.jetty.ee10:jetty-ee10-servlet:${jetty_version}"
     //Spotbugs related
     spotbugsPlugins "com.h3xstream.findsecbugs:findsecbugs-plugin:${findsecbugs_version}"
     compileOnly "net.jcip:jcip-annotations:${jcip_version}"

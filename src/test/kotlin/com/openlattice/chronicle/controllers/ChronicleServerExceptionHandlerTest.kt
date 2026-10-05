@@ -23,6 +23,26 @@ import java.util.*
 
 class ChronicleServerExceptionHandlerTest {
 
+    @Test
+    fun databaseCauseClassificationReturnsClientAndRetryableStatusesWithoutPayload() {
+        val cases = listOf(
+            SQLException("uniquePayloadSentinel", "22021") to 400,
+            SQLException("uniquePayloadSentinel", "22P05") to 400,
+            SQLException("uniquePayloadSentinel", "42501") to 403,
+            SQLException("uniquePayloadSentinel", "53100") to 503,
+            java.sql.SQLTransientConnectionException("uniquePayloadSentinel") to 503,
+        )
+        for ((error, status) in cases) {
+            for (wrapped in listOf(false, true)) {
+                val result = if (wrapped) handler.handleOtherExceptions(mockRequest(), RuntimeException("uniquePayloadSentinel", error))
+                    else handler.handleSqlException(mockRequest(), error)
+                assertEquals(status, result.statusCode.value())
+                assertFalse(result.body.toString().contains("uniquePayloadSentinel"))
+                if (status == 503) assertEquals("5", result.headers.getFirst("Retry-After"))
+            }
+        }
+    }
+
     private val auditingManager = Mockito.mock(AuditingManager::class.java)
     private val config = ErrorSanitizationConfig(
         sanitizeErrors = true,
@@ -436,5 +456,28 @@ class ChronicleServerExceptionHandlerTest {
             listOf("X-Chronicle-Device-Id: Required header is missing"),
             result.body?.details
         )
+    }
+
+    // Regression V-1: a GET to a POST-only route went to the catch-all and answered 500, so a
+    // client probing a newer GET against an older server could not detect "method not supported".
+    @Test
+    fun testWrongMethodOnMappedRouteAnswers405NotA500() {
+        val mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders
+            .standaloneSetup(PostOnlyController())
+            .setControllerAdvice(handler)
+            .build()
+
+        val response = mvc.perform(
+            org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/reminders")
+        ).andReturn().response
+
+        assertEquals(405, response.status)
+        assertEquals("POST", response.getHeader("Allow"))
+    }
+
+    @org.springframework.web.bind.annotation.RestController
+    class PostOnlyController {
+        @org.springframework.web.bind.annotation.PostMapping("/reminders")
+        fun reminders(): String = "ok"
     }
 }

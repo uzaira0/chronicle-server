@@ -86,6 +86,7 @@ import java.util.Locale
     )]
 )
 @EnableAsync
+@org.springframework.context.annotation.EnableAspectJAutoProxy(proxyTargetClass = true)
 public open class ChronicleServerMvcPod : WebMvcConfigurationSupport() {
     @Inject
     private lateinit var defaultObjectMapper: ObjectMapper

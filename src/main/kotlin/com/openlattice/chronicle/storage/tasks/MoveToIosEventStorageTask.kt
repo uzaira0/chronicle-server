@@ -358,11 +358,11 @@ public open class MoveToIosEventStorageTask : HazelcastFixedRateTask<MoveToEvent
 
                 //Create a table that contains any duplicate values introduced by this latest upload for the minimum upload_at value
                 StopWatch(
-                    log = "Creating duplicates table for ios studies = {} and participants = {} ",
+                    log = "Creating duplicates table for ios studies = {} and participantRefs = {} ",
                     level = Level.INFO,
                     logger = logger,
                     studies,
-                    participants
+                    LogSanitizer.stableFingerprints(participants, "participant")
                 ).use {
                     connection.createStatement()
                         .use { stmt ->
@@ -376,15 +376,15 @@ public open class MoveToIosEventStorageTask : HazelcastFixedRateTask<MoveToEvent
                     connection.prepareStatement(PostgresEventTables.buildTempTableOfDuplicatesForIos(tempTableName))
                         .use { ps ->
                             logger.info(
-                                "Earliest observation timestamp for studies = {} and participants = {} is {}",
+                                "Earliest observation timestamp for studies = {} and participantRefs = {} is {}",
                                 studies,
-                                participants,
+                                LogSanitizer.stableFingerprints(participants, "participant"),
                                 minObservationTimestamp
                             )
                             logger.info(
-                                "Latest observation timestamp for studies = {} and participants = {} is {}",
+                                "Latest observation timestamp for studies = {} and participantRefs = {} is {}",
                                 studies,
-                                participants,
+                                LogSanitizer.stableFingerprints(participants, "participant"),
                                 maxObservationTimestamp
                             )
                             ps.setArray(1, PostgresArrays.createTextArray(connection, studies))
@@ -397,11 +397,11 @@ public open class MoveToIosEventStorageTask : HazelcastFixedRateTask<MoveToEvent
 
                 //Delete the duplicates, if any from chronicle_usage_events and drop the temporary table.
                 StopWatch(
-                    log = "Deleting duplicates for ios studies = {} and participants = {} ",
+                    log = "Deleting duplicates for ios studies = {} and participantRefs = {} ",
                     level = Level.INFO,
                     logger = logger,
                     studies,
-                    participants
+                    LogSanitizer.stableFingerprints(participants, "participant")
                 ).use {
                     connection.createStatement().use { stmt ->
                         stmt.execute(PostgresEventTables.getDeleteIosSensorDataFromTempTable(tempTableName))
