@@ -33,7 +33,8 @@ import java.util.UUID
 class DataCollectionSettingsVersionTest {
     @Test
     fun `new study without collection policy receives server issued initial default`() {
-        val study = Study(title = "initial policy", contact = "research@example.org")
+        val study = Study(title = "initial policy", contact = "research@example.org",
+            modules = mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()))
 
         val stamped = stampInitialDataCollectionSettings(study)
 
@@ -147,6 +148,13 @@ class DataCollectionSettingsVersionTest {
         whenever(resultSet.next()).thenReturn(true)
         whenever(resultSet.getString("settings"))
             .thenReturn(ObjectMappers.getJsonMapper().writeValueAsString(settings(baseSetting)))
+        val featureStatement = mock<PreparedStatement>()
+        val featureRows = mock<ResultSet>()
+        whenever(connection.prepareStatement("SELECT modules FROM studies WHERE study_id = ? FOR UPDATE"))
+            .thenReturn(featureStatement)
+        whenever(featureStatement.executeQuery()).thenReturn(featureRows)
+        whenever(featureRows.next()).thenReturn(true)
+        whenever(featureRows.getString("modules")).thenReturn("{\"CHRONICLE_DATA_COLLECTION\":{}}")
         val changed = baseSetting.copy(
             modules = mapOf(CollectionModuleId.USAGE_EVENTS to CollectionModuleSetting(enabled = true)),
             settingsVersion = 99,

@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.survey
 
+import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.ChronicleServerTests
 import com.openlattice.chronicle.client.ChronicleClient
 import com.openlattice.chronicle.constants.EdmConstants
@@ -7,6 +8,10 @@ import com.openlattice.chronicle.util.tests.TestDataFactory
 import org.dmfs.rfc5545.recur.RecurrenceRule
 import org.junit.Assert
 import org.junit.Test
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 
 /**
  * @author alfoncenzioka &lt;alfonce@openlattice.com&gt;
@@ -40,6 +45,18 @@ class QuestionnaireTests : ChronicleServerTests() {
         val questionnaire = questionnaire()
         val questionnaireId = surveyApi.createQuestionnaire(studyId, questionnaire)
 
+        val http = HttpClient.newHttpClient()
+        val resource = URI("http://localhost:$testHttpPort/chronicle/v3/survey/$studyId/questionnaire/$questionnaireId")
+        val token = jwtTokens.getValue(testUser1.id).first()
+        val loaded = http.send(
+            HttpRequest.newBuilder(resource).header("Authorization", "Bearer $token").GET().build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+        Assert.assertEquals(loaded.body(), 200, loaded.statusCode())
+        val revision = loaded.headers().firstValue("ETag").orElseThrow()
+        val snapshot = ObjectMappers.getJsonMapper().readValue(loaded.body(), Questionnaire::class.java)
+        Assert.assertEquals(questionnaire.questions, snapshot.questions)
+
         val update = QuestionnaireUpdate(
             title = "Updated Title",
             description = null,
@@ -47,7 +64,14 @@ class QuestionnaireTests : ChronicleServerTests() {
             active = false,
             questions = null
         )
-        surveyApi.updateQuestionnaire(studyId, questionnaireId, update)
+        fun patch() = HttpRequest.newBuilder(resource)
+            .header("Authorization", "Bearer $token")
+            .header("Content-Type", "application/json")
+            .method("PATCH", HttpRequest.BodyPublishers.ofString(ObjectMappers.getJsonMapper().writeValueAsString(update)))
+        val missingRevision = http.send(patch().build(), HttpResponse.BodyHandlers.ofString())
+        Assert.assertEquals(missingRevision.body(), 428, missingRevision.statusCode())
+        val saved = http.send(patch().header("If-Match", revision).build(), HttpResponse.BodyHandlers.ofString())
+        Assert.assertEquals(saved.body(), 200, saved.statusCode())
         val updated = surveyApi.getQuestionnaire(studyId, questionnaireId)
 
          Assert.assertEquals( update.title, updated.title)

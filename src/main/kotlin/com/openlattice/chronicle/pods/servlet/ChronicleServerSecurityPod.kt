@@ -87,6 +87,12 @@ import jakarta.servlet.Filter
 public open class ChronicleServerSecurityPod {
 
     @Autowired
+    private lateinit var storageResolver: com.openlattice.chronicle.storage.StorageResolver
+
+    @Autowired
+    private lateinit var studyAuthorizationService: com.openlattice.chronicle.authorization.StudyAuthorizationService
+
+    @Autowired
     private lateinit var chronicleAuthConfiguration: ChronicleAuthConfiguration
 
     @Autowired
@@ -439,6 +445,8 @@ public open class ChronicleServerSecurityPod {
             )
         }
 
+        http.addFilterAfter(com.openlattice.chronicle.filters.ConcurrentEditFilter(storageResolver, studyAuthorizationService),
+            org.springframework.security.web.access.intercept.AuthorizationFilter::class.java)
         return http.build()
     }
 

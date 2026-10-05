@@ -290,13 +290,18 @@ public class StudySettingsRevisionMismatchException(
     public val currentSettings: StudySettings,
 ) : RuntimeException("Study settings were modified by another client")
 
+private val SETTINGS_REVISION_ETAG = Regex("""(\d+)(?:--(?:gzip|br|zstd|deflate)|-(?:gzip|br|zstd))?""")
+
 /**
  * Parses an `If-Match` settings precondition. Returns null when absent or `*` (no check, which
  * preserves the behaviour older mobile/iOS clients depend on).
  */
 internal fun parseSettingsRevisionPrecondition(header: String?): Long? {
     val value = header?.trim()?.takeUnless { it.isEmpty() || it == "*" } ?: return null
-    val revision = value.removePrefix("W/").trim().trim('"').toLongOrNull()
+    // Compressing layers rewrite the ETag ("7" -> "7--gzip" in Jetty, "7-gzip" behind a proxy) and the
+    // dashboard echoes it back verbatim, so drop a content-coding suffix before reading the revision.
+    val revision = SETTINGS_REVISION_ETAG.matchEntire(value.removePrefix("W/").trim().trim('"'))
+        ?.groupValues?.get(1)?.toLongOrNull()
     // ast-grep-ignore: server-i18n-response-literal
     return revision ?: throw ResponseStatusException(
         HttpStatus.BAD_REQUEST,

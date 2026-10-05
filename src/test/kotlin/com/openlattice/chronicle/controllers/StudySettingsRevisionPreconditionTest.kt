@@ -64,6 +64,11 @@ class StudySettingsRevisionPreconditionTest {
         assertNull(parseSettingsRevisionPrecondition(null))
         assertNull(parseSettingsRevisionPrecondition("  "))
         assertNull("* means no precondition", parseSettingsRevisionPrecondition("*"))
+        assertEquals(7L, parseSettingsRevisionPrecondition("\"7--gzip\""))
+        assertEquals(7L, parseSettingsRevisionPrecondition("\"7--br\""))
+        assertEquals(7L, parseSettingsRevisionPrecondition("W/\"7-gzip\""))
+        assertThrows(ResponseStatusException::class.java) { parseSettingsRevisionPrecondition("\"7--compress\"") }
+        assertThrows(ResponseStatusException::class.java) { parseSettingsRevisionPrecondition("\"-7\"") }
         val malformed = assertThrows(ResponseStatusException::class.java) {
             parseSettingsRevisionPrecondition("\"not-a-revision\"")
         }
