@@ -587,60 +587,64 @@ public class ParticipantFormAccessService(
         }
     }
 
+    /**
+     * Resolves the form session a request acts as. The host-wide cookie holds only the browser's
+     * newest session, so a second form tab replaces it; the per-tab CSRF token then selects that
+     * tab's own session among the same participant's live sessions. The cookie still has to be a
+     * live (unrevoked, unexpired) session of that participant, and a mutation still needs a CSRF
+     * token whose hash a live session holds. The selected session alone carries the idle timeout:
+     * the cookie only binds the browser, and its own tab may have closed.
+     */
     public fun resolveSession(
         rawSessionToken: String,
         mutationCsrfToken: String?,
         requireCsrf: Boolean,
     ): ParticipantFormAccessScope? {
         if (!isPlausibleToken(rawSessionToken) || (requireCsrf && !isPlausibleToken(mutationCsrfToken))) return null
+        val csrfHash = mutationCsrfToken?.takeIf(::isPlausibleToken)?.let(::sha256)
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
         return storageResolver.getPlatformStorage().connection.use { connection ->
             val originalAutoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
-                val scope = connection.prepareStatement(
-                """
-                SELECT session_id, access_code_id, study_id, participant_id, form_kind, resource_id,
-                       logical_date, csrf_hash, absolute_expires_at
-                FROM participant_form_sessions
-                WHERE session_hash = ? AND revoked_at IS NULL
-                  AND idle_expires_at > ? AND absolute_expires_at > ?
-                """.trimIndent()
-            ).use { statement ->
-                statement.setBytes(1, sha256(rawSessionToken))
-                statement.setObject(2, now)
-                statement.setObject(3, now)
-                statement.executeQuery().use { resultSet ->
-                    if (!resultSet.next()) return@use null
-                    val expectedCsrfHash = resultSet.getBytes("csrf_hash")
-                    if (requireCsrf && !MessageDigest.isEqual(expectedCsrfHash, sha256(mutationCsrfToken!!))) {
-                        return@use null
-                    }
-                    val absoluteExpiry = resultSet.getObject("absolute_expires_at", OffsetDateTime::class.java)
-                    val refreshedIdleExpiry = minOf(absoluteExpiry, now.plus(IDLE_LIFETIME))
-                    val sessionId = resultSet.getObject("session_id", UUID::class.java)
-                    DeletionStudyFence.shared(connection, resultSet.getObject("study_id", UUID::class.java))
+                val cookieSession = loadSession(
+                    connection,
+                    "session_hash = ? AND revoked_at IS NULL AND absolute_expires_at > ?",
+                ) { statement ->
+                    statement.setBytes(1, sha256(rawSessionToken))
+                    statement.setObject(2, now)
+                }
+                val session = when {
+                    cookieSession == null -> null
+                    csrfHash == null || MessageDigest.isEqual(cookieSession.csrfHash, csrfHash) ->
+                        cookieSession.takeIf { it.idleExpiresAt.isAfter(now) }
+                    else -> loadSession(
+                        connection,
+                        """
+                        study_id = ? AND participant_id = ? AND csrf_hash = ? AND revoked_at IS NULL
+                          AND idle_expires_at > ? AND absolute_expires_at > ?
+                        """.trimIndent(),
+                    ) { statement ->
+                        statement.setObject(1, cookieSession.scope.studyId)
+                        statement.setString(2, cookieSession.scope.participantId)
+                        statement.setBytes(3, csrfHash)
+                        statement.setObject(4, now)
+                        statement.setObject(5, now)
+                    } ?: cookieSession.takeIf { !requireCsrf && it.idleExpiresAt.isAfter(now) }
+                }
+                session?.let {
+                    DeletionStudyFence.shared(connection, it.scope.studyId)
                     connection.prepareStatement(
                         "UPDATE participant_form_sessions SET last_seen_at = ?, idle_expires_at = ? WHERE session_id = ?"
                     ).use { update ->
                         update.setObject(1, now)
-                        update.setObject(2, refreshedIdleExpiry)
-                        update.setObject(3, sessionId)
+                        update.setObject(2, minOf(it.scope.absoluteExpiresAt, now.plus(IDLE_LIFETIME)))
+                        update.setObject(3, it.sessionId)
                         check(update.executeUpdate() == 1) { "Participant session refresh failed" }
                     }
-                    ParticipantFormAccessScope(
-                        accessCodeId = resultSet.getObject("access_code_id", UUID::class.java),
-                        studyId = resultSet.getObject("study_id", UUID::class.java),
-                        participantId = resultSet.getString("participant_id"),
-                        formKind = ParticipantFormKind.valueOf(resultSet.getString("form_kind")),
-                        resourceId = resultSet.getObject("resource_id", UUID::class.java),
-                        logicalDate = resultSet.getObject("logical_date", LocalDate::class.java),
-                        absoluteExpiresAt = absoluteExpiry,
-                    )
                 }
-            }
                 connection.commit()
-                scope
+                session?.scope
             } catch (failure: Exception) {
                 connection.rollback()
                 throw failure
@@ -649,6 +653,45 @@ public class ParticipantFormAccessService(
             }
         }
     }
+
+    private fun loadSession(
+        connection: Connection,
+        predicate: String,
+        bind: (PreparedStatement) -> Unit,
+    ): StoredSession? = connection.prepareStatement(
+        """
+        SELECT session_id, access_code_id, study_id, participant_id, form_kind, resource_id,
+               logical_date, csrf_hash, idle_expires_at, absolute_expires_at
+        FROM participant_form_sessions
+        WHERE $predicate
+        """.trimIndent()
+    ).use { statement ->
+        bind(statement)
+        statement.executeQuery().use { resultSet ->
+            if (!resultSet.next()) return@use null
+            StoredSession(
+                sessionId = resultSet.getObject("session_id", UUID::class.java),
+                csrfHash = resultSet.getBytes("csrf_hash"),
+                idleExpiresAt = resultSet.getObject("idle_expires_at", OffsetDateTime::class.java),
+                scope = ParticipantFormAccessScope(
+                    accessCodeId = resultSet.getObject("access_code_id", UUID::class.java),
+                    studyId = resultSet.getObject("study_id", UUID::class.java),
+                    participantId = resultSet.getString("participant_id"),
+                    formKind = ParticipantFormKind.valueOf(resultSet.getString("form_kind")),
+                    resourceId = resultSet.getObject("resource_id", UUID::class.java),
+                    logicalDate = resultSet.getObject("logical_date", LocalDate::class.java),
+                    absoluteExpiresAt = resultSet.getObject("absolute_expires_at", OffsetDateTime::class.java),
+                ),
+            )
+        }
+    }
+
+    private class StoredSession(
+        val sessionId: UUID,
+        val csrfHash: ByteArray,
+        val idleExpiresAt: OffsetDateTime,
+        val scope: ParticipantFormAccessScope,
+    )
 
     private fun loadExchangeableAccessCode(connection: Connection, tokenHash: ByteArray): StoredAccessCode? {
         return connection.prepareStatement(
