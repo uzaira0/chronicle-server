@@ -121,6 +121,8 @@ public open class ExportService(
             WHERE ${EXPORT_ID.name} = ? AND ${STUDY_ID.name} = ?
         """.trimIndent()
 
+        private const val DISABLE_IDLE_IN_TRANSACTION_TIMEOUT_SQL = "SET LOCAL idle_in_transaction_session_timeout = 0"
+
         private val LOCK_EXPORT_FOR_DOWNLOAD_SQL = """
             SELECT job.*,
                    EXISTS (
@@ -376,6 +378,10 @@ public open class ExportService(
             var primaryFailure: Exception? = null
             var exportStorageLock: AutoCloseable? = null
             try {
+                // The deletion fence below must hold for the whole copy, which runs no SQL; without this
+                // a download slower than the server's idle_in_transaction_session_timeout (60 s) loses its
+                // session, the final commit fails and the response is aborted mid-body.
+                connection.createStatement().use { it.execute(DISABLE_IDLE_IN_TRANSACTION_TIMEOUT_SQL) }
                 acquireExportStudyTransactionLock(connection, studyId)
                 val jobInfo = connection.prepareStatement(LOCK_EXPORT_FOR_DOWNLOAD_SQL).use { statement ->
                     statement.setObject(1, exportId)
@@ -722,6 +728,7 @@ public open class ExportService(
                 acquireExportStudyLock(connection, claim.studyId)
                 try {
                     connection.autoCommit = false
+                    connection.createStatement().use { it.execute(DISABLE_IDLE_IN_TRANSACTION_TIMEOUT_SQL) }
                     val revoked = connection.prepareStatement(LOCK_EXPORT_FOR_COMPLETION_SQL).use { statement ->
                         statement.setObject(1, claim.exportId)
                         statement.setObject(2, claim.studyId)

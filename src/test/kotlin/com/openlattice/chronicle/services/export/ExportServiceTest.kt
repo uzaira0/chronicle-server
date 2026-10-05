@@ -94,6 +94,39 @@ class ExportServiceTest {
     }
 
     @Test
+    fun generationDisablesIdleTransactionTimeoutBeforeAWriterExceedsTheDatabaseIdleLimit() {
+        val studyId = UUID.randomUUID()
+        val exportId = UUID.randomUUID()
+        val timeoutDisabled = AtomicBoolean()
+        `when`(mockStatement.execute("SET LOCAL idle_in_transaction_session_timeout = 0")).thenAnswer {
+            timeoutDisabled.set(true); true
+        }
+        val data = Iterable {
+            object : Iterator<Map<String, Any>> {
+                var pending = true
+                override fun hasNext(): Boolean {
+                    if (pending && !timeoutDisabled.get()) throw SQLException("idle transaction terminated", "08006")
+                    return pending
+                }
+                override fun next(): Map<String, Any> { pending = false; return mapOf("title" to "value") }
+            }
+        }
+        org.mockito.kotlin.whenever(downloadManager.getParticipantsUsageEventsData(
+            org.mockito.kotlin.any(), org.mockito.kotlin.any(), org.mockito.kotlin.any(), org.mockito.kotlin.any()))
+            .thenReturn(data)
+        `when`(mockRs.next()).thenReturn(true)
+        `when`(mockRs.getBoolean(1)).thenReturn(true)
+        try {
+            service.executeExport(exportId, studyId, ExportRequest(dataTypes = setOf(ParticipantDataType.UsageEvents), format = ExportFormat.CSV))
+            assertTrue(timeoutDisabled.get())
+            verify(webhookService).enqueueEvent(org.mockito.kotlin.eq(mockConnection), org.mockito.kotlin.eq(studyId),
+                org.mockito.kotlin.eq(WebhookEventType.EXPORT_COMPLETED), org.mockito.kotlin.any())
+        } finally {
+            ExportFileWriter.deleteExportArtifactsForErasure(exportId, null)
+        }
+    }
+
+    @Test
     fun `study visible export failures contain only safe categories and correlation references`() {
         val failures = listOf(
             SQLException(
@@ -716,5 +749,21 @@ class ExportServiceTest {
 
         val os = java.io.ByteArrayOutputStream()
         service.streamExportFile(UUID.randomUUID(), UUID.randomUUID(), "user-1", os)
+    }
+
+    // Regression V-19: the download transaction holds the deletion fence while the file copy runs
+    // no SQL, so Postgres' 60 s idle_in_transaction_session_timeout killed every slow download.
+    @Test
+    fun testStreamExportFileDisablesIdleInTransactionTimeoutBeforeTakingTheFence() {
+        `when`(mockRs.next()).thenReturn(false)
+
+        runCatching {
+            service.streamExportFile(UUID.randomUUID(), UUID.randomUUID(), "user-1", java.io.ByteArrayOutputStream())
+        }
+
+        val order = Mockito.inOrder(mockConnection, mockStatement)
+        order.verify(mockConnection).autoCommit = false
+        order.verify(mockStatement).execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+        order.verify(mockConnection).prepareStatement(kAnyString())
     }
 }
