@@ -479,7 +479,7 @@ tasks.withType(Test) {
     systemProperty 'chronicle.export.maxTotalBytes',
             System.getProperty('chronicle.playwright.backend', 'false') == 'true'
                     ? '8589934592'
-                    : '805306368'
+                    : '2147483648'
     systemProperty 'chronicle.playwright.backend',
             System.getProperty('chronicle.playwright.backend', 'false')
     // Gradle system properties are not inherited by the forked test JVM. Forward

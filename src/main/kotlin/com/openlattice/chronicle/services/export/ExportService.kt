@@ -804,7 +804,7 @@ public open class ExportService(
      * independent server replicas cannot each admit the full shared volume.
      */
     internal fun reserveExportCapacity(claim: ClaimedExport): Boolean {
-        val requestedBytes = ExportFileWriter.defaultCapacityReservationBytes
+        val requestedBytes = ExportFileWriter.reservationBytes(claim.format, ExportFileWriter.defaultCapacityReservationBytes)
         return RLSRequestContext.withSystemContext {
             storageResolver.getPlatformStorage().connection.use { connection ->
                 val previousAutoCommit = connection.autoCommit

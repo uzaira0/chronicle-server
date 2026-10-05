@@ -5761,12 +5761,21 @@ class FlywayMigrationCorpusTest {
             }
         }
 
-        val exportService = ExportService(
+        fun newWorker() = object : ExportService(
             storageResolver,
             Mockito.mock(DataDownloadManager::class.java),
             Mockito.mock(HazelcastIdGenerationService::class.java),
             Mockito.mock(WebhookService::class.java),
-        )
+        ) {
+            // Leave room for one reservation under the configured artifact budget.
+            override fun freshStorageCapacityForExportAdmission(): ExportStorageCapacity = ExportStorageCapacity(
+                usableBytes = Long.MAX_VALUE,
+                managedArtifactBytesAtSample = ExportFileWriter.maximumManagedArtifactBytes -
+                    ExportFileWriter.reservationBytes(request.format, ExportFileWriter.defaultCapacityReservationBytes),
+            )
+        }
+        val exportService = newWorker()
+        val secondWorker = newWorker()
         val firstClaim = ExportService.ClaimedExport(
             firstExportId,
             firstStudyId,
@@ -5797,13 +5806,13 @@ class FlywayMigrationCorpusTest {
                 ),
             )
             val overCapacity = assertThrows(ExportResourceLimitException::class.java) {
-                exportService.reserveExportCapacity(secondClaim)
+                secondWorker.reserveExportCapacity(secondClaim)
             }
             assertTrue(overCapacity.message.orEmpty().contains("managed artifact limit"))
 
             assertTrue(exportService.releaseExportCapacityReservation(firstClaim))
-            assertTrue(exportService.reserveExportCapacity(secondClaim))
-            assertTrue(exportService.releaseExportCapacityReservation(secondClaim))
+            assertTrue(secondWorker.reserveExportCapacity(secondClaim))
+            assertTrue(secondWorker.releaseExportCapacityReservation(secondClaim))
 
             getConnection().use { connection ->
                 connection.prepareStatement(
@@ -5819,8 +5828,9 @@ class FlywayMigrationCorpusTest {
             }
         } finally {
             exportService.releaseExportCapacityReservation(firstClaim)
-            exportService.releaseExportCapacityReservation(secondClaim)
+            secondWorker.releaseExportCapacityReservation(secondClaim)
             exportService.shutdown()
+            secondWorker.shutdown()
             getConnection().use { connection ->
                 connection.prepareStatement(
                     "DELETE FROM export_jobs WHERE export_id IN (?, ?)",

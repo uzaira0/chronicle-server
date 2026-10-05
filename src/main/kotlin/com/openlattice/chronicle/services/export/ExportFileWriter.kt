@@ -9,6 +9,11 @@ import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.converters.PostgresDownloadWrapper
 import com.openlattice.chronicle.export.ExportFormat
 import com.openlattice.chronicle.observability.ChronicleMetrics
+import org.apache.poi.util.DefaultTempFileCreationStrategy
+import org.apache.poi.util.TempFile
+import org.apache.poi.xssf.streaming.GZIPSheetDataWriter
+import org.apache.poi.xssf.streaming.SheetDataWriter
+import java.util.zip.GZIPOutputStream
 import org.apache.poi.xssf.streaming.SXSSFWorkbook
 import org.slf4j.LoggerFactory
 import java.io.BufferedOutputStream
@@ -69,6 +74,19 @@ public class ExportFileWriter private constructor() {
             PosixFilePermissions.fromString("rw-------")
 
         public val EXPORT_DIR: Path = initializeExportDirectory()
+
+        // SXSSF spills every sheet's XML to POI temp files until the workbook is written. Under the
+        // default java.io.tmpdir (the backend's 256 MiB scratch tmpfs) a large Excel export ran out
+        // of space long before its row or byte budget, so those files go to the export volume.
+        internal val POI_TEMP_DIR: Path = Files.createDirectories(
+            EXPORT_DIR.resolve(".poi"),
+            PosixFilePermissions.asFileAttribute(EXPORT_DIRECTORY_PERMISSIONS),
+        ).also { dir ->
+            // The tmpfs used to forget a crashed export's spill files; this volume does not. No export
+            // runs before this class initializes, so anything here is left over.
+            // Assumes one backend per export volume, which the self-host and prod stacks are.
+            Files.list(dir).use { leftovers -> leftovers.forEach { Files.deleteIfExists(it) } }
+        }
         private val DEFAULT_LIMITS = ExportLimits(
             maxRows = positiveLongSetting("chronicle.export.maxRows", "CHRONICLE_EXPORT_MAX_ROWS", 1_000_000L),
             maxBytes = positiveLongSetting(
@@ -118,6 +136,8 @@ public class ExportFileWriter private constructor() {
         )
 
         init {
+            // POI's temp strategy is JVM-global; exports are its only user in this server.
+            TempFile.setTempFileCreationStrategy(DefaultTempFileCreationStrategy(POI_TEMP_DIR.toFile()))
             refreshStorageMetricsFromCache()
             capacityProbe.refreshAsync()
         }
@@ -147,7 +167,7 @@ public class ExportFileWriter private constructor() {
             val filePath = EXPORT_DIR.resolve(fileName)
             val budget = ExportBudget(DEFAULT_LIMITS)
 
-            withCapacityReservation(DEFAULT_LIMITS.maxBytes) {
+            withCapacityReservation(reservationBytes(format, DEFAULT_LIMITS.maxBytes)) {
                 val attemptId = UUID.randomUUID()
                 writeAtomically(filePath, workingPath(filePath, attemptId)) { workingPath ->
                     when (format) {
@@ -169,7 +189,7 @@ public class ExportFileWriter private constructor() {
             attemptId: java.util.UUID = java.util.UUID.randomUUID(),
             limits: ExportLimits = DEFAULT_LIMITS,
         ): ExportWriteResult {
-            return withCapacityReservation(limits.maxBytes) {
+            return withCapacityReservation(reservationBytes(format, limits.maxBytes)) {
                 val budget = ExportBudget(limits)
                 val filePath = attemptFinalPath(exportId, format, attemptId)
                 when (format) {
@@ -316,12 +336,12 @@ public class ExportFileWriter private constructor() {
             budget: ExportBudget,
         ) {
             val rows = ClosingIterator(listOf(data))
-            val workbook = SXSSFWorkbook(100)
+            val workbook = newStreamingWorkbook(budget.spillBudget())
             try {
                 val wb = workbook
                 val sheet = wb.createSheet("Export")
                 if (!rows.hasNext()) {
-                    boundedOutput(filePath, budget).use { wb.write(it) }
+                    boundedOutput(filePath, budget).use { wb.writeAvoidingTempFiles(it) }
                     return
                 }
                 val first = budget.accept(rows.next())
@@ -333,7 +353,7 @@ public class ExportFileWriter private constructor() {
                 while (rows.hasNext()) {
                     writeExcelRow(sheet, rowIndex++, columns, budget.accept(rows.next()))
                 }
-                boundedOutput(filePath, budget).use { wb.write(it) }
+                boundedOutput(filePath, budget).use { wb.writeAvoidingTempFiles(it) }
             } finally {
                 rows.close()
                 try {
@@ -350,7 +370,7 @@ public class ExportFileWriter private constructor() {
             filePath: Path,
             budget: ExportBudget,
         ) {
-            val workbook = SXSSFWorkbook(100)
+            val workbook = newStreamingWorkbook(budget.spillBudget())
             try {
                 val wb = workbook
                 for ((sheetName, data) in dataByType) {
@@ -380,7 +400,7 @@ public class ExportFileWriter private constructor() {
                         rows.close()
                     }
                 }
-                boundedOutput(filePath, budget).use { wb.write(it) }
+                boundedOutput(filePath, budget).use { wb.writeAvoidingTempFiles(it) }
             } finally {
                 try {
                     workbook.close()
@@ -389,6 +409,20 @@ public class ExportFileWriter private constructor() {
                 }
             }
         }
+
+        // Compressed temp sheets: repetitive export XML shrinks by an order of magnitude on disk.
+        internal fun newStreamingWorkbook(): SXSSFWorkbook = newStreamingWorkbook(ExportBudget(DEFAULT_LIMITS))
+
+        private fun newStreamingWorkbook(spillBudget: ExportBudget): SXSSFWorkbook =
+            object : SXSSFWorkbook(null, 100, true) {
+                override fun createSheetDataWriter(): SheetDataWriter = object : GZIPSheetDataWriter() {
+                    override fun decorateOutputStream(stream: FileOutputStream): OutputStream =
+                        GZIPOutputStream(BoundedOutputStream(stream, spillBudget))
+                }
+            }
+
+        internal fun reservationBytes(format: ExportFormat, maximumBytes: Long): Long =
+            if (format == ExportFormat.EXCEL) saturatingAdd(maximumBytes, maximumBytes) else maximumBytes
 
         private fun writeExcelRow(
             sheet: org.apache.poi.ss.usermodel.Sheet,
@@ -708,8 +742,18 @@ public class ExportFileWriter private constructor() {
             }
         }
 
-        private fun managedArtifactBytes(): Long =
-            Files.list(EXPORT_DIR).use { paths ->
+        // Running Excel exports spill to POI_TEMP_DIR on the same volume; count it with the artifacts.
+        internal fun managedArtifactBytes(): Long = saturatingAdd(
+            regularFileBytes(EXPORT_DIR),
+            try {
+                regularFileBytes(POI_TEMP_DIR)
+            } catch (_: java.nio.file.NoSuchFileException) {
+                0L
+            },
+        )
+
+        private fun regularFileBytes(dir: Path): Long =
+            Files.list(dir).use { paths ->
                 paths
                     .filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
                     .mapToLong { path ->
@@ -751,6 +795,8 @@ public class ExportFileWriter private constructor() {
             private val startedAt = Instant.now()
             var rowCount: Long = 0
                 private set
+
+            fun spillBudget(): ExportBudget = ExportBudget(limits)
 
             fun <T> accept(row: T): T {
                 checkRuntime()

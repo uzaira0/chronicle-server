@@ -30,6 +30,32 @@ import java.util.concurrent.TimeUnit
 class ExportFileWriterTest {
 
     @Test
+    fun excelSpillBudgetAbortsDuringGenerationAndCleansPartials() {
+        val id = UUID.randomUUID()
+        var generated = 0
+        val random = java.util.Random(42)
+        val data = Iterable {
+            object : Iterator<Map<String, Any>> {
+                override fun hasNext() = generated < 2000
+                override fun next(): Map<String, Any> {
+                    generated++
+                    val bytes = ByteArray(8192).also(random::nextBytes)
+                    return mapOf("title" to java.util.Base64.getEncoder().encodeToString(bytes))
+                }
+            }
+        }
+        assertThrows(ExportResourceLimitException::class.java) {
+            ExportFileWriter.writeMultiDataTypeExport(mapOf("AudioContent" to data), ExportFormat.EXCEL, id,
+                limits = ExportLimits(10_000, 16_384, Duration.ofMinutes(1)))
+        }
+        assertTrue("spill budget must stop row generation, generated=$generated", generated < 2000)
+        Files.list(ExportFileWriter.POI_TEMP_DIR).use { assertEquals(0L, it.count()) }
+        Files.list(ExportFileWriter.EXPORT_DIR).use {
+            assertEquals(0L, it.filter { path -> path.fileName.toString().startsWith(id.toString()) }.count())
+        }
+    }
+
+    @Test
     fun testExportDirectoryConfigurationIsRequired() {
         assertThrows(IllegalStateException::class.java) {
             ExportFileWriter.resolveConfiguredExportDirectory(null, " ")
@@ -540,6 +566,38 @@ class ExportFileWriterTest {
                     closed = true
                 }
             }
+        }
+    }
+
+    // Regression V-24/V-31: SXSSF spilled uncompressed sheet XML into java.io.tmpdir (the 256 MiB
+    // scratch tmpfs), so a large Excel export hit ENOSPC far below its row and byte limits.
+    @Test
+    fun testExcelTempSheetsAreCompressedOnTheExportVolume() {
+        ExportFileWriter.newStreamingWorkbook().use { workbook ->
+            try {
+                assertTrue(workbook.isCompressTempFiles)
+            } finally {
+                workbook.dispose()
+            }
+        }
+        val probe = org.apache.poi.util.TempFile.createTempFile("probe", ".tmp").toPath()
+        try {
+            assertEquals(ExportFileWriter.EXPORT_DIR.resolve(".poi"), probe.parent)
+        } finally {
+            Files.deleteIfExists(probe)
+        }
+    }
+
+    // Excel spill files take space on the export volume, so capacity accounting must see them.
+    @Test
+    fun testManagedArtifactBytesCountsPoiSpillFiles() {
+        val before = ExportFileWriter.managedArtifactBytes()
+        val spill = Files.createTempFile(ExportFileWriter.POI_TEMP_DIR, "spill", ".tmp")
+        try {
+            Files.write(spill, ByteArray(4096))
+            assertEquals(before + 4096, ExportFileWriter.managedArtifactBytes())
+        } finally {
+            Files.deleteIfExists(spill)
         }
     }
 }
