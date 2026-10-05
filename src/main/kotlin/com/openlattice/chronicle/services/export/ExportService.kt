@@ -326,12 +326,31 @@ public open class ExportService(
                 val rs = ps.executeQuery()
                 check(rs.next()) { "Export job $exportId not found for study $studyId" }
                 val createdBy = rs.getString(CREATED_BY.name)
-                check(createdBy == requestingUserId) {
-                    "Export job $exportId was not created by requesting user"
-                }
+                requireDownloadOwner(connection, studyId, createdBy, requestingUserId)
                 return mapExportJobInfo(rs)
             }
         }
+    }
+
+    private fun requireDownloadOwner(connection: Connection, studyId: UUID, createdBy: String?, requestingUserId: String) {
+        val key = com.openlattice.chronicle.authorization.ApiKeyStudyAuthority.current()
+        val requester = if (key != null) {
+            if (key.studyId != studyId || requestingUserId != "apikey:${key.keyId}" || key.creatorUserId == null)
+                throw org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN)
+            key.creatorUserId
+        } else requestingUserId
+        val owner = if (createdBy?.startsWith("apikey:") == true) {
+            val id = runCatching { UUID.fromString(createdBy.substringAfter(':')) }.getOrNull()
+                ?: throw org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN)
+            connection.prepareStatement("SELECT created_by FROM api_keys WHERE key_id = ? AND study_id = ? AND participant_id IS NULL")
+                .use { statement ->
+                    statement.setObject(1, id)
+                    statement.setObject(2, studyId)
+                    statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+        } else createdBy
+        if (owner == null || requester != owner)
+            throw org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN)
     }
 
     public fun listExports(studyId: UUID, limit: Int = 50, offset: Int = 0): List<ExportJobInfo> {
@@ -363,9 +382,7 @@ public open class ExportService(
                     statement.setObject(2, studyId)
                     statement.executeQuery().use { resultSet ->
                         check(resultSet.next()) { "Export job $exportId not found for study $studyId" }
-                        check(resultSet.getString(CREATED_BY.name) == requestingUserId) {
-                            "Export job $exportId was not created by requesting user"
-                        }
+                        requireDownloadOwner(connection, studyId, resultSet.getString(CREATED_BY.name), requestingUserId)
                         check(!resultSet.getBoolean("revoked")) {
                             "Export job $exportId has been revoked by a data-erasure request"
                         }

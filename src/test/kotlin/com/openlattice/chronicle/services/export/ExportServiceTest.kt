@@ -44,6 +44,56 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ExportServiceTest {
 
     @Test
+    fun rotatedKeyAndCreatingHumanCanDownloadWhileOtherUsersAndStudiesAreForbidden() {
+        val studyId = UUID.randomUUID()
+        val exportId = UUID.randomUUID()
+        val oldKey = UUID.randomUUID()
+        val replacement = UUID.randomUUID()
+        val path = ExportFileWriter.writeMultiDataTypeExport(mapOf("usage" to listOf(mapOf("title" to "safe"))),
+            ExportFormat.CSV, exportId).path
+        val ownerRows = Mockito.mock(ResultSet::class.java)
+        val ownerStatement = Mockito.mock(PreparedStatement::class.java)
+        `when`(mockConnection.prepareStatement(org.mockito.kotlin.argThat { contains("FROM api_keys") })).thenReturn(ownerStatement)
+        `when`(ownerStatement.executeQuery()).thenReturn(ownerRows)
+        `when`(ownerRows.next()).thenReturn(true)
+        `when`(ownerRows.getString(1)).thenReturn("creating-human")
+        `when`(mockRs.next()).thenReturn(true)
+        `when`(mockRs.getString("created_by")).thenReturn("apikey:$oldKey")
+        `when`(mockRs.getObject("export_id", UUID::class.java)).thenReturn(exportId)
+        `when`(mockRs.getObject("study_id", UUID::class.java)).thenReturn(studyId)
+        `when`(mockRs.getObject("created_at", OffsetDateTime::class.java)).thenReturn(OffsetDateTime.now())
+        `when`(mockRs.getString("status")).thenReturn("COMPLETED")
+        `when`(mockRs.getString("format")).thenReturn("CSV")
+        `when`(mockRs.getString("file_path")).thenReturn(path.toString())
+        try {
+            for (user in listOf("creating-human", "apikey:$replacement")) {
+                if (user.startsWith("apikey:")) org.springframework.security.core.context.SecurityContextHolder.getContext().authentication =
+                    com.openlattice.chronicle.filters.ApiKeyAuthenticationToken(user, replacement, studyId, null, null,
+                        com.openlattice.chronicle.apikey.ApiKeyScope.READ_ONLY, emptyList(), creatorUserId = "creating-human")
+                else org.springframework.security.core.context.SecurityContextHolder.clearContext()
+                val output = java.io.ByteArrayOutputStream()
+                service.streamExportFile(studyId, exportId, user, output)
+                assertTrue(output.toString().contains("safe"))
+            }
+            org.springframework.security.core.context.SecurityContextHolder.clearContext()
+            val forbidden = assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+                service.streamExportFile(studyId, exportId, "another-user", java.io.ByteArrayOutputStream())
+            }
+            assertEquals(403, forbidden.statusCode.value())
+            org.springframework.security.core.context.SecurityContextHolder.getContext().authentication =
+                com.openlattice.chronicle.filters.ApiKeyAuthenticationToken("apikey:$replacement", replacement, UUID.randomUUID(),
+                    null, null, com.openlattice.chronicle.apikey.ApiKeyScope.READ_ONLY, emptyList(), creatorUserId = "creating-human")
+            val otherStudy = assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+                service.streamExportFile(studyId, exportId, "apikey:$replacement", java.io.ByteArrayOutputStream())
+            }
+            assertEquals(403, otherStudy.statusCode.value())
+        } finally {
+            org.springframework.security.core.context.SecurityContextHolder.clearContext()
+            Files.deleteIfExists(path)
+        }
+    }
+
+    @Test
     fun `study visible export failures contain only safe categories and correlation references`() {
         val failures = listOf(
             SQLException(
@@ -628,7 +678,7 @@ class ExportServiceTest {
         service.getExportStatusForDownload(UUID.randomUUID(), UUID.randomUUID(), "user-1")
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test(expected = org.springframework.web.server.ResponseStatusException::class)
     fun testGetExportStatusForDownloadThrowsWhenWrongUser() {
         val now = OffsetDateTime.now(ZoneOffset.UTC)
         `when`(mockRs.next()).thenReturn(true)
