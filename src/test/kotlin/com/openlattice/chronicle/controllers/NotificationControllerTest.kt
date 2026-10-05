@@ -20,6 +20,8 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
 import org.mockito.Mockito.verify
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
 import java.util.*
 
 class NotificationControllerTest {
@@ -113,14 +115,18 @@ class NotificationControllerTest {
     // --- verifyResearcherPhoneNumber ---
 
     @Test
-    fun testVerifyResearcherPhoneNumberDelegatesToService() {
+    fun testVerifyResearcherPhoneNumberFailsClosedWithoutMarkingVerified() {
         val studyId = UUID.randomUUID()
         val principalId = "user-123"
         val phoneNumber = "+15551234567"
         val confirmationCode = "123456"
 
-        controller.verifyResearcherPhoneNumber(studyId, principalId, phoneNumber, confirmationCode)
-        verify(notificationService).verifyResearcherPhoneNumber(principalId, phoneNumber)
+        val failure = runCatching {
+            controller.verifyResearcherPhoneNumber(studyId, principalId, phoneNumber, confirmationCode)
+        }.exceptionOrNull()
+        assertTrue("no code is ever issued, so verification must be refused", failure is ResponseStatusException)
+        assertEquals(HttpStatus.NOT_IMPLEMENTED, (failure as ResponseStatusException).statusCode)
+        Mockito.verify(notificationService, Mockito.never()).verifyResearcherPhoneNumber(kAnyString(), kAnyString())
     }
 
     // --- isResearcherPhoneNumberVerified ---

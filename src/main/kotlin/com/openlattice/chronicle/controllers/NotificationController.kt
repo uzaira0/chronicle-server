@@ -111,7 +111,9 @@ public open class NotificationController @Inject constructor(
     ) {
         ensureWriteAccess(AclKey(studyId))
         ensureSelfOrAdmin(principalId)
-        notificationService.verifyResearcherPhoneNumber(principalId, phoneNumber)
+        // Nothing issues or sends a code yet, so no submitted code can prove the number: fail closed rather
+        // than mark it verified.
+        throw ResponseStatusException(HttpStatus.NOT_IMPLEMENTED, Messages.get("error.notification.phoneVerificationUnavailable"))
     }
 
     @GetMapping(
