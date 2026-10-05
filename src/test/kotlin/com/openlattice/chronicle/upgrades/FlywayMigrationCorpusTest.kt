@@ -3303,6 +3303,110 @@ class FlywayMigrationCorpusTest {
     }
 
     @Test
+    fun testExpiredClaimEventuallyCancelsAnAbandonedStoppingJob() {
+        val jobId = UUID.randomUUID()
+        val principalId = UUID.randomUUID()
+        val jobService = JobService(
+            Mockito.mock(HazelcastIdGenerationService::class.java),
+            storageResolver,
+            Mockito.mock(AuditingManager::class.java),
+        )
+        try {
+            getConnection().use { connection ->
+                connection.prepareStatement(
+                    """
+                    INSERT INTO jobs (
+                        job_id, securable_principal_id, principal_type, principal_id,
+                        status, definition, message, deleted_rows, updated_at,
+                        completed_at, lease_token, lease_expires_at
+                    ) VALUES (
+                        ?, ?, 'USER', 'stopping-expired-claim-test', 'RUNNING',
+                        '{"@type":"EmptyJobDefinition"}'::jsonb, '', 0,
+                        now() - interval '10 minutes', 'infinity', ?, now() - interval '1 minute'
+                    )
+                    """.trimIndent(),
+                ).use { statement ->
+                    statement.setObject(1, jobId)
+                    statement.setObject(2, principalId)
+                    statement.setObject(3, UUID.randomUUID())
+                    assertEquals(1, statement.executeUpdate())
+                }
+            }
+
+            jobService.tryAndAcquireTaskForExecutor()
+            val stopping = awaitJobStatus(jobId, JobStatus.STOPPING.name)
+            assertFalse(stopping.completedAtIsFinite)
+            getConnection().use { connection ->
+                connection.prepareStatement("UPDATE jobs SET updated_at = now() - interval '6 minutes' WHERE job_id = ?")
+                    .use { statement ->
+                        statement.setObject(1, jobId)
+                        assertEquals(1, statement.executeUpdate())
+                    }
+            }
+
+            jobService.tryAndAcquireTaskForExecutor()
+            val canceled = awaitJobStatus(jobId, JobStatus.CANCELED.name)
+            assertTrue(canceled.completedAtIsFinite)
+            assertNull(canceled.leaseToken)
+            assertTrue(canceled.message.orEmpty().contains("reconciliation window"))
+        } finally {
+            jobService.shutdown()
+            getConnection().use { connection ->
+                connection.prepareStatement("DELETE FROM jobs WHERE job_id = ?").use { statement ->
+                    statement.setObject(1, jobId)
+                    statement.executeUpdate()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun testAbandonedUncertainStoppingJobReachesTerminalState() {
+        val jobId = UUID.randomUUID()
+        val principalId = UUID.randomUUID()
+        val jobService = JobService(
+            Mockito.mock(HazelcastIdGenerationService::class.java),
+            storageResolver,
+            Mockito.mock(AuditingManager::class.java),
+        )
+        try {
+            getConnection().use { connection ->
+                connection.prepareStatement(
+                    """
+                    INSERT INTO jobs (
+                        job_id, securable_principal_id, principal_type, principal_id,
+                        status, definition, message, deleted_rows, updated_at,
+                        completed_at, lease_token, lease_expires_at
+                    ) VALUES (
+                        ?, ?, 'USER', 'stopping-uncertain-test', 'STOPPING',
+                        '{"@type":"EmptyJobDefinition"}'::jsonb, 'Execution outcome requires reconciliation', 0,
+                        now() - interval '6 minutes', 'infinity', NULL, NULL
+                    )
+                    """.trimIndent(),
+                ).use { statement ->
+                    statement.setObject(1, jobId)
+                    statement.setObject(2, principalId)
+                    assertEquals(1, statement.executeUpdate())
+                }
+            }
+
+            jobService.tryAndAcquireTaskForExecutor()
+            val canceled = awaitJobStatus(jobId, JobStatus.CANCELED.name)
+            assertTrue(canceled.completedAtIsFinite)
+            assertNull(canceled.leaseToken)
+            assertTrue(canceled.message.orEmpty().contains("Execution outcome requires reconciliation"))
+        } finally {
+            jobService.shutdown()
+            getConnection().use { connection ->
+                connection.prepareStatement("DELETE FROM jobs WHERE job_id = ?").use { statement ->
+                    statement.setObject(1, jobId)
+                    statement.executeUpdate()
+                }
+            }
+        }
+    }
+
+    @Test
     fun testActiveJobHoldsLeaseFenceUntilTerminalCommit() {
         val jobId = UUID.randomUUID()
         val principalId = UUID.randomUUID()

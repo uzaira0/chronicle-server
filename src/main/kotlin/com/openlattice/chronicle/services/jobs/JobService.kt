@@ -180,6 +180,26 @@ public open class JobService(
             WHERE job.${JOB_ID.name} = expired_jobs.${JOB_ID.name}
         """.trimIndent()
 
+        private val CANCEL_ABANDONED_STOPPING_JOBS_SQL = """
+            UPDATE ${JOBS.name}
+            SET ${STATUS.name} = '${JobStatus.CANCELED.name}',
+                ${PostgresColumns.UPDATED_AT.name} = now(),
+                ${PostgresColumns.COMPLETED_AT.name} = now(),
+                ${MESSAGE.name} = left(
+                    CASE
+                        WHEN COALESCE(${MESSAGE.name}, '') = ''
+                            THEN 'Unreconciled STOPPING job canceled after the reconciliation window'
+                        ELSE ${MESSAGE.name}
+                            || '; unreconciled STOPPING job canceled after the reconciliation window'
+                    END,
+                    4096
+                ),
+                lease_token = NULL,
+                lease_expires_at = NULL
+            WHERE ${STATUS.name} = '${JobStatus.STOPPING.name}'
+              AND ${PostgresColumns.UPDATED_AT.name} <= now() - interval '5 minutes'
+        """.trimIndent()
+
         private const val MAX_AVAILABLE = 4
         private const val FINISHED_JOB_TTL = "'7d'"
         private const val MAX_FAILURE_MESSAGE_LENGTH = 4_096
@@ -492,11 +512,15 @@ public open class JobService(
         try {
             storageResolver.getPlatformStorage().connection.use { connection ->
                 val expired = connection.prepareStatement(EXPIRE_ABANDONED_JOBS_SQL).executeUpdate()
+                val abandoned = connection.prepareStatement(CANCEL_ABANDONED_STOPPING_JOBS_SQL).executeUpdate()
                 if (expired > 0) {
                     logger.warn(
                         "Marked {} Chronicle jobs for reconciliation because their worker leases expired.",
                         expired,
                     )
+                }
+                if (abandoned > 0) {
+                    logger.warn("Canceled {} Chronicle jobs left in STOPPING past the reconciliation window.", abandoned)
                 }
             }
         } catch (ex: Exception) {
