@@ -66,6 +66,23 @@ class AppDataUploadServiceTest {
     )
 
     @Test
+    fun malformedValuesAreRejectedBeforeAnyStorageOrStatsWork() {
+        val valid = usageEvent()
+        val invalid = listOf(
+            valid.copy(appPackageName = "invalid\u0000package"), valid.copy(activityClass = "invalid\u0000activity"),
+            valid.copy(applicationLabel = "invalid\u0000label"), valid.copy(user = "invalid\u0000user"),
+            valid.copy(interactionType = "invalid\u0000type"), valid.copy(timezone = "Invalid/Zone"),
+            valid.copy(timestamp = OffsetDateTime.MAX), valid.copy(collectedAt = OffsetDateTime.MIN),
+        )
+        for (event in invalid) {
+            assertThrows(IllegalArgumentException::class.java) {
+                service.uploadAndroidUsageEvents(UUID.randomUUID(), "p1", UUID.randomUUID(), listOf(event))
+            }
+        }
+        Mockito.verifyNoInteractions(storageResolver, studyManager)
+    }
+
+    @Test
     fun uploadAcknowledgesOnlyTheEventsItActuallyStored() {
         // filter() silently drops events whose package name contains '[' (and events with no
         // date logged). The service used to return data.size regardless, telling the client

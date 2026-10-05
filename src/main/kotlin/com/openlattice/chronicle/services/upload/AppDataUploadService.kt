@@ -134,6 +134,21 @@ public open class AppDataUploadService(
         uploadedAt: OffsetDateTime,
     ): Int {
         require(data.size <= 10_000) { "Upload batch too large: ${data.size} events (max 10,000)" }
+        require('\u0000' !in participantId) { "Participant id contains an unsupported character" }
+        data.forEach { event ->
+            require(listOf(event.appPackageName, event.activityClass, event.interactionType, event.timezone,
+                event.user, event.applicationLabel, event.participantId).filterNotNull().none { '\u0000' in it }) {
+                "Upload text contains an unsupported character"
+            }
+            try {
+                java.time.ZoneId.of(event.timezone)
+            } catch (_: java.time.DateTimeException) {
+                throw IllegalArgumentException("Upload time zone is invalid")
+            }
+            require(listOfNotNull(event.timestamp, event.collectedAt, uploadedAt).all { it.year in 1..9999 }) {
+                "Upload timestamp is outside the supported range"
+            }
+        }
         val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
         StopWatch(
             log = "logging ${data.size} entries for studyId = {}, participantRef = {}, dataSourceId = {}",

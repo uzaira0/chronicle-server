@@ -714,6 +714,8 @@ public open class StudyService(
 
     override fun registerParticipant(connection: Connection, studyId: UUID, participant: Participant): UUID {
         com.openlattice.chronicle.validation.validateParticipantIdNotPii(participant.participantId)
+        // Enrollment codes, form links and uploads all require this format; reject it here, not after registration.
+        com.openlattice.chronicle.util.validateParticipantId(participant.participantId)
         studyLimitsMgr.reserveEnrollmentCapacity(connection, studyId)
         val candidateId = candidateService.registerCandidate(connection, participant.candidate)
         enrollmentService.registerParticipant(
