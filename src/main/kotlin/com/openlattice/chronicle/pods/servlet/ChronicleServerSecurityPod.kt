@@ -429,7 +429,7 @@ public open class ChronicleServerSecurityPod {
 
         // JWT blocklist filter: reject revoked tokens after authentication
         if (jwtBlocklist != null) {
-            http.addFilterAfter(JwtBlocklistFilter(jwtBlocklist!!), BearerTokenAuthenticationFilter::class.java)
+            http.addFilterAfter(JwtBlocklistFilter(jwtBlocklist!!, java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes)), BearerTokenAuthenticationFilter::class.java)
             LoggerFactory.getLogger(ChronicleServerSecurityPod::class.java)
                 .info("JwtBlocklistFilter registered — token revocation is ENABLED")
         } else {

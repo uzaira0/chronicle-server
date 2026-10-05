@@ -3,6 +3,11 @@ package com.openlattice.chronicle.controllers
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.openlattice.chronicle.audit.AuditAction
 import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.authorization.JwtBlocklist
+import com.openlattice.chronicle.filters.JwtBlocklistFilter
+import jakarta.servlet.http.Cookie
+import org.springframework.mock.web.MockFilterChain
+import org.springframework.security.core.context.SecurityContextHolder
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
 import com.openlattice.chronicle.services.auth.RefreshTokenService
@@ -51,6 +56,10 @@ class AuthTokenControllerTest {
         Mockito.`when`(it.activeProfiles).thenReturn(emptyArray())
     }
     private val auditService = Mockito.mock(AuditService::class.java)
+    private val jwtBlocklist = Mockito.mock(JwtBlocklist::class.java).also {
+        Mockito.`when`(it.isSessionActive(org.mockito.kotlin.any(), org.mockito.kotlin.any(), org.mockito.kotlin.any(),
+            org.mockito.kotlin.any(), org.mockito.kotlin.any())).thenReturn(true)
+    }
     private val controller = AuthTokenController(
         jwtDecoder,
         chronicleAuthConfiguration,
@@ -59,6 +68,7 @@ class AuthTokenControllerTest {
         refreshTokenService,
         environment,
         auditService,
+        jwtBlocklist,
     )
 
     @Test
@@ -166,6 +176,7 @@ class AuthTokenControllerTest {
             refreshTokenService,
             environment,
             auditService,
+            jwtBlocklist,
         )
         val jwt = createJwt("testing-token", "user-789")
         Mockito.`when`(userListingService.issueTestingToken("test-user")).thenReturn("testing-token")
@@ -357,6 +368,47 @@ class AuthTokenControllerTest {
     }
 
     @Test
+    fun logoutRejectsCapturedCookieAndBearerReplay() {
+        val revoked = mutableSetOf<String>()
+        Mockito.doAnswer { revoked.add(it.getArgument(0)); true }
+            .`when`(jwtBlocklist).blockToken(org.mockito.kotlin.any(), org.mockito.kotlin.any())
+        Mockito.doAnswer { revoked.add(it.getArgument(0)); true }
+            .`when`(jwtBlocklist).blockTokenByValue(org.mockito.kotlin.any(), org.mockito.kotlin.any())
+        Mockito.`when`(jwtBlocklist.isBlocked(org.mockito.kotlin.any())).thenAnswer { revoked.contains(it.getArgument(0)) }
+        Mockito.`when`(jwtBlocklist.isBlockedByValue(org.mockito.kotlin.any())).thenAnswer { revoked.contains(it.getArgument(0)) }
+        for (cookie in listOf(true, false)) {
+            val token = "captured-$cookie"
+            val builder = Jwt.withTokenValue(token).header("alg", "HS256").subject("researcher")
+                .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(3600))
+            if (cookie) builder.claim("jti", "session-$cookie")
+            val jwt = builder.build()
+            Mockito.`when`(jwtDecoder.decode(token)).thenReturn(jwt)
+            controller.setAuthCookie(mapOf("token" to token), MockHttpServletRequest(), MockHttpServletResponse())
+            val logout = MockHttpServletRequest().apply {
+                if (cookie) setCookies(Cookie(AuthTokenController.AUTH_COOKIE_NAME, token))
+                else addHeader("Authorization", "Bearer $token")
+            }
+            assertEquals(204, controller.logout(logout, MockHttpServletResponse()).statusCode.value())
+            for (replayAsCookie in listOf(true, false)) {
+                SecurityContextHolder.getContext().authentication = JwtAuthenticationToken(jwt)
+                try {
+                    val replay = MockHttpServletRequest("GET", "/chronicle/v3/studies").apply {
+                        if (replayAsCookie) setCookies(Cookie(AuthTokenController.AUTH_COOKIE_NAME, token))
+                        else addHeader("Authorization", "Bearer $token")
+                    }
+                    val response = MockHttpServletResponse()
+                    val chain = MockFilterChain()
+                    JwtBlocklistFilter(jwtBlocklist).doFilter(replay, response, chain)
+                    assertEquals("logged out token must be rejected", 401, response.status)
+                    assertNull(chain.request)
+                } finally {
+                    SecurityContextHolder.clearContext()
+                }
+            }
+        }
+    }
+
+    @Test
     fun testLogoutClearsBothCookies() {
         val request = MockHttpServletRequest()
         val response = MockHttpServletResponse()
@@ -385,6 +437,7 @@ class AuthTokenControllerTest {
         refreshTokenService,
         environment,
         auditService,
+        jwtBlocklist,
     )
 
     private fun createJwt(tokenValue: String, subject: String): Jwt {

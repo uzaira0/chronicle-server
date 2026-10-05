@@ -16,7 +16,9 @@ import org.springframework.web.filter.OncePerRequestFilter
  * control, so accepting a token whose revocation state cannot be checked would
  * allow explicitly revoked credentials during a blocklist outage.
  */
-public class JwtBlocklistFilter(private val jwtBlocklist: JwtBlocklist) : OncePerRequestFilter() {
+public class JwtBlocklistFilter(private val jwtBlocklist: JwtBlocklist,
+    private val idleWindow: java.time.Duration = java.time.Duration.ofMinutes(15),
+    private val clock: java.time.Clock = java.time.Clock.systemUTC()) : OncePerRequestFilter() {
 
     // Use a different name than 'logger' to avoid KT-56386 clash with OncePerRequestFilter.logger
     private val log = LoggerFactory.getLogger(JwtBlocklistFilter::class.java)
@@ -46,6 +48,12 @@ public class JwtBlocklistFilter(private val jwtBlocklist: JwtBlocklist) : OncePe
                 // Check token value hash
                 if (jwtBlocklist.isBlockedByValue(jwt.tokenValue)) {
                     rejectToken(response, "Token has been revoked")
+                    return
+                }
+
+                if (!jwtBlocklist.isSessionActive(jwt.id?.takeIf(String::isNotBlank)?.let { "JTI:$it" } ?: jwt.tokenValue,
+                    jwt.issuedAt, jwt.expiresAt, idleWindow, clock.instant())) {
+                    rejectToken(response, "Session has expired due to inactivity")
                     return
                 }
 

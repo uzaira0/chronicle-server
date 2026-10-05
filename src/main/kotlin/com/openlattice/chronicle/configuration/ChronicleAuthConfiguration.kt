@@ -31,10 +31,13 @@ public data class ChronicleAuthConfiguration(
      */
     @param:JsonAlias("dashboard_password_hash")
     val dashboardPasswordHash: String? = null,
+    /** Server-enforced inactivity expiry, bounded even when JWT absolute validity is longer. */
+    val sessionIdleMinutes: Long = System.getenv("CHRONICLE_SESSION_IDLE_MINUTES")?.toLong() ?: 15,
     val users: Set<ChronicleAuthUser> = emptySet(),
 ) : Configuration {
 
     init {
+        require(sessionIdleMinutes in 1..120) { "sessionIdleMinutes must be between 1 and 120" }
         require(roleClaimNamespace.isNotBlank()) { "roleClaimNamespace must not be blank" }
     }
 

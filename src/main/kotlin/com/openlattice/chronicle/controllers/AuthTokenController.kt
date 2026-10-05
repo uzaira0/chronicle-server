@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.openlattice.chronicle.audit.AuditAction
 import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.authorization.JwtBlocklist
 import com.openlattice.chronicle.configuration.boundedRestTemplate
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleJwtClientConfiguration
@@ -82,6 +83,7 @@ public open class AuthTokenController(
     private val refreshTokenService: RefreshTokenService,
     private val environment: Environment,
     private val auditService: AuditService,
+    private val jwtBlocklist: JwtBlocklist,
 ) {
     internal companion object {
         private val logger = LoggerFactory.getLogger(AuthTokenController::class.java)
@@ -155,6 +157,7 @@ public open class AuthTokenController(
             return ResponseEntity.status(401).body(mapOf("error" to "invalid token" as Any))
         }
 
+        if (!sessionIsActive(jwt)) return ResponseEntity.status(401).body(mapOf("error" to "session expired"))
         val csrfToken = ensureCookieSession(request, token, response)
         return ResponseEntity.ok(buildAuthenticatedSession(jwt, csrfToken))
     }
@@ -179,7 +182,7 @@ public open class AuthTokenController(
                     logger.info("Ignoring invalid Chronicle auth cookie on session bootstrap: {}", exception.message)
                     null
                 }
-                if (decodedCookieJwt != null) {
+                if (decodedCookieJwt != null && sessionIsActive(decodedCookieJwt)) {
                     val csrfToken = ensureCsrfCookie(request, response)
                     return ResponseEntity.ok(buildAuthenticatedSession(decodedCookieJwt, csrfToken))
                 }
@@ -188,6 +191,7 @@ public open class AuthTokenController(
             return ResponseEntity.ok(buildUnauthenticatedSession())
         }
 
+        if (!sessionIsActive(jwtAuthentication.token)) return ResponseEntity.status(401).body(mapOf("error" to "session expired"))
         val csrfToken = ensureCsrfCookie(request, response)
         return ResponseEntity.ok(buildAuthenticatedSession(jwtAuthentication.token, csrfToken))
     }
@@ -553,6 +557,23 @@ public open class AuthTokenController(
         request: HttpServletRequest,
         response: HttpServletResponse
     ): ResponseEntity<Void> {
+        val tokens = listOfNotNull(
+            readCookie(request, AUTH_COOKIE_NAME),
+            request.getHeader(HttpHeaders.AUTHORIZATION)
+                ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }?.substring(7)?.trim(),
+        ).filter { it.isNotBlank() }.distinct()
+        tokens.forEach { token ->
+            val jwt = try {
+                jwtDecoder.decode(token)
+            } catch (_: JwtException) {
+                null // An invalid or expired credential cannot be used again.
+            }
+            jwt?.expiresAt?.let { expiry ->
+                val jti = jwt.id
+                if (jti.isNullOrBlank()) jwtBlocklist.blockTokenByValue(token, expiry)
+                else jwtBlocklist.blockToken(jti, expiry)
+            }
+        }
         clearCookie(
             request = request,
             response = response,
@@ -756,6 +777,13 @@ public open class AuthTokenController(
 
         return ensureCookieSession(request, ChronicleServerUtil.getTokenFromContext(), response)
     }
+
+    private fun sessionIsActive(jwt: org.springframework.security.oauth2.jwt.Jwt): Boolean =
+        (jwt.id.isNullOrBlank() || !jwtBlocklist.isBlocked(jwt.id)) &&
+            !jwtBlocklist.isBlockedByValue(jwt.tokenValue) &&
+            jwtBlocklist.isSessionActive(jwt.id?.takeIf(String::isNotBlank)?.let { "JTI:$it" } ?: jwt.tokenValue,
+                jwt.issuedAt, jwt.expiresAt,
+                java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes))
 
     private fun readCookie(request: HttpServletRequest, name: String): String? {
         return request.cookies

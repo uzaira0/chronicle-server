@@ -6,6 +6,7 @@ import com.openlattice.chronicle.hazelcast.HazelcastMap
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
 import java.time.Instant
+import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 /**
@@ -22,6 +23,7 @@ public class JwtBlocklist(hazelcastInstance: HazelcastInstance) {
     }
 
     private val blocklist: IMap<String, Long> = HazelcastMap.JWT_BLOCKLIST.getMap(hazelcastInstance)
+    private val activity: IMap<String, Long> = hazelcastInstance.getMap("JWT_SESSION_ACTIVITY")
 
     /**
      * Block a JWT by its JTI (JWT ID) or token hash.
@@ -80,4 +82,23 @@ public class JwtBlocklist(hazelcastInstance: HazelcastInstance) {
     }
 
     public fun getBlockedCount(): Long = blocklist.size.toLong()
+
+    public fun isSessionActive(tokenValue: String, issuedAt: Instant?, expiresAt: Instant?, idleWindow: Duration,
+        now: Instant = Instant.now()): Boolean {
+        if (issuedAt == null || expiresAt == null || !now.isBefore(expiresAt)) return false
+        val key = "SESSION_ACTIVITY:" + sha256(tokenValue)
+        check(activity.tryLock(key, 1, TimeUnit.SECONDS, 5, TimeUnit.SECONDS)) { "Session activity store is unavailable" }
+        try {
+            if (isBlockedByValue(tokenValue)) return false
+            val cutoff = getRevokeAllTimestamp()
+            if (cutoff != null && !issuedAt.isAfter(cutoff)) return false
+            val lastActivity = activity[key]?.let(Instant::ofEpochSecond) ?: issuedAt
+            if (Duration.between(lastActivity, now) >= idleWindow) return false
+            activity.set(key, maxOf(lastActivity.epochSecond, now.epochSecond),
+                maxOf(1, minOf(idleWindow.seconds, expiresAt.epochSecond - now.epochSecond)), TimeUnit.SECONDS)
+            return true
+        } finally {
+            activity.unlock(key)
+        }
+    }
 }
