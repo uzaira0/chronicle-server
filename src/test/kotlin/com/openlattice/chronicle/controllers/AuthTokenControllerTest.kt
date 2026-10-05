@@ -196,6 +196,40 @@ class AuthTokenControllerTest {
     }
 
     @Test
+    fun testingLoginAuditsSuccessAndEveryRejectionWithoutCredentialPayload() {
+        val request = MockHttpServletRequest()
+        controller.testingLogin(null, request, MockHttpServletResponse())
+        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
+            AuditAction.LOGIN_FAILED, false, "disabled", mapOf("method" to "testing"))
+        Mockito.clearInvocations(auditService)
+        val enabled = AuthTokenController(jwtDecoder, chronicleAuthConfiguration.copy(testingLoginEnabled = true),
+            objectMapper, userListingService, refreshTokenService, environment, auditService, jwtBlocklist)
+        val token = "credentialPayloadSentinel"
+        Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(token)
+        Mockito.`when`(jwtDecoder.decode(token)).thenReturn(createJwt(token, "issued-user"))
+        assertEquals(200, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
+        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
+            AuditAction.LOGIN, true, null, mapOf("method" to "testing", "subject" to "issued-user"))
+        Mockito.clearInvocations(auditService)
+        Mockito.`when`(environment.activeProfiles).thenReturn(arrayOf("production"))
+        assertEquals(404, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
+        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
+            AuditAction.LOGIN_FAILED, false, "production_disabled", mapOf("method" to "testing"))
+        Mockito.clearInvocations(auditService)
+        Mockito.`when`(environment.activeProfiles).thenReturn(emptyArray())
+        Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(null)
+        assertEquals(403, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
+        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
+            AuditAction.LOGIN_FAILED, false, "no_local_user", mapOf("method" to "testing"))
+        Mockito.clearInvocations(auditService)
+        Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(token)
+        Mockito.`when`(jwtDecoder.decode(token)).thenThrow(org.springframework.security.oauth2.jwt.BadJwtException("credentialPayloadSentinel"))
+        assertEquals(500, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
+        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
+            AuditAction.LOGIN_FAILED, false, "invalid_token", mapOf("method" to "testing"))
+    }
+
+    @Test
     fun testDashboardLoginAcceptsCorrectPasswordAndWritesSecureCookies() {
         val jwt = createJwt("dashboard-token", "local-admin")
         Mockito.`when`(userListingService.issueDashboardToken(null)).thenReturn("dashboard-token")

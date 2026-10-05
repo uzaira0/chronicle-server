@@ -351,10 +351,12 @@ public open class AuthTokenController(
         if (environment.activeProfiles.any { it.equals("production", ignoreCase = true) } &&
             !chronicleAuthConfiguration.allowProductionTestingLogin
         ) {
+            auditLogin(request, "testing", null, "production_disabled")
             return ResponseEntity.status(404).build()
         }
 
         if (!chronicleAuthConfiguration.testingLoginEnabled) {
+            auditLogin(request, "testing", null, "disabled")
             return ResponseEntity.status(403).body(
                 mapOf(
                     "authenticated" to false,
@@ -366,7 +368,9 @@ public open class AuthTokenController(
         }
 
         val token = userListingService.issueTestingToken(body?.get("userId"))
-            ?: return ResponseEntity.status(403).body(
+        if (token == null) {
+            auditLogin(request, "testing", null, "no_local_user")
+            return ResponseEntity.status(403).body(
                 mapOf(
                     "authenticated" to false,
                     "error" to "testing login is not enabled",
@@ -375,12 +379,14 @@ public open class AuthTokenController(
                 )
             )
 
+        }
         val jwt = try {
             decodeTestingToken(token)
         } catch (exception: Exception) {
+            auditLogin(request, "testing", null, "invalid_token")
             logger.warn(
                 "testing-login issued token could not be decoded with current JWT decoder: {}",
-                exception.message
+                exception.javaClass.simpleName
             )
             return ResponseEntity.status(500).body(
                 mapOf(
@@ -397,6 +403,7 @@ public open class AuthTokenController(
         metadata["authToken"] = token
         metadata["providerLabel"] = TESTING_PROVIDER_LABEL
         metadata["tokenSource"] = "testing-login"
+        auditLogin(request, "testing", jwt.subject, null)
         return ResponseEntity.ok(metadata)
     }
 
