@@ -9,6 +9,7 @@ import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.util.LogSanitizer
 import org.junit.After
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
@@ -83,8 +84,15 @@ class RestoreContinuityReconcilerTest {
             connection.createStatement().use { statement ->
                 statement.execute("DROP SCHEMA IF EXISTS chronicle_restore_continuity CASCADE")
             }
-            connection.prepareStatement("DELETE FROM data_deletion_tombstones WHERE operation_id = ?").use {
+            connection.prepareStatement(
+                """
+                DELETE FROM data_deletion_tombstones
+                WHERE operation_id = ?
+                   OR operation_id IN (SELECT operation_id FROM data_deletion_operations WHERE study_id = ?)
+                """.trimIndent(),
+            ).use {
                 it.setObject(1, fixture.operationId)
+                it.setObject(2, fixture.studyId)
                 it.executeUpdate()
             }
             connection.prepareStatement("DELETE FROM data_deletion_operations WHERE study_id = ?").use {
@@ -97,6 +105,10 @@ class RestoreContinuityReconcilerTest {
             }
             connection.prepareStatement("DELETE FROM api_keys WHERE study_id = ?").use {
                 it.setObject(1, fixture.studyId)
+                it.executeUpdate()
+            }
+            connection.prepareStatement("DELETE FROM erased_device_key_tombstones WHERE key_hash = ?").use {
+                it.setString(1, "restore-hash-${fixture.apiKeyId}")
                 it.executeUpdate()
             }
             connection.prepareStatement("DELETE FROM battery_telemetry WHERE study_id = ?").use {
@@ -183,11 +195,13 @@ class RestoreContinuityReconcilerTest {
                 0L,
                 count(connection, "study_participants", "study_id", fixture.studyId),
             )
-            connection.prepareStatement("SELECT revoked FROM api_keys WHERE key_id = ?").use {
-                it.setObject(1, fixture.apiKeyId)
+            // Re-erasure deletes the restored device key and keeps only its hash tombstone.
+            assertEquals(0L, count(connection, "api_keys", "key_id", fixture.apiKeyId))
+            connection.prepareStatement("SELECT kind FROM erased_device_key_tombstones WHERE key_hash = ?").use {
+                it.setString(1, "restore-hash-${fixture.apiKeyId}")
                 it.executeQuery().use { resultSet ->
                     assertTrue(resultSet.next())
-                    assertTrue(resultSet.getBoolean(1))
+                    assertEquals("WITHDRAW_AND_ERASE", resultSet.getString(1))
                 }
             }
             assertEquals(1L, count(connection, "mobile_withdrawal_requests", "request_id", fixture.requestId))
@@ -704,6 +718,613 @@ class RestoreContinuityReconcilerTest {
         }
     }
 
+    @Test
+    fun `worker completed withdrawal captured by the restore script replays onto an older backup`() {
+        seedRestoredOlderState()
+        val operationId = eraseParticipantWithTheWorker()
+        captureCheckpointWithRestoreScript()
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT participant_id, participant_block_token
+                FROM chronicle_restore_continuity.deletion_operations WHERE operation_id = ?
+                """.trimIndent(),
+            ).use {
+                it.setObject(1, operationId)
+                it.executeQuery().use { resultSet ->
+                    assertTrue(resultSet.next())
+                    assertNull("completion clears the participant id", resultSet.getString(1))
+                    assertEquals(blockToken(), resultSet.getString(2))
+                }
+            }
+        }
+        // The backup predates the erasure: the participant, its key and its data are back.
+        restoreBackupTakenBefore(operationId, participantInBackup = true)
+
+        val result = newReconciler().reconcile() ?: throw AssertionError("expected a reconciliation result")
+
+        assertEquals(1L, result.replayedCompletedDeletionCount)
+        assertFalse(schemaExists("chronicle_restore_continuity"))
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            assertEquals(0L, count(connection, "study_participants", "study_id", fixture.studyId))
+            assertEquals(0L, count(connection, "battery_telemetry", "study_id", fixture.studyId))
+            assertEquals(0L, count(connection, "api_keys", "key_id", fixture.apiKeyId))
+            assertEquals(1L, count(connection, "data_deletion_tombstones", "operation_id", operationId))
+            assertCompletedWithoutIdentifier(connection, operationId)
+        }
+    }
+
+    @Test
+    fun `erased key tombstones absent from the backup are carried with their original expiry`() {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use {
+                it.setObject(1, fixture.studyId)
+                it.setString(2, "restore-continuity-${fixture.studyId}")
+                assertEquals(1, it.executeUpdate())
+            }
+        }
+        // Backup taken here. The participant enrolls a phone afterwards and is then erased.
+        seedRestoredOlderState(includeStudy = false)
+        val operationId = eraseParticipantWithTheWorker()
+        val erasedKeyExpiry = tombstoneExpiry()
+        assertNotNull(erasedKeyExpiry)
+        captureCheckpointWithRestoreScript()
+        restoreBackupTakenBefore(operationId, participantInBackup = false)
+        assertNull("the backup holds no tombstone for the later key", tombstoneExpiry())
+
+        val result = newReconciler().reconcile() ?: throw AssertionError("expected a reconciliation result")
+
+        assertEquals(1L, result.replayedCompletedDeletionCount)
+        assertEquals("the tombstone keeps its original expiry", erasedKeyExpiry, tombstoneExpiry())
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            assertEquals(1L, count(connection, "data_deletion_tombstones", "operation_id", operationId))
+            assertCompletedWithoutIdentifier(connection, operationId)
+        }
+    }
+
+    @Test
+    fun `contract 2 checkpoint left unresolved by the previous release is upgraded and replayed`() {
+        seedRestoredOlderState()
+        val operationId = eraseParticipantWithTheWorker()
+        captureLegacyCheckpoint()
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                "SELECT participant_id FROM chronicle_restore_continuity.deletion_operations WHERE operation_id = ?",
+            ).use {
+                it.setObject(1, operationId)
+                it.executeQuery().use { resultSet ->
+                    assertTrue(resultSet.next())
+                    assertNull("contract 2 holds neither the id nor a token", resultSet.getString(1))
+                }
+            }
+        }
+        restoreBackupTakenBefore(operationId, participantInBackup = true)
+        // The backup was taken during the quarantine: its copy of the operation is the authoritative binding.
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO data_deletion_operations (
+                    operation_id, study_id, participant_ref, participant_id, mode, status,
+                    requested_by, idempotency_key, registry_version, quarantine_until
+                )
+                SELECT operation_id, study_id, participant_ref, ?, mode, 'QUARANTINED',
+                       requested_by, idempotency_key, registry_version, quarantine_until
+                FROM chronicle_restore_continuity.deletion_operations WHERE operation_id = ?
+                """.trimIndent(),
+            ).use {
+                it.setString(1, fixture.participantId)
+                it.setObject(2, operationId)
+                assertEquals(1, it.executeUpdate())
+            }
+        }
+
+        val result = newReconciler().reconcile() ?: throw AssertionError("expected a reconciliation result")
+
+        assertEquals(1L, result.replayedCompletedDeletionCount)
+        assertFalse(schemaExists("chronicle_restore_continuity"))
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            assertEquals(0L, count(connection, "study_participants", "study_id", fixture.studyId))
+            assertEquals(0L, count(connection, "battery_telemetry", "study_id", fixture.studyId))
+            assertEquals(1L, count(connection, "data_deletion_tombstones", "operation_id", operationId))
+            assertCompletedWithoutIdentifier(connection, operationId)
+        }
+    }
+
+    @Test
+    fun `contract 2 upgrade refuses a live participant whose fingerprint matches the erased participant_ref`() {
+        seedRestoredOlderState()
+        val operationId = eraseParticipantWithTheWorker()
+        val liveParticipantId = "live-${fixture.participantId}"
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            // Stands in for a 48-bit collision (or a fingerprint key rotated since the erasure).
+            connection.prepareStatement("UPDATE data_deletion_operations SET participant_ref = ? WHERE operation_id = ?")
+                .use {
+                    it.setString(1, LogSanitizer.stableFingerprint(liveParticipantId, "participant"))
+                    it.setObject(2, operationId)
+                    assertEquals(1, it.executeUpdate())
+                }
+        }
+        captureLegacyCheckpoint()
+        // The backup predates both the erasure and the erased participant; the live one is its sole match.
+        restoreBackupTakenBefore(operationId, participantInBackup = false)
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status)
+                VALUES (?, ?, ?, 'ENROLLED')
+                """.trimIndent(),
+            ).use {
+                it.setObject(1, fixture.studyId)
+                it.setString(2, liveParticipantId)
+                it.setObject(3, UUID.randomUUID())
+                assertEquals(1, it.executeUpdate())
+            }
+            connection.prepareStatement(
+                """
+                INSERT INTO battery_telemetry (
+                    study_id, participant_id, sample_id, sample_timestamp, timezone, level_percent, charging_state
+                ) VALUES (?, ?, 'live-sample', now(), 'UTC', 80, 'NOT_CHARGING')
+                """.trimIndent(),
+            ).use {
+                it.setObject(1, fixture.studyId)
+                it.setString(2, liveParticipantId)
+                assertEquals(1, it.executeUpdate())
+            }
+        }
+
+        val failure = assertThrows(IllegalStateException::class.java) { newReconciler().reconcile() }
+
+        assertTrue(failure.message.orEmpty().contains("cannot be upgraded safely"))
+        assertTrue(failure.message.orEmpty().contains(operationId.toString()))
+        assertTrue(schemaExists("chronicle_restore_continuity"))
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT contract_version FROM chronicle_restore_continuity.checkpoint").use {
+                    assertTrue(it.next())
+                    assertEquals("the upgrade rolled back", 2, it.getInt(1))
+                }
+            }
+            assertEquals(1L, count(connection, "study_participants", "participant_id", liveParticipantId))
+            assertEquals(1L, count(connection, "battery_telemetry", "participant_id", liveParticipantId))
+            assertEquals(0L, count(connection, "data_deletion_operations", "operation_id", operationId))
+        }
+    }
+
+    @Test
+    fun `completed purge already in the backup does not conflict with a later held operation`() {
+        seedRestoredOlderState()
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            createContinuitySchema(connection)
+            // The purge completed before the backup, so the backup and the checkpoint hold the same proof.
+            listOf("", "chronicle_restore_continuity.").forEach { schema ->
+                val (operations, tombstones) = if (schema.isEmpty()) {
+                    "data_deletion_operations" to "data_deletion_tombstones"
+                } else {
+                    "${schema}deletion_operations" to "${schema}deletion_tombstones"
+                }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO $operations (
+                        operation_id, study_id, participant_ref, participant_id, mode, status,
+                        requested_by, idempotency_key, registry_version, quarantine_until,
+                        completed_at, proof_hash
+                    ) VALUES (?, ?, 'participant-source-proof', ?, 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                              'fixture', ?, 1, '2026-08-20T12:00:00Z', '2026-08-20T12:01:00Z', 'source-proof')
+                    """.trimIndent(),
+                ).use {
+                    it.setObject(1, fixture.operationId)
+                    it.setObject(2, fixture.studyId)
+                    it.setString(3, fixture.participantId)
+                    it.setObject(4, fixture.requestId)
+                    assertEquals(1, it.executeUpdate())
+                }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO $tombstones (
+                        operation_id, study_ref, participant_ref, mode, registry_version, completed_at, proof_hash
+                    ) VALUES (?, 'study-source-proof', 'participant-source-proof', 'COLLECTED_DATA_PURGE', 1,
+                              '2026-08-20T12:01:00Z', 'source-proof')
+                    """.trimIndent(),
+                ).use {
+                    it.setObject(1, fixture.operationId)
+                    assertEquals(1, it.executeUpdate())
+                }
+            }
+            // After the backup: another deletion of the same participant, placed on hold.
+            connection.prepareStatement(
+                """
+                INSERT INTO chronicle_restore_continuity.deletion_operations (
+                    operation_id, study_id, participant_ref, participant_id, mode, status,
+                    requested_by, idempotency_key, registry_version, quarantine_until
+                ) VALUES (?, ?, 'participant-source-proof', ?, 'COLLECTED_DATA_PURGE', 'HELD',
+                          'legal-review', ?, 1, '2026-09-20T12:00:00Z')
+                """.trimIndent(),
+            ).use {
+                it.setObject(1, fixture.heldOperationId)
+                it.setObject(2, fixture.studyId)
+                it.setString(3, fixture.participantId)
+                it.setObject(4, fixture.heldRequestId)
+                assertEquals(1, it.executeUpdate())
+            }
+            connection.prepareStatement(
+                """
+                INSERT INTO chronicle_restore_continuity.retention_holds (
+                    hold_id, operation_id, study_id, reason, created_by, created_at, review_at
+                ) VALUES (?, ?, ?, 'legal preservation', 'fixture', '2026-08-20T12:01:00Z', '2026-09-20T12:01:00Z')
+                """.trimIndent(),
+            ).use {
+                it.setObject(1, fixture.holdId)
+                it.setObject(2, fixture.heldOperationId)
+                it.setObject(3, fixture.studyId)
+                assertEquals(1, it.executeUpdate())
+            }
+            sealContinuityCheckpoint(connection)
+        }
+
+        val result = newReconciler().reconcile() ?: throw AssertionError("expected a reconciliation result")
+
+        assertEquals(1L, result.alreadyProtectedDeletionCount)
+        assertEquals(0L, result.replayedCompletedDeletionCount)
+        assertFalse(schemaExists("chronicle_restore_continuity"))
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement("SELECT status FROM data_deletion_operations WHERE operation_id = ?").use {
+                it.setObject(1, fixture.heldOperationId)
+                it.executeQuery().use { resultSet ->
+                    assertTrue(resultSet.next())
+                    assertEquals("HELD", resultSet.getString(1))
+                }
+            }
+            assertEquals(1L, count(connection, "retention_holds", "hold_id", fixture.holdId))
+            assertEquals(1L, count(connection, "data_deletion_tombstones", "operation_id", fixture.operationId))
+        }
+    }
+
+    @Test
+    fun `absent completed purge restores proof and preserves a later hold`() {
+        seedRestoredOlderState()
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            listOf("api_keys", "battery_telemetry", "study_participants").forEach { table ->
+                connection.prepareStatement("DELETE FROM $table WHERE study_id = ?").use {
+                    it.setObject(1, fixture.studyId); it.executeUpdate()
+                }
+            }
+        }
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            createContinuitySchema(connection)
+            // The checkpoint carries a completed purge; the selected backup predates this subject.
+            listOf("chronicle_restore_continuity.").forEach { schema ->
+                val (operations, tombstones) = if (schema.isEmpty()) {
+                    "data_deletion_operations" to "data_deletion_tombstones"
+                } else {
+                    "${schema}deletion_operations" to "${schema}deletion_tombstones"
+                }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO $operations (
+                        operation_id, study_id, participant_ref, participant_id, mode, status,
+                        requested_by, idempotency_key, registry_version, quarantine_until,
+                        completed_at, proof_hash
+                    ) VALUES (?, ?, 'participant-source-proof', ?, 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                              'fixture', ?, 1, '2026-08-20T12:00:00Z', '2026-08-20T12:01:00Z', 'source-proof')
+                    """.trimIndent(),
+                ).use {
+                    it.setObject(1, fixture.operationId)
+                    it.setObject(2, fixture.studyId)
+                    it.setString(3, fixture.participantId)
+                    it.setObject(4, fixture.requestId)
+                    assertEquals(1, it.executeUpdate())
+                }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO $tombstones (
+                        operation_id, study_ref, participant_ref, mode, registry_version, completed_at, proof_hash
+                    ) VALUES (?, 'study-source-proof', 'participant-source-proof', 'COLLECTED_DATA_PURGE', 1,
+                              '2026-08-20T12:01:00Z', 'source-proof')
+                    """.trimIndent(),
+                ).use {
+                    it.setObject(1, fixture.operationId)
+                    assertEquals(1, it.executeUpdate())
+                }
+            }
+            // After the backup: another deletion of the same participant, placed on hold.
+            connection.prepareStatement(
+                """
+                INSERT INTO chronicle_restore_continuity.deletion_operations (
+                    operation_id, study_id, participant_ref, participant_id, mode, status,
+                    requested_by, idempotency_key, registry_version, quarantine_until
+                ) VALUES (?, ?, 'participant-source-proof', ?, 'COLLECTED_DATA_PURGE', 'HELD',
+                          'legal-review', ?, 1, '2026-09-20T12:00:00Z')
+                """.trimIndent(),
+            ).use {
+                it.setObject(1, fixture.heldOperationId)
+                it.setObject(2, fixture.studyId)
+                it.setString(3, fixture.participantId)
+                it.setObject(4, fixture.heldRequestId)
+                assertEquals(1, it.executeUpdate())
+            }
+            connection.prepareStatement(
+                """
+                INSERT INTO chronicle_restore_continuity.retention_holds (
+                    hold_id, operation_id, study_id, reason, created_by, created_at, review_at
+                ) VALUES (?, ?, ?, 'legal preservation', 'fixture', '2026-08-20T12:01:00Z', '2026-09-20T12:01:00Z')
+                """.trimIndent(),
+            ).use {
+                it.setObject(1, fixture.holdId)
+                it.setObject(2, fixture.heldOperationId)
+                it.setObject(3, fixture.studyId)
+                assertEquals(1, it.executeUpdate())
+            }
+            sealContinuityCheckpoint(connection)
+        }
+
+        val result = newReconciler().reconcile() ?: throw AssertionError("expected a reconciliation result")
+
+        assertEquals(0L, result.alreadyProtectedDeletionCount)
+        assertEquals(1L, result.replayedCompletedDeletionCount)
+        assertFalse(schemaExists("chronicle_restore_continuity"))
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement("SELECT status FROM data_deletion_operations WHERE operation_id = ?").use {
+                it.setObject(1, fixture.heldOperationId)
+                it.executeQuery().use { resultSet ->
+                    assertTrue(resultSet.next())
+                    assertEquals("HELD", resultSet.getString(1))
+                }
+            }
+            assertEquals(1L, count(connection, "retention_holds", "hold_id", fixture.holdId))
+            assertEquals(1L, count(connection, "data_deletion_tombstones", "operation_id", fixture.operationId))
+        }
+    }
+
+    @Test
+    fun `a tombstone V115 synthesized at restore takes the checkpoint's kind and original expiry`() {
+        seedRestoredOlderState()
+        seedContinuityCheckpoint()
+        // A pre-V114 backup: the completed erasure retained its revoked device key.
+        seedAlreadyProtectedPublicState()
+        val hash = "restore-hash-${fixture.apiKeyId}"
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use {
+                it.execute(
+                    java.io.File(
+                        "src/main/resources/db/migration/V115__tombstone_device_keys_of_completed_erasures.sql",
+                    ).readText(),
+                )
+                it.execute("UPDATE erased_device_key_tombstones SET kind = 'STUDY_ERASURE' WHERE key_hash = '$hash'")
+            }
+        }
+        val synthesized = tombstoneExpiry()
+        assertNotNull("V115 tombstones the retained key with a restore-time expiry", synthesized)
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO chronicle_restore_continuity.erased_device_key_tombstones (key_hash, kind, expires_at)
+                VALUES (?, 'WITHDRAW_AND_ERASE', date_trunc('second', now()) + interval '30 days')
+                """.trimIndent(),
+            ).use {
+                it.setString(1, hash)
+                assertEquals(1, it.executeUpdate())
+            }
+            connection.prepareStatement(
+                """
+                UPDATE chronicle_restore_continuity.checkpoint
+                SET checkpoint_sha256 = ?, erased_device_key_tombstone_count = 1
+                WHERE checkpoint_id = ?
+                """.trimIndent(),
+            ).use {
+                it.setString(1, RestoreContinuityReconciler.computeCheckpointSha256(connection))
+                it.setObject(2, fixture.checkpointId)
+                assertEquals(1, it.executeUpdate())
+            }
+        }
+        val original = storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery(
+                    "SELECT expires_at FROM chronicle_restore_continuity.erased_device_key_tombstones",
+                ).use { resultSet ->
+                    assertTrue(resultSet.next())
+                    resultSet.getObject(1, java.time.OffsetDateTime::class.java)
+                }
+            }
+        }
+        assertTrue(original.isBefore(synthesized))
+
+        val result = newReconciler().reconcile() ?: throw AssertionError("expected a reconciliation result")
+
+        assertEquals(1L, result.alreadyProtectedDeletionCount)
+        assertEquals(original, tombstoneExpiry())
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement("SELECT kind FROM erased_device_key_tombstones WHERE key_hash = ?").use {
+                it.setString(1, hash)
+                it.executeQuery().use { resultSet ->
+                    assertTrue(resultSet.next())
+                    assertEquals("WITHDRAW_AND_ERASE", resultSet.getString(1))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `expired checkpoint key markers override V115 and are swept before checkpoint consumption`() {
+        seedRestoredOlderState()
+        seedContinuityCheckpoint()
+        // A pre-V114 backup: the completed erasure retained its revoked device key.
+        seedAlreadyProtectedPublicState()
+        // A source completion with a different exact proof needs canonical replay, even though
+        // the old completed operation was sufficient for V115 to synthesize the key marker.
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use {
+                it.executeUpdate("UPDATE chronicle_restore_continuity.deletion_operations SET proof_hash = 'later-source-proof'")
+                it.executeUpdate("UPDATE chronicle_restore_continuity.deletion_tombstones SET proof_hash = 'later-source-proof'")
+            }
+        }
+        val hash = "restore-hash-${fixture.apiKeyId}"
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use {
+                it.execute(
+                    java.io.File(
+                        "src/main/resources/db/migration/V115__tombstone_device_keys_of_completed_erasures.sql",
+                    ).readText(),
+                )
+                it.execute("UPDATE erased_device_key_tombstones SET kind = 'STUDY_ERASURE' WHERE key_hash = '$hash'")
+            }
+        }
+        val synthesized = tombstoneExpiry()
+        assertNotNull("V115 tombstones the retained key with a restore-time expiry", synthesized)
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO chronicle_restore_continuity.erased_device_key_tombstones (key_hash, kind, expires_at)
+                VALUES (?, 'WITHDRAW_AND_ERASE', date_trunc('second', now()) - interval '1 second')
+                """.trimIndent(),
+            ).use {
+                it.setString(1, hash)
+                assertEquals(1, it.executeUpdate())
+            }
+            connection.prepareStatement(
+                """
+                UPDATE chronicle_restore_continuity.checkpoint
+                SET checkpoint_sha256 = ?, erased_device_key_tombstone_count = 1
+                WHERE checkpoint_id = ?
+                """.trimIndent(),
+            ).use {
+                it.setString(1, RestoreContinuityReconciler.computeCheckpointSha256(connection))
+                it.setObject(2, fixture.checkpointId)
+                assertEquals(1, it.executeUpdate())
+            }
+        }
+        val original = storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery(
+                    "SELECT expires_at FROM chronicle_restore_continuity.erased_device_key_tombstones",
+                ).use { resultSet ->
+                    assertTrue(resultSet.next())
+                    resultSet.getObject(1, java.time.OffsetDateTime::class.java)
+                }
+            }
+        }
+        assertTrue(original.isBefore(synthesized))
+
+        val result = newReconciler().reconcile() ?: throw AssertionError("expected a reconciliation result")
+
+        assertEquals(0L, result.alreadyProtectedDeletionCount)
+        assertEquals(1L, result.replayedCompletedDeletionCount)
+        assertNull("expired markers are removed after replay", tombstoneExpiry())
+        assertFalse(schemaExists("chronicle_restore_continuity"))
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement("SELECT kind FROM erased_device_key_tombstones WHERE key_hash = ?").use {
+                it.setString(1, hash)
+                it.executeQuery().use { resultSet ->
+                    assertFalse("no renewed capability remains", resultSet.next())
+                }
+            }
+        }
+    }
+
+    private fun blockToken(): String =
+        java.security.MessageDigest.getInstance("MD5")
+            .digest("${fixture.studyId}:${fixture.participantId}".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    /** The real erasure path: NOT_ENROLLED, a WITHDRAW_AND_ERASE quarantine, then the deletion worker. */
+    private fun eraseParticipantWithTheWorker(): UUID {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                "UPDATE study_participants SET participation_status = 'NOT_ENROLLED' WHERE study_id = ? AND participant_id = ?",
+            ).use {
+                it.setObject(1, fixture.studyId)
+                it.setString(2, fixture.participantId)
+                assertEquals(1, it.executeUpdate())
+            }
+        }
+        val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+        val operationId = orchestrator.quarantineParticipant(
+            fixture.studyId, fixture.participantId, DataDeletionMode.WITHDRAW_AND_ERASE, "fixture", UUID.randomUUID(),
+        )
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                "UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?",
+            ).use {
+                it.setObject(1, operationId)
+                assertEquals(1, it.executeUpdate())
+            }
+        }
+        assertEquals(1, orchestrator.processDueOperations(limit = 1))
+        assertEquals("COMPLETED", orchestrator.getOperation(operationId).status)
+        return operationId
+    }
+
+    /** Runs selfhost/restore.sh's own checkpoint capture against the current database. */
+    private fun captureCheckpointWithRestoreScript() {
+        val script = java.io.File("../selfhost/restore.sh").readText()
+        val start = "CREATE SCHEMA chronicle_restore_continuity;"
+        captureCheckpoint(start + script.substringAfter("<<'SQL' >/dev/null\n$start").substringBefore("\nSQL\n"))
+    }
+
+    /** restore.sh of the previous release captured this, then its server could not start. */
+    private fun captureLegacyCheckpoint() =
+        captureCheckpoint(java.io.File("src/test/resources/restore-continuity-contract-v2-capture.sql").readText())
+
+    private fun captureCheckpoint(capture: String) {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.createStatement().use { statement ->
+                // The script revokes from both runtime roles that a self-host cluster always has.
+                statement.execute(
+                    """
+                    DO ${'$'}${'$'} BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chronicle_app') THEN CREATE ROLE chronicle_app; END IF;
+                        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chronicle_admin') THEN CREATE ROLE chronicle_admin; END IF;
+                    END ${'$'}${'$'}
+                    """.trimIndent(),
+                )
+                statement.execute(capture)
+            }
+        }
+    }
+
+    /** What restoring a dump taken before [operationId] leaves: no erasure evidence, optionally the subject. */
+    private fun restoreBackupTakenBefore(operationId: UUID, participantInBackup: Boolean) {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            listOf(
+                "data_deletion_audit_outbox", "retention_holds", "data_deletion_form_access_revocations",
+                "export_job_revocations", "data_deletion_steps", "data_deletion_tombstones", "data_deletion_operations",
+            ).forEach { table ->
+                connection.prepareStatement("DELETE FROM $table WHERE operation_id = ?").use {
+                    it.setObject(1, operationId)
+                    it.executeUpdate()
+                }
+            }
+            connection.prepareStatement("DELETE FROM erased_device_key_tombstones WHERE key_hash = ?").use {
+                it.setString(1, "restore-hash-${fixture.apiKeyId}")
+                it.executeUpdate()
+            }
+        }
+        if (participantInBackup) seedRestoredOlderState(includeStudy = false)
+    }
+
+    private fun tombstoneExpiry(): java.time.OffsetDateTime? =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement("SELECT expires_at FROM erased_device_key_tombstones WHERE key_hash = ?").use {
+                it.setString(1, "restore-hash-${fixture.apiKeyId}")
+                it.executeQuery().use { resultSet ->
+                    if (resultSet.next()) resultSet.getObject(1, java.time.OffsetDateTime::class.java) else null
+                }
+            }
+        }
+
+    private fun assertCompletedWithoutIdentifier(connection: Connection, operationId: UUID) {
+        connection.prepareStatement(
+            "SELECT status, participant_id, participant_block_token FROM data_deletion_operations WHERE operation_id = ?",
+        ).use {
+            it.setObject(1, operationId)
+            it.executeQuery().use { resultSet ->
+                assertTrue(resultSet.next())
+                assertEquals("COMPLETED", resultSet.getString(1))
+                assertNull(resultSet.getString(2))
+                assertEquals(blockToken(), resultSet.getString(3))
+            }
+        }
+    }
+
     private fun newReconciler(): RestoreContinuityReconciler {
         val orchestrator = DataDeletionOrchestrator(
             storageResolver,
@@ -713,9 +1334,9 @@ class RestoreContinuityReconcilerTest {
         return RestoreContinuityReconciler(storageResolver, orchestrator)
     }
 
-    private fun seedRestoredOlderState() {
+    private fun seedRestoredOlderState(includeStudy: Boolean = true) {
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use {
+            if (includeStudy) connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use {
                 it.setObject(1, fixture.studyId)
                 it.setString(2, "restore-continuity-${fixture.studyId}")
                 assertEquals(1, it.executeUpdate())
@@ -942,8 +1563,8 @@ class RestoreContinuityReconcilerTest {
                 checkpoint_sha256, withdrawal_receipt_count, revoked_api_key_count,
                 withdrawn_participant_count, deletion_operation_count, source_tombstone_count,
                 collection_revision_count, published_collection_settings_count,
-                enrollment_invitation_count
-            ) SELECT 2, ?, '2026-08-20T12:02:00Z', '100', ?,
+                enrollment_invitation_count, erased_device_key_tombstone_count
+            ) SELECT 3, ?, '2026-08-20T12:02:00Z', '100', ?,
                      (SELECT count(*) FROM chronicle_restore_continuity.withdrawal_requests),
                      (SELECT count(*) FROM chronicle_restore_continuity.revoked_api_keys),
                      (SELECT count(*) FROM chronicle_restore_continuity.withdrawn_participants),
@@ -951,7 +1572,8 @@ class RestoreContinuityReconcilerTest {
                      (SELECT count(*) FROM chronicle_restore_continuity.deletion_tombstones),
                      (SELECT count(*) FROM chronicle_restore_continuity.data_collection_settings_revisions),
                      (SELECT count(*) FROM chronicle_restore_continuity.published_data_collection_settings),
-                     (SELECT count(*) FROM chronicle_restore_continuity.enrollment_invitations)
+                     (SELECT count(*) FROM chronicle_restore_continuity.enrollment_invitations),
+                     (SELECT count(*) FROM chronicle_restore_continuity.erased_device_key_tombstones)
             """.trimIndent(),
         ).use {
             it.setObject(1, fixture.checkpointId)
@@ -1023,7 +1645,8 @@ class RestoreContinuityReconcilerTest {
                     source_tombstone_count BIGINT NOT NULL,
                     collection_revision_count BIGINT NOT NULL,
                     published_collection_settings_count BIGINT NOT NULL,
-                    enrollment_invitation_count BIGINT NOT NULL
+                    enrollment_invitation_count BIGINT NOT NULL,
+                    erased_device_key_tombstone_count BIGINT NOT NULL
                 )
                 """.trimIndent(),
             )
@@ -1057,7 +1680,11 @@ class RestoreContinuityReconcilerTest {
                 """
                 CREATE TABLE chronicle_restore_continuity.deletion_operations (
                     operation_id UUID PRIMARY KEY, study_id UUID NOT NULL,
-                    participant_ref TEXT, participant_id TEXT, mode TEXT NOT NULL,
+                    participant_ref TEXT, participant_id TEXT,
+                    -- What V68 derives in public; these fixtures never seed a completed participant shape.
+                    participant_block_token TEXT GENERATED ALWAYS AS
+                        (md5(study_id::text || ':' || participant_id)) STORED,
+                    mode TEXT NOT NULL,
                     status TEXT NOT NULL, requested_by TEXT NOT NULL,
                     idempotency_key UUID NOT NULL UNIQUE, registry_version INTEGER NOT NULL,
                     quarantine_until TIMESTAMPTZ, completed_at TIMESTAMPTZ,
@@ -1115,6 +1742,13 @@ class RestoreContinuityReconcilerTest {
                     enrollment_replay_expires_at TIMESTAMPTZ,
                     enrollment_settings_version INTEGER, enrollment_disclosure_version TEXT,
                     enrollment_enabled_modules JSONB, enrollment_required_modules JSONB
+                )
+                """.trimIndent(),
+            )
+            statement.execute(
+                """
+                CREATE TABLE chronicle_restore_continuity.erased_device_key_tombstones (
+                    key_hash TEXT PRIMARY KEY, kind TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL
                 )
                 """.trimIndent(),
             )

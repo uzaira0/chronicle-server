@@ -57,6 +57,7 @@ internal data class RestoredDeletionOperation(
     val studyId: UUID,
     val participantRef: String?,
     val participantId: String?,
+    val participantBlockToken: String?,
     val mode: DataDeletionMode,
     val status: String,
     val requestedBy: String,
@@ -329,7 +330,7 @@ public open class DataDeletionOrchestrator(
      * Physical erasure still belongs to this orchestrator and its canonical asset registry; the
      * restore workflow supplies only the durable operation identity and current hold state.
      */
-    internal fun reconcileRestoredOperation(
+    internal open fun reconcileRestoredOperation(
         operation: RestoredDeletionOperation,
         holds: List<RestoredRetentionHold>,
     ): Boolean {
@@ -390,7 +391,7 @@ public open class DataDeletionOrchestrator(
     ) {
         connection.prepareStatement(
             """
-            SELECT operation_id, study_id, participant_id, mode, idempotency_key
+            SELECT operation_id, study_id, participant_block_token, mode, idempotency_key
             FROM data_deletion_operations
             WHERE operation_id = ? OR idempotency_key = ?
             """.trimIndent(),
@@ -405,7 +406,8 @@ public open class DataDeletionOrchestrator(
                     check(resultSet.getObject("study_id", UUID::class.java) == operation.studyId) {
                         "Restore deletion operation belongs to another study"
                     }
-                    check(resultSet.getString("participant_id") == operation.participantId) {
+                    // Completion clears participant_id; the block token names the subject either way.
+                    check(resultSet.getString("participant_block_token") == operation.participantBlockToken) {
                         "Restore deletion operation belongs to another participant"
                     }
                     check(resultSet.getString("mode") == operation.mode.name) {
@@ -524,7 +526,7 @@ public open class DataDeletionOrchestrator(
                 next_attempt_at, participant_block_token, worker_lease_token,
                 worker_lease_expires_at, cancelled_by, cancelled_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0,
-                      NULL, NULL, NULL, NULL, NULL, NULL)
+                      NULL, ?, NULL, NULL, NULL, NULL)
             ON CONFLICT (operation_id) DO UPDATE SET
                 study_id = EXCLUDED.study_id,
                 participant_ref = EXCLUDED.participant_ref,
@@ -541,7 +543,7 @@ public open class DataDeletionOrchestrator(
                 failure_code = NULL,
                 operation_attempt_count = 0,
                 next_attempt_at = NULL,
-                participant_block_token = NULL,
+                participant_block_token = EXCLUDED.participant_block_token,
                 worker_lease_token = NULL,
                 worker_lease_expires_at = NULL,
                 cancelled_by = NULL,
@@ -564,6 +566,7 @@ public open class DataDeletionOrchestrator(
             statement.setObject(8, operation.idempotencyKey)
             statement.setInt(9, REGISTRY_VERSION)
             statement.setObject(10, quarantineUntil)
+            statement.setString(11, operation.participantBlockToken)
             check(statement.executeUpdate() == 1)
         }
     }
