@@ -407,33 +407,36 @@ public open class SurveysService(
             .filter { DEVICE_USAGE_EVENT_TYPES.contains(it.eventType) } // Filter out any usage events unrelated to calculated time.
             .groupBy { it.appPackageName }
             .mapValues { (_, au) ->
-                //We start counting usage from the beginning of the block when it the first event isn't an activity resumed.
-                var currentStartTime = startDateTime
+                // Each resume re-anchors the interval, so a resume whose pause was never recorded (power
+                // loss) is not counted up to some much later pause. A pause while inactive adds nothing,
+                // except pauses before the first resume: those close usage already running at the window
+                // boundary and count once, as the union [startDateTime, last leading pause].
+                var total = 0.0
+                var currentStartTime: OffsetDateTime? = null
+                var seenResume = false
+                var leadingPauseEnd: OffsetDateTime? = null
 
-                au.fold(0.0) { s, a ->
-                    val result = when (a.eventType) {
-                        /*
-                         * When an activity is resumed start counter waiting for the activity to terminate. Even if it
-                         * is the last event, it will be fine as we just won't count the time for an unpaired event.
-                         */
+                au.forEach { a ->
+                    when (a.eventType) {
                         ChronicleUsageEventType.ACTIVITY_RESUMED.value, ChronicleUsageEventType.MOVE_TO_FOREGROUND.value -> {
-                            s
+                            seenResume = true
+                            currentStartTime = a.timestamp
                         }
-                        /*
-                         * When an activity is paused our backgrounded add the total time it was used for in the
-                         * current time block.
-                         */
+
                         ChronicleUsageEventType.ACTIVITY_PAUSED.value, ChronicleUsageEventType.MOVE_TO_BACKGROUND.value -> {
-                            s + ChronoUnit.SECONDS.between(currentStartTime, a.timestamp).toDouble()
+                            if (!seenResume) {
+                                leadingPauseEnd = a.timestamp
+                            } else {
+                                currentStartTime?.let { total += ChronoUnit.SECONDS.between(it, a.timestamp).toDouble() }
+                            }
+                            currentStartTime = null
                         }
 
                         else -> error("Unrecognized event type.")
                     }
-                    //We always advanced currentStartTime to avoid double counting multiple sequential ACTIVITY_PAUSED_EVENTS.
-                    //This seems to usually happen when a system modal takes focus without backgrounding the application.
-                    currentStartTime = a.timestamp
-                    result
                 }
+                leadingPauseEnd?.let { total += ChronoUnit.SECONDS.between(startDateTime, it).toDouble() }
+                total
             }
     }
 
