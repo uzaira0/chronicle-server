@@ -18,7 +18,6 @@
 package com.openlattice.chronicle.audit
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.openlattice.chronicle.configuration.ErrorSanitizationConfig
 import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
@@ -66,7 +65,6 @@ public open class AuditService(
         private const val MAX_FLUSH_RETRIES = 3
         private const val MAX_QUEUED_EVENTS = 10_000
         private const val MAX_AUDIT_STRING_LENGTH = 500
-        private val auditErrorSanitizer = ErrorSanitizationConfig(maxMessageLength = MAX_AUDIT_STRING_LENGTH)
         private val redactedAdditionalDataKeyParts = setOf("token", "secret", "password", "apikey", "api_key")
         private val fingerprintedAdditionalDataKeys = setOf(
             "participantid",
@@ -95,9 +93,7 @@ public open class AuditService(
         }
 
         private fun sanitizeAuditErrorMessage(message: String?): String? {
-            return message?.let {
-                auditErrorSanitizer.sanitizeMessage(LogSanitizer.sanitize(it, MAX_AUDIT_STRING_LENGTH))
-            }
+            return message?.let { "Operation failed" }
         }
 
         private fun sanitizeAdditionalData(data: Map<String, Any>?): Map<String, Any>? {
@@ -193,6 +189,9 @@ public open class AuditService(
      */
     public fun log(entry: AuditLogEntry) {
         val sanitizedEntry = sanitizeForPersistence(entry)
+        if (entry.success && auditLogRepository.saveInActiveTransaction(sanitizedEntry) {
+                writeToLogFile(sanitizedEntry)
+            }) return
         // Always write to log file immediately (synchronous) for SIEM
         writeToLogFile(sanitizedEntry)
 
@@ -531,7 +530,7 @@ public open class AuditService(
             try {
                 val saved = auditLogRepository.saveBatch(batch)
                 if (saved != batch.size) {
-                    throw IllegalStateException("Only saved $saved/${batch.size} audit entries to database")
+                    error("Only saved $saved/${batch.size} audit entries to database")
                 }
                 consecutiveFlushFailures.set(0)
             } catch (e: Exception) {

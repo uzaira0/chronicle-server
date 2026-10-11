@@ -4,6 +4,9 @@ import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
 import com.openlattice.chronicle.auditing.AuditingManager
+import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.configuration.RateLimit
 import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AclKey
@@ -58,6 +61,7 @@ public open class StudyComplianceController @Inject constructor(
     private val storageResolver: StorageResolver,
     override val auditingManager: AuditingManager,
     override val authorizationManager: AuthorizationManager,
+    private val auditService: AuditService,
 ) : StudyComplianceApi, AuthorizingComponent {
     internal companion object {
         private val logger = LoggerFactory.getLogger(StudyComplianceController::class.java)
@@ -71,7 +75,17 @@ public open class StudyComplianceController @Inject constructor(
         ensureReadAccess(AclKey(studyId))
         check(studyService.isValidStudy(studyId)) { "$studyId is not valid." }
 
-        return studyComplianceManager.getNonCompliantStudies(listOf(studyId))
+        val violations = studyComplianceManager.getNonCompliantStudies(listOf(studyId))
+        auditService.logWithContext {
+            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            resourceType("StudyCompliance")
+            studyId(studyId)
+            success(true)
+            accessedPHI(true)
+            phiFields(listOf("participantId", "complianceViolations"))
+            additionalData(mapOf("participantCount" to (violations[studyId]?.size ?: 0)))
+        }
+        return violations
     }
 
     @PostMapping(
@@ -82,7 +96,10 @@ public open class StudyComplianceController @Inject constructor(
     override fun triggerStudyComplianceNotifications(@Valid @RequestBody studyIds: Set<UUID>): OK {
         ensureAdminAccess()
         val nonCompliantStudies = studyComplianceManager.getNonCompliantStudies(studyIds)
-        logger.info("Triggering notifications for the following non-compliant studies: $nonCompliantStudies")
+        nonCompliantStudies.forEach { (studyId, violations) ->
+            logger.info("Triggering non-compliance notifications for study {} ({})",
+                studyId, StudyComplianceHazelcastTask.complianceLogSummary(violations))
+        }
         check(studyIds.containsAll(nonCompliantStudies.keys) ) { "Received unrequested non-compliant studies must be a bug." }
 
         storageResolver.getPlatformStorage().connection.use { connection ->

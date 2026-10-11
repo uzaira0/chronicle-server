@@ -13,7 +13,8 @@ import java.util.UUID
 class DashboardControllerTest {
 
     private val dashboardService = Mockito.mock(DashboardService::class.java)
-    private val controller = DashboardController(dashboardService)
+    private val auditService = Mockito.mock(com.openlattice.chronicle.audit.AuditService::class.java)
+    private val controller = DashboardController(dashboardService, auditService)
 
     @Test
     fun testGetStatsReturnsServiceResult() {
@@ -38,6 +39,11 @@ class DashboardControllerTest {
 
         assertNotNull(result)
         assertEquals(0, result.size)
+        val audit = org.mockito.kotlin.argumentCaptor<com.openlattice.chronicle.audit.AuditLogEntry>()
+        verify(auditService).log(audit.capture())
+        assertEquals(com.openlattice.chronicle.audit.AuditAction.PARTICIPANT_DATA_ACCESS, audit.firstValue.action)
+        assertEquals(true, audit.firstValue.accessedPHI)
+        assertEquals(studyId, audit.firstValue.studyId)
     }
 
     @Test

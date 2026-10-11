@@ -1,6 +1,9 @@
 package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
+import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.authorization.StudyPermission
 import com.openlattice.chronicle.authorization.annotations.RequiresStudyAccess
 import com.openlattice.chronicle.configuration.RateLimit
@@ -25,7 +28,8 @@ import java.util.*
 @Timed
 @RateLimit(type = RateLimitType.READ, keyStrategy = RateLimitKeyStrategy.STUDY)
 public open class DashboardController(
-    private val dashboardService: DashboardService
+    private val dashboardService: DashboardService,
+    private val auditService: AuditService,
 ) : DashboardApi {
 
     @RequiresStudyAccess(StudyPermission.READ_STUDY)
@@ -48,6 +52,16 @@ public open class DashboardController(
         @RequestParam("since", required = false) since: String?
     ): List<StudyEvent> {
         val sinceDate = since?.let { OffsetDateTime.parse(it) }
-        return dashboardService.getRecentEvents(studyId, limit, sinceDate)
+        val events = dashboardService.getRecentEvents(studyId, limit, sinceDate)
+        auditService.logWithContext {
+            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            resourceType("StudyEvents")
+            studyId(studyId)
+            success(true)
+            accessedPHI(true)
+            phiFields(listOf("participantId"))
+            additionalData(mapOf("participantCount" to events.mapNotNull { it.participantId }.distinct().size))
+        }
+        return events
     }
 }

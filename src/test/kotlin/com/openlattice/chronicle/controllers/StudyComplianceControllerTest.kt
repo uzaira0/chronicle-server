@@ -26,9 +26,10 @@ class StudyComplianceControllerTest {
     private val storageResolver = Mockito.mock(StorageResolver::class.java)
     private val auditingManager = Mockito.mock(AuditingManager::class.java)
     private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
+    private val auditService = Mockito.mock(com.openlattice.chronicle.audit.AuditService::class.java)
     private val controller = StudyComplianceController(
         studyLimitsMgr, studyService, studyComplianceManager,
-        studyComplianceHazelcastTask, storageResolver, auditingManager, authorizationManager
+        studyComplianceHazelcastTask, storageResolver, auditingManager, authorizationManager, auditService
     )
 
     @Test
@@ -54,7 +55,7 @@ class StudyComplianceControllerTest {
     }
 
     @Test
-    fun testGetStudyComplianceViolationsDelegatesToManager() {
+    fun testGetStudyComplianceViolationsAuditsSuccessfulParticipantDataAccess() {
         val studyId = UUID.randomUUID()
         Mockito.`when`(authorizationManager.checkIfHasPermissions(
             kAny(), kAny(), kAny()
@@ -68,11 +69,38 @@ class StudyComplianceControllerTest {
         val result = controller.getStudyComplianceViolations(studyId)
         assertNotNull(result)
         verify(studyComplianceManager).getNonCompliantStudies(listOf(studyId))
+        val audit = org.mockito.kotlin.argumentCaptor<com.openlattice.chronicle.audit.AuditLogEntry>()
+        verify(auditService).log(audit.capture())
+        assertEquals(com.openlattice.chronicle.audit.AuditAction.PARTICIPANT_DATA_ACCESS, audit.firstValue.action)
+        assertEquals(studyId, audit.firstValue.studyId)
+        assertTrue(audit.firstValue.success)
+        assertTrue(audit.firstValue.accessedPHI)
+        TestSecurityUtils.clearSecurityContext()
     }
 
     // triggerComplianceNotificationsForAllStudies and triggerStudyComplianceNotifications
     // require ensureAdminAccess() which depends on Principals static context
     // and use AuditedTransactionBuilder with real DB connections.
     // Cannot be unit-tested with simple mocks. Covered by integration tests.
+
+
+    @Test fun bothManualTriggersPropagatePersistenceFailureWithoutSuccessAudit() {
+        TestSecurityUtils.setupSecurityContext()
+        val study = UUID.randomUUID()
+        val violations = mapOf(study to emptyMap<String, List<com.openlattice.chronicle.study.ComplianceViolation>>())
+        val source = org.mockito.kotlin.mock<com.zaxxer.hikari.HikariDataSource>()
+        val connection = org.mockito.kotlin.mock<java.sql.Connection>()
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(source)
+        Mockito.`when`(source.connection).thenReturn(connection)
+        Mockito.`when`(studyComplianceManager.getNonCompliantStudies(setOf(study))).thenReturn(violations)
+        Mockito.`when`(studyComplianceManager.getAllNonCompliantStudies()).thenReturn(violations)
+        Mockito.doAnswer { throw java.sql.SQLException("insert failed") }
+            .`when`(studyComplianceHazelcastTask).notifyNonCompliantStudies(violations)
+        org.junit.Assert.assertThrows(java.sql.SQLException::class.java) { controller.triggerStudyComplianceNotifications(setOf(study)) }
+        org.junit.Assert.assertThrows(java.sql.SQLException::class.java) { controller.triggerComplianceNotificationsForAllStudies() }
+        Mockito.verifyNoInteractions(auditingManager)
+        Mockito.verify(connection, Mockito.times(2)).rollback()
+        TestSecurityUtils.clearSecurityContext()
+    }
 
 }

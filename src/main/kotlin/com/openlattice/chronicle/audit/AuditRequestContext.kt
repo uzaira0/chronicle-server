@@ -77,6 +77,7 @@ public object AuditRequestContext {
     // reason: boundary catch — absence of an authenticated principal must yield a null id
     @Suppress("TooGenericExceptionCaught")
     public fun getCurrentUserId(): UUID? {
+        if (!isAuthenticated()) return null
         return try {
             Principals.getCurrentSecurablePrincipal().id
         } catch (e: Exception) {
@@ -91,6 +92,7 @@ public object AuditRequestContext {
     // reason: boundary catch — absence of an authenticated principal must yield a null role
     @Suppress("TooGenericExceptionCaught")
     public fun getCurrentUserRole(): String? {
+        if (!isAuthenticated()) return null
         return try {
             Principals.getCurrentSecurablePrincipal().principal.type.name
         } catch (e: Exception) {
@@ -119,13 +121,9 @@ public object AuditRequestContext {
     // reason: boundary catch — any failure resolving the principal means not authenticated
     @Suppress("TooGenericExceptionCaught")
     public fun isAuthenticated(): Boolean {
-        return try {
-            Principals.getCurrentSecurablePrincipal()
-            true
-        } catch (e: Exception) {
-            logger.debug("No current securable principal available; treating as unauthenticated", e)
-            false
-        }
+        val authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().authentication
+        return authentication?.isAuthenticated == true &&
+            authentication !is org.springframework.security.authentication.AnonymousAuthenticationToken
     }
 
     /**

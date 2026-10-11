@@ -5,8 +5,6 @@ import com.geekbeast.postgres.PostgresColumnDefinition
 import com.geekbeast.postgres.PostgresDatatype
 import org.apache.olingo.commons.api.edm.FullQualifiedName
 import org.slf4j.LoggerFactory
-import java.lang.reflect.Field
-import java.lang.reflect.Modifier
 
 /**
  *
@@ -98,7 +96,7 @@ public class PostgresEventColumns private constructor() {
         @JvmField val PRINCIPAL_ID = PostgresColumnDefinition("principal_id", PostgresDatatype.TEXT_256).notNull()
         @JvmField val ACL_KEY = PostgresColumnDefinition("acl_key", PostgresDatatype.TEXT_256).notNull()
         @JvmField val AUDIT_EVENT_TYPE = PostgresColumnDefinition("audit_event_type", PostgresDatatype.TEXT_256).notNull()
-        @JvmField val DESCRIPTION = PostgresColumnDefinition("description", PostgresDatatype.TEXT_256).notNull()
+        @JvmField val DESCRIPTION = PostgresColumnDefinition("description", PostgresDatatype.TEXT).notNull()
         @JvmField val DATA = PostgresColumnDefinition("data", PostgresDatatype.VARCHAR_MAX).notNull()
 
         // SENSOR_DATA
@@ -181,19 +179,10 @@ public class PostgresEventColumns private constructor() {
         public val columnTypes : Map<String, PostgresDatatype> = eventStorageColumns().associate { it.name to it.datatype }
 
         @JvmStatic
-        public fun eventStorageColumns(): List<PostgresColumnDefinition> {
-            return (PostgresEventColumns::class.java.fields.asList() + PostgresEventColumns::class.java.declaredFields)
-                .filter { field: Field -> (Modifier.isStatic(field.modifiers) && Modifier.isFinal(field.modifiers)) }
-                .filter { field: Field -> PostgresColumnDefinition::class.java.isAssignableFrom(field.type) }
-                .mapNotNull { field: Field ->
-                    try {
-                        return@mapNotNull field[null] as PostgresColumnDefinition
-                    } catch (e: IllegalAccessException) {
-                        logger.debug("Skipping inaccessible column field {}", field.name, e)
-                        return@mapNotNull null
-                    }
-                }
-        }
+        public fun eventStorageColumns(): List<PostgresColumnDefinition> =
+            reflectedPostgresColumns(PostgresEventColumns::class.java) { field, error ->
+                logger.debug("Skipping inaccessible column field {}", field.name, error)
+            }
 
         // applies to all sensor types
         public val SHARED_SENSOR_COLS = linkedSetOf(

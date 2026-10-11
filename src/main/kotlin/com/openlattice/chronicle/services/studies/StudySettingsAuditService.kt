@@ -70,24 +70,28 @@ public open class StudySettingsAuditService(
         settingKey: StudySettingType,
         beforeValue: Any?,
         afterValue: Any,
-        changeSummary: String
+        changeSummary: String,
+        connection: java.sql.Connection? = null,
     ) {
-        val hds = storageResolver.getPlatformStorage()
-        hds.connection.use { connection ->
-            connection.prepareStatement(INSERT_AUDIT_ENTRY_SQL).use { ps ->
-                val entryId = UUID.randomUUID()
-                ps.setObject(1, entryId)
-                ps.setObject(2, studyId)
-                ps.setString(3, changedBy)
-                ps.setObject(4, OffsetDateTime.now())
-                ps.setString(5, sourceIp)
-                ps.setString(6, settingKey.name)
-                ps.setString(7, if (beforeValue != null) mapper.writeValueAsString(beforeValue) else null)
-                ps.setString(8, mapper.writeValueAsString(afterValue))
-                ps.setString(9, changeSummary)
-                ps.executeUpdate()
-                logger.info("Recorded settings audit entry {} for study {} setting {}", entryId, studyId, settingKey)
+        if (connection == null) {
+            storageResolver.getPlatformStorage().connection.use {
+                recordSettingsChange(studyId, changedBy, sourceIp, settingKey, beforeValue, afterValue, changeSummary, it)
             }
+            return
+        }
+        connection.prepareStatement(INSERT_AUDIT_ENTRY_SQL).use { ps ->
+            val entryId = UUID.randomUUID()
+            ps.setObject(1, entryId)
+            ps.setObject(2, studyId)
+            ps.setString(3, changedBy)
+            ps.setObject(4, OffsetDateTime.now())
+            ps.setString(5, sourceIp)
+            ps.setString(6, settingKey.name)
+            ps.setString(7, if (beforeValue != null) mapper.writeValueAsString(beforeValue) else null)
+            ps.setString(8, mapper.writeValueAsString(afterValue))
+            ps.setString(9, changeSummary)
+            ps.executeUpdate()
+            logger.info("Recorded settings audit entry {} for study {} setting {}", entryId, studyId, settingKey)
         }
     }
 

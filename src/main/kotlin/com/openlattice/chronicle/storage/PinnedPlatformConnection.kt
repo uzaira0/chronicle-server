@@ -40,12 +40,14 @@ public object PinnedPlatformConnection {
     }
 
     /** Commit the outermost owner, then dispatch its coalesced cache invalidations. */
-    internal fun <T> committing(delegate: HikariDataSource, connection: Connection, block: () -> T): T {
+    internal fun <T> committing(delegate: HikariDataSource, connection: Connection, commitWhen: () -> Boolean = { true }, block: () -> T): T {
         if (owningConnection(delegate) != null) return block()
         return pinning(delegate, connection) {
             val result = block()
-            connection.commit()
-            checkNotNull(pinned.get()).afterCommit.values.forEach { it() }
+            if (commitWhen()) {
+                connection.commit()
+                checkNotNull(pinned.get()).afterCommit.values.forEach { it() }
+            } else connection.rollback()
             result
         }
     }

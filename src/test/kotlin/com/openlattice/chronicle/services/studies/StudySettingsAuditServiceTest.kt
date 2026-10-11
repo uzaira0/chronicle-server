@@ -78,6 +78,15 @@ class StudySettingsAuditServiceTest {
     }
 
     @Test
+    fun transactionalAuditDoesNotBorrowOrCloseAnotherConnection() {
+        service.recordSettingsChange(UUID.randomUUID(), "staff", null, StudySettingType.Notifications,
+            null, mapOf("enabled" to true), "Changed settings", mockConnection)
+        Mockito.verifyNoInteractions(mockHds)
+        verify(mockConnection, Mockito.never()).close()
+        verify(mockPs).executeUpdate()
+    }
+
+    @Test
     fun testRecordSettingsChangeWithNullBeforeValue() {
         service.recordSettingsChange(
             studyId = UUID.randomUUID(),

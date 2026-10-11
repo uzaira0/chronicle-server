@@ -41,6 +41,7 @@ public open class AuditLogRepository(
 
         private const val TABLE_NAME = "audit_logs"
 
+        // An explicit conflict target applies SELECT RLS to callers that can only append audits.
         private val INSERT_SQL = """
             INSERT INTO $TABLE_NAME (
                 id, timestamp, user_id, user_role, ip_address, user_agent,
@@ -49,6 +50,7 @@ public open class AuditLogRepository(
                 request_path, request_method, response_code, duration_ms,
                 additional_data
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+            ON CONFLICT DO NOTHING
         """.trimIndent()
 
         private val SELECT_BY_ID_SQL = """
@@ -130,6 +132,14 @@ public open class AuditLogRepository(
     /**
      * Saves a single audit log entry using an existing connection.
      */
+    internal fun saveInActiveTransaction(entry: AuditLogEntry, afterCommit: () -> Unit): Boolean {
+        val pool = storageResolver.getPlatformStorage()
+        val owner = com.openlattice.chronicle.storage.PinnedPlatformConnection.owningConnection(pool) ?: return false
+        save(owner, entry)
+        com.openlattice.chronicle.storage.PinnedPlatformConnection.afterCommit(pool, entry.id, afterCommit)
+        return true
+    }
+
     public fun save(connection: Connection, entry: AuditLogEntry) {
         connection.prepareStatement(INSERT_SQL).use { ps ->
             bindEntry(ps, entry)
