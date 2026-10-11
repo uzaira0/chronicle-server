@@ -13,7 +13,13 @@ class TimeUseDiaryDayTest {
     @Test
     fun `groups a submission on the local day of the requested range`() {
         val chicagoRangeStart = OffsetDateTime.parse("2026-10-01T00:00:00-05:00")
-        assertEquals(LocalDate.parse("2026-10-01"), tudSubmissionDay(eveningSubmission, chicagoRangeStart))
+        assertEquals(LocalDate.parse("2026-10-01"), tudSubmissionDay(eveningSubmission, chicagoRangeStart.offset))
+    }
+
+    @Test fun `Santiago grouping follows the changed offset across September DST`() {
+        val zone = java.time.ZoneId.of("America/Santiago")
+        assertEquals(LocalDate.parse("2026-09-05"), tudSubmissionDay(OffsetDateTime.parse("2026-09-06T03:30:00Z"), zone))
+        assertEquals(LocalDate.parse("2026-09-07"), tudSubmissionDay(OffsetDateTime.parse("2026-09-07T03:30:00Z"), zone))
     }
 
     @Test

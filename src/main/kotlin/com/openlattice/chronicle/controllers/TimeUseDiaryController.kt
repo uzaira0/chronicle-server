@@ -40,6 +40,7 @@ import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.PARTICIP
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.PARTICIPANT_ID_PATH
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.PARTICIPANT_PATH
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.START_DATE
+import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.TIME_ZONE
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.SETTINGS_PATH
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.STUDY_ID
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.STUDY_ID_PATH
@@ -123,19 +124,25 @@ public open class TimeUseDiaryController(
                 ensureWriteAccess(AclKey(realStudyId))
                 IdempotentSubmissionResult(
                     storageResolver.getPlatformStorage().connection.use { conn ->
-                        AuditedTransactionBuilder<UUID>(conn, auditingManager)
-                            .transaction { connection ->
-                                timeUseDiaryService.submitTimeUseDiary(
-                                    connection,
-                                    realStudyId,
-                                    participantId,
-                                    responses
-                                )
+                        val previousAutoCommit = conn.autoCommit
+                        conn.autoCommit = false
+                        try {
+                            com.openlattice.chronicle.storage.PinnedPlatformConnection.committing(storageResolver.getPlatformStorage(), conn) {
+                                storageResolver.getPlatformStorage().connection.use { borrowed ->
+                                    AuditedTransactionBuilder<UUID>(borrowed, auditingManager)
+                                        .transaction { connection ->
+                                            timeUseDiaryService.submitTimeUseDiary(connection, realStudyId, participantId, responses)
+                                        }
+                                        .audit { listOf(tudSubmissionEvent(realStudyId, participantId, it)) }
+                                        .buildAndRun()
+                                }
                             }
-                            .audit {
-                                listOf(tudSubmissionEvent(realStudyId, participantId, it))
-                            }
-                            .buildAndRun()
+                        } catch (failure: Exception) {
+                            conn.rollback()
+                            throw failure
+                        } finally {
+                            conn.autoCommit = previousAutoCommit
+                        }
                     },
                     replayed = false,
                 )
@@ -288,13 +295,19 @@ public open class TimeUseDiaryController(
         @PathVariable(STUDY_ID) studyId: UUID,
         @RequestParam(START_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) startDateTime: OffsetDateTime,
         @RequestParam(END_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) endDateTime: OffsetDateTime,
+        @RequestParam(TIME_ZONE, required = false) timeZone: String?,
     ): Map<LocalDate, Set<UUID>> {
         ensureReadAccess(AclKey(studyId))
         logger.info("Retrieving TimeUseDiary ids from study $studyId")
+        val zone = try { java.time.ZoneId.of(timeZone ?: startDateTime.offset.id) }
+        catch (error: java.time.DateTimeException) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.study.invalidTimeZone"), error)
+        }
         val submissionsIdsByDate = timeUseDiaryService.getStudyTUDSubmissionIdsByDate(
             studyId,
             startDateTime,
-            endDateTime
+            endDateTime,
+            zone,
         )
         recordEvent(
             AuditableEvent(

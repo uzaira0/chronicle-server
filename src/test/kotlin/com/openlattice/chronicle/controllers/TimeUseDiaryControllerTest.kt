@@ -29,6 +29,7 @@ import org.mockito.Mockito.verify
 import java.sql.Connection
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
+import java.time.ZoneId
 import java.util.*
 
 class TimeUseDiaryControllerTest {
@@ -104,7 +105,7 @@ class TimeUseDiaryControllerTest {
     }
 
     @Test
-    fun testGetStudyTUDSubmissionIdsByDateDelegatesToService() {
+    fun testGetStudyTUDSubmissionIdsByDateUsesIanaZone() {
         val studyId = UUID.randomUUID()
         val startDate = OffsetDateTime.of(2024, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
         val endDate = OffsetDateTime.of(2024, 12, 31, 23, 59, 59, 0, ZoneOffset.UTC)
@@ -112,14 +113,18 @@ class TimeUseDiaryControllerTest {
         Mockito.`when`(authorizationManager.checkIfHasPermissions(
             kAny(), kAny(), kAny()
         )).thenReturn(true)
-        Mockito.`when`(timeUseDiaryService.getStudyTUDSubmissionIdsByDate(studyId, startDate, endDate))
+        val zone = ZoneId.of("America/Santiago")
+        Mockito.`when`(timeUseDiaryService.getStudyTUDSubmissionIdsByDate(studyId, startDate, endDate, zone))
             .thenReturn(emptyMap())
 
         TestSecurityUtils.setupSecurityContext()
 
-        val result = controller.getStudyTUDSubmissionIdsByDate(studyId, startDate, endDate)
+        val result = controller.getStudyTUDSubmissionIdsByDate(studyId, startDate, endDate, zone.id)
         assertNotNull(result)
-        verify(timeUseDiaryService).getStudyTUDSubmissionIdsByDate(studyId, startDate, endDate)
+        verify(timeUseDiaryService).getStudyTUDSubmissionIdsByDate(studyId, startDate, endDate, zone)
+        assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+            controller.getStudyTUDSubmissionIdsByDate(studyId, startDate, endDate, "Invalid/Zone")
+        }
     }
 
     @Test
@@ -295,6 +300,49 @@ class TimeUseDiaryControllerTest {
         controller.getParticipantTUDSubmissionIdsByDate(studyId, participantId, start, end)
 
         verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
+    }
+
+    @Test
+    fun failedDiaryResponseNeverReachesEitherAuditSink() {
+        val studyId = UUID.randomUUID()
+        val sentinel = "health-response-sentinel"
+        val repository = Mockito.mock(com.openlattice.chronicle.audit.AuditLogRepository::class.java)
+        Mockito.`when`(repository.saveBatch(org.mockito.kotlin.any())).thenAnswer {
+            it.getArgument<List<com.openlattice.chronicle.audit.AuditLogEntry>>(0).size }
+        val audit = AuditService(repository, com.geekbeast.mappers.mappers.ObjectMappers.newJsonMapper())
+        val logger = org.apache.logging.log4j.LogManager.getLogger("AUDIT") as org.apache.logging.log4j.core.Logger
+        val messages = mutableListOf<String>()
+        val appender = Mockito.mock(org.apache.logging.log4j.core.Appender::class.java)
+        Mockito.`when`(appender.name).thenReturn("diary-audit-${UUID.randomUUID()}")
+        Mockito.`when`(appender.isStarted).thenReturn(true)
+        Mockito.doAnswer {
+            messages += it.getArgument<org.apache.logging.log4j.core.LogEvent>(0).message.formattedMessage
+            null
+        }.`when`(appender).append(org.mockito.kotlin.any())
+        logger.addAppender(appender)
+        try {
+            val connection = Mockito.mock(Connection::class.java)
+            val source = Mockito.mock(HikariDataSource::class.java)
+            Mockito.`when`(source.connection).thenReturn(connection)
+            Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(source)
+            Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+            Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
+            Mockito.`when`(timeUseDiaryService.submitTimeUseDiary(kAny(), kAny(), kAnyString(), kAny()))
+                .thenAnswer { throw java.sql.SQLException("JSON data, line 1: answer $sentinel before invalid NUL", "22P05") }
+            TestSecurityUtils.setupSecurityContext()
+            val controller = TimeUseDiaryController(authorizationManager, auditingManager, storageResolver,
+                idGenerationService, timeUseDiaryService, studyService, audit, enrollmentManager, participantFormSubmissionReceiptService)
+            assertThrows(java.sql.SQLException::class.java) { controller.submitTimeUseDiary(studyId, "participant-1", emptyList()) }
+            audit.flushBatch()
+            val entries = org.mockito.kotlin.argumentCaptor<List<com.openlattice.chronicle.audit.AuditLogEntry>>()
+            verify(repository).saveBatch(entries.capture())
+            org.junit.Assert.assertFalse(entries.firstValue.single().errorMessage.orEmpty().contains(sentinel))
+            org.junit.Assert.assertTrue("Audit file sink must have received the failure", messages.isNotEmpty())
+            org.junit.Assert.assertFalse(messages.joinToString().contains(sentinel))
+        } finally {
+            logger.removeAppender(appender)
+            audit.shutdown()
+        }
     }
 
 }

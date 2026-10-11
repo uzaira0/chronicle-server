@@ -46,14 +46,9 @@ internal fun tudDiaryDay(responses: List<TimeUseDiaryResponse>, submissionDate: 
         ?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         ?: submissionDate.toLocalDate()
 
-/**
- * Groups a submission on the caller's calendar, read from the offset of the requested range
- * start, so a group's day matches the local-day window the web downloads it with.
- * One offset for the whole range; a range spanning a DST change shifts groups on the
- * far side by an hour near midnight. Pass a zone id through the API if that matters.
- */
-internal fun tudSubmissionDay(submittedAt: OffsetDateTime, rangeStart: OffsetDateTime): LocalDate =
-    submittedAt.atZoneSameInstant(rangeStart.offset).toLocalDate()
+/** Resolve each instant using the study calendar's DST rules. */
+internal fun tudSubmissionDay(submittedAt: OffsetDateTime, timeZone: java.time.ZoneId): LocalDate =
+    submittedAt.atZoneSameInstant(timeZone).toLocalDate()
 
 /**
  * @author Andrew Carter andrew@openlattice.com
@@ -76,6 +71,7 @@ public open class TimeUseDiaryService(
         participantId: String,
         responses: List<TimeUseDiaryResponse>
     ): UUID {
+        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId, participantId)
         require(responses.size <= 1_000) { "Time use diary submission too large: ${responses.size} entries (max 1,000)" }
         val timeUseDiaryId = idGenerationService.getNextId()
         val submissionDate = OffsetDateTime.now()
@@ -172,6 +168,7 @@ public open class TimeUseDiaryService(
         studyId: UUID,
         startDate: OffsetDateTime,
         endDate: OffsetDateTime,
+        timeZone: java.time.ZoneId,
     ): Map<LocalDate, Set<UUID>> {
         try {
             val hds = storageResolver.getPlatformReadStorage(PostgresFlavor.VANILLA)
@@ -188,7 +185,7 @@ public open class TimeUseDiaryService(
             ) {
                 val date = ResultSetAdapters.submissionDate(it)
                 val id = ResultSetAdapters.submissionId(it)
-                Pair(tudSubmissionDay(date, startDate), id)
+                Pair(tudSubmissionDay(date, timeZone), id)
             }.toList()
 
             val submissionsByDate: MutableMap<LocalDate, Set<UUID>> = mutableMapOf()

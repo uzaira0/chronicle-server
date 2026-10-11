@@ -30,6 +30,7 @@ public interface TimeUseDiaryManager {
         studyId: UUID,
         startDate: OffsetDateTime,
         endDate: OffsetDateTime,
+        timeZone: java.time.ZoneId = startDate.offset,
     ): Map<LocalDate, Set<UUID>>
 
     public fun getStudyTUDSubmissions(
