@@ -27,7 +27,7 @@ class HazelcastIdGenerationServiceTest {
         val attempts = AtomicInteger()
         withService { scrolls, queue, block, available ->
             Mockito.doAnswer {
-                if (attempts.getAndIncrement() == 0) throw IllegalStateException("transient lock failure")
+                if (attempts.getAndIncrement() == 0) error("transient lock failure")
                 null
             }.`when`(scrolls).lock(0L)
             Mockito.`when`(scrolls.executeOnEntries<List<UUID>>(any())).thenReturn(mapOf(0L to listOf(expected)))
@@ -79,7 +79,7 @@ class HazelcastIdGenerationServiceTest {
         val attempts = AtomicInteger()
         withService { scrolls, queue, block, available ->
             Mockito.`when`(scrolls.executeOnEntries<List<UUID>>(any())).thenAnswer {
-                if (attempts.getAndIncrement() == 0) throw IllegalStateException("transient generation failure")
+                if (attempts.getAndIncrement() == 0) error("transient generation failure")
                 mapOf(0L to listOf(expected))
             }
             Mockito.doAnswer { invocation ->
@@ -153,7 +153,8 @@ class HazelcastIdGenerationServiceTest {
         }
     }
 
-    private fun withService(random: Boolean = false, configure: (IMap<Long, Range>, IQueue<UUID>, CountDownLatch, LinkedBlockingQueue<UUID>) -> Unit): Fixture {
+    private fun withService(random: Boolean = false, configure: (IMap<Long, Range>, IQueue<UUID>, CountDownLatch, LinkedBlockingQueue<UUID>) ->
+        Unit): Fixture {
         val clients = mock<IHazelcastClientProvider>()
         val instance = mock<HazelcastInstance>()
         val scrolls = mock<IMap<Long, Range>>()

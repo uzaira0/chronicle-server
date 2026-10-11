@@ -6,7 +6,6 @@ import com.hazelcast.map.IMap
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
-import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.import.ImportStudiesConfiguration
 import com.openlattice.chronicle.services.candidates.CandidateService
 import com.openlattice.chronicle.services.studies.StudyService
@@ -65,7 +64,7 @@ class ImportControllerConnectionTest {
         timeUseDiaryTable = "legacy_diary", timeUseDiarySummarizedTable = "legacy_summary",
     )
 
-    private fun withController(action: (ImportController, HikariDataSource) -> Unit) {
+    private fun withController(studies: StudyService = mock(), action: (ImportController, HikariDataSource) -> Unit) {
         TestSecurityUtils.setupSecurityContext()
         HikariDataSource().use { dataSource ->
             dataSource.jdbcUrl = postgres.jdbcUrl
@@ -82,8 +81,11 @@ class ImportControllerConnectionTest {
                     }
                     statement.execute("CREATE TABLE IF NOT EXISTS legacy_system_apps (app_package_name TEXT)")
                     statement.execute("TRUNCATE legacy_system_apps")
-                    statement.execute("CREATE TABLE IF NOT EXISTS legacy_diary (id INTEGER)")
-                    statement.execute("CREATE TABLE IF NOT EXISTS legacy_summary (id INTEGER)")
+                    statement.execute("DROP TABLE IF EXISTS legacy_diary, legacy_summary")
+                    statement.execute(
+                        "CREATE TABLE legacy_diary (study_id UUID, organization_id UUID, submission_id UUID, participant_id TEXT, " +
+                        "submission_date TIMESTAMPTZ, submission TEXT)")
+                    statement.execute("CREATE TABLE legacy_summary (submission_id UUID, data TEXT)")
                 }
             }
             val dataSourceManager = mock<DataSourceManager>()
@@ -93,11 +95,40 @@ class ImportControllerConnectionTest {
             val hazelcast = mock<HazelcastInstance>()
             Mockito.`when`(hazelcast.getMap<String, Any>("USERS")).thenReturn(mock<IMap<String, Any>>())
             val controller = ImportController(
-                mock<StudyService>(), mock<CandidateService>(), mock<TimeUseDiaryService>(),
-                mock<AppDataUploadService>(), mock<HazelcastIdGenerationService>(), dataSourceManager,
+                studies, mock<CandidateService>(), mock<TimeUseDiaryService>(),
+                mock<AppDataUploadService>(), dataSourceManager,
                 mock<StorageResolver>(), authorization, mock<AuditingManager>(), hazelcast,
             )
             action(controller, dataSource)
         }
     }
+
+    @Test fun summaryFailureRollsBackAndRetriesKeepOneStableSubmission() {
+        val studies = mock<StudyService>()
+        val study = java.util.UUID.randomUUID()
+        val submission = java.util.UUID.randomUUID()
+        Mockito.`when`(studies.getStudyId(study)).thenReturn(study)
+        withController(studies) { controller, source ->
+            source.connection.use { connection -> connection.createStatement().use { statement ->
+                statement.execute("INSERT INTO legacy_diary VALUES ('$study', '${java.util.UUID.randomUUID()}', '$submission', 'p1', now(), '[]')")
+                statement.execute("INSERT INTO legacy_summary VALUES ('$submission', '[]')")
+                statement.execute("ALTER TABLE time_use_diary_summarized ADD CONSTRAINT injected_summary_failure CHECK (false)")
+            } }
+            assertThrows(SQLException::class.java) { controller.importTimeUseDiarySubmissions(config()) }
+            source.connection.use { connection -> connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT count(*) FROM time_use_diary_submissions").use { rows -> rows.next(); assertEquals(0, rows.getInt(1)) }
+                statement.execute("ALTER TABLE time_use_diary_summarized DROP CONSTRAINT injected_summary_failure")
+            } }
+            repeat(2) { controller.importTimeUseDiarySubmissions(config()) }
+            source.connection.use { connection -> connection.createStatement().use { statement ->
+                for (table in listOf("time_use_diary_submissions", "time_use_diary_summarized")) {
+                    statement.executeQuery("SELECT submission_id FROM $table").use { rows ->
+                        org.junit.Assert.assertTrue(rows.next()); assertEquals(submission, rows.getObject(1, java.util.UUID::class.java))
+                        org.junit.Assert.assertFalse(rows.next())
+                    }
+                }
+            } }
+        }
+    }
+
 }

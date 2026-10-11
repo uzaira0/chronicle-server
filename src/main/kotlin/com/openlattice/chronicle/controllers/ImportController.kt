@@ -21,7 +21,6 @@ import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.authorization.mapstores.UserMapstore
 import com.openlattice.chronicle.constants.OutputConstants
 import com.openlattice.chronicle.hazelcast.HazelcastMap
-import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.import.ImportApi
 import com.openlattice.chronicle.import.ImportApi.Companion.APP_USAGE_SURVEY
 import com.openlattice.chronicle.import.ImportApi.Companion.CONTROLLER
@@ -91,7 +90,6 @@ public open class ImportController(
     // reason: DI-wired collaborator retained for the migration controller's public constructor
     @Suppress("UnusedPrivateProperty")
     private val appDataUploadService: AppDataUploadService,
-    private val idGenerationService: HazelcastIdGenerationService,
     private val dataSourceManager: DataSourceManager,
     // reason: DI-wired collaborator retained for the migration controller's public constructor
     @Suppress("UnusedPrivateProperty")
@@ -113,8 +111,11 @@ public open class ImportController(
          * 5) submission_date,
          * 6) submission
          */
+        private const val IMPORT_RETRY_CONFLICT = "ON CONFLICT (submission_id) DO NOTHING"
+
         private val INSERT_TUD_SUBMISSIONS_SQL = """
             INSERT INTO ${ChroniclePostgresTables.TIME_USE_DIARY_SUBMISSIONS.name} values (?, ?, ?, ?, ?::jsonb)
+            $IMPORT_RETRY_CONFLICT
         """.trimIndent()
 
         /**
@@ -127,6 +128,7 @@ public open class ImportController(
          */
         private val INSERT_INTO_TUD_SUMMARIZED_SQL = """
             INSERT INTO ${ChroniclePostgresTables.TIME_USE_DIARY_SUMMARIZED.name} values (?, ?, ?, ?, ?::jsonb)
+            $IMPORT_RETRY_CONFLICT
         """.trimIndent()
 
         private val PARTICIPANT_STATS_COLUMNS = linkedSetOf(
@@ -469,11 +471,6 @@ public open class ImportController(
             tudSubmission(it)
         }.toList()
 
-        val legacySubmissionIdMapping: MutableMap<UUID, UUID> = mutableMapOf()
-
-        val inserted = insertTudSubmissions(hds, tudEntities, legacySubmissionIdMapping)
-        logger.info("Imported $inserted time use diary submissions. Expected to import ${tudEntities.size}")
-
         val tudSubmissionById: Map<UUID, TudSubmission> = tudEntities.associateBy { it.submissionId }
 
         val tudSummarizedTable = SqlIdentifierValidator.validateImportTableName(config.timeUseDiarySummarizedTable ?: "")
@@ -483,64 +480,69 @@ public open class ImportController(
             tudSummarized(it)
         }.toList()
 
-        val summaryInserts = insertTudSummaries(hds, summarizedData, tudSubmissionById, legacySubmissionIdMapping)
-        logger.info("inserted $summaryInserts entities into time use diary summary table")
-    }
-
-    private fun insertTudSubmissions(
-        hds: HikariDataSource,
-        tudEntities: List<TudSubmission>,
-        legacySubmissionIdMapping: MutableMap<UUID, UUID>,
-    ): Int {
-        return hds.connection.use { connection ->
-            connection.prepareStatement(INSERT_TUD_SUBMISSIONS_SQL).use { ps ->
-                tudEntities.forEach {
-                    val realStudyId = studyService.getStudyId(it.studyId)
-                    if (realStudyId == null) {
-                        logger.error("invalid study id ${it.studyId}")
-                        return@forEach
-                    }
-                    var index = 0
-                    val submissionId = idGenerationService.getNextId()
-                    legacySubmissionIdMapping[it.submissionId] = submissionId
-                    ps.setObject(++index, submissionId)
-                    ps.setObject(++index, realStudyId)
-                    ps.setString(++index, it.participantId)
-                    ps.setObject(++index, it.submissionDate)
-                    ps.setString(++index, mapper.writeValueAsString(it.submission))
-                    ps.addBatch()
-                }
-                ps.executeBatch().sum()
+        hds.connection.use { connection ->
+            val previousAutoCommit = connection.autoCommit
+            connection.autoCommit = false
+            try {
+                insertTudSubmissions(connection, tudEntities)
+                insertTudSummaries(connection, summarizedData, tudSubmissionById)
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = previousAutoCommit
             }
         }
     }
 
+    private fun insertTudSubmissions(
+        connection: Connection,
+        tudEntities: List<TudSubmission>,
+    ): Int {
+        return connection.prepareStatement(INSERT_TUD_SUBMISSIONS_SQL).use { ps ->
+            tudEntities.forEach {
+                val realStudyId = studyService.getStudyId(it.studyId)
+                if (realStudyId == null) {
+                    logger.error("invalid study id ${it.studyId}")
+                    return@forEach
+                }
+                var index = 0
+                val submissionId = it.submissionId
+                ps.setObject(++index, submissionId)
+                ps.setObject(++index, realStudyId)
+                ps.setString(++index, it.participantId)
+                ps.setObject(++index, it.submissionDate)
+                ps.setString(++index, mapper.writeValueAsString(it.submission))
+                ps.addBatch()
+            }
+            ps.executeBatch().sum()
+        }
+    }
+
     private fun insertTudSummaries(
-        hds: HikariDataSource,
+        connection: Connection,
         summarizedData: List<TudSummarizedEntity>,
         tudSubmissionById: Map<UUID, TudSubmission>,
-        legacySubmissionIdMapping: Map<UUID, UUID>,
     ): Int {
-        return hds.connection.use { connection ->
-            connection.prepareStatement(INSERT_INTO_TUD_SUMMARIZED_SQL).use { ps ->
-                summarizedData.forEach {
-                    val submissionId = legacySubmissionIdMapping[it.submissionId] ?: return@forEach
-                    val tudSubmission = tudSubmissionById.getValue(it.submissionId)
-                    val realStudyId = studyService.getStudyId(tudSubmission.studyId)
-                    if (realStudyId == null) {
-                        logger.error("invalid study id ${tudSubmission.studyId}")
-                        return@forEach
-                    }
-                    var index = 0
-                    ps.setObject(++index, realStudyId)
-                    ps.setString(++index, tudSubmission.participantId)
-                    ps.setObject(++index, submissionId)
-                    ps.setObject(++index, tudSubmission.submissionDate)
-                    ps.setString(++index, mapper.writeValueAsString(it.entities))
-                    ps.addBatch()
+        return connection.prepareStatement(INSERT_INTO_TUD_SUMMARIZED_SQL).use { ps ->
+            summarizedData.forEach {
+                val submissionId = it.submissionId
+                val tudSubmission = tudSubmissionById[submissionId] ?: return@forEach
+                val realStudyId = studyService.getStudyId(tudSubmission.studyId)
+                if (realStudyId == null) {
+                    logger.error("invalid study id ${tudSubmission.studyId}")
+                    return@forEach
                 }
-                ps.executeBatch().sum()
+                var index = 0
+                ps.setObject(++index, realStudyId)
+                ps.setString(++index, tudSubmission.participantId)
+                ps.setObject(++index, submissionId)
+                ps.setObject(++index, tudSubmission.submissionDate)
+                ps.setString(++index, mapper.writeValueAsString(it.entities))
+                ps.addBatch()
             }
+            ps.executeBatch().sum()
         }
     }
 

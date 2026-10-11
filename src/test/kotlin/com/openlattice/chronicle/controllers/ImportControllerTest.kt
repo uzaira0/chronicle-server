@@ -5,7 +5,6 @@ import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
-import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.import.ImportStudiesConfiguration
 import com.openlattice.chronicle.services.candidates.CandidateService
 import com.openlattice.chronicle.services.studies.StudyService
@@ -17,6 +16,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assert.assertThrows
+import com.geekbeast.controllers.exceptions.ForbiddenException
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
@@ -28,7 +29,6 @@ class ImportControllerTest {
     private val candidateService = Mockito.mock(CandidateService::class.java)
     private val timeUseDiaryService = Mockito.mock(TimeUseDiaryService::class.java)
     private val appDataUploadService = Mockito.mock(AppDataUploadService::class.java)
-    private val idGenerationService = Mockito.mock(HazelcastIdGenerationService::class.java)
     private val dataSourceManager = Mockito.mock(DataSourceManager::class.java)
     private val storageResolver = Mockito.mock(StorageResolver::class.java)
     private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
@@ -48,7 +48,7 @@ class ImportControllerTest {
 
         controller = ImportController(
             studyService, candidateService, timeUseDiaryService,
-            appDataUploadService, idGenerationService, dataSourceManager,
+            appDataUploadService, dataSourceManager,
             storageResolver, authorizationManager, auditingManager, hazelcast
         )
     }
@@ -125,108 +125,18 @@ class ImportControllerTest {
     }
 
     @Test
-    fun testImportStudiesRequiresAdmin() {
-        // With no admin role, should fail
-        Mockito.`when`(authorizationManager.checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )).thenReturn(false)
-
+    fun testEveryImportRequiresAdminBeforeAccessingDataSources() {
+        TestSecurityUtils.setupSecurityContext(admin = false)
         val config = Mockito.mock(ImportStudiesConfiguration::class.java)
-        try {
-            controller.importStudies(config)
-            fail("Expected exception for non-admin access")
-        } catch (expected: Exception) {
-            // Expected - either ForbiddenException or NotImplementedException depending on admin check
-        }
-    }
-
-    @Test
-    fun testImportParticipantsRequiresAdmin() {
-        Mockito.`when`(authorizationManager.checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )).thenReturn(false)
-
-        val config = Mockito.mock(ImportStudiesConfiguration::class.java)
-        try {
-            controller.importParticipants(config)
-            fail("Expected exception for non-admin access")
-        } catch (expected: Exception) {
-            // Expected
-        }
-    }
-
-    @Test
-    fun testImportUserPermissionsRequiresAdmin() {
-        Mockito.`when`(authorizationManager.checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )).thenReturn(false)
-
-        val config = Mockito.mock(ImportStudiesConfiguration::class.java)
-        try {
-            controller.importUserPermissions(config)
-            fail("Expected exception for non-admin access")
-        } catch (expected: Exception) {
-            // Expected
-        }
-    }
-
-    @Test
-    fun testImportParticipantStatsRequiresAdmin() {
-        Mockito.`when`(authorizationManager.checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )).thenReturn(false)
-
-        val config = Mockito.mock(ImportStudiesConfiguration::class.java)
-        try {
-            controller.importParticipantStats(config)
-            fail("Expected exception for non-admin access")
-        } catch (expected: Exception) {
-            // Expected
-        }
-    }
-
-    @Test
-    fun testImportAppUsageSurveyRequiresAdmin() {
-        Mockito.`when`(authorizationManager.checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )).thenReturn(false)
-
-        val config = Mockito.mock(ImportStudiesConfiguration::class.java)
-        try {
-            controller.importAppUsageSurvey(config)
-            fail("Expected exception for non-admin access")
-        } catch (expected: Exception) {
-            // Expected
-        }
-    }
-
-    @Test
-    fun testImportSystemAppsRequiresAdmin() {
-        Mockito.`when`(authorizationManager.checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )).thenReturn(false)
-
-        val config = Mockito.mock(ImportStudiesConfiguration::class.java)
-        try {
-            controller.importSystemApps(config)
-            fail("Expected exception for non-admin access")
-        } catch (expected: Exception) {
-            // Expected
-        }
-    }
-
-    @Test
-    fun testImportTimeUseDiarySubmissionsRequiresAdmin() {
-        Mockito.`when`(authorizationManager.checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )).thenReturn(false)
-
-        val config = Mockito.mock(ImportStudiesConfiguration::class.java)
-        try {
-            controller.importTimeUseDiarySubmissions(config)
-            fail("Expected exception for non-admin access")
-        } catch (expected: Exception) {
-            // Expected
+        val imports = listOf(
+            controller::importStudies, controller::importParticipants, controller::importUserPermissions,
+            controller::importParticipantStats, controller::importAppUsageSurvey, controller::importSystemApps,
+            controller::importTimeUseDiarySubmissions,
+        )
+        imports.forEach { import ->
+            assertThrows(ForbiddenException::class.java) { import(config) }
+            Mockito.verifyNoInteractions(dataSourceManager, storageResolver, studyService, candidateService,
+                timeUseDiaryService, appDataUploadService)
         }
     }
 }
