@@ -3,8 +3,6 @@ package com.openlattice.chronicle.storage
 import com.geekbeast.postgres.PostgresColumnDefinition
 import com.geekbeast.postgres.PostgresDatatype
 import org.slf4j.LoggerFactory
-import java.lang.reflect.Field
-import java.lang.reflect.Modifier
 
 
 /**
@@ -431,18 +429,9 @@ public class PostgresColumns private constructor() {
 
         // reason: function name mirrors the reflected class on purpose; renaming would obscure that it enumerates this class's columns
         @Suppress("MemberNameEqualsClassName")
-        public fun postgresColumns(): List<PostgresColumnDefinition> {
-            return (PostgresColumns::class.java.fields.asList() + PostgresColumns::class.java.declaredFields)
-                .filter { field: Field -> (Modifier.isStatic(field.modifiers) && Modifier.isFinal(field.modifiers)) }
-                .filter { field: Field -> PostgresColumnDefinition::class.java.isAssignableFrom(field.type) }
-                .mapNotNull { field: Field ->
-                    try {
-                        return@mapNotNull field[null] as PostgresColumnDefinition
-                    } catch (e: IllegalAccessException) {
-                        logger.debug("Skipping inaccessible PostgresColumns field {}: {}", field.name, e.message)
-                        return@mapNotNull null
-                    }
-                }
-        }
+        public fun postgresColumns(): List<PostgresColumnDefinition> =
+            reflectedPostgresColumns(PostgresColumns::class.java) { field, error ->
+                logger.debug("Skipping inaccessible PostgresColumns field {}: {}", field.name, error.message)
+            }
     }
 }

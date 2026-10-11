@@ -4,10 +4,12 @@ import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.jdbc.DataSourceManager
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
-import com.openlattice.chronicle.collection.*
+import com.openlattice.chronicle.collection.AndroidAppNetworkUsageEvent
+import com.openlattice.chronicle.collection.AndroidHealthMetricEvent
+import com.openlattice.chronicle.collection.HealthMetricType
+import com.openlattice.chronicle.collection.NetworkUsageType
 import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
-import com.openlattice.chronicle.controllers.TestSecurityUtils
 import com.openlattice.chronicle.hazelcast.processors.storage.StudyStorageRead
 import com.openlattice.chronicle.participants.ParticipantStats
 import com.openlattice.chronicle.sensorkit.SensorDataSample
@@ -15,17 +17,30 @@ import com.openlattice.chronicle.sensorkit.SensorType
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.services.studies.StudyService
-import com.openlattice.chronicle.services.upload.*
+import com.openlattice.chronicle.services.upload.AppDataUploadService
+import com.openlattice.chronicle.services.upload.AppNetworkUsageUploadService
+import com.openlattice.chronicle.services.upload.HealthMetricsUploadService
+import com.openlattice.chronicle.services.upload.SensorDataUploadService
 import com.openlattice.chronicle.storage.tasks.MoveToEventStorageTaskDependencies
 import com.openlattice.chronicle.storage.tasks.MoveToIosEventStorageTask
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.study.Study
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.mockito.Mockito
-import org.mockito.kotlin.*
+import org.mockito.kotlin.any
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.timeout
+import org.mockito.kotlin.times
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
 import java.lang.reflect.InvocationTargetException
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -80,7 +95,8 @@ class SweepRevisionRegressionTest {
                 val network = AndroidAppNetworkUsageEvent("old-network", fresh, "UTC", "example.app", NetworkUsageType.WIFI, 1, 2,
                     old.toInstant().toEpochMilli(), old.plusHours(1).toInstant().toEpochMilli())
                 AppNetworkUsageUploadService(storage).upload(study, participant, listOf(network,
-                    network.copy(id = "fresh-network", bucketStartMillis = fresh.toInstant().toEpochMilli(), bucketEndMillis = fresh.plusHours(1).toInstant().toEpochMilli())))
+                    network.copy(id = "fresh-network", bucketStartMillis = fresh.toInstant().toEpochMilli(), bucketEndMillis = fresh.plusHours(
+                        1).toInstant().toEpochMilli())))
                 val screen = sample().copy(sensor = SensorType.deviceUsage,
                     data = """{"totalScreenWakes":1,"totalUnlocks":1,"totalUnlockDuration":1.0,"appUsage":{},"webUsage":{}}""",
                     startDate = old, endDate = old.plusHours(1), dateRecorded = fresh)
@@ -90,7 +106,8 @@ class SweepRevisionRegressionTest {
         }
         assertEquals(1, count(study, "health_metrics")); assertEquals(1, count(study, "app_network_usage"))
         postgres.createConnection("").use { c -> c.createStatement().use {
-            it.executeQuery("SELECT jsonb_array_length(data) FROM upload_buffer WHERE study_id = '$study'").use { r -> assertTrue(r.next()); assertEquals(1, r.getInt(1)) }
+            it.executeQuery("SELECT jsonb_array_length(data) FROM upload_buffer WHERE study_id = '$study'").use { r -> assertTrue(r.next());
+                assertEquals(1, r.getInt(1)) }
             it.execute("DELETE FROM upload_buffer WHERE study_id = '$study'")
         } }
     }
@@ -104,7 +121,8 @@ class SweepRevisionRegressionTest {
                 assertNotNull("Stats merge must join the upload admission transaction", owner)
                 assertFalse(owner!!.autoCommit)
                 postgres.createConnection("").use { other -> other.createStatement().use { statement ->
-                    statement.executeQuery("SELECT pg_try_advisory_xact_lock(hashtextextended('chronicle-deletion:$study', 0))").use { r -> r.next(); assertFalse(r.getBoolean(1)) }
+                    statement.executeQuery("SELECT pg_try_advisory_xact_lock(hashtextextended('chronicle-deletion:$study', 0))").use { r -> r.next();
+                        assertFalse(r.getBoolean(1)) }
                 } }
                 null
             }
@@ -169,14 +187,17 @@ class SweepRevisionRegressionTest {
     @Test fun drainCensusFencesAtMostOneBatchOfEligibleStudies() {
         val studies = List(300) { UUID.randomUUID() }
         postgres.createConnection("").use { c -> c.createStatement().use { s -> studies.forEach {
-            s.execute("INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id) VALUES ('$it', '$participant', '[]', '2000-01-01', 'Ios', '${UUID.randomUUID()}')")
+            s.execute(
+                "INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id) VALUES ('$it', '$participant', '[]', '2000-01-01', 'Ios', '${UUID.randomUUID()}')")
         } } }
         try {
             postgres.createConnection("").use { c -> c.autoCommit = false
-                try { assertTrue("Preparatory fences must be bounded by the 128-row claim", DeletionTableLockOrder.lockDrain(c, "sensor_data").size <= 128) }
+                try { assertTrue("Preparatory fences must be bounded by the 128-row claim", DeletionTableLockOrder.lockDrain(c,
+                    "sensor_data").size <= 128) }
                 finally { c.rollback() }
             }
-        } finally { postgres.createConnection("").use { c -> c.createStatement().use { s -> studies.forEach { s.execute("DELETE FROM upload_buffer WHERE study_id = '$it'") } } } }
+        } finally { postgres.createConnection("").use { c -> c.createStatement().use { s -> studies.forEach { s.execute(
+            "DELETE FROM upload_buffer WHERE study_id = '$it'") } } } }
     }
 
     @Test fun iosDrainAggregatesStatsByParticipant() {
@@ -192,7 +213,8 @@ class SweepRevisionRegressionTest {
                 try { MoveToIosEventStorageTask::class.java.getDeclaredMethod("moveToEventStorage").apply { isAccessible = true }.invoke(task) }
                 catch (e: InvocationTargetException) { throw e.targetException }
             }
-            val updates = Mockito.mockingDetails(studies).invocations.filter { it.method.name == "insertOrUpdateParticipantStats" && (it.arguments[0] as ParticipantStats).studyId == study }
+            val updates = Mockito.mockingDetails(studies).invocations.filter { it.method.name == "insertOrUpdateParticipantStats" && (
+                it.arguments[0] as ParticipantStats).studyId == study }
             assertEquals("One stats merge per participant", 1, updates.size)
             assertEquals(100, (updates.single().arguments[0] as ParticipantStats).iosUniqueDates.size)
         }
@@ -205,7 +227,8 @@ class SweepRevisionRegressionTest {
             val ids = mock<com.openlattice.chronicle.ids.HazelcastIdGenerationService>()
             whenever(ids.getNextId()).thenAnswer { UUID.randomUUID() }
             val jobs = com.openlattice.chronicle.services.jobs.JobService(ids, storage, mock())
-            val service = com.openlattice.chronicle.services.notifications.NotificationService(storage, mock(), mock(), mock(), mock(), jobs, ids, mock(), mock())
+            val service = com.openlattice.chronicle.services.notifications.NotificationService(storage, mock(), mock(), mock(), mock(), jobs, ids,
+                mock(), mock())
             try {
                 postgres.createConnection("").use { blocker ->
                     blocker.autoCommit = false
@@ -216,9 +239,11 @@ class SweepRevisionRegressionTest {
                             try {
                                 service.sendResearcherNotifications(c, study, listOf(
                                     com.openlattice.chronicle.services.notifications.ResearcherNotification(
-                                        setOf("test@example.org"), emptySet(), com.openlattice.chronicle.notifications.NotificationType.PASSIVE_DATA_COLLECTION_COMPLIANCE,
+                                        setOf("test@example.org"), emptySet(),
+                                            com.openlattice.chronicle.notifications.NotificationType.PASSIVE_DATA_COLLECTION_COMPLIANCE,
                                         java.util.EnumSet.of(com.openlattice.chronicle.notifications.DeliveryType.EMAIL), "Status", "Body")), false,
-                                    com.openlattice.chronicle.authorization.Principal(com.openlattice.chronicle.authorization.PrincipalType.USER, "revision"))
+                                    com.openlattice.chronicle.authorization.Principal(com.openlattice.chronicle.authorization.PrincipalType.USER,
+                                        "revision"))
                                 c.commit()
                             } finally { c.rollback() }
                         }
@@ -322,7 +347,8 @@ class SweepRevisionRegressionTest {
 
     private fun awaitBlocked(name: String) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        postgres.createConnection("").use { c -> c.prepareStatement("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock')").use { s ->
+        postgres.createConnection("").use { c -> c.prepareStatement(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock')").use { s ->
             s.setString(1, name)
             while (System.nanoTime() < deadline) { s.executeQuery().use { r -> r.next(); if (r.getBoolean(1)) return }; Thread.sleep(10) }
         } }

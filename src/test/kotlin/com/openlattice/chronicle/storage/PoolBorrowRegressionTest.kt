@@ -12,7 +12,6 @@ import com.openlattice.chronicle.services.notifications.Notification
 import com.openlattice.chronicle.services.notifications.NotificationJobRunner
 import com.openlattice.chronicle.services.twilio.TwilioService
 import com.openlattice.chronicle.services.upload.UsageEventQueueEntry
-import com.openlattice.chronicle.storage.tasks.MoveToEventStorageTask
 import com.openlattice.chronicle.study.Study
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
@@ -105,13 +104,10 @@ class PoolBorrowRegressionTest {
         whenever(prepared.executeQuery()).thenReturn(permitted)
         whenever(permitted.next()).thenReturn(false)
         whenever(permitted.getInt(1)).thenReturn(1)
-        val method = MoveToEventStorageTask::class.java.getDeclaredMethod(
-            "writeToEventStorage", HikariDataSource::class.java, List::class.java, Boolean::class.javaPrimitiveType,
-        ).apply { isAccessible = true }
         val entry = UsageEventQueueEntry(UUID.randomUUID(), "participant", emptyMap(), OffsetDateTime.now())
         slot.dataSource.connection.use { owner ->
             PinnedPlatformConnection.pinning(slot.dataSource, owner) {
-                assertEquals(1, method.invoke(MoveToEventStorageTask(), slot.dataSource, listOf(entry), false))
+                assertEquals(1, UsageEventStorageWriter.write(slot.dataSource, listOf(entry), mock()) {})
             }
             Mockito.verify(owner, Mockito.never()).close()
             Mockito.verify(owner, Mockito.never()).commit()

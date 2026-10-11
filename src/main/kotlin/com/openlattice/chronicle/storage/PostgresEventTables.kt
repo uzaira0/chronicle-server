@@ -1,7 +1,6 @@
 package com.openlattice.chronicle.storage
 
 import com.geekbeast.postgres.PostgresColumnDefinition
-import com.geekbeast.postgres.PostgresDatatype
 import com.geekbeast.postgres.PostgresTableDefinition
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.MAX_BIND_PARAMETERS
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.ACL_KEY
@@ -55,8 +54,6 @@ import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.USERNAME
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.WEEKDAY_MONDAY_FRIDAY
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.WEEKDAY_MONDAY_THURSDAY
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.WEEKDAY_SUNDAY_THURSDAY
-import java.security.InvalidParameterException
-import java.time.LocalDate
 
 /**
  *
@@ -186,24 +183,7 @@ public class PostgresEventTables private constructor() {
             return (table.columns - columnsToExclude).joinToString(
                 " AND "
             ) {
-                val defaultValue = when (it.datatype) {
-                    PostgresDatatype.BOOLEAN -> "false"
-                    PostgresDatatype.TEXT_UUID, PostgresDatatype.TEXT, PostgresDatatype.TEXT_128,
-                    PostgresDatatype.TEXT_256, PostgresDatatype.TEXT_512, PostgresDatatype.VARCHAR_MAX -> "''"
-                    PostgresDatatype.BIGINT, PostgresDatatype.INTEGER, PostgresDatatype.NUMERIC,
-                    PostgresDatatype.DECIMAL, PostgresDatatype.DOUBLE, PostgresDatatype.REAL,
-                    PostgresDatatype.SMALLINT, PostgresDatatype.SERIAL, PostgresDatatype.BIGSERIAL -> "0"
-                    PostgresDatatype.DATE -> LocalDate.MIN.toString()
-                    PostgresDatatype.TIMESTAMP, PostgresDatatype.TIMESTAMPTZ -> "to_timestamp(0) AT TIME ZONE 'UTC'"
-                    PostgresDatatype.SMALLINT_ARRAY, PostgresDatatype.UUID_ARRAY, PostgresDatatype.INTEGER_ARRAY,
-                    PostgresDatatype.TIMETZ_ARRAY, PostgresDatatype.TIMESTAMPTZ_ARRAY, PostgresDatatype.TIME_ARRAY,
-                    PostgresDatatype.BYTEA_ARRAY, PostgresDatatype.DATE_ARRAY, PostgresDatatype.DOUBLE_ARRAY,
-                    PostgresDatatype.BIGINT_ARRAY, PostgresDatatype.BOOLEAN_ARRAY -> "ARRAY()"
-                    else -> throw InvalidParameterException(
-                        "Unsupported data type ${it.datatype} for duplicate comparison column ${it.name}."
-                    )
-                }
-                "COALESCE(${table.name}.${it.name},$defaultValue) = COALESCE(${srcMergeTableName}.${it.name},$defaultValue)"
+                "${table.name}.${it.name} IS NOT DISTINCT FROM ${srcMergeTableName}.${it.name}"
             }
         }
 
@@ -241,13 +221,29 @@ public class PostgresEventTables private constructor() {
          * @param numLines The number of lines containing usage events to insert
          * @param includeOnConflict Whether or not it should include the on conflict statement
          */
-        public fun buildMultilineInsertUsageEvents(numLines: Int, includeOnConflict: Boolean): String {
-            check((CHRONICLE_USAGE_EVENTS.columns.size * numLines) < MAX_BIND_PARAMETERS) {
+        public fun buildMultilineInsertUsageEvents(numLines: Int, includeOnConflict: Boolean): String =
+            buildMultilineInsert(CHRONICLE_USAGE_EVENTS, numLines, includeOnConflict)
+
+        public fun buildMultilineInsertSensorEvents(numLines: Int, includeOnConflict: Boolean): String =
+            buildMultilineInsert(IOS_SENSOR_DATA, numLines, includeOnConflict)
+
+        public fun buildInsertAuditBufferEvents(): String =
+            buildMultilineInsert(ChroniclePostgresTables.AUDIT_BUFFER, 1, false)
+
+        public fun buildMultilineInsertAuditEvents(numLines: Int, includeOnConflict: Boolean): String =
+            buildMultilineInsert(AUDIT, numLines, includeOnConflict)
+
+        private fun buildMultilineInsert(
+            table: PostgresTableDefinition,
+            numLines: Int,
+            includeOnConflict: Boolean,
+        ): String {
+            check((table.columns.size * numLines) < MAX_BIND_PARAMETERS) {
                 "Maximum number of postgres bind parameters would be exceeded with this amount of lines"
             }
-            val columns = CHRONICLE_USAGE_EVENTS.columns.joinToString(",") { it.name }
-            val header = "INSERT INTO ${CHRONICLE_USAGE_EVENTS.name} ($columns) VALUES"
-            val params = CHRONICLE_USAGE_EVENTS.columns.joinToString(",") { "?" }
+            val columns = table.columns.joinToString(",") { it.name }
+            val header = "INSERT INTO ${table.name} ($columns) VALUES"
+            val params = table.columns.joinToString(",") { "?" }
             val line = "($params)"
             val lines = (1..numLines).joinToString(",\n") { line }
 
@@ -261,60 +257,6 @@ public class PostgresEventTables private constructor() {
                 "$header\n$lines"
             }
         }
-
-        /**
-         * Builds a multi-line prepared statement for inserting batches of data into Postgres.
-         * @param numLines The number of lines containing usage events to insert
-         * @param includeOnConflict Whether or not it should include the on conflict statement
-         */
-        public fun buildMultilineInsertSensorEvents(numLines: Int, includeOnConflict: Boolean): String {
-            check((IOS_SENSOR_DATA.columns.size * numLines) < MAX_BIND_PARAMETERS) {
-                "Maximum number of postgres bind parameters would be exceeded with this amount of lines"
-            }
-            val columns = IOS_SENSOR_DATA.columns.joinToString(",") { it.name }
-            val header = "INSERT INTO ${IOS_SENSOR_DATA.name} ($columns) VALUES"
-            val params = IOS_SENSOR_DATA.columns.joinToString(",") { "?" }
-            val line = "($params)"
-            val lines = (1..numLines).joinToString(",\n") { line }
-
-            check((header.length + (line.length * numLines)) < 16777216) {
-                "SQL exceeds maximum length allowed for Postgres."
-            }
-
-            return if (includeOnConflict) {
-                "$header\n$lines ON CONFLICT DO NOTHING"
-            } else {
-                "$header\n$lines"
-            }
-        }
-
-        /**
-         * Builds a multi-line prepared statement for inserting batches of audit events into Postgres.
-         * @param numLines The number of lines containing usage events to insert
-         * @param includeOnConflict Whether or not it should include the on conflict statement
-         */
-        public fun buildMultilineInsertAuditEvents(numLines: Int, includeOnConflict: Boolean): String {
-            check((AUDIT.columns.size * numLines) < MAX_BIND_PARAMETERS) {
-                "Maximum number of postgres bind parameters would be exceeded with this amount of lines"
-            }
-
-            val columns = AUDIT.columns.joinToString(",") { it.name }
-            val header = "INSERT INTO ${AUDIT.name} ($columns) VALUES"
-            val params = AUDIT.columns.joinToString(",") { "?" }
-            val line = "($params)"
-            val lines = (1..numLines).joinToString(",\n") { line }
-
-            check((header.length + (line.length * numLines)) < 16777216) {
-                "SQL exceeds maximum length allowed for Postgres."
-            }
-
-            return if (includeOnConflict) {
-                "$header\n$lines ON CONFLICT DO NOTHING"
-            } else {
-                "$header\n$lines"
-            }
-        }
-
 
         /**
          * Generates SQL for creating a temp table of duplicate rows that may have been inserted.

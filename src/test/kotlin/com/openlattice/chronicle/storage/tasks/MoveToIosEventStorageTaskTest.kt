@@ -28,8 +28,8 @@ class MoveToIosEventStorageTaskTest {
         )
         assertTrue(
             sql.contains(
-                "COALESCE(sensor_data.ios_screen_time_raw_source_label,'') = " +
-                    "COALESCE(duplicate_ios_events_test.ios_screen_time_raw_source_label,'')"
+                "sensor_data.ios_screen_time_raw_source_label IS NOT DISTINCT FROM " +
+                    "duplicate_ios_events_test.ios_screen_time_raw_source_label"
             )
         )
         assertTrue(!sql.contains("InvalidParameterException"))
@@ -48,8 +48,8 @@ class MoveToIosEventStorageTaskTest {
         assertTrue(buildSql.contains("exact_recordeddate"))
         assertTrue(
             deleteSql.contains(
-                "COALESCE(sensor_data.exact_recordeddate,to_timestamp(0) AT TIME ZONE 'UTC') = " +
-                    "COALESCE(duplicate_ios_events_test.exact_recordeddate,to_timestamp(0) AT TIME ZONE 'UTC')"
+                "sensor_data.exact_recordeddate IS NOT DISTINCT FROM " +
+                    "duplicate_ios_events_test.exact_recordeddate"
             )
         )
     }
@@ -327,4 +327,16 @@ class MoveToIosEventStorageTaskTest {
         startDate = timestamp,
         endDate = timestamp.plusNanos((duration * 1_000_000_000).toLong()),
     )
+
+    @Test fun webOnlyUsageKeepsEachCategoryAndDuration() {
+        val sample = sensorSample(OffsetDateTime.now(),
+            """{"totalScreenWakes":0,"totalUnlocks":0,"totalUnlockDuration":0,"appUsage":{},"webUsage":{"News":20,"Social":45}}""",
+            SensorType.deviceUsage)
+        val rows = mapSensorDataToStorage(listOf(sample)).getValue(SensorType.deviceUsage)
+            .map { it.associate { column -> column.col.name to column.value } }
+        assertEquals(mapOf("News" to 20.0, "Social" to 45.0), rows.associate {
+            it.getValue(PostgresEventColumns.APP_CATEGORY.name) to it.getValue(PostgresEventColumns.APP_CATEGORY_WEB_DURATION.name)
+        })
+    }
+
 }

@@ -507,6 +507,8 @@ public class ChroniclePostgresTables private constructor() {
             )
             .primaryKey(ORGANIZATION_ID, STUDY_ID)
 
+        public const val STUDY_PARTICIPANTS_WITH_WITHDRAWALS: String = "study_participants_with_withdrawals"
+
         @JvmField
         public val STUDY_PARTICIPANTS = PostgresTableDefinition("study_participants")
             .addColumns(
@@ -1169,6 +1171,10 @@ public class ChroniclePostgresTables private constructor() {
          * sources may bypass table policies. `ctid` is safe here because selection, deletion, and row locking
          * occur in the same statement and transaction.
          */
+        internal const val MAX_ANDROID_CLAIM_BYTES: Long = 64L * 1024 * 1024
+        internal const val ANDROID_DECODE_CHUNK_SIZE: Int = 256
+        internal const val CLAIM_PAYLOAD_BYTES: String = "claim_payload_bytes"
+
         @JvmStatic
         public fun getMoveSql(batchSize: Int = 65536, uploadType: UploadType, fencedStudies: Collection<UUID>? = null): String {
             return buildMoveSql(batchSize, uploadType, scoped = false, fencedStudies)
@@ -1204,23 +1210,37 @@ public class ChroniclePostgresTables private constructor() {
                 else -> "AND candidate.${STUDY_ID.name} IN (${fencedStudies.joinToString { "'$it'::uuid" }})"
             }
             val lockClause = if (scoped) "FOR UPDATE" else "FOR UPDATE SKIP LOCKED"
+            val byteBound = if (uploadType == UploadType.Android) {
+                "WHERE claimed_bytes <= $MAX_ANDROID_CLAIM_BYTES OR claim_order = 1"
+            } else ""
+            val returning = if (uploadType == UploadType.Android) {
+                """claimed.${STUDY_ID.name}, claimed.${PARTICIPANT_ID.name}, claimed.${UPLOADED_AT.name},
+                    octet_length(claimed.${UPLOAD_DATA.name}::text) AS $CLAIM_PAYLOAD_BYTES,
+                    CASE WHEN octet_length(claimed.${UPLOAD_DATA.name}::text) <= $MAX_ANDROID_CLAIM_BYTES
+                         THEN claimed.${UPLOAD_DATA.name} ELSE NULL END AS ${UPLOAD_DATA.name}"""
+            } else "claimed.*"
             return """
-                DELETE FROM ${UPLOAD_BUFFER.name} AS claimed
-                WHERE claimed.ctid IN (
-                    SELECT candidate.ctid
+                WITH candidates AS MATERIALIZED (
+                    SELECT candidate.ctid, candidate.${UPLOADED_AT.name}, octet_length(candidate.${UPLOAD_DATA.name}::text) AS payload_bytes
                     FROM ${UPLOAD_BUFFER.name} AS candidate
                     WHERE candidate.${UPLOAD_TYPE.name} = '${uploadType.name}'
-                      AND chronicle_participant_mutation_allowed(
-                          candidate.${STUDY_ID.name},
-                          candidate.${PARTICIPANT_ID.name}
-                      )
+                      AND chronicle_participant_mutation_allowed(candidate.${STUDY_ID.name}, candidate.${PARTICIPANT_ID.name})
                     $subjectFilter
                     $studyFilter
                     ORDER BY candidate.${UPLOADED_AT.name}, candidate.ctid
                     $lockClause
                     LIMIT $batchSize
+                ), bounded AS (
+                    SELECT ctid, row_number() OVER (ORDER BY ${UPLOADED_AT.name}, ctid) AS claim_order,
+                           sum(payload_bytes) OVER (ORDER BY ${UPLOADED_AT.name}, ctid) AS claimed_bytes
+                    FROM candidates
                 )
-                RETURNING claimed.*
+                DELETE FROM ${UPLOAD_BUFFER.name} AS claimed
+                WHERE claimed.ctid IN (
+                    SELECT ctid FROM bounded
+                    $byteBound
+                )
+                RETURNING $returning
             """.trimIndent()
         }
 

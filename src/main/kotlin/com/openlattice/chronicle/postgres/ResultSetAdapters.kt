@@ -19,6 +19,8 @@
  */
 package com.openlattice.chronicle.postgres
 
+import com.fasterxml.jackson.core.JsonToken
+import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.geekbeast.mappers.mappers.ObjectMappers
@@ -46,7 +48,9 @@ import com.openlattice.chronicle.services.jobs.ChronicleJob
 import com.openlattice.chronicle.services.notifications.Notification
 import com.openlattice.chronicle.services.surveys.IosDeviceUsageByCategory
 import com.openlattice.chronicle.services.upload.UsageEventColumn
-import com.openlattice.chronicle.services.upload.UsageEventQueueEntries
+import com.openlattice.chronicle.services.upload.UsageEventQueueEntry
+import com.openlattice.chronicle.storage.ChroniclePostgresTables
+import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ANDROID_DECODE_CHUNK_SIZE
 import com.openlattice.chronicle.sources.SourceDeviceType
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACL_KEY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACTIVE
@@ -385,7 +389,7 @@ public class ResultSetAdapters private constructor() {
             return Study(
                 rs.getObject(STUDY_ID.name, UUID::class.java),
                 rs.getString(TITLE.name),
-                rs.getString(DESCRIPTION.name),
+                rs.getString(DESCRIPTION.name) ?: "",
                 rs.getObject(CREATED_AT.name, OffsetDateTime::class.java),
                 rs.getObject(UPDATED_AT.name, OffsetDateTime::class.java),
                 rs.getObject(STARTED_AT.name, OffsetDateTime::class.java),
@@ -495,6 +499,7 @@ public class ResultSetAdapters private constructor() {
                 participantStatus(rs),
                 rs.getString(PARTICIPANT_NOTES.name),
                 tags,
+                rs.getObject("withdrawn_at", OffsetDateTime::class.java),
             )
         }
 
@@ -571,13 +576,29 @@ public class ResultSetAdapters private constructor() {
             return UUID.fromString(rs.getString(SUBMISSION_ID.name))
         }
 
-        @Throws(SQLException::class)
-        public fun usageEventQueueEntries(rs: ResultSet): UsageEventQueueEntries {
+        internal fun forEachUsageEventChunk(rs: ResultSet, consume: (List<UsageEventQueueEntry>) -> Unit) {
+            check(rs.getLong(ChroniclePostgresTables.CLAIM_PAYLOAD_BYTES) <= ChroniclePostgresTables.MAX_ANDROID_CLAIM_BYTES) {
+                "Buffered usage row exceeds the claim byte limit; drain rolled back without loading its payload"
+            }
             val studyId = rs.getObject(STUDY_ID.name, UUID::class.java)
             val participantId = rs.getString(PARTICIPANT_ID.name)
-            val data = mapper.readValue<List<Map<String, UsageEventColumn>>>(rs.getString(UPLOAD_DATA.name))
             val uploadedAt = rs.getObject(PostgresEventColumns.UPLOADED_AT.name, OffsetDateTime::class.java)
-            return UsageEventQueueEntries(studyId, participantId, data, uploadedAt)
+            rs.getCharacterStream(UPLOAD_DATA.name).use { stream ->
+                mapper.factory.createParser(stream).use { parser ->
+                    check(parser.nextToken() == JsonToken.START_ARRAY) { "Buffered usage data must be an array" }
+                    parser.nextToken()
+                    mapper.readerFor(object : TypeReference<Map<String, UsageEventColumn>>() {})
+                        .readValues<Map<String, UsageEventColumn>>(parser).use { events ->
+                            while (events.hasNextValue()) {
+                                val chunk = ArrayList<UsageEventQueueEntry>(ANDROID_DECODE_CHUNK_SIZE)
+                                while (chunk.size < ANDROID_DECODE_CHUNK_SIZE && events.hasNextValue()) {
+                                    chunk.add(UsageEventQueueEntry(studyId, participantId, events.nextValue(), uploadedAt))
+                                }
+                                consume(chunk)
+                            }
+                        }
+                }
+            }
         }
 
         @Throws(SQLException::class)

@@ -125,46 +125,9 @@ public open class MoveToIosEventStorageTask : HazelcastFixedRateTask<MoveToEvent
                 platform.prepareStatement(QUARANTINE_MALFORMED_BUFFER_SQL).use { quarantine ->
                     stmt.executeQuery(ChroniclePostgresTables.getMoveSql(128, UploadType.Ios, fencedStudies)).use { rs ->
                         while (rs.next()) {
-                            val studyId = rs.getObject(PostgresColumns.STUDY_ID.name, UUID::class.java)
-                            val raw = rs.getString(PostgresColumns.UPLOAD_DATA.name)
-                            val payload = try {
-                                requireNotNull(SensorDataUploadService.mapper.readTree(raw))
-                            } catch (invalidData: Exception) {
-                                quarantineInvalidPayload(quarantine, rs, invalidData)
-                                continue
-                            }
-                            val participantId = rs.getString(PostgresColumns.PARTICIPANT_ID.name)
-                            // One watermark lookup per legacy batch; storage failures still roll back the claim.
-                            val cutoff = ParticipantPurgeCutoff.load(platform, studyId, participantId)
-                            if (!payload.isArray) {
-                                quarantineInvalidPayload(quarantine, rs,
-                                    IllegalArgumentException("iOS sensor upload must contain a sample list"))
-                                continue
-                            }
-                            val rows = mutableListOf<SensorDataRow>()
-                            val invalidSamples = mutableListOf<JsonNode>()
-                            payload.forEach { node ->
-                                if (!ParticipantPurgeCutoff.permits(cutoff, legacyCollectionTime(node))) return@forEach
-                                try {
-                                    val sample = requireNotNull(SensorDataUploadService.mapper.treeToValue(
-                                        node, SensorDataSample::class.java,
-                                    )) { "iOS sensor sample cannot be null" }
-                                    rows.addAll(SensorDataEntries(
-                                        studyId, participantId, listOf(sample),
-                                        rs.getObject(PostgresColumns.UPLOADED_AT.name, OffsetDateTime::class.java),
-                                        rs.getObject(PostgresColumns.DEVICE_ID.name, UUID::class.java),
-                                    ).toSensorDataRows())
-                                } catch (invalidData: Exception) {
-                                    if (invalidData !is JacksonException && invalidData !is IllegalArgumentException &&
-                                        invalidData !is DateTimeException
-                                    ) throw invalidData
-                                    invalidSamples.add(node)
-                                }
-                            }
-                            if (invalidSamples.isNotEmpty()) quarantineMalformedRow(quarantine, rs,
-                                SensorDataUploadService.mapper.writeValueAsString(invalidSamples))
+                            val rows = decodeBufferedRow(platform, rs, quarantine)
                             if (rows.isEmpty()) continue
-                            val (flavor, _) = storageResolver.resolveAndGetFlavor(studyId)
+                            val (flavor, _) = storageResolver.resolveAndGetFlavor(rows.first().studyId)
                             queueEntriesByFlavor.getOrPut(flavor) { mutableListOf() }.addAll(rows)
                         }
                     }
@@ -205,16 +168,54 @@ public open class MoveToIosEventStorageTask : HazelcastFixedRateTask<MoveToEvent
         }
     }
 
-    // deviceUsage: Screen Time's endDate is its interval end; legacy SensorKit's endDate is the fetch
-    // bound and dateRecorded the observation. The earlier of the two is the observation time for both.
-    private fun legacyCollectionTime(sample: JsonNode): OffsetDateTime? = try {
-        val recorded = sample.get("dateRecorded")?.takeIf { it.isTextual }?.asText()?.let(OffsetDateTime::parse)
-        if (sample.path("sensor").asText() != SensorType.deviceUsage.name) recorded
-        else listOfNotNull(recorded, sample.get("endDate")?.takeIf { it.isTextual }?.asText()?.let(OffsetDateTime::parse))
-            .minOrNull()
-    } catch (_: DateTimeException) {
-        null
+    // Only deterministic payload failures are quarantined; other failures abort the transaction.
+    @Suppress("TooGenericExceptionCaught")
+    private fun decodeBufferedRow(
+        connection: java.sql.Connection,
+        row: ResultSet,
+        quarantine: PreparedStatement,
+    ): List<SensorDataRow> {
+        val studyId = row.getObject(PostgresColumns.STUDY_ID.name, UUID::class.java)
+        val raw = row.getString(PostgresColumns.UPLOAD_DATA.name)
+        val payload = try {
+            requireNotNull(SensorDataUploadService.mapper.readTree(raw))
+        } catch (invalidData: Exception) {
+            quarantineInvalidPayload(quarantine, row, invalidData)
+            return emptyList()
+        }
+        val participantId = row.getString(PostgresColumns.PARTICIPANT_ID.name)
+        // One watermark lookup per legacy batch; storage failures still roll back the claim.
+        val cutoff = ParticipantPurgeCutoff.load(connection, studyId, participantId)
+        if (!payload.isArray) {
+            quarantineInvalidPayload(quarantine, row,
+                IllegalArgumentException("iOS sensor upload must contain a sample list"))
+            return emptyList()
+        }
+        val rows = mutableListOf<SensorDataRow>()
+        val invalidSamples = mutableListOf<JsonNode>()
+        payload.forEach { node ->
+            if (!ParticipantPurgeCutoff.permits(cutoff, ParticipantPurgeCutoff.bufferedCollectionTime(node, UploadType.Ios))) return@forEach
+            try {
+                val sample = requireNotNull(SensorDataUploadService.mapper.treeToValue(
+                    node, SensorDataSample::class.java,
+                )) { "iOS sensor sample cannot be null" }
+                rows.addAll(SensorDataEntries(
+                    studyId, participantId, listOf(sample),
+                    row.getObject(PostgresColumns.UPLOADED_AT.name, OffsetDateTime::class.java),
+                    row.getObject(PostgresColumns.DEVICE_ID.name, UUID::class.java),
+                ).toSensorDataRows())
+            } catch (invalidData: Exception) {
+                if (!isMalformedPayload(invalidData)) throw invalidData
+                invalidSamples.add(node)
+            }
+        }
+        if (invalidSamples.isNotEmpty()) quarantineMalformedRow(quarantine, row,
+            SensorDataUploadService.mapper.writeValueAsString(invalidSamples))
+        return rows
     }
+
+    private fun isMalformedPayload(failure: Exception): Boolean =
+        failure is JacksonException || failure is IllegalArgumentException || failure is DateTimeException
 
     private fun quarantineInvalidPayload(
         statement: PreparedStatement,
@@ -224,9 +225,7 @@ public open class MoveToIosEventStorageTask : HazelcastFixedRateTask<MoveToEvent
     ) {
         // Only deterministic payload failures belong in quarantine. Storage/routing failures
         // must abort and restore the entire claim for retry.
-        if (invalidData !is JacksonException && invalidData !is IllegalArgumentException &&
-            invalidData !is DateTimeException
-        ) throw invalidData
+        if (!isMalformedPayload(invalidData)) throw invalidData
         quarantineMalformedRow(statement, row, data)
         logger.error(
             "Quarantined malformed legacy iOS sensor row - studyId = {}, participantRef = {}, reason = {}",
@@ -728,10 +727,10 @@ private fun mapDeviceUsageData(data: List<SensorDataSample>): List<List<SensorDa
                         PostgresEventColumns.TEXT_INPUT_SOURCE,
                         PostgresEventColumns.TEXT_INPUT_DURATION,
                         PostgresEventColumns.APP_USAGE_TIME,
-                        PostgresEventColumns.APP_CATEGORY,
                         PostgresEventColumns.BUNDLE_IDENTIFIER
                     )
                 ).toMutableList()
+                cols.add(SensorDataColumn(PostgresEventColumns.APP_CATEGORY, category))
                 cols.add(SensorDataColumn(PostgresEventColumns.APP_CATEGORY_WEB_DURATION, webUsage))
                 cols.addAll(summaryCols)
                 cols.addAll(metadataCols)
