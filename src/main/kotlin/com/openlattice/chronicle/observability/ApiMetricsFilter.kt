@@ -16,18 +16,16 @@
  */
 package com.openlattice.chronicle.observability
 
-import com.openlattice.chronicle.util.LogSanitizer
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.web.filter.OncePerRequestFilter
+import org.springframework.web.servlet.HandlerMapping
 
 /**
  * Servlet filter that records API request latency and error metrics in Prometheus.
  *
- * Normalizes URL paths to reduce cardinality and avoid storing request identifiers:
- * - study, participant, device, export, webhook, and questionnaire IDs are route-shaped
- * - query strings are stripped before metric labels are emitted
+ * Labels requests with the MVC route template, or one label for requests rejected before routing.
  *
  * Skips static assets and health/metrics endpoints.
  */
@@ -41,10 +39,8 @@ public class ApiMetricsFilter : OncePerRequestFilter() {
             "/chronicle/internal/health/live",
         )
 
-        /**
-         * Normalizes a request path to a low-cardinality, identifier-safe route shape.
-         */
-        public fun normalizePath(path: String): String = LogSanitizer.sanitizeRequestPath(path)
+        internal const val UNMATCHED = "unmatched"
+        private val METHODS = setOf("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT")
     }
 
     override fun doFilterInternal(
@@ -60,8 +56,7 @@ public class ApiMetricsFilter : OncePerRequestFilter() {
             return
         }
 
-        val normalizedPath = normalizePath(path)
-        val method = request.method
+        val method = request.method.takeIf { it in METHODS } ?: "OTHER"
         val startNanos = System.nanoTime()
 
         ChronicleMetrics.activeRequests.inc()
@@ -71,6 +66,9 @@ public class ApiMetricsFilter : OncePerRequestFilter() {
             ChronicleMetrics.activeRequests.dec()
 
             val durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0
+            val normalizedPath = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE)?.toString()
+                ?: com.openlattice.chronicle.configuration.MobileApiSignatureFilter.enrollmentMetricEndpoint(request)
+                ?: UNMATCHED
             ChronicleMetrics.apiRequestDuration
                 .labels(normalizedPath, method)
                 .observe(durationSeconds)

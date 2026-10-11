@@ -67,10 +67,15 @@ import jakarta.servlet.http.HttpServletResponse
 public open class RateLimitFilter(
     hazelcastInstance: HazelcastInstance,
     private val config: RateLimitConfiguration,
-    private val handlerMapping: RequestMappingHandlerMapping?
+    @Volatile private var handlerMapping: RequestMappingHandlerMapping?
 ) : OncePerRequestFilter() {
 
     private val log = LoggerFactory.getLogger(RateLimitFilter::class.java)
+
+    public fun bindHandlerMapping(mapping: RequestMappingHandlerMapping) {
+        check(handlerMapping == null || handlerMapping === mapping) { "Rate limit handler mapping is already bound" }
+        handlerMapping = mapping
+    }
 
     internal companion object {
 
@@ -105,10 +110,12 @@ public open class RateLimitFilter(
     private val cidrCache = ConcurrentHashMap<String, CidrRange>()
 
     // Pre-parsed trusted proxy CIDR ranges for hot-path client IP extraction.
-    private val trustedProxyRanges: List<CidrRange> = ClientIpResolver.parseTrustedProxyCidrs(config.trustedProxyCidrs)
+    private val trustedProxyRanges: List<CidrRange> = ClientIpResolver.parseTrustedProxyCidrs(
+        ClientIpResolver.deploymentTrustedProxyCidrs(config.trustedProxyCidrs)
+    )
 
     // Cache for endpoint rate limit annotations
-    private val annotationCache = ConcurrentHashMap<String, RateLimit?>()
+    private val annotationCache = ConcurrentHashMap<HandlerMethod, RateLimit?>()
 
     // Regex to extract study ID from URL paths like /chronicle/v3/study/{uuid}/...
     // and /chronicle/v4/study/{uuid}/...
@@ -367,38 +374,22 @@ public open class RateLimitFilter(
     }
 
     /**
-     * Normalizes a URI for handler-annotation cache keys without retaining request identifiers.
-     */
-    private fun normalizeCacheKey(uri: String): String = LogSanitizer.sanitizeRequestPath(uri)
-
-    /**
      * Gets the @RateLimit annotation from the endpoint handler, if present.
      */
     // reason: boundary catch — handler resolution failure must fall back to default limits, not break the filter
     @Suppress("TooGenericExceptionCaught")
     private fun getEndpointAnnotation(request: HttpServletRequest): RateLimit? {
-        if (handlerMapping == null) {
-            return null
-        }
+        val handlerMapping = handlerMapping ?: return null
 
-        val cacheKey = "${request.method}:${normalizeCacheKey(request.requestURI)}"
-
-        return annotationCache.computeIfAbsent(cacheKey) {
-            try {
-                val handlerExecutionChain = handlerMapping.getHandler(request)
-                val handler = handlerExecutionChain?.handler
-
-                if (handler is HandlerMethod) {
-                    // Check method-level annotation first
-                    handler.getMethodAnnotation(RateLimit::class.java)
-                        ?: handler.beanType.getAnnotation(RateLimit::class.java)
-                } else {
-                    null
-                }
-            } catch (e: Exception) {
-                log.debug("Could not resolve handler for rate limit annotation: {}", e.message)
-                null
+        return try {
+            val handler = handlerMapping.getHandler(request)?.handler as? HandlerMethod ?: return null
+            annotationCache.computeIfAbsent(handler) {
+                it.getMethodAnnotation(RateLimit::class.java)
+                    ?: it.beanType.getAnnotation(RateLimit::class.java)
             }
+        } catch (e: Exception) {
+            log.debug("Could not resolve handler for rate limit annotation: {}", e.message)
+            null
         }
     }
 
@@ -418,7 +409,7 @@ public open class RateLimitFilter(
         val userRef = userId?.let { LogSanitizer.stableFingerprint(it, prefix = "user") }
 
         val keyPart = when (config.keyStrategy) {
-            RateLimitKeyStrategy.IP -> clientRef
+            RateLimitKeyStrategy.IP -> mobileIdentityRef() ?: clientRef
             RateLimitKeyStrategy.USER -> userRef ?: clientRef
             RateLimitKeyStrategy.USER_AND_IP -> "user_ip:${userRef ?: "user:anon"}:$clientRef"
             RateLimitKeyStrategy.ENDPOINT -> "endpoint:${LogSanitizer.sanitizeRequestPath(path)}:${userRef ?: clientRef}"
@@ -439,7 +430,7 @@ public open class RateLimitFilter(
             }
         }
 
-        return "$KEY_PREFIX$keyPart"
+        return "$KEY_PREFIX${config.keyStrategy}:${config.limit}:${config.burstCapacity}:$keyPart"
     }
 
     private fun stableRefOrUnknown(value: String, prefix: String): String {
@@ -475,7 +466,7 @@ public open class RateLimitFilter(
         return try {
             val authentication = SecurityContextHolder.getContext().authentication
             if (authentication != null && authentication.isAuthenticated) {
-                resolvePrincipalUserId(authentication.principal, authentication.name)
+                mobileIdentityRef() ?: resolvePrincipalUserId(authentication.principal, authentication.name)
             } else {
                 null
             }
@@ -484,6 +475,11 @@ public open class RateLimitFilter(
             null
         }
     }
+
+    private fun mobileIdentityRef(): String? =
+        (SecurityContextHolder.getContext().authentication as? com.openlattice.chronicle.filters.ApiKeyAuthenticationToken)
+            ?.takeIf { it.isAuthenticated && (it.deviceId != null || it.erased) }
+            ?.let { LogSanitizer.stableFingerprint(if (it.erased) it.name else "${it.studyId}:${it.deviceId}", "device") }
 
     private fun resolvePrincipalUserId(principal: Any?, name: String?): String? {
         return when (principal) {

@@ -23,7 +23,6 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
-import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping
 import org.springframework.beans.factory.annotation.Autowired
 import jakarta.inject.Inject
 import jakarta.servlet.Filter
@@ -74,9 +73,6 @@ public open class RateLimitConfig {
 
     @Autowired(required = false)
     private var rateLimitConfiguration: RateLimitConfiguration? = null
-
-    @Autowired(required = false)
-    private var handlerMapping: RequestMappingHandlerMapping? = null
 
     /**
      * Creates the distributed rate limit filter.
@@ -134,7 +130,7 @@ public open class RateLimitConfig {
         return RateLimitFilter(
             hazelcastInstance = hazelcastInstance,
             config = config,
-            handlerMapping = handlerMapping
+            handlerMapping = null
         )
     }
 

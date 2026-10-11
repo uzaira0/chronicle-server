@@ -7,6 +7,18 @@ import org.springframework.mock.web.MockHttpServletRequest
 class ClientIpResolverTest {
 
     @Test
+    fun testDeploymentTrustReplacesFixedRangesForEverySubnetFamily() {
+        for (subnet in listOf("10.253.1.0/24", "192.168.77.0/24", "172.28.0.0/16")) {
+            assertEquals(listOf(subnet), ClientIpResolver.deploymentTrustedProxyCidrs(listOf("127.0.0.1/32"), subnet))
+            val request = MockHttpServletRequest()
+            request.remoteAddr = subnet.substringBefore("/").substringBeforeLast(".") + ".5"
+            request.addHeader("X-Forwarded-For", "198.51.100.40")
+            assertEquals("198.51.100.40", ClientIpResolver.resolve(request,
+                trustedProxyCidrs = ClientIpResolver.deploymentTrustedProxyCidrs(emptyList(), subnet)))
+        }
+    }
+
+    @Test
     fun testIgnoresForwardedHeadersFromUntrustedDirectPeer() {
         val request = MockHttpServletRequest("GET", "/chronicle/v3/auth/session")
         request.remoteAddr = "203.0.113.10"

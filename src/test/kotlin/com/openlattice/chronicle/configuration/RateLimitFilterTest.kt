@@ -92,6 +92,64 @@ class RateLimitFilterTest {
     // --- Basic rate limiting ---
 
     @Test
+    fun arbitraryV2PathsShareOneAnnotationCacheEntryEvenAfterRateLimitRejection() {
+        val mapping = org.mockito.kotlin.mock<org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping>()
+        val handler = org.springframework.web.method.HandlerMethod(this, javaClass.getMethod("limitedHandler"))
+        org.mockito.kotlin.whenever(mapping.getHandler(org.mockito.kotlin.any()))
+            .thenReturn(org.springframework.web.servlet.HandlerExecutionChain(handler))
+        val filter = createFilter(RateLimitConfiguration(defaultRequestsPerMinute = 1,
+            burstCapacityMultiplier = 1.0, hazelcastMapName = "RL_CACHE_${UUID.randomUUID()}"))
+        filter.bindHandlerMapping(mapping)
+        var rejected = false
+        repeat(10_000) { index ->
+            val response = MockHttpServletResponse()
+            filter.doFilter(createRequest(path = "/chronicle/v2/arbitrary-$index/device-$index"), response, MockFilterChain())
+            rejected = rejected || response.status == 429
+        }
+        val field = RateLimitFilter::class.java.getDeclaredField("annotationCache").apply { isAccessible = true }
+        assertEquals(1, (field.get(filter) as Map<*, *>).size)
+        assertTrue(rejected)
+    }
+
+    @RateLimit(type = RateLimitType.DEFAULT)
+    fun limitedHandler() = Unit
+
+    @Test fun authenticatedPhonesBehindOneSnatIpHaveIndependentBuckets() {
+        val filter = createFilter(RateLimitConfiguration(defaultRequestsPerMinute = 1,
+            burstCapacityMultiplier = 1.0, hazelcastMapName = "RL_SNAT_${UUID.randomUUID()}"))
+        val context = org.springframework.security.core.context.SecurityContextHolder.getContext()
+        val study = UUID.randomUUID()
+        val device = UUID.randomUUID()
+        fun authenticate(deviceId: UUID, keyId: UUID = UUID.randomUUID()) {
+            context.authentication = com.openlattice.chronicle.filters.ApiKeyAuthenticationToken(
+                "apikey:$keyId", keyId, study, "participant", deviceId,
+                com.openlattice.chronicle.apikey.ApiKeyScope.WRITE, emptyList())
+        }
+        fun request(): Int {
+            val response = MockHttpServletResponse()
+            filter.doFilter(createRequest(remoteAddr = "203.0.113.55"), response, MockFilterChain())
+            return response.status
+        }
+        try {
+            authenticate(device)
+            assertEquals(200, request())
+            // Reissuing a key for the same device must not reset its quota.
+            authenticate(device)
+            assertEquals(429, request())
+            authenticate(UUID.randomUUID())
+            assertEquals(200, request())
+            context.authentication = com.openlattice.chronicle.filters.ApiKeyAuthenticationToken.erased("first-erased-device")
+            assertEquals(200, request())
+            assertEquals(429, request())
+            context.authentication = com.openlattice.chronicle.filters.ApiKeyAuthenticationToken.erased("second-erased-device")
+            assertEquals(200, request())
+            context.authentication = null
+            assertEquals(200, request())
+            assertEquals(429, request())
+        } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext() }
+    }
+
+    @Test
     fun testRequestsWithinLimitPassThrough() {
         // Use a unique map name to isolate this test
         val config = RateLimitConfiguration(
@@ -161,8 +219,7 @@ class RateLimitFilterTest {
         filter.doFilter(createRequest(remoteAddr = uniqueIp), res, MockFilterChain())
 
         assertEquals(429, res.status)
-        assertNotNull("Retry-After header should be set", res.getHeader("Retry-After"))
-        val retryAfter = res.getHeader("Retry-After").toLong()
+        val retryAfter = requireNotNull(res.getHeader("Retry-After")) { "Retry-After header should be set" }.toLong()
         assertTrue("Retry-After should be positive", retryAfter > 0)
     }
 
@@ -447,7 +504,7 @@ class RateLimitFilterTest {
             hazelcastMapName = "RL_TEST_STUDY_ISO_${UUID.randomUUID()}"
         )
         val filter = createFilter(config)
-        val uniqueIp = "198.51.100.${(Math.random() * 254).toInt() + 1}"
+        val uniqueIp = "198.51.100.1"
 
         val studyA = "550e8400-e29b-41d4-a716-446655440001"
         val studyB = "550e8400-e29b-41d4-a716-446655440002"
@@ -468,7 +525,7 @@ class RateLimitFilterTest {
 
         // Study A should be limited (uses same IP-based key, not study-based by default)
         // Study B from a DIFFERENT IP should still pass
-        val differentIp = "198.51.100.${(Math.random() * 254).toInt() + 1}"
+        val differentIp = "198.51.100.2"
         val res = MockHttpServletResponse()
         filter.doFilter(
             createRequest(
@@ -482,6 +539,26 @@ class RateLimitFilterTest {
     }
 
     // --- Auth endpoint stricter limits ---
+
+    @Test
+    fun permissiveRequestCannotInitializeAnAuthenticationBucket() {
+        val filter = createFilter(RateLimitConfiguration(
+            defaultRequestsPerMinute = 100,
+            authRequestsPerMinute = 2,
+            burstCapacityMultiplier = 1.0,
+            hazelcastMapName = "RL_TEST_POLICY_${UUID.randomUUID()}",
+        ))
+        val remoteAddr = "198.51.100.237"
+        filter.doFilter(createRequest(path = "/unknown", remoteAddr = remoteAddr), MockHttpServletResponse(), MockFilterChain())
+        repeat(2) {
+            val response = MockHttpServletResponse()
+            filter.doFilter(createRequest(path = "/chronicle/v4/mobile/reviewer-enrollment", remoteAddr = remoteAddr), response, MockFilterChain())
+            assertEquals(200, response.status)
+        }
+        val response = MockHttpServletResponse()
+        filter.doFilter(createRequest(path = "/chronicle/v4/mobile/reviewer-enrollment", remoteAddr = remoteAddr), response, MockFilterChain())
+        assertEquals(429, response.status)
+    }
 
     @Test
     fun testAuthPathsUseStricterLimit() {
@@ -579,7 +656,7 @@ class RateLimitFilterTest {
             hazelcastMapName = "RL_TEST_OVERRIDE_${UUID.randomUUID()}"
         )
         val filter = createFilter(config)
-        val uniqueIp = "198.51.100.${(Math.random() * 254).toInt() + 1}"
+        val uniqueIp = "198.51.100.3"
 
         // Default endpoints (non-study) should be limited at 1 req/min
         filter.doFilter(
@@ -596,7 +673,7 @@ class RateLimitFilterTest {
         assertEquals("Default endpoint should be limited", 429, res1.status)
 
         // Study endpoint with override should allow more (uses different key)
-        val studyIp = "198.51.100.${(Math.random() * 254).toInt() + 1}"
+        val studyIp = "198.51.100.4"
         for (i in 1..5) {
             val res = MockHttpServletResponse()
             filter.doFilter(
@@ -689,4 +766,30 @@ class RateLimitFilterTest {
 
         assertEquals("Spoofed XFF must not create a fresh rate-limit bucket", 429, secondResponse.status)
     }
+    @Test
+    fun exportPollingFromTwoTabsDoesNotUseTheSensitiveBucket() {
+        val controller = com.openlattice.chronicle.controllers.ExportController(
+            org.mockito.kotlin.mock(), org.mockito.kotlin.mock(),
+        )
+        val mapping = org.mockito.kotlin.mock<org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping>()
+        val method = controller.javaClass.getMethod("listExports", UUID::class.java, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+        org.mockito.kotlin.whenever(mapping.getHandler(org.mockito.kotlin.any())).thenReturn(
+            org.springframework.web.servlet.HandlerExecutionChain(org.springframework.web.method.HandlerMethod(controller, method)),
+        )
+        val filter = RateLimitFilter(hz, RateLimitConfiguration(
+            readRequestsPerMinute = 100, sensitiveRequestsPerMinute = 20,
+            burstCapacityMultiplier = 1.0, hazelcastMapName = "EXPORT_POLL_${UUID.randomUUID()}",
+        ), mapping)
+        com.openlattice.chronicle.controllers.TestSecurityUtils.setupSecurityContext()
+        try {
+            val studyId = UUID.randomUUID()
+            repeat(24) {
+                val response = MockHttpServletResponse()
+                filter.doFilter(createRequest(path = "/chronicle/v3/study/$studyId/export"), response, MockFilterChain())
+                assertEquals("Two tabs each poll twelve times per minute", 200, response.status)
+                assertEquals("100", response.getHeader(RateLimitFilter.HEADER_LIMIT))
+            }
+        } finally { com.openlattice.chronicle.controllers.TestSecurityUtils.clearSecurityContext() }
+    }
+
 }

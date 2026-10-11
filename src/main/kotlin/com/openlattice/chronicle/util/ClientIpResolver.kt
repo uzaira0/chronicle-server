@@ -18,10 +18,12 @@ public object ClientIpResolver {
     private val trustedProxyRangeCache = ConcurrentHashMap<String, List<CidrRange>>()
 
     private val defaultTrustedProxyCidrs: List<String> =
-        (System.getenv("CHRONICLE_TRUSTED_PROXY_CIDRS") ?: "172.16.0.0/12,127.0.0.0/8,::1/128")
-            .split(",")
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
+        deploymentTrustedProxyCidrs(listOf("172.16.0.0/12", "127.0.0.0/8", "::1/128"))
+
+    public fun deploymentTrustedProxyCidrs(
+        fallback: List<String>,
+        deployment: String? = System.getenv("CHRONICLE_TRUSTED_PROXY_CIDRS"),
+    ): List<String> = deployment?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: fallback
 
     public fun resolve(
         request: HttpServletRequest,
