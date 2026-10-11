@@ -28,6 +28,22 @@ class StudyParticipantPolicyImmutabilityTest {
     private val changedPolicy = policy("2")
 
     @Test
+    fun withdrawalModeCannotChangeAfterEnrollment() {
+        val prior = StudySettings(mapOf(StudySettingType.Withdrawal to com.openlattice.chronicle.study.StudyWithdrawalSetting()))
+        val changed = StudySettings(mapOf(StudySettingType.Withdrawal to com.openlattice.chronicle.study.StudyWithdrawalSetting(
+            com.openlattice.chronicle.study.WithdrawalMode.KEEP_PRIOR_DATA,
+        )))
+        for (pending in listOf(false, true)) {
+            val fixture = databaseFixture(hasActiveEnrollment = !pending, hasPendingEnrollment = pending)
+            val exception = assertThrows(ResponseStatusException::class.java) {
+                ensureParticipantPolicyMutable(fixture.connection, studyId, prior, changed)
+            }
+            org.junit.Assert.assertEquals(409, exception.statusCode.value())
+        }
+        ensureParticipantPolicyMutable(databaseFixture(hasActiveEnrollment = false).connection, studyId, prior, changed)
+    }
+
+    @Test
     fun `changed participant policy is rejected when an enrolled participant exists`() {
         val fixture = databaseFixture(hasActiveEnrollment = true)
 

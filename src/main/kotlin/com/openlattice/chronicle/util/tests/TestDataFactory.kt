@@ -108,28 +108,31 @@ public class TestDataFactory private constructor() {
                     StudySettingType.DataQuality -> DataQualityConfig()
                     StudySettingType.Pipeline -> com.openlattice.chronicle.pipeline.PipelineConfig()
                     StudySettingType.Encryption -> com.openlattice.chronicle.study.StudyEncryptionSetting()
-                    StudySettingType.ParticipantPolicy -> StudyParticipantPolicy(
-                        responsibleInstitution = "Example Research Institute",
-                        serverOperator = "Example Research Institute",
-                        researchContact = "research@example.org",
-                        purpose = "Deterministic test study purpose",
-                        expectedDuration = "30 days",
-                        procedures = "Deterministic test procedures",
-                        foreseeableRisks = "Minimal test fixture risks",
-                        expectedBenefits = "No direct benefit",
-                        dataUseAndSharing = "Used only for deterministic tests",
-                        retentionAndDeletion = "Deleted after deterministic tests",
-                        privacyPolicyUrl = "https://example.org/privacy",
-                        withdrawalUrl = "https://example.org/withdrawal",
-                        consentDocumentUrl = "https://example.org/consent",
-                        version = "test-v1",
-                        effectiveAt = OffsetDateTime.parse("2026-01-01T00:00:00Z"),
-                    )
+                    StudySettingType.ParticipantPolicy -> participantPolicy()
+                    StudySettingType.Withdrawal -> com.openlattice.chronicle.study.StudyWithdrawalSetting()
                 }
             })
 
         }
 
+
+        public fun participantPolicy(): StudyParticipantPolicy = StudyParticipantPolicy(
+            responsibleInstitution = "Example Research Institute",
+            serverOperator = "Example Research Institute",
+            researchContact = "research@example.org",
+            purpose = "Deterministic test study purpose",
+            expectedDuration = "30 days",
+            procedures = "Deterministic test procedures",
+            foreseeableRisks = "Minimal test fixture risks",
+            expectedBenefits = "No direct benefit",
+            dataUseAndSharing = "Used only for deterministic tests",
+            retentionAndDeletion = "Deleted after deterministic tests",
+            privacyPolicyUrl = "https://example.org/privacy",
+            withdrawalUrl = "https://example.org/withdrawal",
+            consentDocumentUrl = "https://example.org/consent",
+            version = "test-v1",
+            effectiveAt = OffsetDateTime.parse("2026-01-01T00:00:00Z"),
+        )
 
         public fun randomAlphanumeric(length: Int): String {
             return randomAlphaNumeric.generate(length)

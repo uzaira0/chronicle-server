@@ -8,6 +8,7 @@ import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.REVOKED
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
+import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
 import java.sql.Connection
 import java.util.UUID
 
@@ -89,7 +90,7 @@ internal class MobileWithdrawalIntentBinder(
         val revoked = requireWithdrawalKey(connection, studyId, participantId, deviceId, keyId)
         resolveExistingIntent(connection, keyId, requestId, studyId, participantId, deviceId)?.let { return it }
         if (revoked) invalidWithdrawal()
-        val alreadyWithdrawn = withWithdrawalEnrollmentContext(connection) {
+        val alreadyWithdrawn = RLSConnectionCustomizer.withWithdrawalEnrollmentContext(connection) {
             classifyParticipation(connection, studyId, participantId)
         }
         val intent = insertIntent(
@@ -97,20 +98,11 @@ internal class MobileWithdrawalIntentBinder(
             WithdrawalIntentRecord(requestId, studyId, participantId, deviceId, alreadyWithdrawn),
             keyId,
         )
-        if (!alreadyWithdrawn) withWithdrawalEnrollmentContext(connection) {
+        if (!alreadyWithdrawn) RLSConnectionCustomizer.withWithdrawalEnrollmentContext(connection) {
             claimParticipantWithdrawal(connection, studyId, participantId)
         }
         return WithdrawalBindingResult(intent, statusChanged = !alreadyWithdrawn)
     }
-
-    /** The key tuple has already been authenticated/locked; only its enrollment may bypass quarantine. */
-    private fun <T> withWithdrawalEnrollmentContext(connection: Connection, block: () -> T): T =
-        com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
-            connection.createStatement().use { statement ->
-                statement.execute("SELECT set_config('app.current_user_id', 'chronicle-deletion-worker', true)")
-            }
-            block()
-        }
 
     private fun resolveExistingIntent(
         connection: Connection,
@@ -138,12 +130,20 @@ internal class MobileWithdrawalIntentBinder(
     }
 
     private fun classifyParticipation(connection: Connection, studyId: UUID, participantId: String): Boolean =
-        if (hasErasureOperation(connection, studyId, participantId)) true else when (
+        if (hasErasureOperation(connection, studyId, participantId) || hasWithdrawalReceipt(connection, studyId, participantId)) true else when (
             lockParticipationStatus(connection, studyId, participantId)
         ) {
             ParticipationStatus.ENROLLED, ParticipationStatus.NOT_ENROLLED,
             ParticipationStatus.PAUSED, ParticipationStatus.COLLECTION_COMPLETED -> false
             else -> invalidWithdrawal()
+        }
+
+    private fun hasWithdrawalReceipt(connection: Connection, studyId: UUID, participantId: String): Boolean =
+        connection.prepareStatement("SELECT EXISTS (SELECT 1 FROM mobile_withdrawal_requests WHERE study_id = ? AND participant_id = ?)").use {
+            statement ->
+            statement.setObject(1, studyId)
+            statement.setString(2, participantId)
+            statement.executeQuery().use { rows -> check(rows.next()); rows.getBoolean(1) }
         }
 
     private fun hasErasureOperation(connection: Connection, studyId: UUID, participantId: String): Boolean =
@@ -154,7 +154,7 @@ internal class MobileWithdrawalIntentBinder(
                   AND status NOT IN ('PREVIEW', 'CANCELLED')
                   AND (mode <> 'STUDY_ERASURE' OR status = 'COMPLETED')
                   AND (mode = 'STUDY_ERASURE' OR participant_id = ?
-                       OR participant_block_token = md5(? || ':' || ?))
+                       OR participant_block_token = chronicle_participant_block_token(?::uuid, ?::text))
             )
         """.trimIndent()).use { statement ->
             statement.setObject(1, studyId)
@@ -199,7 +199,10 @@ internal class MobileWithdrawalIntentBinder(
             AuditableEvent(
                 aclKey = AclKey(studyId),
                 eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
-                description = "Set participation status of participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId to NOT_ENROLLED",
+                description =
+                    "Participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} withdrew from study $studyId; collection stopped",
+                study = studyId,
+                data = mapOf("status" to ParticipationStatus.NOT_ENROLLED.name, "requestId" to result.intent.requestId.toString()),
             ),
         )
         add(

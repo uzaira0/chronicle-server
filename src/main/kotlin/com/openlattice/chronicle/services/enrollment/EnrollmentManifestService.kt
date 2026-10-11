@@ -6,7 +6,7 @@ import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.controllers.validatePlayCollectionPolicy
-import com.openlattice.chronicle.controllers.collectionSettingsForFeatures
+import com.openlattice.chronicle.services.studies.collectionSettingsForFeatures
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.services.participantaccess.EnrollmentAccessCodeScope
 import com.openlattice.chronicle.services.participantaccess.EnrollmentAttemptBinding
@@ -126,7 +126,8 @@ public open class EnrollmentManifestService(
         val policy = (study.settings[StudySettingType.ParticipantPolicy] as? StudyParticipantPolicy)
             ?.validate()
             ?: throw incompleteEnrollmentConfiguration("participant policy")
-        val collectionSettings = collectionSettingsForFeatures(study.settings, study.modules.keys.map { it.name }.toSet())[StudySettingType.DataCollection] as? AndroidDataCollectionSetting
+        val collectionSettings = collectionSettingsForFeatures(study.settings, study.modules.keys.map { it.name }.toSet(
+            ))[StudySettingType.DataCollection] as? AndroidDataCollectionSetting
             ?: throw incompleteEnrollmentConfiguration("versioned DataCollection settings")
         validatePlayCollectionPolicy(collectionSettings)
         val manifest = EnrollmentManifest(
@@ -140,6 +141,8 @@ public open class EnrollmentManifestService(
             settingsVersion = collectionSettings.settingsVersion,
             issuedAt = scope.issuedAt,
             expiresAt = scope.expiresAt,
+            withdrawalMode = (study.settings[StudySettingType.Withdrawal] as? com.openlattice.chronicle.study.StudyWithdrawalSetting)
+                ?.mode ?: com.openlattice.chronicle.study.WithdrawalMode.ERASE,
         )
         return EnrollmentPreviewResponse(manifest, EnrollmentManifestDigest.compute(manifest))
     }

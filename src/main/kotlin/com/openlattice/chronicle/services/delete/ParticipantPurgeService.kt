@@ -7,9 +7,13 @@ import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.services.apikeys.ApiKeyService
+import com.openlattice.chronicle.services.enrollment.loadLockedStudy
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.ParticipantDataPurgeSummary
 import com.openlattice.chronicle.study.ParticipantPurgeRequest
+import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.study.StudyWithdrawalSetting
+import com.openlattice.chronicle.study.WithdrawalMode
 import com.openlattice.chronicle.util.LogSanitizer
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import org.slf4j.LoggerFactory
@@ -118,7 +122,9 @@ public open class ParticipantPurgeService(
         return executePurge(
             studyId,
             request,
-            idempotencyKey = UUID.randomUUID(),
+            // nosemgrep: chronicle-uuid-from-string -- A signed confirmation identifies one purge across HTTP retries.
+            idempotencyKey = UUID.nameUUIDFromBytes(request.confirmationToken.substringBefore('|').toByteArray(Charsets.UTF_8)),
+
             mode = DataDeletionMode.COLLECTED_DATA_PURGE,
         )
     }
@@ -172,6 +178,7 @@ public open class ParticipantPurgeService(
         keyId: UUID,
         requestId: UUID,
     ): MobileSelfWithdrawalResult {
+        var withdrawalMode = WithdrawalMode.ERASE
         val transaction = dataDeletionOrchestrator.quarantineParticipantAtomically(
             studyId = studyId,
             participantId = participantId,
@@ -179,6 +186,8 @@ public open class ParticipantPurgeService(
             requestedBy = "device-self-withdrawal",
             idempotencyKey = requestId,
         ) { connection ->
+            withdrawalMode = (loadLockedStudy(connection, studyId).settings[StudySettingType.Withdrawal]
+                as? StudyWithdrawalSetting)?.mode ?: WithdrawalMode.ERASE
             val intent = apiKeyService.bindWithdrawalIntent(
                 connection,
                 studyId,
@@ -187,20 +196,26 @@ public open class ParticipantPurgeService(
                 keyId,
                 requestId,
             )
-            ParticipantQuarantineDecision(intent, createOperation = !intent.alreadyWithdrawn)
+            ParticipantQuarantineDecision(
+                intent,
+                createOperation = !intent.alreadyWithdrawn && withdrawalMode == WithdrawalMode.ERASE,
+            )
         }
-        transaction.operationId?.let { operationId ->
+        val operationId = transaction.operationId
+        if (!transaction.result.alreadyWithdrawn) {
             recordEvent(
                 AuditableEvent(
-                    aclKey = AclKey(operationId),
-                    eventType = AuditEventType.PURGE_PARTICIPANT_DATA,
-                    description = "Quarantined withdrawn participant data for verified erasure after seven days; " +
+                    aclKey = AclKey(operationId ?: studyId),
+                    eventType = if (operationId == null) AuditEventType.UPDATE_PARTICIPATION_STATUS
+                        else AuditEventType.PURGE_PARTICIPANT_DATA,
+                    description = (if (operationId == null) "Withdrew without erasure; prior participant data retained; "
+                        else "Quarantined withdrawn participant data for verified erasure after seven days; ") +
                         "participant ref ${LogSanitizer.stableFingerprint(participantId, "participant")}",
                     study = studyId,
-                    data = mapOf(
-                        "operationId" to operationId.toString(),
-                        "mode" to DataDeletionMode.WITHDRAW_AND_ERASE.name,
-                    ),
+                    data = buildMap {
+                        put("mode", if (operationId == null) withdrawalMode.name else DataDeletionMode.WITHDRAW_AND_ERASE.name)
+                        operationId?.let { put("operationId", it.toString()) }
+                    },
                 ),
             )
         }
@@ -218,9 +233,9 @@ public open class ParticipantPurgeService(
         participantId: String,
     ): Long {
         val predicate = asset.participantScope.predicate
-        val sql = "SELECT COUNT(*) FROM ${asset.tableName} WHERE study_id::text = ? AND $predicate"
+        val sql = "SELECT COUNT(*) FROM ${asset.tableName} WHERE $STUDY_ERASURE_PREDICATE AND $predicate"
         return connection.prepareStatement(sql).use { ps ->
-            ps.setString(1, studyId.toString())
+            ps.bindErasureStudyId(studyId)
             ps.setString(2, participantId)
             ps.executeQuery().use { rs ->
                 check(rs.next()) { "No count returned for registered asset ${asset.id}" }

@@ -89,6 +89,19 @@ class EnrollmentManifestServiceTest {
     private val proposedKey = "ck_01234567_0123456789ABCDEFGHIJKLMNOPQRSTUV" // gitleaks:allow -- deterministic test credential
 
     @Test
+    fun withdrawalModeIsBoundIntoTheCanonicalManifestDigest() {
+        val service = serviceWithStudy(collectionSettings)
+        val keepStudy = study(collectionSettings, withdrawalMode = com.openlattice.chronicle.study.WithdrawalMode.KEEP_PRIOR_DATA)
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(keepStudy)
+        val preview = service.getPreview(studyId, participantId, accessCode)
+        assertEquals(com.openlattice.chronicle.study.WithdrawalMode.KEEP_PRIOR_DATA, preview.manifest.withdrawalMode)
+        val original = manifest(collectionSettings)
+        val keep = original.copy(withdrawalMode = com.openlattice.chronicle.study.WithdrawalMode.KEEP_PRIOR_DATA)
+        assertFalse(EnrollmentManifestDigest.compute(original) == EnrollmentManifestDigest.compute(keep))
+        assertEquals(EnrollmentManifestDigest.compute(keep), EnrollmentManifestDigest.compute(keep.copy()))
+    }
+
+    @Test
     fun `preview returns authoritative study policy and current collection settings without consuming code`() {
         val service = serviceWithStudy(collectionSettings)
 
@@ -415,15 +428,19 @@ class EnrollmentManifestServiceTest {
             proposedKey,
         )
 
-    private fun study(settings: AndroidDataCollectionSetting, collectionEnabled: Boolean = true): Study = Study(
+    private fun study(settings: AndroidDataCollectionSetting, collectionEnabled: Boolean = true,
+                      withdrawalMode: com.openlattice.chronicle.study.WithdrawalMode = com.openlattice.chronicle.study.WithdrawalMode.ERASE): Study =
+                          Study(
         studyId = studyId,
         title = "Mobility Study",
-        modules = if (collectionEnabled) mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()) else emptyMap(),
+        modules = if (collectionEnabled) mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>(
+            )) else emptyMap(),
         description = "Study description",
         contact = "research@example.org",
         settings = StudySettings(
             mapOf(
                 StudySettingType.ParticipantPolicy to policy,
+                StudySettingType.Withdrawal to com.openlattice.chronicle.study.StudyWithdrawalSetting(mode = withdrawalMode),
                 StudySettingType.DataCollection to settings,
             ),
         ),
