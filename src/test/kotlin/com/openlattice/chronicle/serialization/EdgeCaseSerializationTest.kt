@@ -409,8 +409,13 @@ class EdgeCaseSerializationTest {
     fun testAllStudySettingTypesAsMapKeys() {
         // Verify all StudySettingType values serialize correctly as map keys
         StudySettingType.values().forEach { type ->
-            val json = """{"${type.name}":{"@class":"com.openlattice.chronicle.study.DataQualityConfig",""" +
-                """"expectedDaysPerWeek":5,"alertThresholdPercent":50,"evaluationWindowDays":14}}"""
+            val setting = if (type == StudySettingType.Withdrawal) {
+                """{"@class":"com.openlattice.chronicle.study.StudyWithdrawalSetting","mode":"ERASE"}"""
+            } else {
+                """{"@class":"com.openlattice.chronicle.study.DataQualityConfig",""" +
+                    """"expectedDaysPerWeek":5,"alertThresholdPercent":50,"evaluationWindowDays":14}"""
+            }
+            val json = """{"${type.name}":$setting}"""
             val settings: StudySettings = mapper.readValue(json)
             assertEquals(1, settings.size)
             assertNotNull("Key $type should deserialize", settings[type])

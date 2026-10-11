@@ -97,7 +97,8 @@ class ResearcherNotificationScopeTest {
         try {
             postgres.createConnection("").use { connection -> connection.createStatement().use {
                 it.execute("INSERT INTO studies (study_id, title) VALUES ('$study', 'identity scope')")
-                it.execute("INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES ('$study', '$participant', '${UUID.randomUUID()}', 'ENROLLED')")
+                it.execute(
+                    "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES ('$study', '$participant', '${UUID.randomUUID()}', 'ENROLLED')")
             } }
             val notice = ResearcherNotification(emptySet(), setOf("+15555550100"),
                 NotificationType.PASSIVE_DATA_COLLECTION_COMPLIANCE, EnumSet.of(DeliveryType.SMS),

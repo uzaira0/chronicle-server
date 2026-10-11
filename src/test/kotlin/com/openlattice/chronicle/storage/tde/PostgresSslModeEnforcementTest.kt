@@ -28,10 +28,10 @@ import java.util.Properties
  *     is **refused**, while `sslmode=require` / `verify-full`-class connections succeed. This proves
  *     a downgraded connection cannot reach the database — the property the W4 JDBC-URL pin protects.
  *  2. **Configuration pin:** the production datasource template
- *     (`docker/rhizome-docker.yaml.template`) hard-codes `sslmode=verify-full` in the JDBC URL, so a
+ *     (`selfhost/config/rhizome.yaml.template`) hard-codes `sslmode=verify-full` in the JDBC URL, so a
  *     deploy cannot silently downgrade the connection via the `POSTGRES_SSL_MODE` env var.
  *
- * The server is the EXACT production image (`percona/percona-distribution-postgresql:18.4-5`); SSL
+ * The server uses the production image pinned in `toolchain-manifest.yaml`; SSL
  * is turned on with a self-signed cert and the `pg_hba.conf` is rewritten to `hostssl … scram-sha-256`
  * (rejecting every non-SSL TCP connection) — mirroring the prod hardened posture. If the image is not
  * pullable in the runner, the behavioral test SKIPS via JUnit `Assume`; the config-pin test still runs.
@@ -191,12 +191,8 @@ class PostgresSslModeEnforcementTest {
 
     @Test
     fun `production datasource template pins sslmode=verify-full in the JDBC URL`() {
-        // Walk up from the test working dir to find the monorepo docker/ template. When chronicle-server
-        // is built standalone (no monorepo checkout) the template is absent → assert-skip via assumeNoException.
-        val template = locateTemplate()
-        if (template == null) {
-            // Not a failure: the behavioral tests above carry the control; this is the belt-and-braces pin.
-            return
+        val template = requireNotNull(locateTemplate()) {
+            "Required shipped selfhost/config/rhizome.yaml.template is missing"
         }
         val text = template.readText()
         val jdbcLines = text.lines().filter { it.contains("jdbcUrl") }
@@ -222,7 +218,7 @@ class PostgresSslModeEnforcementTest {
     private fun locateTemplate(): File? {
         var dir: File? = File(System.getProperty("user.dir"))
         repeat(6) {
-            val candidate = dir?.resolve("docker/rhizome-docker.yaml.template")
+            val candidate = dir?.resolve("selfhost/config/rhizome.yaml.template")
             if (candidate != null && candidate.isFile) return candidate
             dir = dir?.parentFile
         }
@@ -233,7 +229,7 @@ class PostgresSslModeEnforcementTest {
     fun `verify-full is a stronger mode than the env default and is the pinned target`() {
         // Documents the W4 decision: verify-full (encrypt + verify cert chain + verify hostname) is
         // the pinned mode, strictly stronger than the historical `require` env default (encrypt only).
-        val template = locateTemplate() ?: return
+        val template = requireNotNull(locateTemplate()) { "Required shipped datasource template is missing" }
         assertNull(
             "the pinned URL must not fall back to the weaker 'require' mode",
             template.readText().lines()

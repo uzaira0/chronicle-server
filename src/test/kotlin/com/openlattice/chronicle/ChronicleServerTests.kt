@@ -25,6 +25,23 @@ import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.users.ConfiguredUserListingService
 import com.zaxxer.hikari.HikariDataSource
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import com.openlattice.chronicle.client.Environment
+import com.openlattice.chronicle.client.RetrofitClientFactory
+import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
+import com.openlattice.chronicle.collection.CollectionAcknowledgment
+import com.openlattice.chronicle.collection.CollectionDefaults
+import com.openlattice.chronicle.collection.CollectionModuleId
+import com.openlattice.chronicle.participantaccess.ParticipantFormKind
+import com.openlattice.chronicle.services.apikeys.ApiKeyService
+import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
+import com.openlattice.chronicle.sources.AndroidDevice
+import com.openlattice.chronicle.study.StudyApi
+import com.openlattice.chronicle.study.StudyFeature
+import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.study.StudyUpdate
+import com.openlattice.chronicle.util.tests.TestDataFactory
+import java.time.OffsetDateTime
 import org.junit.Before
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -43,6 +60,57 @@ open class ChronicleServerTests {
     }
 
     companion object {
+        /** Publish the disclosure and uploaded modules before registering the first participant. */
+        fun prepareUsageFixture(client: ChronicleClient, studyId: UUID) {
+            val study = client.studyApi.getStudy(studyId)
+            client.studyApi.updateStudy(studyId, StudyUpdate(
+                modules = study.modules.mapKeys { it.key.name } +
+                    (StudyFeature.CHRONICLE_DATA_COLLECTION.name to emptyMap<String, Any>()),
+            ))
+            val settings = client.studyApi.getStudySetting(studyId, StudySettingType.DataCollection) as AndroidDataCollectionSetting
+            val fixtureModules = setOf(CollectionModuleId.USAGE_EVENTS, CollectionModuleId.IN_APP_ACTIVITY_CLASS,
+                CollectionModuleId.USER_IDENTIFICATION)
+            client.studyApi.updateStudySettings(studyId, StudySettingType.DataCollection, settings.copy(
+                modules = settings.modules + fixtureModules.associateWith { CollectionDefaults.moduleSetting(it, enabled = true) },
+            ))
+            client.studyApi.updateStudySettings(studyId, StudySettingType.ParticipantPolicy, TestDataFactory.participantPolicy())
+        }
+
+        /** Enroll through the public Android invitation protocol, with consent for the usage fixture. */
+        fun enrollUsageFixture(
+            studyId: UUID,
+            participantId: String,
+            sourceDeviceId: String,
+            device: AndroidDevice,
+            beforeAcknowledgment: (StudyApi) -> Unit = {},
+        ): StudyApi {
+            val code = testServer.context.getBean(ParticipantFormAccessService::class.java).createAccessCode(
+                studyId, participantId, ParticipantFormKind.ENROLLMENT, null, null, null,
+                ParticipantAccessCodeIssuerType.RESEARCHER, "integration-fixture",
+            ).accessCode
+            val publicApi = RetrofitClientFactory.newClient(Environment.TESTING_CHRONICLE).create(StudyApi::class.java)
+            val preview = publicApi.getEnrollmentPreviewV4(studyId, participantId, code)
+            val rawKey = UUID.randomUUID().toString().replace("-", "")
+            val proposedKey = "ck_${rawKey.take(ApiKeyService.PREFIX_LENGTH)}_$rawKey"
+            val enrolled = publicApi.enrollV4(studyId, participantId, sourceDeviceId, device,
+                code, preview.manifestDigest, UUID.randomUUID().toString(), proposedKey)
+            val mobileHttp = RetrofitClientFactory.okHttpClient().addInterceptor { chain ->
+                chain.proceed(chain.request().newBuilder().header("X-Api-Key", requireNotNull(enrolled.apiKey)).build())
+            }
+            val mobileApi = RetrofitClientFactory.decorateWithOpenLatticeFactories(
+                RetrofitClientFactory.createBaseRhizomeRetrofitBuilder(Environment.TESTING_CHRONICLE, mobileHttp),
+            ).build().create(StudyApi::class.java)
+            beforeAcknowledgment(mobileApi)
+            mobileApi.reportCollectionAcknowledgmentV4(studyId, participantId, sourceDeviceId, CollectionAcknowledgment(
+                acknowledgedModules = preview.manifest.collectionSettings.effectiveEnabledModuleIds(),
+                acknowledgedAt = OffsetDateTime.now(),
+                settingsVersion = preview.manifest.settingsVersion,
+                disclosureVersion = preview.manifest.participantPolicy.version,
+                manifestDigest = preview.manifestDigest,
+            ))
+            return mobileApi
+        }
+
         @JvmField
         val testHttpPort: Int = System.getenv("CHRONICLE_TEST_HTTP_PORT")
             ?.toIntOrNull()
@@ -112,6 +180,7 @@ open class ChronicleServerTests {
 
         init {
             postgres.start()
+            postgres.createConnection("").use(ChronicleContractTestSchema::bootstrapApplicationRoles)
             writeTestConfig()
             testServer.start(*LOCAL_TEST_PROFILES)
 
@@ -130,7 +199,6 @@ open class ChronicleServerTests {
             dsm = testServer.context.getBean(DataSourceManager::class.java)
             jwtTokens = testServer.context.getBean(ConfiguredUserListingService::class.java).jwtTokens
             ensureAuditLogsTable(hds)
-            ensureRlsAppRole(hds)
             seedTestPrincipals(
                 testServer.context.getBean(SecurePrincipalsManager::class.java),
                 testServer.context.getBean(AuthorizationManager::class.java)
@@ -161,53 +229,6 @@ open class ChronicleServerTests {
             }
             spm.addPrincipalToPrincipal(spm.lookup(Principal(PrincipalType.USER, "test_admin")), spm.lookup(SystemRole.ADMIN.principal))
             seedResolvedPrincipalTrees()
-        }
-
-        /**
-         * Mirror docker/init-db-roles.sql in the test database: the request-path RLS
-         * wrapper drops to the non-superuser `chronicle_app` role via SET ROLE, so the
-         * role must exist and hold DML on every table or any authenticated request would
-         * fail. Runs after the schema + audit_logs are created so the blanket grants and
-         * default privileges (for tables created later by oltest) cover everything.
-         */
-        private fun ensureRlsAppRole(hds: HikariDataSource) {
-            hds.connection.use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.execute(
-                        """
-                        DO ${'$'}${'$'}
-                        BEGIN
-                            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'chronicle_app') THEN
-                                CREATE ROLE chronicle_app WITH LOGIN NOSUPERUSER NOCREATEDB
-                                    NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
-                            END IF;
-                        END ${'$'}${'$'};
-                        """.trimIndent()
-                    )
-                    statement.execute("GRANT USAGE ON SCHEMA public TO chronicle_app")
-                    statement.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO chronicle_app")
-                    statement.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO chronicle_app")
-                    statement.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO chronicle_app")
-                    statement.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO chronicle_app")
-                    statement.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO chronicle_app")
-                    statement.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO chronicle_app")
-                    statement.execute(
-                        "REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs, study_settings_audit, " +
-                            "participant_collection_acknowledgment, mobile_withdrawal_requests FROM chronicle_app"
-                    )
-                    statement.execute(
-                        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON " +
-                            "data_collection_settings_revisions FROM chronicle_app"
-                    )
-                    statement.execute(
-                        "REVOKE ALL ON restore_continuity_reconciliations FROM chronicle_app"
-                    )
-                    statement.execute(
-                        "REVOKE EXECUTE ON FUNCTION record_data_collection_settings_revision() FROM chronicle_app"
-                    )
-                    statement.execute("REVOKE CREATE ON SCHEMA public FROM chronicle_app")
-                }
-            }
         }
 
         private fun ensureAuditLogsTable(hds: HikariDataSource) {
@@ -275,7 +296,7 @@ open class ChronicleServerTests {
         private fun writeTestConfig() {
             val jdbcUrl = postgres.jdbcUrl
             val yaml = """
-                enable-persistence: false
+                enable-persistence: true
                 session-clustering-enabled: false
                 hazelcast:
                     server: true
@@ -388,12 +409,27 @@ open class ChronicleServerTests {
         val adminUser = Principal(PrincipalType.USER, "test_admin")
 
         @JvmField
-        val clientUser1 = ChronicleClient { jwtTokens.getValue(testUser1.id).first() }
+        val clientUser1 = ChronicleClient { activeFixtureToken(testUser1) }
         @JvmField
-        val clientUser2 = ChronicleClient { jwtTokens.getValue(testUser2.id).first() }
+        val clientUser2 = ChronicleClient { activeFixtureToken(testUser2) }
         @JvmField
-        val clientUser3 = ChronicleClient { jwtTokens.getValue(testUser3.id).first() }
+        val clientUser3 = ChronicleClient { activeFixtureToken(testUser3) }
         @JvmField
-        val clientAdmin = ChronicleClient { jwtTokens.getValue(adminUser.id).first() }
+        val clientAdmin = ChronicleClient { activeFixtureToken(adminUser) }
+
+        internal fun activeFixtureToken(user: Principal): String {
+            val token = jwtTokens.getValue(user.id).first()
+            val jwt = com.auth0.jwt.JWT.decode(token)
+            val blocklist = testServer.context.getBean(com.openlattice.chronicle.authorization.JwtBlocklist::class.java)
+            if (blocklist.credentialRejectionReason(jwt.id, token, jwt.issuedAt?.toInstant(), jwt.expiresAt?.toInstant(),
+                    java.time.Duration.ofMinutes(15), subject = user.id) == null) return token
+
+            // JWT iat has second precision; reauthenticate after the ACL cutoff's second.
+            val nextSecond = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusSeconds(1)
+            while (java.time.Instant.now().isBefore(nextSecond)) {
+                Thread.sleep(maxOf(1, java.time.Duration.between(java.time.Instant.now(), nextSecond).toMillis()))
+            }
+            return requireNotNull(testServer.context.getBean(ConfiguredUserListingService::class.java).issueDashboardToken(user.id))
+        }
     }
 }

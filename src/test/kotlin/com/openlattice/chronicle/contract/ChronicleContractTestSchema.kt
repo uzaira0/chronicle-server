@@ -14,6 +14,8 @@ import org.testcontainers.utility.DockerImageName
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 import java.sql.Connection
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
 
@@ -47,7 +49,9 @@ object ChronicleContractTestSchema {
             withPassword("testpass")
             // Explicit command, mirroring TdePrincipalKeyRotationTest: the Percona image's
             // entrypoint misbehaves under the PostgreSQLContainer default command wiring.
-            withCommand("postgres", "-c", "fsync=off")
+            // Bound every test connection, including direct barrier/observer connections.
+            // Flyway clears these limits in its migration session.
+            withCommand("postgres", "-c", "fsync=off", "-c", "lock_timeout=15s", "-c", "statement_timeout=30s")
             // The Percona image routes server logs through a logging collector, so the
             // default log-message wait never matches; wait on the port, then on pg_isready
             // so start() only returns once queries are accepted ("starting up" window) —
@@ -100,6 +104,7 @@ object ChronicleContractTestSchema {
      * `chronicle` JDBC application role that the migration corpus GRANT/REVOKEs against.
      */
     fun applyFrameworkSchema(conn: Connection) {
+        bootstrapApplicationRoles(conn)
         conn.createStatement().use { stmt ->
             for (table in allChronicleTableDefinitions()) {
                 stmt.execute(table.createTableQuery())
@@ -127,42 +132,22 @@ object ChronicleContractTestSchema {
 
     /** Framework bootstrap + full Flyway corpus, exactly like a production fresh install. */
     fun applyFrameworkSchemaAndMigrations(container: PostgreSQLContainer<*>) {
-        container.createConnection("").use { conn -> applyFrameworkSchema(conn) }
+        container.createConnection("").use { conn ->
+            applyFrameworkSchema(conn)
+        }
         val result = migrate(container)
         check(result.success) { "Flyway corpus failed to apply: ${result.warnings}" }
-        container.createConnection("").use { conn -> applyRestrictedApplicationRoleGrants(conn) }
     }
 
     /**
-     * Mirrors the post-schema grants from docker/init-db-roles.sql.
-     *
-     * V60 creates the no-login chronicle_app role for migration tests, while production's role
-     * bootstrap grants that role DML after the restored schema exists. Applying the same grants
-     * here lets contract tests exercise background work under the real restricted role instead of
-     * accidentally relying on the Testcontainers superuser. Revoke mutable access to append-only
-     * audit tables last, matching the production script's final defense-in-depth boundary.
+     * Run the shipped role bootstrap before schema creation so Flyway's REVOKEs remain effective.
      */
-    private fun applyRestrictedApplicationRoleGrants(conn: Connection) {
+    fun bootstrapApplicationRoles(conn: Connection) {
+        val script = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
+            .map { it.resolve("docker/init-db-roles.sql") }
+            .first { Files.isRegularFile(it) }
         conn.createStatement().use { stmt ->
-            stmt.execute("GRANT USAGE ON SCHEMA public TO chronicle_app")
-            stmt.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO chronicle_app")
-            stmt.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO chronicle_app")
-            stmt.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO chronicle_app")
-            stmt.execute(
-                "REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs, study_settings_audit, " +
-                    "participant_collection_acknowledgment, mobile_withdrawal_requests FROM chronicle_app"
-            )
-            stmt.execute(
-                "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON " +
-                    "data_collection_settings_revisions FROM chronicle_app"
-            )
-            stmt.execute("REVOKE ALL ON restore_continuity_reconciliations FROM chronicle_app")
-            stmt.execute("REVOKE SELECT ON audit, audit_buffer FROM chronicle_app")
-            stmt.execute("REVOKE DELETE, TRUNCATE ON data_deletion_audit_outbox FROM chronicle_app")
-            stmt.execute(
-                "REVOKE EXECUTE ON FUNCTION record_data_collection_settings_revision() FROM chronicle_app"
-            )
-            stmt.execute("REVOKE CREATE ON SCHEMA public FROM chronicle_app")
+            stmt.execute(Files.readString(script))
         }
     }
 

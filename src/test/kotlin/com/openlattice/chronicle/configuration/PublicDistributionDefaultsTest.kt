@@ -28,7 +28,7 @@ class PublicDistributionDefaultsTest {
         }
         assertTrue(resources.getValue("/twilio.yaml").contains("enabled: false"))
         assertTrue(resources.getValue("/twilio.yaml").contains("callbackBaseUrl: \"\""))
-        assertTrue(resources.getValue("/mail.yaml").contains("defaultFromEmail: \"\""))
+        assertEquals("{}", resources.getValue("/mail.yaml").trim())
         assertTrue(resources.getValue("/cors.yaml").contains("allowed-origins: []"))
         val mobileSecurity = resources.getValue("/mobile-security.yaml")
         assertTrue(mobileSecurity.contains("enabled: false"))
