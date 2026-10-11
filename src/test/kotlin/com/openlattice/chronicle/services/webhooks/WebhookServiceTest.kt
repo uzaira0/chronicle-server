@@ -85,6 +85,75 @@ class WebhookServiceTest {
         assertNotNull(service)
     }
 
+    @Test
+    fun recipientsCannotBeAddedDuringActiveOrPendingEnrollment() {
+        `when`(idGenerationService.getNextId()).thenReturn(UUID.randomUUID())
+        val lock = Mockito.mock(PreparedStatement::class.java)
+        val lockRows = Mockito.mock(ResultSet::class.java)
+        val activity = Mockito.mock(PreparedStatement::class.java)
+        val activityRows = Mockito.mock(ResultSet::class.java)
+        `when`(lock.executeQuery()).thenReturn(lockRows)
+        `when`(lockRows.next()).thenReturn(true)
+        `when`(activity.executeQuery()).thenReturn(activityRows)
+        `when`(activityRows.next()).thenReturn(true)
+        `when`(mockConnection.prepareStatement(kAnyString())).thenAnswer { invocation ->
+            if (invocation.getArgument<String>(0).contains("FOR UPDATE")) lock else activity
+        }
+        service = WebhookService(storageResolver, idGenerationService, deliveryExecutor,
+            hostResolver = { arrayOf(InetAddress.getByName("93.184.216.34")) })
+        val request = WebhookCreateRequest(url = "https://example.org/callback", secret = VALID_SECRET,
+            eventTypes = setOf(WebhookEventType.DATA_SUBMITTED))
+        for (active in listOf(true, false)) {
+            `when`(activityRows.getBoolean(1)).thenReturn(active)
+            `when`(activityRows.getBoolean(2)).thenReturn(!active)
+            val error = assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+                service.createWebhook(UUID.randomUUID(), "staff", request)
+            }
+            assertEquals(409, error.statusCode.value())
+        }
+        verify(mockConnection, Mockito.times(2)).rollback()
+        verify(activity, never()).executeUpdate()
+    }
+
+    @Test
+    fun terminalDeliveryPruningKeepsPendingAndRecentRows() {
+        val pg = com.openlattice.chronicle.contract.ChronicleContractTestSchema.sharedPostgres
+        HikariDataSource(com.zaxxer.hikari.HikariConfig().apply {
+            jdbcUrl = pg.jdbcUrl; username = pg.username; password = pg.password; maximumPoolSize = 1
+        }).use { pool ->
+            pool.connection.use { connection -> connection.createStatement().use { statement ->
+                statement.execute(
+                    "CREATE TEMP TABLE webhook_deliveries (delivery_id uuid PRIMARY KEY, delivery_state text, completed_at timestamptz)")
+                statement.execute("""INSERT INTO webhook_deliveries VALUES
+                    (gen_random_uuid(), 'SUCCEEDED', now() - interval '31 days'),
+                    (gen_random_uuid(), 'FAILED', now() - interval '31 days'),
+                    (gen_random_uuid(), 'SUCCEEDED', now()),
+                    (gen_random_uuid(), 'PENDING', now() - interval '31 days'),
+                    (gen_random_uuid(), 'IN_FLIGHT', now() - interval '31 days')""")
+                statement.execute("""INSERT INTO webhook_deliveries
+                    SELECT gen_random_uuid(), 'SUCCEEDED', now() - interval '31 days'
+                    FROM generate_series(1, 2500)""")
+            } }
+            val resolver = Mockito.mock(StorageResolver::class.java)
+            `when`(resolver.getPlatformStorage()).thenReturn(pool)
+            val pruning = WebhookService(resolver, idGenerationService, deliveryExecutor)
+            assertEquals(2502, pruning.pruneTerminalDeliveries())
+            pool.connection.use { connection -> connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT count(*) FROM webhook_deliveries").use { rows ->
+                    assertTrue(rows.next()); assertEquals(3, rows.getInt(1))
+                }
+            } }
+            assertEquals(0, pruning.pruneTerminalDeliveries())
+        }
+    }
+
+    @Test
+    fun pruningStopsAtItsRunCapDuringSustainedTraffic() {
+        `when`(mockPs.executeUpdate()).thenReturn(1_000)
+        assertEquals(100_000, service.pruneTerminalDeliveries())
+        verify(mockPs, Mockito.times(WebhookService.DELIVERY_PRUNE_MAX_BATCHES)).executeUpdate()
+    }
+
     // --- createWebhook tests ---
 
     @Test(expected = IllegalArgumentException::class)

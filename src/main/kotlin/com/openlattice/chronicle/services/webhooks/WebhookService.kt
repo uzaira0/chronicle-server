@@ -60,6 +60,10 @@ public open class WebhookService(
     internal companion object {
         private val logger = LoggerFactory.getLogger(WebhookService::class.java)
         private val mapper = ObjectMappers.newJsonMapper()
+        private const val DELIVERY_RETENTION_DAYS = 30L
+        private const val DELIVERY_PRUNE_BATCH_SIZE = 1_000
+        internal const val DELIVERY_PRUNE_MAX_BATCHES = 100
+        private const val DELIVERY_PRUNE_INTERVAL_MS = 3_600_000L
 
         private const val INSERT_WEBHOOK_SQL = """
             INSERT INTO webhook_registrations
@@ -325,6 +329,7 @@ public open class WebhookService(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught")
     public fun createWebhook(studyId: UUID, userId: String, request: WebhookCreateRequest): WebhookRegistration {
         validateCreateRequest(request)
         // C-5: Validate webhook URL against SSRF rules on registration
@@ -334,17 +339,29 @@ public open class WebhookService(
         val secretHash = if (request.secret.isNotBlank()) hashSecret(request.secret) else ""
 
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(INSERT_WEBHOOK_SQL).use { ps ->
-                ps.setObject(1, webhookId)
-                ps.setObject(2, studyId)
-                ps.setString(3, request.url)
-                ps.setString(4, secretHash)
-                ps.setArray(5, PostgresArrays.createTextArray(
-                    ps.connection, request.eventTypes.map { it.name }
-                ))
-                ps.setString(6, request.description)
-                ps.setString(7, userId)
-                ps.executeUpdate()
+            connection.autoCommit = false
+            try {
+                val (active, pending) = com.openlattice.chronicle.services.studies.loadEnrollmentDisclosureActivity(connection, studyId)
+                if (active || pending) throw org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT,
+                    com.openlattice.chronicle.i18n.Messages.get("error.webhook.recipientsLocked"),
+                )
+                connection.prepareStatement(INSERT_WEBHOOK_SQL).use { ps ->
+                    ps.setObject(1, webhookId)
+                    ps.setObject(2, studyId)
+                    ps.setString(3, request.url)
+                    ps.setString(4, secretHash)
+                    ps.setArray(5, PostgresArrays.createTextArray(
+                        ps.connection, request.eventTypes.map { it.name }
+                    ))
+                    ps.setString(6, request.description)
+                    ps.setString(7, userId)
+                    ps.executeUpdate()
+                }
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
             }
         }
 
@@ -533,6 +550,33 @@ public open class WebhookService(
             } catch (ex: RejectedExecutionException) {
                 logger.debug("Webhook dispatcher queue is full; persisted deliveries remain pending")
                 return
+            }
+        }
+    }
+
+    @Scheduled(fixedDelay = DELIVERY_PRUNE_INTERVAL_MS)
+    public fun pruneTerminalDeliveries(): Int = RLSRequestContext.withSystemContext {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement(
+                """
+                DELETE FROM webhook_deliveries WHERE delivery_id IN (
+                    SELECT delivery_id FROM webhook_deliveries
+                    WHERE delivery_state IN ('SUCCEEDED', 'FAILED')
+                      AND completed_at < now() - (? * interval '1 day')
+                    ORDER BY completed_at LIMIT ?
+                    FOR UPDATE SKIP LOCKED
+                )
+                """.trimIndent(),
+            ).use { statement ->
+                statement.setLong(1, DELIVERY_RETENTION_DAYS)
+                statement.setInt(2, DELIVERY_PRUNE_BATCH_SIZE)
+                var total = 0
+                repeat(DELIVERY_PRUNE_MAX_BATCHES) {
+                    val deleted = statement.executeUpdate()
+                    total += deleted
+                    if (deleted < DELIVERY_PRUNE_BATCH_SIZE) return@withSystemContext total
+                }
+                total
             }
         }
     }

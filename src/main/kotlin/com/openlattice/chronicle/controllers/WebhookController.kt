@@ -1,6 +1,9 @@
 package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
+import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.authorization.StudyPermission
 import com.openlattice.chronicle.authorization.annotations.RequiresStudyAccess
 import com.openlattice.chronicle.authorization.principals.Principals
@@ -33,7 +36,8 @@ import java.util.*
 @Timed
 @RateLimit(type = RateLimitType.SENSITIVE)
 public open class WebhookController(
-    private val webhookService: WebhookService
+    private val webhookService: WebhookService,
+    private val auditService: AuditService,
 ) : WebhookApi {
 
     @RequiresStudyAccess(StudyPermission.MODIFY_STUDY)
@@ -47,7 +51,9 @@ public open class WebhookController(
         @RequestBody @Valid request: WebhookCreateRequest
     ): WebhookRegistration {
         val userId = Principals.getCurrentUser().id
-        return webhookService.createWebhook(studyId, userId, request)
+        return webhookService.createWebhook(studyId, userId, request).also {
+            auditWebhook(AuditAction.CREATE, it)
+        }
     }
 
     @RequiresStudyAccess(StudyPermission.READ_STUDY)
@@ -68,7 +74,9 @@ public open class WebhookController(
         @PathVariable(StudyApi.STUDY_ID) studyId: UUID,
         @PathVariable(WebhookApi.WEBHOOK_ID) webhookId: UUID
     ): OK {
+        val registration = registration(studyId, webhookId)
         webhookService.deleteWebhook(studyId, webhookId)
+        auditWebhook(AuditAction.DELETE, registration)
         return OK.ok
     }
 
@@ -93,12 +101,28 @@ public open class WebhookController(
         @PathVariable(StudyApi.STUDY_ID) studyId: UUID,
         @PathVariable(WebhookApi.WEBHOOK_ID) webhookId: UUID
     ): OK {
+        val registration = registration(studyId, webhookId)
         webhookService.testWebhook(studyId, webhookId)
+        auditWebhook(AuditAction.CONFIGURATION_CHANGE, registration)
         return OK.ok
     }
 
     @ExceptionHandler(WebhookNotFoundException::class)
     public fun handleWebhookNotFound(): ResponseEntity<ApiError> {
         return ResponseEntity(ApiError.notFound(), HttpStatus.NOT_FOUND)
+    }
+
+    private fun registration(studyId: UUID, webhookId: UUID): WebhookRegistration =
+        webhookService.listWebhooks(studyId).firstOrNull { it.webhookId == webhookId } ?: throw WebhookNotFoundException()
+
+    private fun auditWebhook(action: AuditAction, registration: WebhookRegistration) {
+        auditService.logWithContext {
+            action(action)
+            resourceType("Webhook")
+            resourceId(registration.webhookId)
+            studyId(registration.studyId)
+            success(true)
+            additionalData(mapOf("destinationHost" to WebhookService.parseDeliveryUrl(registration.url).host))
+        }
     }
 }
