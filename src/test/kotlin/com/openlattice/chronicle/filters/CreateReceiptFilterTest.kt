@@ -6,9 +6,22 @@ import com.openlattice.chronicle.storage.StorageResolver
 import com.zaxxer.hikari.HikariDataSource
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletResponse
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.fail
 import org.junit.Test
-import org.mockito.Mockito.*
+import org.mockito.Mockito.any
+import org.mockito.Mockito.anyInt
+import org.mockito.Mockito.anyString
+import org.mockito.Mockito.doAnswer
+import org.mockito.Mockito.doThrow
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
+import org.mockito.Mockito.`when`
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.mock.web.MockHttpServletResponse
 import java.sql.Connection
@@ -29,6 +42,8 @@ class CreateReceiptFilterTest {
             CreateReceiptFilter(storage, authorization) { throw AssertionError("Invalid key needs no secret") }
                 .doFilter(request, response, FilterChain { _, _ -> fail("Invalid keys must not create") })
             assertEquals(400, response.status)
+            assertEquals("application/json", response.contentType)
+            assertEquals("""{"status":400,"message":"Idempotency-Key must contain 1–128 letters, digits, underscores or hyphens"}""", response.contentAsString)
         }
         verifyNoInteractions(storage, authorization)
     }
@@ -119,22 +134,65 @@ class CreateReceiptFilterTest {
                 assertEquals(first.contentAsString, replay.contentAsString)
                 assertEquals("true", replay.getHeader("Idempotency-Replayed"))
                 assertFalse(sealed.orEmpty().contains("raw-key-sentinel"))
+                val unavailableReplay = MockHttpServletResponse()
+                CreateReceiptFilter(storage, authorization) { "different-receipt-secret-32-characters-minimum" }
+                    .doFilter(request(), unavailableReplay, action)
+                assertEquals(409, unavailableReplay.status)
+                assertEquals("""{"status":409,"message":"This create already completed; its original result cannot be replayed"}""", unavailableReplay.contentAsString)
                 val conflict = MockHttpServletResponse()
                 CreateReceiptFilter(storage, authorization) { "test-receipt-secret-32-characters-minimum" }
                     .doFilter(request("{\"title\":\"changed\"}"), conflict, action)
                 assertEquals(409, conflict.status)
+                assertEquals("""{"status":409,"message":"Idempotency-Key was already used for a different request"}""", conflict.contentAsString)
                 assertEquals(1, created)
                 if (route != "/v3/study") {
                     doThrow(com.geekbeast.controllers.exceptions.ForbiddenException("private access diagnostic")).`when`(authorization)
-                        .requirePermission(study, if (route.endsWith("/export/async")) com.openlattice.chronicle.authorization.StudyPermission.EXPORT_DATA
+                        .requirePermission(study, if (route.endsWith(
+                            "/export/async")) com.openlattice.chronicle.authorization.StudyPermission.EXPORT_DATA
                             else com.openlattice.chronicle.authorization.StudyPermission.MODIFY_STUDY)
                     val denied = MockHttpServletResponse()
                     CreateReceiptFilter(storage, authorization) { "test-receipt-secret-32-characters-minimum" }.doFilter(request(), denied, action)
                     assertEquals(403, denied.status)
+                    assertEquals("""{"status":403,"message":"Access denied"}""", denied.contentAsString)
                     assertFalse(denied.contentAsString.contains("private access diagnostic"))
                     assertEquals(1, created)
                 }
             }
+        } finally { TestSecurityUtils.clearSecurityContext() }
+    }
+
+    @Test
+    fun failedCreatesRollBackBeforeSendingTheOriginalResponse() {
+        TestSecurityUtils.setupSecurityContext(subject = "receipt-owner", admin = false)
+        try {
+            val storage = mock(StorageResolver::class.java)
+            val pool = mock(HikariDataSource::class.java)
+            val connection = mock(Connection::class.java)
+            val statement = mock(PreparedStatement::class.java)
+            `when`(storage.getPlatformStorage()).thenReturn(pool)
+            `when`(pool.connection).thenReturn(connection)
+            `when`(connection.prepareStatement(anyString())).thenReturn(statement)
+            `when`(statement.executeUpdate()).thenReturn(1)
+            val request = MockHttpServletRequest("POST", "/chronicle/v3/study").apply {
+                addHeader("Idempotency-Key", "failed-intent")
+                setContent("{}".toByteArray())
+            }
+            val response = MockHttpServletResponse()
+            CreateReceiptFilter(storage, mock(StudyAuthorizationService::class.java)) {
+                "test-receipt-secret-32-characters-minimum"
+            }.doFilter(request, response, FilterChain { _, result ->
+                assertEquals("response remains buffered until rollback", "", response.contentAsString)
+                (result as HttpServletResponse).apply {
+                    status = 422
+                    contentType = "application/json"
+                    writer.write("""{"message":"invalid create"}""")
+                }
+            })
+            assertEquals(422, response.status)
+            assertEquals("""{"message":"invalid create"}""", response.contentAsString)
+            verify(connection).rollback()
+            verify(connection, never()).commit()
+            verify(statement).executeUpdate()
         } finally { TestSecurityUtils.clearSecurityContext() }
     }
 }
