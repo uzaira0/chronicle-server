@@ -77,7 +77,7 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
         }
     }
 
-    // reason: boundary catch — a single study's notification failure must roll back and not abort the loop
+    // Persistence failures propagate to both manual trigger endpoints.
     @Suppress("TooGenericExceptionCaught")
     public fun notifyNonCompliantStudies(nonCompliantStudies: Map<UUID, Map<String, List<ComplianceViolation>>>) {
         val studyService = getDependency().studyService
@@ -85,12 +85,13 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
         val notificationService = getDependency().notificationService
         //For each study look up research contact email
         nonCompliantStudies.forEach { (studyId, participantViolations) ->
+            val study = studyService.getStudy(studyId)
+            if (!study.getNotifyResearchers()) return@forEach
             logger.info(
                 "Sending non-compliance notification for study {} ({})",
                 studyId,
                 complianceLogSummary(participantViolations),
             )
-            val study = studyService.getStudy(studyId)
             val studyEmails = study.contact.split(",").toSet()
             val phoneNumbers = (study.settings[StudySettingType.Notifications] as? StudyNotificationSettings)
                 ?.researcherPhoneNumbers?.split(",")?.toSet() ?: emptySet()
@@ -124,6 +125,7 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
                 } catch (ex: Exception) {
                     logger.info("Unable to send notifications.", ex)
                     connection.rollback()
+                    throw ex
                 }
             }
         }

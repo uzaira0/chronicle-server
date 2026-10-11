@@ -17,6 +17,7 @@
 package com.openlattice.chronicle.configuration
 
 import com.openlattice.chronicle.util.ClientIpRecord
+import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -180,7 +181,7 @@ public open class CorsValidationFilter(
             sanitizeLogValue(origin),
             reason,
             request.method,
-            sanitizeLogValue(request.requestURI),
+            sanitizeLogValue(LogSanitizer.sanitizeRequestPath(request.requestURI)),
             ClientIpRecord.logReference(request),
             sanitizeLogValue(request.getHeader("User-Agent") ?: "unknown")
         )

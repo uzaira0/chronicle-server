@@ -186,6 +186,18 @@ class LogSanitizerMutationTest {
     }
 
     @Test
+    fun purgePreviewRedactsPluralParticipantPath() {
+        assertEquals(
+            "/chronicle/v3/study/{studyId}/participants/{participantId}/purge/preview",
+            LogSanitizer.sanitizeRequestPath("/chronicle/v3/study/study-1/participants/12.345.678-5/purge/preview"),
+        )
+        assertEquals(
+            "/chronicle/v3/study/{studyId}/participants/stats",
+            LogSanitizer.sanitizeRequestPath("/chronicle/v3/study/study-1/participants/stats"),
+        )
+    }
+
+    @Test
     fun `sanitizeRequestPath keeps static platform routes and redacts query strings`() {
         val path = "/chronicle/v3/study/550e8400-e29b-41d4-a716-446655440000/android/sensors/availability" +
                 "?participantId=u15"

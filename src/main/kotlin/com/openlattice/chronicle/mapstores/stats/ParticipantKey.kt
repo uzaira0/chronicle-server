@@ -9,4 +9,7 @@ import java.util.*
 public data class ParticipantKey(
     val studyId: UUID,
     val participantId: String
-)
+) {
+    override fun toString(): String =
+        "ParticipantKey(studyId=$studyId, participantRef=${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)})"
+}

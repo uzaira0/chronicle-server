@@ -409,6 +409,7 @@ public object LogSanitizer {
             rawSegment.isEmpty() -> ""
             previous in studyIdParentSegments -> "{studyId}"
             previous == "participant" -> "{participantId}"
+            previous == "participants" && segment !in setOf("data", "stats", "android", "ios", "purge") -> "{participantId}"
             previous == "questionnaire" -> "{questionnaireId}"
             previous in setOf("exports", "export") -> "{exportId}"
             previous == "webhooks" -> "{webhookId}"
