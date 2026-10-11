@@ -206,9 +206,8 @@ public open class PrincipalDirectoryController(
     override fun deleteUserAccount(@PathVariable(USER_ID) userId: String): OK {
         ensureAdminAccess()
 
-        //First remove from all organizations
-        organizationService.removeMemberFromAllOrganizations(Principal(PrincipalType.USER, userId))
         val securablePrincipal: SecurablePrincipal = spm.getSecurablePrincipal(userId)
+        organizationService.removeMemberFromAllOrganizations(Principal(PrincipalType.USER, userId))
         spm.deletePrincipal(securablePrincipal.aclKey)
         authorizationManager.deleteAllPrincipalPermissions(Principal(PrincipalType.USER, userId))
 

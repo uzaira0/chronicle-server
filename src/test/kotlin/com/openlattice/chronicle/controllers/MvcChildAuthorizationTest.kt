@@ -6,11 +6,22 @@ import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.authorization.StudyAuthorizationService
 import com.openlattice.chronicle.authorization.StudyPermission
 import com.openlattice.chronicle.authorization.aspects.StudyAuthorizationAspect
+import com.openlattice.chronicle.configuration.RateLimitFilter
+import com.openlattice.chronicle.converters.PostgresDownloadCsvHttpMessageConverter
+import com.openlattice.chronicle.converters.TimeUseDiaryDownloadCsvHttpMessageConverter
+import com.openlattice.chronicle.converters.YamlHttpMessageConverter
 import com.openlattice.chronicle.pods.servlet.ChronicleServerMvcPod
 import com.openlattice.chronicle.services.export.ExportService
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.mockito.Mockito.*
+import org.mockito.Mockito.doNothing
+import org.mockito.Mockito.doThrow
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
+import org.mockito.Mockito.`when`
 import org.springframework.aop.support.AopUtils
 import org.springframework.context.support.GenericApplicationContext
 import org.springframework.mock.web.MockServletContext
@@ -20,6 +31,9 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.http.ResponseEntity
+import org.springframework.http.MediaType
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping
 import java.util.UUID
 
 class MvcChildAuthorizationTest {
@@ -33,11 +47,13 @@ class MvcChildAuthorizationTest {
     fun mvcOwnedControllerUsesParentAuthorizationAspectBeforeDownload() {
         val exports = mock(ExportService::class.java)
         val access = mock(StudyAuthorizationService::class.java)
+        val rateLimitFilter = mock(RateLimitFilter::class.java)
         val parent = GenericApplicationContext()
         parent.beanFactory.registerSingleton("exports", exports)
         parent.beanFactory.registerSingleton("audit", mock(AuditService::class.java))
         parent.beanFactory.registerSingleton("mapper", ObjectMapper())
         parent.beanFactory.registerSingleton("studyAspect", StudyAuthorizationAspect(access))
+        parent.beanFactory.registerSingleton("rateLimitFilter", rateLimitFilter)
         parent.refresh()
         val child = AnnotationConfigWebApplicationContext()
         child.parent = parent
@@ -47,11 +63,20 @@ class MvcChildAuthorizationTest {
             val registry = factory as org.springframework.beans.factory.support.BeanDefinitionRegistry
             registry.beanDefinitionNames.filter { name ->
                 val type = registry.getBeanDefinition(name).beanClassName.orEmpty()
-                type.startsWith("com.openlattice.chronicle.controllers.") && type != ExportController::class.java.name && type != TestAdvice::class.java.name
+                type.startsWith("com.openlattice.chronicle.controllers.") && type != ExportController::class.java.name &&
+                    type != TestAdvice::class.java.name
             }.forEach(registry::removeBeanDefinition)
         }
         try {
             child.refresh()
+            verify(rateLimitFilter).bindHandlerMapping(child.getBean(RequestMappingHandlerMapping::class.java))
+            val converters = child.getBean(RequestMappingHandlerAdapter::class.java).messageConverters
+            val jsonConverter = converters.single { it.canWrite(Map::class.java, MediaType.APPLICATION_JSON) }
+            assertEquals("org.springframework.http.converter.json.MappingJackson2HttpMessageConverter", jsonConverter.javaClass.name)
+            assertSame(parent.getBean(ObjectMapper::class.java), jsonConverter.javaClass.getMethod("getObjectMapper").invoke(jsonConverter))
+            assertEquals(listOf(PostgresDownloadCsvHttpMessageConverter::class.java,
+                TimeUseDiaryDownloadCsvHttpMessageConverter::class.java, YamlHttpMessageConverter::class.java),
+                converters.takeLast(3).map { it.javaClass })
             val study = UUID.randomUUID()
             val export = UUID.randomUUID()
             TestSecurityUtils.setupSecurityContext(subject = "mvc-export-user", admin = false)

@@ -71,7 +71,6 @@ import com.openlattice.chronicle.security.MetricsAuthenticationFilter
 import com.openlattice.chronicle.controllers.ReviewerEnrollmentController
 import org.springframework.web.filter.CharacterEncodingFilter
 import org.springframework.security.web.csrf.CsrfFilter
-import org.springframework.web.servlet.handler.HandlerMappingIntrospector
 import org.springframework.beans.factory.annotation.Autowired
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import org.springframework.beans.factory.annotation.Qualifier
@@ -87,10 +86,20 @@ import jakarta.servlet.Filter
 public open class ChronicleServerSecurityPod {
 
     @Autowired
+    private lateinit var securityHardeningConfig: com.openlattice.chronicle.configuration.SecurityHardeningConfig
+
+    @Autowired
+    @Qualifier("parameterPollutionFilter")
+    private lateinit var parameterPollutionFilter: Filter
+
+    @Autowired
     private lateinit var storageResolver: com.openlattice.chronicle.storage.StorageResolver
 
     @Autowired
     private lateinit var studyAuthorizationService: com.openlattice.chronicle.authorization.StudyAuthorizationService
+
+    @Autowired
+    private lateinit var auditService: com.openlattice.chronicle.audit.AuditService
 
     @Autowired
     private lateinit var chronicleAuthConfiguration: ChronicleAuthConfiguration
@@ -112,9 +121,6 @@ public open class ChronicleServerSecurityPod {
 
     @Value("\${chronicle.security.metrics-password-files:}")
     private lateinit var metricsPasswordFiles: String
-
-    @Autowired(required = false)
-    private var corsConfigurationSource: CorsConfigurationSource? = null
 
     @Autowired(required = false)
     private var apiKeyService: ApiKeyService? = null
@@ -148,11 +154,6 @@ public open class ChronicleServerSecurityPod {
     @Autowired(required = false)
     @Qualifier("rateLimitFilter")
     private var rateLimitFilter: Filter? = null
-
-    @Bean
-    public fun mvcHandlerMappingIntrospector(): HandlerMappingIntrospector {
-        return HandlerMappingIntrospector()
-    }
 
     @Bean
     public fun chronicleTokenResolver(): BearerTokenResolver {
@@ -252,12 +253,8 @@ public open class ChronicleServerSecurityPod {
             .sessionManagement { session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .securityContext { securityContext -> securityContext.requireExplicitSave(true) }
 
-        // Enable CORS with our custom configuration source
-        corsConfigurationSource?.let { corsSource ->
-            http.cors { cors -> cors.configurationSource(corsSource) }
-        } ?: run {
-            http.cors { }
-        }
+        // No Spring CORS headers: the dashboard is same-origin; origin validation lives in the CORS validation filter.
+        http.cors { it.configurationSource(CorsConfigurationSource { null }) }
 
         http.authorizeHttpRequests { auth ->
             auth
@@ -300,9 +297,6 @@ public open class ChronicleServerSecurityPod {
                 // only a public key plus the disabled flag — never a private key or PHI. Clients may
                 // discover the disabled setting here; encrypted collection cannot silently engage.
                 .requestMatchers(HttpMethod.GET, "/chronicle/v3/study/*/settings/type/Encryption").permitAll()
-
-                // Participant verification
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/study/*/participant/*/verify").permitAll()
 
                 // iOS writes intentionally fall through to /chronicle/** authenticated().
                 // The client persists the enrollment-issued device key in Keychain and
@@ -379,6 +373,17 @@ public open class ChronicleServerSecurityPod {
         filter.setForceEncoding(true)
         http.addFilterBefore(filter, CsrfFilter::class.java)
 
+        val hardeningFilters = listOf(
+            securityHardeningConfig.securityHeadersFilter(),
+            securityHardeningConfig.traceMethodBlockingFilter(),
+            securityHardeningConfig.requestSizeLimitFilter(),
+            securityHardeningConfig.requestValidationFilter(),
+            parameterPollutionFilter,
+        )
+        hardeningFilters.forEach { hardening ->
+            http.addFilterBefore(hardening, CsrfFilter::class.java)
+        }
+
         // Observability: MDC correlation context (requestId, traceId, studyId, participantId)
         // Runs early so all downstream filters and controllers benefit from MDC fields.
         http.addFilterAfter(ObservabilityFilter(), CharacterEncodingFilter::class.java)
@@ -405,7 +410,7 @@ public open class ChronicleServerSecurityPod {
             http.addFilterBefore(filter, BearerTokenAuthenticationFilter::class.java)
         }
 
-        // API abuse protection for both public mobile bootstrap and authenticated API routes.
+        // Validated API-key/JWT identities must be available before bucketing phones behind SNAT.
         rateLimitFilter?.let { filter ->
             http.addFilterBefore(filter, rateLimitFilterAnchor(mobileApiSignatureFilter))
         }
@@ -445,7 +450,7 @@ public open class ChronicleServerSecurityPod {
             )
         }
 
-        http.addFilterAfter(com.openlattice.chronicle.filters.ConcurrentEditFilter(storageResolver, studyAuthorizationService),
+        http.addFilterAfter(com.openlattice.chronicle.filters.ConcurrentEditFilter(storageResolver, studyAuthorizationService, auditService),
             org.springframework.security.web.access.intercept.AuthorizationFilter::class.java)
         http.addFilterAfter(com.openlattice.chronicle.filters.CreateReceiptFilter(storageResolver, studyAuthorizationService),
             com.openlattice.chronicle.filters.ConcurrentEditFilter::class.java)
@@ -532,8 +537,8 @@ public open class ChronicleServerSecurityPod {
     }
 }
 
-internal fun rateLimitFilterAnchor(mobileApiSignatureFilter: Filter?): Class<out Filter> =
-    mobileApiSignatureFilter?.javaClass ?: BearerTokenAuthenticationFilter::class.java
+internal fun rateLimitFilterAnchor(@Suppress("UNUSED_PARAMETER") mobileApiSignatureFilter: Filter?): Class<out Filter> =
+    AnonymousAuthenticationFilter::class.java
 
 /**
  * Builds the JWT validator chain the resource-server decoder applies to every bearer token.

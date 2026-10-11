@@ -316,6 +316,12 @@ public data class MobileSecurityConfiguration(
 ) : Configuration {
 
     internal companion object {
+        internal const val INTERNAL_WEB_HEADER = "X-Chronicle-Internal-Web"
+
+        internal fun isTrustedInternalWebMarker(secret: String, marker: String?): Boolean =
+            secret.isNotBlank() && !marker.isNullOrBlank() &&
+                java.security.MessageDigest.isEqual(secret.toByteArray(Charsets.UTF_8), marker.toByteArray(Charsets.UTF_8))
+
         @JvmField
         public val key = SimpleConfigurationKey("mobile-security.yaml")
     }

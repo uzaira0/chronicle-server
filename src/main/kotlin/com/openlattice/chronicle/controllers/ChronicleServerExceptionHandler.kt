@@ -86,7 +86,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      */
     @ExceptionHandler(NullPointerException::class)
     public fun handleNullPointerException(req: HttpServletRequest, e: NullPointerException): ResponseEntity<ApiError> {
-        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+        findSqlCause(e)
             ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
         logExceptionWithId(errorId, req, e)
@@ -168,7 +168,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     @Suppress("TooGenericExceptionCaught")
     @ExceptionHandler(IllegalArgumentException::class, HttpMessageNotReadableException::class)
     public fun handleIllegalArgumentException(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
-        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+        findSqlCause(e)
             ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
 
@@ -360,7 +360,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
             return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiError(409, "Conflict",
                 "Participant is already registered for this study", path = safeErrorPath(req)))
         }
-        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+        findSqlCause(e)
             ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
         logExceptionWithId(errorId, req, e)
@@ -437,11 +437,13 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
             )
         }
 
+        // Preserve the existing 413 error text after Spring 7 renamed this status.
+        val reasonPhrase = if (status == HttpStatus.CONTENT_TOO_LARGE) PAYLOAD_TOO_LARGE_REASON else status.reasonPhrase
         return ResponseEntity(
             ApiError(
                 status = status.value(),
-                error = status.reasonPhrase,
-                message = e.reason ?: status.reasonPhrase,
+                error = reasonPhrase,
+                message = e.reason ?: reasonPhrase,
                 errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
                 path = safeErrorPath(req)
             ),
@@ -615,7 +617,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      */
     @ExceptionHandler(Exception::class)
     public fun handleOtherExceptions(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
-        generateSequence(e as Throwable?) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+        findSqlCause(e)
             ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
         logExceptionWithId(errorId, req, e)
@@ -648,6 +650,9 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         }
     }
 
+    private fun findSqlCause(failure: Throwable): SQLException? =
+        generateSequence(failure) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
+
     /**
      * Logs an exception with the error ID for correlation.
      */
@@ -662,8 +667,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         // by the caller.
         logMessage: Boolean = true,
     ) {
-        val databaseFailure = generateSequence(e as Throwable?) { it.cause }
-            .take(32).filterIsInstance<SQLException>().firstOrNull()
+        val databaseFailure = findSqlCause(e)
         if (databaseFailure != null) {
             logger.error("Database error [ErrorId: {}] - SQLState: {}, ErrorCode: {}",
                 errorId, databaseFailure.sqlState, databaseFailure.errorCode)
@@ -726,6 +730,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     private fun safeErrorPath(req: HttpServletRequest): String = LogSanitizer.sanitizeRequestPath(req.requestURI)
 
     internal companion object {
+        internal const val PAYLOAD_TOO_LARGE_REASON = "Payload Too Large"
         private val logger = LoggerFactory.getLogger(ChronicleServerExceptionHandler::class.java)
     }
 }

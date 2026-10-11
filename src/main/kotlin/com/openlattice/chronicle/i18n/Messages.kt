@@ -51,7 +51,7 @@ public object Messages {
     public fun get(key: String): String = resolve(key, LocaleContextHolder.getLocale(), null)
 
     /** Resolves [key] with `{0}`-style arguments in the current request locale. */
-    public fun format(key: String, vararg args: Any?): String =
+    public fun format(key: String, vararg args: Any): String =
         resolve(key, LocaleContextHolder.getLocale(), args)
 
     /**
@@ -64,6 +64,6 @@ public object Messages {
     /** Resolves [key] in English. For audit records, which must stay in one language. */
     public fun en(key: String): String = resolve(key, Locale.ENGLISH, null)
 
-    private fun resolve(key: String, locale: Locale?, args: Array<out Any?>?): String =
+    private fun resolve(key: String, locale: Locale?, args: Array<out Any>?): String =
         source.getMessage(key, args, locale ?: Locale.ENGLISH)
 }

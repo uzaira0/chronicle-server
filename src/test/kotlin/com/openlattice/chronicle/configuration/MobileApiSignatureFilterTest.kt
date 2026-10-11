@@ -19,6 +19,7 @@ import org.springframework.mock.web.MockFilterChain
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.mock.web.MockHttpServletResponse
 import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.web.filter.UrlHandlerFilter
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.time.Instant
@@ -47,7 +48,7 @@ import org.mockito.kotlin.argumentCaptor
 class MobileApiSignatureFilterTest {
 
     companion object {
-        private const val SECRET = "test-secret-key-for-hmac-at-least-32-bytes!!"
+        internal const val SECRET = "test-secret-key-for-hmac-at-least-32-bytes!!"
         private const val MOBILE_DATA_PATH =
             "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/participant/test-participant/android/data"
         private const val MOBILE_STATUS_PATH =
@@ -83,7 +84,7 @@ class MobileApiSignatureFilterTest {
             hz.shutdown()
         }
 
-        private fun computeSignature(
+        internal fun computeSignature(
             method: String,
             path: String,
             timestamp: String,
@@ -134,6 +135,40 @@ class MobileApiSignatureFilterTest {
     @After
     fun clearSecurityContext() {
         SecurityContextHolder.clearContext()
+    }
+
+    @Test
+    fun `HMAC verification uses the normalized path and rejects a signature over the trailing slash`() {
+        val normalizer = UrlHandlerFilter.trailingSlashHandler("/**").wrapRequest().build()
+        val filter = newFilter()
+        val body = """{"device":"test"}""".toByteArray()
+        for (signingPath in listOf(MOBILE_ENROLLMENT_PATH, "$MOBILE_ENROLLMENT_PATH/")) {
+            clearSecurityContext()
+            val timestamp = Instant.now().epochSecond.toString()
+            val nonce = UUID.randomUUID().toString()
+            val request = MockHttpServletRequest("POST", "$MOBILE_ENROLLMENT_PATH/").apply {
+                servletPath = "$MOBILE_ENROLLMENT_PATH/"
+                setContent(body)
+                addHeader(MobileApiSignatureFilter.HEADER_TIMESTAMP, timestamp)
+                addHeader(MobileApiSignatureFilter.HEADER_NONCE, nonce)
+                addHeader(MobileApiSignatureFilter.HEADER_SIGNATURE,
+                    computeSignature("POST", signingPath, timestamp, nonce, body))
+            }
+            val response = MockHttpServletResponse()
+            val chain = MockFilterChain()
+            normalizer.doFilter(request, response) { normalized, res -> filter.doFilter(normalized, res, chain) }
+
+            if (signingPath == MOBILE_ENROLLMENT_PATH) {
+                Assert.assertEquals(200, response.status)
+                Assert.assertEquals(MOBILE_ENROLLMENT_PATH, (chain.request as HttpServletRequest).requestURI)
+                Assert.assertTrue(SecurityContextHolder.getContext().authentication is MobileApiHmacAuthenticationToken)
+            } else {
+                Assert.assertEquals(401, response.status)
+                Assert.assertNull(chain.request)
+                Assert.assertNull(SecurityContextHolder.getContext().authentication)
+                Assert.assertTrue(response.contentAsString.contains("Invalid request signature"))
+            }
+        }
     }
 
     @Test
@@ -223,11 +258,18 @@ class MobileApiSignatureFilterTest {
         val response = MockHttpServletResponse()
         val chain = MockFilterChain()
 
-        filter.doFilter(request, response, chain)
+        val endpoint = MobileApiSignatureFilter.ENROLLMENT_METRIC_ENDPOINT
+        val errors = com.openlattice.chronicle.observability.ChronicleMetrics.apiErrorsTotal.labels(endpoint, "POST", "401")
+        val before = errors.get()
+        com.openlattice.chronicle.observability.ApiMetricsFilter().doFilter(request, response) { req, res ->
+            filter.doFilter(req, res, chain)
+        }
 
         Assert.assertEquals(401, response.status)
         Assert.assertNull(chain.request)
         Assert.assertNull(SecurityContextHolder.getContext().authentication)
+        Assert.assertEquals(before + 1, errors.get(), 0.0)
+        Assert.assertTrue("Enrollment failures must match the alert selector", endpoint.matches(Regex(".*enroll.*")))
     }
 
     @Test

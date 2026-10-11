@@ -4,7 +4,7 @@
       Kotlin's inline/reified Mockito helpers emit unreachable primitive cast
       branches at each call site. Scope the waiver to the test classes that
       currently contain those generated branches, so new classes still fail.
-      This filter is attached only to spotbugsTest; spotbugsMain is unfiltered.
+      This filter is attached only to spotbugsTest; spotbugsMain uses spotbugs-main-exclude.xml.
     -->
     <Match>
         <Class name="~com\.openlattice\.chronicle\.(authorization\.HazelcastAuthorizationOwnerLockTest|controllers\.(AdminControllerTest|AuthorizationsControllerTest|DashboardControllerTest|ImportControllerTest|MobileEnrollmentControllerTest|MobileReminderControllerTest|NotificationControllerTest|OrganizationControllerTest|PermissionsControllerTest|PrincipalDirectoryControllerTest|StudyComplianceControllerTest|StudyControllerTest|StudyLimitsControllerTest|StudyParticipantPolicyImmutabilityTest|SurveyControllerTest|TimeUseDiaryControllerTest)|controllers\.v2\.ChronicleControllerV2Test|filters\.(ParticipantFormAccessFilterTest|RLSContextFilterMutationTest)|mapstores\.stats\.(ParticipantStatsCacheTest|ParticipantStatsMapstoreTest)|services\.(candidates\.CandidateServiceMutationTest|crypto\.EnvelopeRoundTripTest|enrollment\.(EnrollmentManifestServiceTest|EnrollmentServiceMutationTest|ReviewerEnrollmentServiceTest)|export\.ExportServiceTest|roles\.RoleServiceTest|studies\.(StudyComplianceServiceQuarantineTest|StudyLifecycleServiceTest|StudyLimitsServiceTest|StudyServiceCachePublicationTest)))"/>
@@ -43,5 +43,252 @@
         <Class name="com.openlattice.chronicle.storage.rls.RLSConnectionRoleEnforcementTest"/>
         <Method name="installProductionRlsMigration"/>
         <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+
+    <!-- All reported casts originate in Mockito Kotlin reified matchers. The bytecode
+         contains unreachable primitive-wrapper branches for reference type arguments. -->
+    <Match>
+        <Class name="~(?:com\.openlattice\.chronicle\.auditing\.AuditedOperationTransactionTest|com\.openlattice\.chronicle\.auditing\.PostgresAuditingManagerTest|com\.openlattice\.chronicle\.authorization\.AclSessionRevocationTest|com\.openlattice\.chronicle\.authorization\.principals\.RootPrincipalTest|com\.openlattice\.chronicle\.client\.ResearcherCreateHeaderTest|com\.openlattice\.chronicle\.configuration\.RateLimitFilterTest|com\.openlattice\.chronicle\.controllers\.ApiKeyControllerTest|com\.openlattice\.chronicle\.controllers\.AuthTokenControllerTest|com\.openlattice\.chronicle\.controllers\.CollectionFeatureConsistencyTest|com\.openlattice\.chronicle\.controllers\.ImportControllerConnectionTest|com\.openlattice\.chronicle\.controllers\.ParticipantFormAccessControllerDeviceTest|com\.openlattice\.chronicle\.controllers\.WebhookControllerTest|com\.openlattice\.chronicle\.deletion\.SurveyDeletionRunnerTest|com\.openlattice\.chronicle\.faults\.TwoStepOperationFaultTest|com\.openlattice\.chronicle\.filters\.ApiKeyAuthenticationFilterTest|com\.openlattice\.chronicle\.filters\.ResearcherApiKeyAccessTest|com\.openlattice\.chronicle\.ids\.HazelcastIdGenerationServiceTest|com\.openlattice\.chronicle\.mapstores\.stats\.ParticipantStatsOwnedTransactionTest|com\.openlattice\.chronicle\.postgres\.UsageEventChunkTest|com\.openlattice\.chronicle\.services\.delete\.DataDeletionOrchestratorProxyTest|com\.openlattice\.chronicle\.services\.delete\.RestoreContinuityReconcilerTest|com\.openlattice\.chronicle\.services\.delete\.ServerSweepConcurrencyTest|com\.openlattice\.chronicle\.services\.delete\.StudyErasureFinalizerConcurrencyTest|com\.openlattice\.chronicle\.services\.enrollment\.ErasedParticipantReuseTest|com\.openlattice\.chronicle\.services\.notifications\.NotificationJobRunnerFailureTest|com\.openlattice\.chronicle\.services\.notifications\.ResearcherNotificationScopeTest|com\.openlattice\.chronicle\.services\.participantaccess\.ParticipantFormSessionTabsTest|com\.openlattice\.chronicle\.services\.studies\.tasks\.StudyComplianceHazelcastTaskPrivacyTest|com\.openlattice\.chronicle\.services\.twilio\.TwilioPoolTest|com\.openlattice\.chronicle\.storage\.PoolBorrowRegressionTest|com\.openlattice\.chronicle\.storage\.PoolBorrowRegressionTest\$SingleSlot|com\.openlattice\.chronicle\.storage\.SweepRevisionRegressionTest|com\.openlattice\.chronicle\.upgrades\.FlywayMigrationCorpusTest|com\.openlattice\.chronicle\.util\.LogPrivacyRegressionTest)"/>
+        <Bug pattern="BC_IMPOSSIBLE_CAST"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.mapstores.stats.ParticipantStatsOwnedTransactionTest"/>
+        <Method name="cold stats read and merge use the owner and delayed stale store preserves merged dates"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.RestoreContinuityReconcilerTest"/>
+        <Method name="a tombstone V115 synthesized at restore takes the checkpoint's kind and original expiry"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.RestoreContinuityReconcilerTest"/>
+        <Method name="expired checkpoint key markers override V115 and are swept before checkpoint consumption"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.RestoreContinuityReconcilerTest"/>
+        <Method name="older backup preserves manual pause completion and study archive"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.ServerSweepConcurrencyTest"/>
+        <Method name="accessCodeExchangeTakesDeletionFenceBeforeCodeRow"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.ServerSweepConcurrencyTest"/>
+        <Method name="collectionGuardTakesDeletionFenceBeforeStudyRow$lambda$0$0"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.StudyErasureFinalizerConcurrencyTest"/>
+        <Method name="queued study finalizer and another study drain follow one table lock order"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.notifications.ResearcherNotificationScopeTest"/>
+        <Method name="participant identity in a researcher message is scoped deleted and fenced on withdrawal"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.participantaccess.ParticipantFormSessionTabsTest"/>
+        <Method name="participant"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.SweepRevisionRegressionTest"/>
+        <Method name="colocatedDistinctPoolMaterializationPassesAQueuedEraser$lambda$0$0$0$0$0"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.SweepRevisionRegressionTest"/>
+        <Method name="cutoff"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.SweepRevisionRegressionTest"/>
+        <Method name="drainCensusFencesAtMostOneBatchOfEligibleStudies"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.SweepRevisionRegressionTest"/>
+        <Method name="scopedFlushDoesNotFenceAnotherStudysBacklog"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.UsageEventTimestampContractTest"/>
+        <Method name="nullAndEmptyActivityClassesEachRetainOneRetry"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.UsageEventTimestampContractTest"/>
+        <Method name="nullAndEmptyActivityClassesEachRetainOneRetry"/>
+        <Bug pattern="SQL_PREPARED_STATEMENT_GENERATED_FROM_NONCONSTANT_STRING"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="nulBearingUsageAudioAndNotificationTextIsNormalizedBeforeStorage"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="sweepParticipantAssetErasure"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="sweepWebhookErasure"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="testCancelledIosNameBackfillDoesNotUpdateTheDeletionLedger"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="testSweepDeviceQuarantineAndErasureRespectCollectedPurgeVersusWithdrawal"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="testSweepFinalVerificationDoesNotInvertStudyRevisionWriters"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="testSweepOrdinaryDrainAndSensorRecalculationDoNotBlockReinsertion"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="testV109SupplementalCleanupOfCompletedWithdrawalsAndStudyErasures"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="testV115TombstonesAndDeletesKeysRetainedByErasuresCompletedBeforeV114"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.FlywayMigrationCorpusTest"/>
+        <Method name="testSweepOrdinaryDrainAndSensorRecalculationDoNotBlockReinsertion"/>
+        <Bug pattern="SQL_PREPARED_STATEMENT_GENERATED_FROM_NONCONSTANT_STRING"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.ServerBatchMigrationRegressionTest"/>
+        <Method name="cancellingDeferredScrubPreservesEnrolledDeviceKeys$lambda$0"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.V109RevisionMigrationTest"/>
+        <Method name="completedErasuresRemoveOnlyScopedNotificationLogs$lambda$0"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.V109RevisionMigrationTest"/>
+        <Method name="operation"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- In-process PostgreSQL fixture SQL: identifiers are fixture UUIDs or trusted
+         repository migration/query builders; no request or external input reaches this test. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.upgrades.V111DeviceNameMigrationTest"/>
+        <Method name="iosDeviceNamesAreReplacedByPerDeviceKeys"/>
+        <Bug pattern="SQL_NONCONSTANT_STRING_PASSED_TO_EXECUTE"/>
+    </Match>
+    <!-- Kotlin lateinit getters throw before initialization; they cannot return null. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.RestoreContinuityFixture$Companion"/>
+        <Method name="~get(Postgres|StorageResolver)"/>
+        <Bug pattern="NP_NONNULL_RETURN_VIOLATION"/>
+    </Match>
+    <!-- Compatibility block tokens match the published PostgreSQL md5 identity contract,
+         not a password digest or signature. Changing the algorithm would break restore. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.RestoreContinuityReconcilerTest"/>
+        <Method name="blockToken"/>
+        <Bug pattern="WEAK_MESSAGE_DIGEST_MD5"/>
+    </Match>
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.RestoreSubjectResolutionTest"/>
+        <Method name="completedPurgesResolveAbsenceBeforeHoldChecksEvenWhenCheckpointRetainsTheId"/>
+        <Bug pattern="WEAK_MESSAGE_DIGEST_MD5"/>
+    </Match>
+    <!-- Local Testcontainers role password, used only against the disposable test database. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.storage.rls.OrganizationMembersRlsPolicyTest"/>
+        <Method name="appConnection"/>
+        <Bug pattern="HARD_CODE_PASSWORD"/>
+    </Match>
+    <!-- Kotlin's second lateinit read repeats the guard already checked at fixture setup. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.faults.TwoStepOperationFaultTest"/>
+        <Method name="setUp"/>
+        <Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/>
+    </Match>
+    <!-- Cleanup joins may fail after an assertion; ignoring them preserves the original
+         test failure. The normal path awaits and checks both worker results above finally. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.services.delete.StudyErasureFinalizerConcurrencyTest"/>
+        <Method name="queued study finalizer and another study drain follow one table lock order"/>
+        <Bug pattern="DE_MIGHT_IGNORE"/>
     </Match>
 </FindBugsFilter>

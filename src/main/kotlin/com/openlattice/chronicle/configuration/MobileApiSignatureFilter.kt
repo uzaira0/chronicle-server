@@ -154,7 +154,6 @@ public open class MobileApiSignatureFilter(
             "/chronicle/v4/mobile/",
         )
 
-        private const val INTERNAL_WEB_HEADER = "X-Chronicle-Internal-Web"
         private const val API_KEY_HEADER = "X-Api-Key"
         private const val DEVICE_ID_HEADER = "X-Chronicle-Device-Id"
         private const val AUTH_COOKIE = "chronicle_auth"
@@ -170,6 +169,20 @@ public open class MobileApiSignatureFilter(
             V4_ENROLLMENT_PREVIEW_PATH,
             LEGACY_V3_ENROLLMENT_PATH,
         )
+        internal const val ENROLLMENT_METRIC_ENDPOINT = "enrollment"
+
+        internal fun enrollmentMetricEndpoint(request: HttpServletRequest): String? {
+            if (request.method == "POST" && request.requestURI == REVIEWER_ENROLLMENT_PATH) return ENROLLMENT_METRIC_ENDPOINT
+            return enrollmentPaths(request).asSequence().mapNotNull { it.matchEntire(request.requestURI) }
+                .firstOrNull { runCatching { UUID.fromString(it.groupValues[1]) }.isSuccess }
+                ?.let { ENROLLMENT_METRIC_ENDPOINT }
+        }
+
+        private fun enrollmentPaths(request: HttpServletRequest): List<Regex> = when (request.method.uppercase()) {
+                "POST" -> listOf(V4_ENROLLMENT_PATH, LEGACY_V3_ENROLLMENT_PATH)
+                "GET" -> listOf(V4_ENROLLMENT_PREVIEW_PATH)
+                else -> emptyList()
+            }
         private val PUBLIC_SETTINGS_PATHS = listOf(
             Regex("""^/chronicle/v3/study/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/settings/sensors$"""),
             Regex("""^/chronicle/v3/study/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/settings/type/(?:AndroidSensor|Sensor|DataCollection|Encryption)$"""),
@@ -494,12 +507,7 @@ public open class MobileApiSignatureFilter(
     }
 
     private fun enrollmentTarget(request: HttpServletRequest): EnrollmentTarget? {
-        val methodSpecificPaths = when {
-            request.method.equals("GET", ignoreCase = true) -> listOf(V4_ENROLLMENT_PREVIEW_PATH)
-            request.method.equals("POST", ignoreCase = true) -> listOf(V4_ENROLLMENT_PATH, LEGACY_V3_ENROLLMENT_PATH)
-            else -> emptyList()
-        }
-        return methodSpecificPaths.asSequence()
+        return enrollmentPaths(request).asSequence()
             .mapNotNull { pattern -> pattern.matchEntire(request.requestURI) }
             .mapNotNull { match ->
                 val studyId = runCatching { UUID.fromString(match.groupValues[1]) }.getOrNull()
@@ -539,7 +547,7 @@ public open class MobileApiSignatureFilter(
         val decodedBody = try {
             inflate(request.getCachedBody())
         } catch (_: DecodedBodyTooLargeException) {
-            sendError(response, HttpStatus.PAYLOAD_TOO_LARGE, "Decoded request body too large")
+            sendError(response, HttpStatus.CONTENT_TOO_LARGE, "Decoded request body too large")
             return
         } catch (_: IOException) {
             sendError(response, HttpStatus.BAD_REQUEST, "Invalid deflate request body")
@@ -603,8 +611,8 @@ public open class MobileApiSignatureFilter(
      * is no guessable literal fallback (CWE-290).
      */
     private fun isInternalWebRequest(request: HttpServletRequest): Boolean {
-        val marker = request.getHeader(INTERNAL_WEB_HEADER)
-        if (marker.isNullOrBlank() || !isTrustedInternalWebMarker(marker)) {
+        val marker = request.getHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER)
+        if (!MobileSecurityConfiguration.isTrustedInternalWebMarker(internalWebSecret, marker)) {
             return false
         }
         if (ENROLLMENT_PATHS.any { it.matches(request.requestURI) }) return false
@@ -621,11 +629,6 @@ public open class MobileApiSignatureFilter(
             cookie.name == AUTH_COOKIE && cookie.value.isNotBlank()
         } == true
         return bearerCredential || cookieCredential
-    }
-
-    /** Validates the internal-web marker against an explicitly configured proxy secret. */
-    private fun isTrustedInternalWebMarker(marker: String): Boolean {
-        return internalWebSecret.isNotBlank() && constantTimeEquals(marker, internalWebSecret)
     }
 
     /**

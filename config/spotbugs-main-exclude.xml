@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- The locked snapshot is serialized JSON with application/json and explicit UTF-8,
+         not HTML. ConcurrentEditFilterTest verifies the content type and exact payload. -->
+    <Match>
+        <Class name="com.openlattice.chronicle.filters.ConcurrentEditFilter"/>
+        <Method name="guarded$com_openlattice_chronicle_server"/>
+        <Bug pattern="XSS_SERVLET"/>
+    </Match>
+</FindBugsFilter>

@@ -102,12 +102,23 @@ class ChronicleServerExceptionHandlerTest {
     }
 
     @Test
+    fun testHandleResponseStatusExceptionPreservesPayloadTooLargeText() {
+        for (reason in listOf(null, "Export exceeds the limit")) {
+            val result = handler.handleResponseStatusException(
+                mockRequest(), ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, reason))
+            assertEquals(413, result.statusCode.value())
+            assertEquals(ChronicleServerExceptionHandler.PAYLOAD_TOO_LARGE_REASON, result.body?.error)
+            assertEquals(reason ?: result.body?.error, result.body?.message)
+        }
+    }
+
+    @Test
     fun testHandleResponseStatusExceptionStillSanitizesServerErrors() {
         // A 5xx must not leak the reason, even though the controller supplied one.
         val e = ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "postgres pool exhausted on host db-7")
         val result = handler.handleResponseStatusException(mockRequest(), e)
         assertEquals(HttpStatus.SERVICE_UNAVAILABLE, result.statusCode)
-        assertFalse(result.body?.message!!.contains("db-7"))
+        assertFalse(requireNotNull(result.body?.message) { "Server error response should include a message" }.contains("db-7"))
     }
 
     @Test
@@ -115,7 +126,7 @@ class ChronicleServerExceptionHandlerTest {
         val e = ResponseStatusException(HttpStatus.BAD_REQUEST, "resourceId is only valid for QUESTIONNAIRE access codes")
         val result = handler.handleResponseStatusException(mockRequest(), e)
         assertNotNull(result.body?.errorId)
-        assertTrue(result.body?.errorId!!.startsWith("ERR-"))
+        assertTrue(result.body?.errorId?.startsWith("ERR-") == true)
     }
 
     // --- handleNullPointerException ---
@@ -133,7 +144,7 @@ class ChronicleServerExceptionHandlerTest {
         val e = NullPointerException("null ref")
         val result = handler.handleNullPointerException(mockRequest(), e)
         assertNotNull(result.body?.errorId)
-        assertTrue(result.body?.errorId!!.startsWith("ERR-"))
+        assertTrue(result.body?.errorId?.startsWith("ERR-") == true)
     }
 
     @Test

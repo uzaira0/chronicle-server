@@ -129,7 +129,7 @@ class SecretRotationServiceTest {
         val service = service()
         rotationDates(service)["tde_principal_key"] = Instant.now().minus(10, ChronoUnit.DAYS)
 
-        val body = service.secretsHealth().body!!
+        val body = requireNotNull(service.secretsHealth().body) { "Secrets health should include rotation status" }
         @Suppress("UNCHECKED_CAST")
         val secrets = body["secrets"] as List<Map<String, Any?>>
         val tde = secrets.first { it["name"] == "tde_principal_key" }
@@ -217,7 +217,7 @@ class SecretRotationServiceTest {
             service.onStartup()
 
             assertNull(service.checkRotationStatus().getValue("jwt_signing_secret").lastRotated)
-            val health = service.secretsHealth().body!!
+            val health = requireNotNull(service.secretsHealth().body) { "Failed refresh should still return secrets health" }
             assertEquals("WARN", health["status"])
             assertEquals("never", health["last_check"])
             assertEquals(false, health["refresh_ok"])

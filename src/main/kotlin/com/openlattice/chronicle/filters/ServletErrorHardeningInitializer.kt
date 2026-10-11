@@ -1,12 +1,15 @@
 package com.openlattice.chronicle.filters
 
 import jakarta.servlet.ServletContext
-import jakarta.servlet.http.HttpServletRequest
-import jakarta.servlet.http.HttpServletResponse
-import org.eclipse.jetty.ee10.servlet.ErrorHandler
-import org.eclipse.jetty.ee10.servlet.ServletContextHandler
-import org.eclipse.jetty.ee10.servlet.ServletContextRequest
+import org.eclipse.jetty.ee11.servlet.ErrorHandler
+import org.eclipse.jetty.ee11.servlet.ServletContextHandler
+import org.eclipse.jetty.http.HttpHeader
+import org.eclipse.jetty.server.Request
+import org.eclipse.jetty.server.Response
+import org.eclipse.jetty.util.Callback
 import org.springframework.web.WebApplicationInitializer
+import java.io.PrintWriter
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 /** Covers sendError and exceptions raised before DispatcherServlet's exception advice. */
@@ -17,15 +20,22 @@ public class ServletErrorHardeningInitializer : WebApplicationInitializer {
     }
 
     internal class SanitizedErrorHandler : ErrorHandler() {
-        override fun generateAcceptableResponse(
-            base: ServletContextRequest, request: HttpServletRequest, response: HttpServletResponse,
-            code: Int, message: String?,
+        init {
+            setShowStacks(false)
+            setShowMessageInTitle(false)
+        }
+
+        override fun generateResponse(
+            request: Request, response: Response, code: Int, message: String?, cause: Throwable?, callback: Callback,
         ) {
             response.status = code
-            response.contentType = "application/json"
-            response.characterEncoding = "UTF-8"
-            response.setHeader("Cache-Control", "no-store")
-            response.writer.write("""{"status":$code,"message":"Request failed","errorId":"${UUID.randomUUID()}"}""")
+            response.headers.put(HttpHeader.CACHE_CONTROL, "no-store")
+            // Jetty error response path: https://github.com/jetty/jetty.project/blob/jetty-12.1.14/jetty-core/jetty-server/src/main/java/org/eclipse/jetty/server/handler/ErrorHandler.java https://github.com/jetty/jetty.project/blob/jetty-12.1.14/jetty-ee11/jetty-ee11-servlet/src/main/java/org/eclipse/jetty/ee11/servlet/ErrorHandler.java https://github.com/jetty/jetty.project/blob/jetty-12.1.14/jetty-ee11/jetty-ee11-servlet/src/main/java/org/eclipse/jetty/ee11/servlet/ServletChannel.java
+            generateAcceptableResponse(request, response, callback, "application/json", listOf(StandardCharsets.UTF_8), code, message, cause)
+        }
+
+        override fun writeErrorJson(request: Request, writer: PrintWriter, code: Int, message: String?, cause: Throwable?) {
+            writer.write("""{"status":$code,"message":"Request failed","errorId":"${UUID.randomUUID()}"}""")
         }
     }
 }

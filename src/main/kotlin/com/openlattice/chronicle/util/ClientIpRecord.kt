@@ -20,6 +20,7 @@ public object ClientIpRecord {
     /** Operator switch for staff IP references; off by default. */
     public const val RECORD_STAFF_IP_ENV: String = "CHRONICLE_RECORD_STAFF_IP"
 
+    @JvmStatic
     @Volatile
     internal var recordStaffIp: Boolean = System.getenv(RECORD_STAFF_IP_ENV).equals("true", ignoreCase = true)
 
@@ -52,5 +53,5 @@ public object ClientIpRecord {
     public fun isReference(value: String?): Boolean = value != null && reference.matches(value)
 
     private fun isStaffRequest(): Boolean =
-        SecurityContextHolder.getContext()?.authentication is JwtAuthenticationToken
+        SecurityContextHolder.getContext().authentication is JwtAuthenticationToken
 }

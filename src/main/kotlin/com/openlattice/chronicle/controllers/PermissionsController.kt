@@ -88,7 +88,7 @@ public open class PermissionsController @Inject constructor(
 
 
     @Timed
-    @RequestMapping(path = ["", "/"], method = [RequestMethod.PATCH], consumes = [MediaType.APPLICATION_JSON_VALUE])
+    @RequestMapping(method = [RequestMethod.PATCH], consumes = [MediaType.APPLICATION_JSON_VALUE])
     override fun updateAcl(@Valid @RequestBody req: AclData): OK {
         auditService.logWithContext {
             action(AuditAction.PERMISSION_CHANGE)
@@ -171,7 +171,6 @@ public open class PermissionsController @Inject constructor(
 
     @Timed
     @RequestMapping(
-        path = ["", "/"],
         method = [RequestMethod.POST],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
         produces = [MediaType.APPLICATION_JSON_VALUE]

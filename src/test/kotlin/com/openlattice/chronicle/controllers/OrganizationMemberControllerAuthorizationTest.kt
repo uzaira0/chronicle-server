@@ -1,7 +1,6 @@
 package com.openlattice.chronicle.controllers
 
 import com.geekbeast.controllers.exceptions.ForbiddenException
-import com.openlattice.chronicle.base.OK
 import com.openlattice.chronicle.authorization.aspects.OrganizationAuthorizationAspect
 import com.openlattice.chronicle.organizations.OrganizationMember
 import com.openlattice.chronicle.organizations.OrganizationRole

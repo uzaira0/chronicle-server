@@ -47,7 +47,6 @@ public open class CandidateController @Inject constructor(
 
     @Timed
     @PostMapping(
-        path = ["", "/"],
         consumes = [MediaType.APPLICATION_JSON_VALUE]
     )
     // reason: boundary catch — controller handler records a failure audit event for any error

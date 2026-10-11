@@ -9,6 +9,7 @@ import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
 import com.openlattice.chronicle.participantaccess.CreateParticipantFormAccessCodeRequest
 import com.openlattice.chronicle.participantaccess.ParticipantFormKind
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
+import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
 import com.openlattice.chronicle.services.studies.StudyManager
 import org.junit.Assert.assertEquals
@@ -65,4 +66,27 @@ class ParticipantFormAccessControllerDeviceTest {
         assertEquals(403, error.statusCode.value())
         Mockito.verifyNoInteractions(accessService)
     }
+    @Test
+    fun researcherEnrollmentIssuanceReplacesThePriorInvitation() {
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            whenever(enrollmentManager.isKnownParticipant(studyId, participantId)).thenReturn(true)
+            whenever(controller.authorizationManager.checkIfHasPermissions(org.mockito.kotlin.any(), org.mockito.kotlin.any(),
+                org.mockito.kotlin.any())).thenReturn(true)
+            val response = com.openlattice.chronicle.participantaccess.ParticipantFormAccessCodeResponse(
+                "synthetic-code", java.time.OffsetDateTime.now().plusMinutes(15), ParticipantFormKind.ENROLLMENT)
+            val authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().authentication!!
+            whenever(accessService.createReplacingAccessCode(studyId, participantId, ParticipantFormKind.ENROLLMENT,
+                null, null, null, ParticipantAccessCodeIssuerType.RESEARCHER, authentication.name)).thenReturn(response)
+            assertEquals(response, controller.createAccessCode(studyId, participantId,
+                CreateParticipantFormAccessCodeRequest(ParticipantFormKind.ENROLLMENT, null),
+                authentication, MockHttpServletResponse()))
+            Mockito.verify(accessService).createReplacingAccessCode(studyId, participantId, ParticipantFormKind.ENROLLMENT,
+                null, null, null, ParticipantAccessCodeIssuerType.RESEARCHER, authentication.name)
+            Mockito.verify(accessService, Mockito.never()).createAccessCode(org.mockito.kotlin.any(), org.mockito.kotlin.any(),
+                org.mockito.kotlin.any(), org.mockito.kotlin.anyOrNull(), org.mockito.kotlin.anyOrNull(), org.mockito.kotlin.anyOrNull(),
+                org.mockito.kotlin.any(), org.mockito.kotlin.any())
+        } finally { TestSecurityUtils.clearSecurityContext() }
+    }
+
 }

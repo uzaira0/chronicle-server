@@ -69,7 +69,6 @@ public open class OrganizationController @Inject constructor(
 
     @Timed
     @PostMapping(
-        path = ["", "/"],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
         produces = [MediaType.APPLICATION_JSON_VALUE],
     )
@@ -91,7 +90,6 @@ public open class OrganizationController @Inject constructor(
 
     @Timed
     @GetMapping(
-        path = ["", "/"],
         produces = [MediaType.APPLICATION_JSON_VALUE],
     )
     override fun getOrganizations(): Iterable<Organization> {

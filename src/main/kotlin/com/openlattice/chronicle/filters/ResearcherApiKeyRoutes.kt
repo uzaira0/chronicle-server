@@ -4,6 +4,7 @@ import com.openlattice.chronicle.apikey.ApiKeyScope
 import com.openlattice.chronicle.apikey.ApiKeyScope.ADMIN
 import com.openlattice.chronicle.apikey.ApiKeyScope.READ_ONLY
 import com.openlattice.chronicle.apikey.ApiKeyScope.WRITE
+import com.openlattice.chronicle.study.StudyApi
 import java.util.UUID
 
 /**
@@ -49,7 +50,7 @@ internal object ResearcherApiKeyRoutes {
         Route("PATCH", STUDY, "/participant/$SEGMENT/status", WRITE),
         Route("PATCH", STUDY, "/participant/$SEGMENT/annotations", WRITE),
         Route("PATCH", STUDY, "/settings/type/$SEGMENT", WRITE),
-        Route("PUT", STUDY, "/data-collection/", WRITE),
+        Route("PUT", STUDY, StudyApi.DATA_COLLECTION, WRITE),
         Route("POST", SURVEY, "/questionnaire", WRITE),
         Route("PATCH", SURVEY, "/questionnaire/$SEGMENT", WRITE),
         Route("PUT", SURVEY, "/filtered", WRITE),

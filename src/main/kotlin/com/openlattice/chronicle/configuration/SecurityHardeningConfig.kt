@@ -23,8 +23,11 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
 import org.springframework.http.HttpStatus
+import org.springframework.security.oauth2.core.OAuth2AccessToken
+import org.springframework.util.StringUtils
 import org.springframework.web.filter.OncePerRequestFilter
 import jakarta.servlet.Filter
 import jakarta.servlet.FilterChain
@@ -152,6 +155,8 @@ public open class SecurityHardeningConfig {
      * Blocks requests with:
      * - Null bytes (path traversal indicator)
      * - Excessively long parameter values (potential buffer overflow)
+     * - DPoP authorization: Spring Security enables DPoP whenever its classes are present;
+     *   Chronicle issues only Bearer tokens and never issues DPoP-bound tokens
      */
     // reason: security request-validation filter — each early return rejects a distinct malicious
     // input (null-byte URI/query/param, oversized param) and the param-map iteration nesting is
@@ -167,6 +172,12 @@ public open class SecurityHardeningConfig {
                 response: HttpServletResponse,
                 filterChain: FilterChain
             ) {
+                if (StringUtils.startsWithIgnoreCase(request.getHeader(HttpHeaders.AUTHORIZATION), OAuth2AccessToken.TokenType.DPOP.value)) {
+                    response.setHeader(HttpHeaders.WWW_AUTHENTICATE, OAuth2AccessToken.TokenType.BEARER.value)
+                    response.sendError(HttpStatus.UNAUTHORIZED.value(), "Unsupported authorization scheme")
+                    return
+                }
+
                 // Check for null bytes in URI
                 if (request.requestURI.contains('\u0000')) {
                     val sanitizedUri = LogSanitizer.sanitizeUri(request.requestURI.replace('\u0000', '?'))
@@ -255,7 +266,7 @@ public open class SecurityHardeningConfig {
                             "${ClientIpRecord.logReference(request)}, " +
                             "URI: ${LogSanitizer.sanitizeRequestPath(request.requestURI)}"
                     )
-                    response.sendError(HttpStatus.PAYLOAD_TOO_LARGE.value(),
+                    response.sendError(HttpStatus.CONTENT_TOO_LARGE.value(),
                         "Request body too large. Maximum size: ${MAX_REQUEST_SIZE_BYTES / (1024 * 1024)}MB")
                     return
                 }
