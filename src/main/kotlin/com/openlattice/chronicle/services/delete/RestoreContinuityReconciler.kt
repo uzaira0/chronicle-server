@@ -2,6 +2,7 @@ package com.openlattice.chronicle.services.delete
 
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.PinnedPlatformConnection
+import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer.setDeletionWorkerContext
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import java.sql.Connection
@@ -28,6 +29,10 @@ private data class RestoreContinuityCheckpoint(
     val publishedCollectionSettingsCount: Long,
     val enrollmentInvitationCount: Long,
     val erasedDeviceKeyTombstoneCount: Long,
+    val restrictedParticipantCount: Long,
+    val archivedStudyCount: Long,
+    val purgeCutoffCount: Long,
+    val collectionAcknowledgmentCount: Long,
     val createdAt: OffsetDateTime,
 )
 
@@ -51,102 +56,36 @@ public open class RestoreContinuityReconciler(
     internal companion object {
         private val logger = LoggerFactory.getLogger(RestoreContinuityReconciler::class.java)
         private const val RECOVERY_SCHEMA = "chronicle_restore_continuity"
-        private const val CONTRACT_VERSION = 3
+        internal val CONTRACT_VERSION = restoreResource("restore-continuity.version").trim().toInt()
+        private const val PREVIOUS_CONTRACT_VERSION = 3
+        private const val RESTRICTIONS_CONTRACT_VERSION = 4
         private const val LEGACY_CONTRACT_VERSION = 2
         private const val COORDINATION_LOCK_SQL =
             "SELECT pg_advisory_lock(hashtextextended('chronicle-restore-continuity', 0))"
         private const val COORDINATION_UNLOCK_SQL =
             "SELECT pg_advisory_unlock(hashtextextended('chronicle-restore-continuity', 0))"
 
-        private const val CHECKPOINT_DIGEST_SQL = """
-            WITH canonical(line) AS (
-                SELECT concat_ws('|',
-                    'withdrawal', request_id::text, api_key_id::text, study_id::text,
-                    participant_id, device_id::text, already_withdrawn::text,
-                    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
-                FROM chronicle_restore_continuity.withdrawal_requests
-                UNION ALL
-                SELECT concat_ws('|',
-                    'revoked-key', key_id::text, study_id::text,
-                    COALESCE(participant_id, '<null>'), COALESCE(device_id::text, '<null>'))
-                FROM chronicle_restore_continuity.revoked_api_keys
-                UNION ALL
-                SELECT concat_ws('|', 'withdrawn', study_id::text, participant_id)
-                FROM chronicle_restore_continuity.withdrawn_participants
-                UNION ALL
-                SELECT concat_ws('|',
-                    'operation', operation_id::text, study_id::text,
-                    COALESCE(participant_ref, '<null>'), COALESCE(participant_id, '<null>'),
-                    COALESCE(participant_block_token, '<null>'),
-                    mode, status, requested_by, idempotency_key::text, registry_version::text,
-                    COALESCE(to_char(quarantine_until AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '<null>'),
-                    COALESCE(to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '<null>'),
-                    COALESCE(proof_hash, '<null>'), COALESCE(cancelled_by, '<null>'),
-                    COALESCE(to_char(cancelled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '<null>'))
-                FROM chronicle_restore_continuity.deletion_operations
-                UNION ALL
-                SELECT concat_ws('|',
-                    'hold', hold_id::text, operation_id::text, study_id::text, reason,
-                    created_by, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-                    to_char(review_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-                    COALESCE(released_by, '<null>'),
-                    COALESCE(to_char(released_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '<null>'),
-                    COALESCE(release_reason, '<null>'))
-                FROM chronicle_restore_continuity.retention_holds
-                UNION ALL
-                SELECT concat_ws('|',
-                    'tombstone', operation_id::text, study_ref,
-                    COALESCE(participant_ref, '<null>'), mode, registry_version::text,
-                    to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-                    proof_hash)
-                FROM chronicle_restore_continuity.deletion_tombstones
-                UNION ALL
-                SELECT concat_ws('|', 'collection-revision', study_id::text,
-                    settings_version::text, setting::text,
-                    to_char(issued_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
-                FROM chronicle_restore_continuity.data_collection_settings_revisions
-                UNION ALL
-                SELECT concat_ws('|', 'published-collection-settings', study_id::text,
-                    settings_version::text, setting::text)
-                FROM chronicle_restore_continuity.published_data_collection_settings
-                UNION ALL
-                SELECT concat_ws('|', 'enrollment-invitation', access_code_id::text,
-                    encode(token_hash, 'hex'), study_id::text, participant_id, form_kind,
-                    COALESCE(resource_id::text, '<null>'), COALESCE(logical_date::text, '<null>'),
-                    issuer_type, issued_by,
-                    to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-                    COALESCE(to_char(exchanged_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '<null>'),
-                    COALESCE(to_char(revoked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '<null>'),
-                    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-                    COALESCE(enrollment_attempt_id::text, '<null>'),
-                    COALESCE(enrollment_source_device_hash, '<null>'),
-                    COALESCE(enrollment_device_id::text, '<null>'),
-                    COALESCE(enrollment_manifest_digest, '<null>'),
-                    COALESCE(enrollment_request_hash, '<null>'),
-                    COALESCE(enrollment_proposed_key_hash, '<null>'),
-                    COALESCE(to_char(enrollment_replay_expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '<null>'),
-                    COALESCE(enrollment_settings_version::text, '<null>'),
-                    COALESCE(enrollment_disclosure_version, '<null>'),
-                    COALESCE(enrollment_enabled_modules::text, '<null>'),
-                    COALESCE(enrollment_required_modules::text, '<null>'))
-                FROM chronicle_restore_continuity.enrollment_invitations
-                UNION ALL
-                SELECT concat_ws('|', 'erased-device-key', key_hash, kind,
-                    to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
-                FROM chronicle_restore_continuity.erased_device_key_tombstones
-            )
-            SELECT encode(
-                sha256(convert_to(COALESCE(string_agg(line, E'\n' ORDER BY line), ''), 'UTF8')),
-                'hex'
-            )
-            FROM canonical
-        """
+        internal fun restoreResource(name: String): String =
+            requireNotNull(RestoreContinuityReconciler::class.java.getResourceAsStream("/$name")) {
+                "Missing restore continuity resource $name"
+            }.bufferedReader(Charsets.UTF_8).use { it.readText() }
+
+        private val CHECKPOINT_DIGEST_SQL = restoreResource("restore-continuity-digest.sql") + "SELECT value FROM digest"
+        private val RESTRICTIONS_CHECKPOINT_DIGEST_SQL = CHECKPOINT_DIGEST_SQL
+            .replace(Regex(""",\s*COALESCE\(to_char\(capture_cutoff.*?'<null>'\)"""), "")
+            .replace(Regex("""\s*COALESCE\(to_char\(started_at.*?'<null>'\),"""), "")
+            .replace(Regex("""UNION ALL\s+SELECT concat_ws\('\|', 'purge-cutoff'.*?FROM chronicle_restore_continuity\.participant_collection_acknowledgment acknowledgment""",
+                RegexOption.DOT_MATCHES_ALL), "")
+        private val PREVIOUS_CHECKPOINT_DIGEST_SQL = RESTRICTIONS_CHECKPOINT_DIGEST_SQL.replace(
+            Regex("""UNION ALL\s+SELECT concat_ws\('\|', 'restricted-participant'.*?FROM chronicle_restore_continuity\.archived_studies""",
+                RegexOption.DOT_MATCHES_ALL), "",
+        )
 
         /**
          * Contract 2 (restore.sh through 2026.10.3) hashed the same rows without the operation block
          * token and without erased device-key tombstones.
          */
-        private val LEGACY_CHECKPOINT_DIGEST_SQL = CHECKPOINT_DIGEST_SQL
+        private val LEGACY_CHECKPOINT_DIGEST_SQL = PREVIOUS_CHECKPOINT_DIGEST_SQL
             .replace("COALESCE(participant_block_token, '<null>'),", "")
             .replace(
                 Regex(
@@ -186,6 +125,7 @@ public open class RestoreContinuityReconciler(
                     validatePublicConflicts(operations)
                     validateAuthorityConflicts()
                     applyRestoredAuthorities(checkpoint)
+                    applyCapturedAuthorities()
                     applyContainmentAndReceipts()
                     applyErasedDeviceKeyTombstones()
 
@@ -241,6 +181,25 @@ public open class RestoreContinuityReconciler(
         }
     }
 
+    private fun <T> withTransaction(
+        connection: Connection,
+        afterCommit: () -> Unit = {},
+        block: () -> T,
+    ): T {
+        connection.autoCommit = false
+        try {
+            val result = block()
+            connection.commit()
+            afterCommit()
+            return result
+        } catch (exception: Exception) {
+            connection.rollback()
+            throw exception
+        } finally {
+            connection.autoCommit = true
+        }
+    }
+
     private fun recoverySchemaExists(): Boolean =
         storageResolver.getPlatformStorage().connection.use { connection ->
             connection.prepareStatement("SELECT to_regnamespace(?) IS NOT NULL").use { statement ->
@@ -266,6 +225,10 @@ public open class RestoreContinuityReconciler(
                 }
             }
             if (contractVersion == LEGACY_CONTRACT_VERSION) upgradeLegacyCheckpoint(connection)
+            if (contractVersion in setOf(LEGACY_CONTRACT_VERSION, PREVIOUS_CONTRACT_VERSION)) upgradePreviousCheckpoint(connection)
+            if (contractVersion in setOf(LEGACY_CONTRACT_VERSION, PREVIOUS_CONTRACT_VERSION, RESTRICTIONS_CONTRACT_VERSION)) {
+                upgradeRestrictionsCheckpoint(connection)
+            }
             val checkpoint = connection.createStatement().use { statement ->
                 statement.executeQuery(
                     """
@@ -274,7 +237,9 @@ public open class RestoreContinuityReconciler(
                            revoked_api_key_count, withdrawn_participant_count,
                            deletion_operation_count, source_tombstone_count,
                            collection_revision_count, published_collection_settings_count,
-                           enrollment_invitation_count, erased_device_key_tombstone_count, created_at
+                           enrollment_invitation_count, erased_device_key_tombstone_count,
+                           restricted_participant_count, archived_study_count,
+                           purge_cutoff_count, collection_acknowledgment_count, created_at
                     FROM chronicle_restore_continuity.checkpoint
                     """.trimIndent(),
                 ).use { resultSet ->
@@ -293,6 +258,10 @@ public open class RestoreContinuityReconciler(
                             resultSet.getLong("published_collection_settings_count"),
                         enrollmentInvitationCount = resultSet.getLong("enrollment_invitation_count"),
                         erasedDeviceKeyTombstoneCount = resultSet.getLong("erased_device_key_tombstone_count"),
+                        restrictedParticipantCount = resultSet.getLong("restricted_participant_count"),
+                        archivedStudyCount = resultSet.getLong("archived_study_count"),
+                        purgeCutoffCount = resultSet.getLong("purge_cutoff_count"),
+                        collectionAcknowledgmentCount = resultSet.getLong("collection_acknowledgment_count"),
                         createdAt = resultSet.getObject("created_at", OffsetDateTime::class.java),
                     )
                     check(resultSet.getInt("contract_version") == CONTRACT_VERSION) {
@@ -311,7 +280,8 @@ public open class RestoreContinuityReconciler(
                 "data_collection_settings_revisions",
                 "published_data_collection_settings",
                 "enrollment_invitations",
-                "erased_device_key_tombstones",
+                "erased_device_key_tombstones", "restricted_participants", "archived_studies",
+                "participant_purge_cutoffs", "participant_collection_acknowledgment",
             ).map { table -> countRecoveryRows(connection, table) }
             check(
                 actualCounts == listOf(
@@ -324,6 +294,8 @@ public open class RestoreContinuityReconciler(
                     checkpoint.publishedCollectionSettingsCount,
                     checkpoint.enrollmentInvitationCount,
                     checkpoint.erasedDeviceKeyTombstoneCount,
+                    checkpoint.restrictedParticipantCount, checkpoint.archivedStudyCount,
+                    checkpoint.purgeCutoffCount, checkpoint.collectionAcknowledgmentCount,
                 ),
             ) { "Restore continuity checkpoint row counts do not match its protected tables" }
             check(computeCheckpointSha256(connection) == checkpoint.checkpointSha256) {
@@ -352,9 +324,10 @@ public open class RestoreContinuityReconciler(
      */
     @Suppress("LongMethod")
     private fun upgradeLegacyCheckpoint(connection: Connection) {
-        connection.autoCommit = false
-        try {
-            setDeletionWorkerContext(connection)
+        withTransaction(connection, afterCommit = {
+            logger.info("restore_continuity outcome=checkpoint_upgraded from_contract={}", LEGACY_CONTRACT_VERSION)
+        }) {
+            setDeletionWorkerContext(connection, transactionLocal = true)
             val legacyTables = listOf(
                 "withdrawal_requests", "revoked_api_keys", "withdrawn_participants", "deletion_operations",
                 "deletion_tombstones", "data_collection_settings_revisions",
@@ -387,7 +360,7 @@ public open class RestoreContinuityReconciler(
                 statement.executeUpdate(
                     """
                     UPDATE chronicle_restore_continuity.deletion_operations
-                    SET participant_block_token = md5(study_id::text || ':' || participant_id)
+                    SET participant_block_token = chronicle_participant_block_token(study_id, participant_id)
                     WHERE participant_id IS NOT NULL
                     """.trimIndent(),
                 )
@@ -437,20 +410,77 @@ public open class RestoreContinuityReconciler(
                     """.trimIndent(),
                 )
             }
-            connection.prepareStatement(
-                "UPDATE chronicle_restore_continuity.checkpoint SET contract_version = ?, checkpoint_sha256 = ?",
-            ).use { statement ->
-                statement.setInt(1, CONTRACT_VERSION)
-                statement.setString(2, computeCheckpointSha256(connection))
-                check(statement.executeUpdate() == 1)
+            updateCheckpointContract(connection, PREVIOUS_CONTRACT_VERSION, PREVIOUS_CHECKPOINT_DIGEST_SQL)
+        }
+    }
+
+    private fun upgradePreviousCheckpoint(connection: Connection) {
+        withTransaction(connection) {
+            val digest = connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT checkpoint_sha256 FROM chronicle_restore_continuity.checkpoint").use {
+                    check(it.next())
+                    it.getString(1)
+                }
             }
-            connection.commit()
-            logger.info("restore_continuity outcome=checkpoint_upgraded from_contract={}", LEGACY_CONTRACT_VERSION)
-        } catch (exception: Exception) {
-            connection.rollback()
-            throw exception
-        } finally {
-            connection.autoCommit = true
+            check(computeCheckpointSha256(connection, PREVIOUS_CHECKPOINT_DIGEST_SQL) == digest) {
+                "Restore continuity checkpoint digest does not match its protected tables"
+            }
+            connection.createStatement().use { statement ->
+                statement.execute(restoreResource("restore-restrictions-schema.sql"))
+                statement.execute("""
+                    ALTER TABLE chronicle_restore_continuity.checkpoint
+                    ADD COLUMN restricted_participant_count BIGINT NOT NULL DEFAULT 0,
+                    ADD COLUMN archived_study_count BIGINT NOT NULL DEFAULT 0
+                """.trimIndent())
+                statement.execute("""
+                    REVOKE ALL ON ALL TABLES IN SCHEMA chronicle_restore_continuity
+                    FROM PUBLIC, chronicle_app, chronicle_admin
+                """.trimIndent())
+            }
+            updateCheckpointContract(connection, RESTRICTIONS_CONTRACT_VERSION, RESTRICTIONS_CHECKPOINT_DIGEST_SQL)
+        }
+    }
+
+    private fun upgradeRestrictionsCheckpoint(connection: Connection) {
+        withTransaction(connection) {
+            val digest = connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT checkpoint_sha256 FROM chronicle_restore_continuity.checkpoint").use {
+                    check(it.next())
+                    it.getString(1)
+                }
+            }
+            check(computeCheckpointSha256(connection, RESTRICTIONS_CHECKPOINT_DIGEST_SQL) == digest) {
+                "Restore continuity checkpoint digest does not match its protected tables"
+            }
+            connection.createStatement().use { statement ->
+                statement.execute(
+                    "ALTER TABLE chronicle_restore_continuity.restricted_participants ADD COLUMN IF NOT EXISTS capture_cutoff TIMESTAMPTZ")
+                statement.execute("ALTER TABLE chronicle_restore_continuity.deletion_operations ADD COLUMN started_at TIMESTAMPTZ")
+                // Older contracts cannot recover missing decisions. Never substitute replay time
+                // for a completed purge: its completion is the latest original watermark available.
+                statement.executeUpdate("""
+                    UPDATE chronicle_restore_continuity.deletion_operations source
+                    SET started_at = COALESCE(
+                        (SELECT target.started_at FROM data_deletion_operations target
+                         WHERE target.operation_id = source.operation_id), source.completed_at)
+                """.trimIndent())
+                statement.execute(restoreResource("restore-authorities-schema.sql"))
+                statement.execute("""
+                    REVOKE ALL ON ALL TABLES IN SCHEMA chronicle_restore_continuity
+                    FROM PUBLIC, chronicle_app, chronicle_admin
+                """.trimIndent())
+            }
+            updateCheckpointContract(connection, CONTRACT_VERSION, CHECKPOINT_DIGEST_SQL)
+        }
+    }
+
+    private fun updateCheckpointContract(connection: Connection, version: Int, digestSql: String) {
+        connection.prepareStatement(
+            "UPDATE chronicle_restore_continuity.checkpoint SET contract_version = ?, checkpoint_sha256 = ?",
+        ).use {
+            it.setInt(1, version)
+            it.setString(2, computeCheckpointSha256(connection, digestSql))
+            check(it.executeUpdate() == 1)
         }
     }
 
@@ -489,7 +519,7 @@ public open class RestoreContinuityReconciler(
                     OR status = 'PREVIEW'
                     OR (mode = 'STUDY_ERASURE') <> (participant_block_token IS NULL)
                     OR participant_block_token IS DISTINCT FROM
-                       COALESCE(md5(study_id::text || ':' || participant_id), participant_block_token)
+                       COALESCE(chronicle_participant_block_token(study_id, participant_id), participant_block_token)
                     OR (participant_id IS NULL AND mode <> 'STUDY_ERASURE' AND status <> 'COMPLETED')
                     OR (status = 'CANCELLED') <> (cancelled_by IS NOT NULL AND cancelled_at IS NOT NULL)) +
                 (SELECT count(*)
@@ -509,13 +539,21 @@ public open class RestoreContinuityReconciler(
                        (released_by IS NULL AND release_reason IS NULL)) +
                 (SELECT count(*)
                  FROM chronicle_restore_continuity.deletion_operations operation
-                 WHERE (operation.status = 'HELD') <>
-                       EXISTS (
-                           SELECT 1
-                           FROM chronicle_restore_continuity.retention_holds hold
-                           WHERE hold.operation_id = operation.operation_id
-                             AND hold.released_at IS NULL
-                       )) +
+                 CROSS JOIN LATERAL (
+                     SELECT EXISTS (
+                         SELECT 1
+                         FROM chronicle_restore_continuity.retention_holds hold
+                         WHERE hold.operation_id = operation.operation_id
+                           AND hold.released_at IS NULL
+                     ) AS has_active_hold
+                 ) hold_state
+                 -- HELD requires an active hold; holds may also outlive a hold-free
+                 -- transition (placed on QUARANTINED, released later, or left by a cancel).
+                 WHERE CASE
+                     WHEN operation.status = 'HELD' THEN NOT hold_state.has_active_hold
+                     WHEN operation.status IN ('QUARANTINED', 'READY', 'FAILED', 'CANCELLED') THEN false
+                     ELSE hold_state.has_active_hold
+                 END) +
                 (SELECT count(*)
                  FROM chronicle_restore_continuity.deletion_tombstones tombstone
                  JOIN chronicle_restore_continuity.deletion_operations completed
@@ -551,7 +589,7 @@ public open class RestoreContinuityReconciler(
                     SELECT operation.operation_id, operation.study_id,
                            operation.participant_ref, operation.participant_id,
                            operation.participant_block_token, operation.mode, operation.status, operation.requested_by,
-                           operation.idempotency_key, operation.quarantine_until,
+                           operation.idempotency_key, operation.quarantine_until, operation.started_at,
                            operation.cancelled_by, operation.cancelled_at,
                            tombstone.operation_id IS NOT NULL AS has_source_tombstone
                     FROM chronicle_restore_continuity.deletion_operations operation
@@ -577,6 +615,7 @@ public open class RestoreContinuityReconciler(
                                     cancelledBy = resultSet.getString("cancelled_by"),
                                     cancelledAt = resultSet.getObject("cancelled_at", OffsetDateTime::class.java),
                                     hasSourceTombstone = resultSet.getBoolean("has_source_tombstone"),
+                                    startedAt = resultSet.getObject("started_at", OffsetDateTime::class.java),
                                 ),
                             )
                         }
@@ -640,7 +679,7 @@ public open class RestoreContinuityReconciler(
                     require(table.matches(Regex("^[a-z_]+$")))
                     add(
                         "SELECT DISTINCT participant_id FROM $table WHERE study_id::text = ?::text " +
-                            "AND md5(study_id::text || ':' || participant_id) = ? LIMIT 2" to operation.studyId,
+                            "AND chronicle_participant_block_token(study_id::uuid, participant_id) = ? LIMIT 2" to operation.studyId,
                     )
                 }
             ChronicleDataAssetRegistry.assetsFor(operation.mode)
@@ -649,7 +688,7 @@ public open class RestoreContinuityReconciler(
                     require(asset.tableName.matches(Regex("^[a-z_]+$")))
                     add(
                         "SELECT DISTINCT subject FROM ${asset.tableName}, unnest(participant_ids) subject " +
-                            "WHERE study_id::text = ?::text AND md5(study_id::text || ':' || subject) = ? LIMIT 2" to
+                            "WHERE study_id::text = ?::text AND chronicle_participant_block_token(study_id::uuid, subject) = ? LIMIT 2" to
                             operation.studyId,
                     )
                 }
@@ -657,7 +696,7 @@ public open class RestoreContinuityReconciler(
         val subjects = storageResolver.getPlatformStorage().connection.use { connection ->
             connection.autoCommit = false
             try {
-                setDeletionWorkerContext(connection)
+                setDeletionWorkerContext(connection, transactionLocal = true)
                 buildSet {
                     for ((sql, scope) in sources) {
                         connection.prepareStatement(sql).use { statement ->
@@ -689,15 +728,9 @@ public open class RestoreContinuityReconciler(
             "Only a completed erasure can lack its participant"
         }
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                setDeletionWorkerContext(connection)
-                connection.prepareStatement(
-                    "SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:' || ?::text, 0))",
-                ).use { statement ->
-                    statement.setObject(1, operation.studyId)
-                    statement.executeQuery().close()
-                }
+            withTransaction(connection) {
+                setDeletionWorkerContext(connection, transactionLocal = true)
+                com.openlattice.chronicle.storage.DeletionStudyFence.exclusive(connection, operation.studyId)
                 listOf("data_deletion_tombstones", "retention_holds").forEach { table ->
                     connection.prepareStatement("DELETE FROM $table WHERE operation_id = ?").use { statement ->
                         statement.setObject(1, operation.operationId)
@@ -767,12 +800,44 @@ public open class RestoreContinuityReconciler(
                             statement.executeUpdate()
                         }
                     }
-                connection.commit()
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = true
+            }
+        }
+    }
+
+    private fun applyCapturedAuthorities() {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            withTransaction(connection) {
+                setDeletionWorkerContext(connection, transactionLocal = true)
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate("""
+                        UPDATE study_participants target
+                        SET capture_cutoff = source.capture_cutoff
+                        FROM chronicle_restore_continuity.restricted_participants source
+                        WHERE target.study_id = source.study_id AND target.participant_id = source.participant_id
+                          AND target.participation_status IN ('PAUSED', 'COLLECTION_COMPLETED')
+                    """.trimIndent())
+                    statement.executeUpdate("""
+                        INSERT INTO participant_purge_cutoffs (study_id, participant_block_token, cutoff)
+                        SELECT study_id, participant_block_token, cutoff
+                        FROM chronicle_restore_continuity.participant_purge_cutoffs
+                        ON CONFLICT (study_id, participant_block_token) DO UPDATE
+                        SET cutoff = GREATEST(participant_purge_cutoffs.cutoff, EXCLUDED.cutoff)
+                    """.trimIndent())
+                    statement.executeQuery("""
+                        SELECT count(*) FROM chronicle_restore_continuity.participant_collection_acknowledgment source
+                        JOIN participant_collection_acknowledgment target USING (id)
+                        WHERE to_jsonb(source) IS DISTINCT FROM to_jsonb(target)
+                    """.trimIndent()).use { rows ->
+                        check(rows.next() && rows.getLong(1) == 0L) { "Conflicting restored collection acknowledgment" }
+                    }
+                    statement.executeUpdate("""
+                        INSERT INTO participant_collection_acknowledgment
+                        SELECT (jsonb_populate_record(NULL::participant_collection_acknowledgment, to_jsonb(source))).*
+                        FROM chronicle_restore_continuity.participant_collection_acknowledgment source
+                        ORDER BY source.settings_version, source.recorded_at, source.id
+                        ON CONFLICT (id) DO NOTHING
+                    """.trimIndent())
+                }
             }
         }
     }
@@ -786,9 +851,8 @@ public open class RestoreContinuityReconciler(
      */
     private fun applyErasedDeviceKeyTombstones() {
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                setDeletionWorkerContext(connection)
+            withTransaction(connection) {
+                setDeletionWorkerContext(connection, transactionLocal = true)
                 connection.createStatement().use { statement ->
                     statement.executeUpdate(
                         """
@@ -816,24 +880,7 @@ public open class RestoreContinuityReconciler(
                         }
                     }
                 }
-                connection.commit()
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = true
             }
-        }
-    }
-
-    private fun setDeletionWorkerContext(connection: Connection) {
-        connection.createStatement().use { statement ->
-            statement.execute(
-                """
-                SELECT set_config('app.current_user_id', 'chronicle-deletion-worker', true),
-                       set_config('app.is_admin', 'true', true)
-                """.trimIndent(),
-            )
         }
     }
 
@@ -952,16 +999,8 @@ public open class RestoreContinuityReconciler(
     @Suppress("LongMethod")
     private fun applyRestoredAuthorities(checkpoint: RestoreContinuityCheckpoint) {
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                connection.createStatement().use { statement ->
-                    statement.execute(
-                        """
-                        SELECT set_config('app.current_user_id', 'chronicle-deletion-worker', true),
-                               set_config('app.is_admin', 'true', true)
-                        """.trimIndent(),
-                    )
-                }
+            withTransaction(connection) {
+                setDeletionWorkerContext(connection, transactionLocal = true)
                 connection.createStatement().use { statement ->
                     statement.execute(
                         """
@@ -1076,12 +1115,6 @@ public open class RestoreContinuityReconciler(
                     statement.executeUpdate()
                 }
                 verifyRestoredAuthorities(connection)
-                connection.commit()
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = true
             }
         }
     }
@@ -1200,8 +1233,8 @@ public open class RestoreContinuityReconciler(
 
     private fun applyContainmentAndReceipts() {
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.autoCommit = false
-            try {
+            withTransaction(connection) {
+                setDeletionWorkerContext(connection, transactionLocal = true)
                 connection.createStatement().use { statement ->
                     statement.executeUpdate(
                         """
@@ -1243,13 +1276,10 @@ public open class RestoreContinuityReconciler(
                         """.trimIndent(),
                     )
                 }
+                connection.createStatement().use {
+                    it.execute(restoreResource("restore-restrictions-containment.sql"))
+                }
                 verifyContainment(connection)
-                connection.commit()
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = true
             }
         }
     }
@@ -1301,8 +1331,7 @@ public open class RestoreContinuityReconciler(
         completedDeletionCount: Long,
     ) {
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.autoCommit = false
-            try {
+            withTransaction(connection) {
                 check(computeCheckpointSha256(connection) == checkpoint.checkpointSha256) {
                     "Restore continuity checkpoint changed during reconciliation"
                 }
@@ -1314,8 +1343,9 @@ public open class RestoreContinuityReconciler(
                         withdrawn_participant_count, deletion_operation_count,
                         source_tombstone_count, already_protected_deletion_count,
                         replayed_completed_deletion_count, collection_revision_count,
-                        published_collection_settings_count, enrollment_invitation_count
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        published_collection_settings_count, enrollment_invitation_count,
+                        restricted_participant_count, archived_study_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (checkpoint_id) DO NOTHING
                     """.trimIndent(),
                 ).use { statement ->
@@ -1333,6 +1363,8 @@ public open class RestoreContinuityReconciler(
                     statement.setLong(12, checkpoint.collectionRevisionCount)
                     statement.setLong(13, checkpoint.publishedCollectionSettingsCount)
                     statement.setLong(14, checkpoint.enrollmentInvitationCount)
+                    statement.setLong(15, checkpoint.restrictedParticipantCount)
+                    statement.setLong(16, checkpoint.archivedStudyCount)
                     statement.executeUpdate()
                 }
                 verifyReceipt(
@@ -1341,7 +1373,7 @@ public open class RestoreContinuityReconciler(
                     alreadyProtectedDeletionCount,
                     completedDeletionCount,
                 )
-                setDeletionWorkerContext(connection)
+                setDeletionWorkerContext(connection, transactionLocal = true)
                 connection.createStatement().use {
                     // Expired checkpoint markers suppress ON CONFLICT renewal during replay only.
                     // They must not become fresh credential tombstones when the replay completes.
@@ -1362,12 +1394,6 @@ public open class RestoreContinuityReconciler(
                     }
                     it.execute("DROP SCHEMA chronicle_restore_continuity CASCADE")
                 }
-                connection.commit()
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = true
             }
         }
     }
@@ -1385,7 +1411,8 @@ public open class RestoreContinuityReconciler(
                    withdrawn_participant_count, deletion_operation_count,
                    source_tombstone_count, already_protected_deletion_count,
                    replayed_completed_deletion_count, collection_revision_count,
-                   published_collection_settings_count, enrollment_invitation_count
+                   published_collection_settings_count, enrollment_invitation_count,
+                   restricted_participant_count, archived_study_count
             FROM restore_continuity_reconciliations
             WHERE checkpoint_id = ?
             """.trimIndent(),
@@ -1407,6 +1434,8 @@ public open class RestoreContinuityReconciler(
                         checkpoint.publishedCollectionSettingsCount,
                 )
                 check(resultSet.getLong("enrollment_invitation_count") == checkpoint.enrollmentInvitationCount)
+                check(resultSet.getLong("restricted_participant_count") == checkpoint.restrictedParticipantCount)
+                check(resultSet.getLong("archived_study_count") == checkpoint.archivedStudyCount)
                 check(
                     resultSet.getLong("already_protected_deletion_count") ==
                         alreadyProtectedDeletionCount,
