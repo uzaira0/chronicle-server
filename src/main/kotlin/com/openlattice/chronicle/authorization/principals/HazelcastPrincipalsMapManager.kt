@@ -1,6 +1,5 @@
 package com.openlattice.chronicle.authorization.principals
 
-import com.google.common.base.Preconditions
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.query.Predicates
 import com.openlattice.chronicle.authorization.AclKey
@@ -21,7 +20,7 @@ import com.openlattice.chronicle.hazelcast.HazelcastMap
  */
 public open class HazelcastPrincipalsMapManager(
     hazelcastInstance: HazelcastInstance,
-    private val reservations: AclKeyReservationService
+    @Suppress("UnusedParameter") reservations: AclKeyReservationService
 ) : PrincipalsMapManager {
 
     private val principals = HazelcastMap.PRINCIPALS.getMap(hazelcastInstance)
@@ -41,13 +40,7 @@ public open class HazelcastPrincipalsMapManager(
     }
 
     override fun getSecurablePrincipal(principalId: String): SecurablePrincipal {
-        val id = Preconditions.checkNotNull(
-            reservations.getId(HazelcastPrincipalService.getPrincipalReservationName(principalId)),
-            "AclKey not found for Principal %s", principalId
-        )
-        return principals.values(
-            Predicates.equal(PrincipalMapstore.PRINCIPAL_ID_INDEX, id)
-        ).first()
+        return getSecurablePrincipal(Principal(PrincipalType.USER, principalId))
     }
 
     override fun getSecurablePrincipal(aclKey: AclKey): SecurablePrincipal? {

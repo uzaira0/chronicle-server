@@ -31,6 +31,7 @@ import com.openlattice.chronicle.authorization.SystemUser
 import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import org.slf4j.LoggerFactory
+import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException
 import org.springframework.security.core.Authentication
 import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.context.SecurityContextHolder
@@ -48,16 +49,22 @@ public class Principals private constructor() {
             .getLogger(Principals::class.java)
         private val startupLock: Lock = ReentrantLock()
         private lateinit var securablePrincipals: IMap<String, SecurablePrincipal>
+        private lateinit var principalManager: SecurePrincipalsManager
+        private lateinit var principalResolver: com.openlattice.chronicle.authorization.CreatorPrincipalResolver
 
         // reason: field name is a reflection contract — TestSecurityUtils.injectStaticMock looks up
         // the static field by the literal name "principals"; renaming breaks the test-security harness
         @Suppress("MemberNameEqualsClassName")
         private lateinit var principals: IMap<String, SortedPrincipalSet>
 
-        // reason: stable init API signature; spm param retained for callers, removal alters call site
-        @Suppress("UnusedParameter")
-        public fun init(spm: SecurePrincipalsManager, hazelcastInstance: HazelcastInstance) {
+        public fun init(
+            spm: SecurePrincipalsManager,
+            hazelcastInstance: HazelcastInstance,
+            resolver: com.openlattice.chronicle.authorization.CreatorPrincipalResolver,
+        ) {
             if (startupLock.tryLock()) {
+                principalManager = spm
+                principalResolver = resolver
                 securablePrincipals = HazelcastMap.SECURABLE_PRINCIPALS.getMap(
                     hazelcastInstance
                 )
@@ -89,8 +96,7 @@ public class Principals private constructor() {
         }
 
         /**
-         * This will retrieve the current user. If auth information isn't present an NPE is thrown (by design). If the wrong
-         * type of auth is present a ClassCast exception will be thrown (by design).
+         * Retrieves the current user, or throws [AuthenticationCredentialsNotFoundException] if authentication is absent.
          *
          * @return The principal for the current request.
          */
@@ -98,12 +104,18 @@ public class Principals private constructor() {
         public fun getCurrentUser(): Principal = getUserPrincipal(getCurrentPrincipalId())
         public fun getCurrentSecurablePrincipal(): SecurablePrincipal {
             val principalId = getCurrentPrincipalId()
-            return securablePrincipals[principalId] ?: SecurablePrincipal(
-                // An API key has no stored principal; its key id keeps audit rows traceable to the key.
-                Optional.of(
-                    (SecurityContextHolder.getContext().authentication as? ApiKeyAuthenticationToken)?.keyId
-                        ?: UUID.randomUUID()
-                ),
+            securablePrincipals[principalId]?.let { return it }
+            val key = SecurityContextHolder.getContext().authentication as? ApiKeyAuthenticationToken
+            if (key == null) {
+                val user = getUserPrincipal(principalId)
+                val stored = principalManager.getSecurablePrincipals(setOf(user)).firstOrNull()
+                if (stored != null) return stored
+                return SecurablePrincipal(
+                    Optional.of(getUserId(principalId)), user, principalId, Optional.of("Auto-provisioned local user"),
+                )
+            }
+            return SecurablePrincipal(
+                Optional.of(key.keyId),
                 Principal(PrincipalType.USER, principalId),
                 principalId,
                 Optional.of("Auto-provisioned local user")
@@ -129,8 +141,14 @@ public class Principals private constructor() {
             return Principal(PrincipalType.USER, principalId)
         }
 
+        // Account identity is stable before its first ACL is provisioned; this is not a credential.
+        internal fun getUserId(principalId: String): UUID =
+            // nosemgrep: chronicle-uuid-from-string -- Stable account identifier, never a credential.
+            UUID.nameUUIDFromBytes("chronicle-user:$principalId".toByteArray(
+                Charsets.UTF_8))
+
         public fun getUserPrincipals(principalId: String): NavigableSet<Principal> {
-            return principals[principalId]!!
+            return getStoredUserPrincipals(principalId)
         }
 
         /**
@@ -138,17 +156,11 @@ public class Principals private constructor() {
          * principal. Roles that only arrive in a login token are not known here.
          */
         public fun getStoredUserPrincipals(principalId: String): NavigableSet<Principal> =
-            TreeSet<Principal>(principals[principalId] ?: emptySet()).apply { add(getUserPrincipal(principalId)) }
+            TreeSet<Principal>(principals[principalId] ?: principalResolver.resolve(principalId))
+                .apply { add(getUserPrincipal(principalId)) }
 
         public fun getCurrentPrincipals(): NavigableSet<Principal> {
-            val principalId = getCurrentPrincipalId()
-            return TreeSet<Principal>(principals[principalId] ?: TreeSet<Principal>().apply {
-                add(Principal(PrincipalType.USER, principalId))
-                // Do NOT add admin role for unknown users — this was a privilege
-                // escalation vulnerability. Unknown users get only their own
-                // user principal. Admin access must be explicitly granted via
-                // the principal_trees table or trusted JWT authorities.
-            }).apply {
+            return TreeSet<Principal>(getStoredUserPrincipals(getCurrentPrincipalId())).apply {
                 addAll(currentAuthenticationPrincipals())
             }
         }
@@ -159,7 +171,8 @@ public class Principals private constructor() {
         private fun currentAuthenticationPrincipals(): Set<Principal> {
             val authentication = SecurityContextHolder.getContext().authentication ?: return emptySet()
             return authentication.authorities.mapNotNull { authority ->
-                val parts = authority.authority.split("|", limit = 2)
+                val name = authority.authority ?: return@mapNotNull null
+                val parts = name.split("|", limit = 2)
                 if (parts.size != 2) {
                     null
                 } else {
@@ -182,7 +195,11 @@ public class Principals private constructor() {
             }
         }
 
-        private fun getCurrentPrincipalId(): String = getPrincipalId(SecurityContextHolder.getContext().authentication)
+        private fun getCurrentPrincipalId(): String {
+            val authentication = SecurityContextHolder.getContext().authentication
+                ?: throw AuthenticationCredentialsNotFoundException("No authentication available")
+            return getPrincipalId(authentication)
+        }
 
         public fun invalidatePrincipalCache(principalId: String) {
             securablePrincipals.evict(principalId)

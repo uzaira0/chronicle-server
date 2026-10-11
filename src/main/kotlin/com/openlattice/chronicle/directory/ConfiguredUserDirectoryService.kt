@@ -43,7 +43,9 @@ public open class ConfiguredUserDirectoryService(
                     profile.familyName,
                     profile.username,
                 ).filterNotNull() + profile.connections + profile.identityUserIds
-                haystack.any { candidate -> email.contains(candidate) || name.contains(candidate) }
+                haystack.any { candidate -> candidate.isNotBlank() &&
+                    listOf(email, name).any { query -> query.isNotBlank() && candidate.contains(query, ignoreCase = true) }
+                }
             }
             .associateBy { it.toChronicleUserProfile().id }
             .mapValues { it.value.toChronicleUserProfile() }

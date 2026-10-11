@@ -80,7 +80,6 @@ public interface SecurePrincipalsManager {
     public fun principalHasChildPrincipal(parent: AclKey, child: AclKey): Boolean
 
     // Methods about users
-    public fun getAllUserProfilesWithPrincipal(principal: AclKey): Collection<ChronicleUserProfile>
     public fun principalExists(p: Principal): Boolean
     public fun getUser(userId: String): ChronicleUserProfile
     public fun getRole(organizationId: UUID, roleId: UUID): Role
@@ -88,8 +87,6 @@ public interface SecurePrincipalsManager {
     public fun lookup(principals: Set<Principal>): Map<Principal, AclKey>
     public fun lookupRole(principal: Principal): Role
     public fun getSecurablePrincipals(members: Collection<Principal>): Collection<SecurablePrincipal>
-    public fun getAllPrincipals(sp: SecurablePrincipal): Collection<SecurablePrincipal>
-    public fun bulkGetUnderlyingPrincipals(sps: Set<SecurablePrincipal>): Map<SecurablePrincipal, Set<Principal>>
     public fun getCurrentUserId(): UUID
     public fun ensurePrincipalsExist(aclKeys: Set<AclKey>)
     public fun getAllRoles(): Set<Role>
