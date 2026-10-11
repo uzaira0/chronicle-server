@@ -217,4 +217,15 @@ class AnonymizationControllerTest {
         assertNotNull(result)
         verify(anonymizationService).updateConfig(studyId, config)
     }
+    @Test
+    fun testUnsupportedAnonymizationConfigurationCannotBePersisted() {
+        val storage = Mockito.mock(com.openlattice.chronicle.storage.StorageResolver::class.java)
+        val service = AnonymizationService(storage)
+        val error = org.junit.Assert.assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+            AnonymizationController(service).updateAnonymizationConfig(UUID.randomUUID(), AnonymizationConfig())
+        }
+        assertEquals(org.springframework.http.HttpStatus.NOT_IMPLEMENTED, error.statusCode)
+        Mockito.verifyNoInteractions(storage)
+    }
+
 }

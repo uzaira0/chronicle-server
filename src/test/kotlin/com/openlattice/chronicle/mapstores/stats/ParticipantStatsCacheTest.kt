@@ -64,7 +64,7 @@ class ParticipantStatsCacheTest {
         whenever(hazelcast.getMap<UUID, com.openlattice.chronicle.study.StudyLimits>("STUDY_LIMITS")).thenReturn(limits)
         whenever(stats.keys).thenReturn(mutableSetOf())
         val studyId = UUID.randomUUID()
-        doAnswer { throw IllegalStateException("cache unavailable") }.whenever(studies).evict(studyId)
+        doAnswer { error("cache unavailable") }.whenever(studies).evict(studyId)
 
         val result = HazelcastParticipantStatsCache(resolver, hazelcast).quarantineStudy(studyId) { "committed" }
 
@@ -104,7 +104,7 @@ class ParticipantStatsCacheTest {
         val participantId = "participant-a"
         val key = ParticipantKey(studyId, participantId)
         val cache = cache(deletionBlocked = false)
-        doAnswer { throw IllegalStateException("injected cache failure") }
+        doAnswer { error("injected cache failure") }
             .whenever(participantStats)
             .evict(key)
 
@@ -158,7 +158,7 @@ class ParticipantStatsCacheTest {
         val secondKey = ParticipantKey(studyId, "participant-b")
         val otherKey = ParticipantKey(UUID.randomUUID(), "participant-c")
         whenever(participantStats.keys).thenReturn(linkedSetOf(firstKey, secondKey, otherKey))
-        doAnswer { throw IllegalStateException("injected cache failure") }
+        doAnswer { error("injected cache failure") }
             .whenever(participantStats)
             .evict(firstKey)
         val cache = cache(deletionBlocked = false)
@@ -398,7 +398,7 @@ class ParticipantStatsCacheTest {
 
         assertThrows(IllegalStateException::class.java) {
             cache.quarantineParticipant(studyId, participantId) {
-                throw IllegalStateException("injected transaction failure")
+                error("injected transaction failure")
             }
         }
 

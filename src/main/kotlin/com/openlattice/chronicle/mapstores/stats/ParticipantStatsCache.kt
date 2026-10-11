@@ -83,8 +83,14 @@ public open class HazelcastParticipantStatsCache internal constructor(
         }
 
         val owner = storage?.let(PinnedPlatformConnection::owningConnection)
-        val cached = if (owner == null) participantStats[key]
-            else ParticipantStatsMapstore(checkNotNull(storage)).readUsing(owner, key)
+        val cached = if (owner != null) ParticipantStatsMapstore(checkNotNull(storage)).readUsing(owner, key)
+            else {
+                val pending = participantStats[key]
+                // An upload commits its SQL merge before asynchronous cache eviction finishes.
+                // Include that durable value while retaining pending write-behind dates.
+                val persisted = storage?.let { ParticipantStatsMapstore(it).load(key) }
+                if (persisted == null) pending else mergeParticipantStats(pending, persisted)
+            }
         cached ?: return null
         return if (deletionBlocked(key)) {
             evictWithoutOwnerWait(key)
@@ -287,7 +293,7 @@ internal class ParticipantStatsDeletionGuard(
                       AND (
                           operation.mode = 'STUDY_ERASURE'
                           OR operation.participant_id = ?
-                          OR operation.participant_block_token = md5(? || ':' || ?)
+                          OR operation.participant_block_token = chronicle_participant_block_token(?::uuid, ?::text)
                       )
                 )
         """

@@ -24,8 +24,8 @@ public class InternalHealthController(
     private var probe: java.util.concurrent.Future<Boolean>? = null
 
     @Synchronized
-    private fun startProbe(): java.util.concurrent.Future<Boolean>? {
-        if (probe?.isDone == false) return null
+    private fun startProbe(): java.util.concurrent.Future<Boolean> {
+        if (probe?.isDone == false) return checkNotNull(probe)
         return probeExecutor.submit<Boolean> {
             storageResolver.getPlatformStorage().connection.use { it.isValid(DATABASE_VALIDATION_TIMEOUT_SECONDS) }
         }.also { probe = it }
@@ -50,8 +50,8 @@ public class InternalHealthController(
             }
             // A stuck checkout keeps the sole probe occupied; requests never spawn replacements.
             // The worker closes a connection even if checkout completes after the response deadline.
-            val databaseReady = startProbe()?.get(DATABASE_VALIDATION_TIMEOUT_SECONDS.toLong(),
-                java.util.concurrent.TimeUnit.SECONDS) ?: false
+            val databaseReady = startProbe().get(DATABASE_VALIDATION_TIMEOUT_SECONDS.toLong(),
+                java.util.concurrent.TimeUnit.SECONDS)
             if (databaseReady) {
                 ResponseEntity.noContent().build()
             } else {

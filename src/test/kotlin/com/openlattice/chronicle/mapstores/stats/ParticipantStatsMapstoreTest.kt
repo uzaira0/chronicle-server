@@ -88,12 +88,30 @@ class ParticipantStatsMapstoreTest {
         whenever(statement.execute()).thenThrow(SQLException("connection lost", "08006"))
         val mapstore = TestParticipantStatsMapstore(dataSource)
 
-        assertThrows(IllegalStateException::class.java) {
+        val failure = assertThrows(IllegalStateException::class.java) {
             mapstore.store(key, value)
         }
 
+        org.junit.Assert.assertFalse(failure.message.orEmpty().contains(key.participantId))
+        org.junit.Assert.assertFalse(key.toString().contains(key.participantId))
+
         verify(dataSource, times(1)).connection
         verify(statement).execute()
+    }
+
+    @Test
+    fun batchFailureDoesNotExposeParticipantKey() {
+        val dataSource = mock<HikariDataSource>()
+        val connection = mock<Connection>()
+        val statement = mock<PreparedStatement>()
+        val key = ParticipantKey(UUID.randomUUID(), "private-participant-sentinel")
+        whenever(dataSource.connection).thenReturn(connection)
+        whenever(connection.prepareStatement(any())).thenReturn(statement)
+        whenever(statement.executeBatch()).thenThrow(SQLException("connection lost", "08006"))
+        val failure = assertThrows(IllegalStateException::class.java) {
+            TestParticipantStatsMapstore(dataSource).storeAll(mapOf(key to ParticipantStats(key.studyId, key.participantId)))
+        }
+        org.junit.Assert.assertFalse(failure.message.orEmpty().contains(key.participantId))
     }
 
     @Test

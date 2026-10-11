@@ -136,8 +136,7 @@ class SurveyControllerTest {
     // ---------------------------------------------------------------------------
     // GET app-usage survey data — /survey/{studyId}/participant/{participantId}/app-usage
     //
-    // Not ACL-gated: this endpoint is participant-facing (the participant reviews
-    // their own usage), so it never calls authorizationManager.checkIfHasPermissions.
+    // Researchers need study READ; participants use their verified form capability.
     // The controller does NOT return the service result unchanged — it filters out
     // packages whose aggregate usage is at/below the threshold. We pin both the
     // delegation (getAndroidAppUsageData + computeAggregateUsage) and the actual
@@ -163,14 +162,14 @@ class SurveyControllerTest {
             .thenReturn(mapOf("keep.me" to 100.0, "drop.me" to 5.0))
 
         TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
 
         val result = controller.getAppUsageSurveyData(studyId, participantId, start, end, 10)
 
         // delegation
         verify(surveysService).getAndroidAppUsageData(studyId, participantId, start, end)
         verify(surveysService).computeAggregateUsage(start, appUsageData)
-        // not acl-gated
-        verify(authorizationManager, never()).checkIfHasPermissions(kAny(), kAny(), kAny())
+        verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
         // threshold-filtered outcome: only the above-threshold package survives
         assertEquals(1, result.size)
         assertTrue(result.contains(keep))
@@ -180,7 +179,7 @@ class SurveyControllerTest {
     // ---------------------------------------------------------------------------
     // GET device-usage survey data — /survey/{studyId}/participant/{participantId}/device
     //
-    // Also participant-facing (not ACL-gated). The controller keeps only packages
+    // Researchers need study READ. The controller keeps only packages
     // whose usage exceeds the threshold (it removes packages with usage <= threshold).
     // ---------------------------------------------------------------------------
     @Test
@@ -201,11 +200,12 @@ class SurveyControllerTest {
             .thenReturn(deviceUsage)
 
         TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
 
         val result = controller.getDeviceUsageSurveyData(studyId, participantId, start, end, 10)
 
         verify(surveysService).getDeviceUsageData(studyId, participantId, start, end)
-        verify(authorizationManager, never()).checkIfHasPermissions(kAny(), kAny(), kAny())
+        verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
         // only the above-threshold package survives
         assertEquals(setOf("keep.me"), result.usageByPackage.keys)
         assertEquals(setOf("keep.me"), result.categoryByPackage.keys)
@@ -327,6 +327,18 @@ class SurveyControllerTest {
         assertSame(expected, result)
         verify(downloadService).getQuestionnaireResponses(studyId, questionnaireId)
         verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
+    }
+
+    @Test
+    fun testUsageReadWithoutCapabilityRequiresStudyRead() {
+        val studyId = UUID.randomUUID()
+        val start = OffsetDateTime.parse("2026-10-01T00:00:00Z")
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        TestSecurityUtils.setupSecurityContext()
+        assertThrows(ForbiddenException::class.java) {
+            controller.getAppUsageSurveyData(studyId, "participant-1", start, start.plusDays(1), 10)
+        }
+        Mockito.verifyNoInteractions(surveysService)
     }
 
 }

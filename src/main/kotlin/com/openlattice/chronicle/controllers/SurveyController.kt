@@ -182,6 +182,20 @@ public open class SurveyController @Inject constructor(
         }
     }
 
+    private fun resolveUsageSurveyStudy(
+        studyId: UUID, participantId: String, startDateTime: OffsetDateTime, endDateTime: OffsetDateTime,
+    ): UUID {
+        val realStudyId = checkNotNull(studyService.getStudyId(studyId)) { "invalid study id" }
+        if (ParticipantFormAccessFilter.currentScope() == null) ensureReadAccess(AclKey(realStudyId))
+        requireKnownParticipant(realStudyId, participantId)
+        SynchronousExportLimits.validate(setOf(participantId), startDateTime, endDateTime)
+        return realStudyId
+    }
+
+    private fun appUsageThreshold(studyId: UUID, thresholdInSeconds: Int?): Int =
+        thresholdInSeconds ?: (studyService.getStudySettings(studyId)
+            .getOrDefault(StudySettingType.Survey, SurveySettings()) as SurveySettings).appUsageThresholdInSeconds
+
     @Timed
     @GetMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + DEVICE_USAGE_PATH],
@@ -194,16 +208,11 @@ public open class SurveyController @Inject constructor(
         @RequestParam(value = END_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) endDateTime: OffsetDateTime,
         @RequestParam(THRESHOLD, required = false) thresholdInSeconds: Int?,
     ): DeviceUsage {
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        requireKnownParticipant(realStudyId, participantId)
-        SynchronousExportLimits.validate(setOf(participantId), startDateTime, endDateTime)
+        val realStudyId = resolveUsageSurveyStudy(studyId, participantId, startDateTime, endDateTime)
         // Participant format validation prevents injection; data query is scoped to (studyId, participantId)
         val deviceUsageData = surveysService.getDeviceUsageData(realStudyId, participantId, startDateTime, endDateTime)
 
-        val threshold = thresholdInSeconds ?: (studyService
-            .getStudySettings(realStudyId)
-            .getOrDefault(StudySettingType.Survey, SurveySettings()) as SurveySettings).appUsageThresholdInSeconds
+        val threshold = appUsageThreshold(realStudyId, thresholdInSeconds)
         val packagesToKeep = deviceUsageData.usageByPackage.filterValues { it <= threshold }.keys
         val usageByPackage = deviceUsageData.usageByPackage - packagesToKeep
         auditService.logWithContext {
@@ -234,17 +243,12 @@ public open class SurveyController @Inject constructor(
         @RequestParam(value = END_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) endDateTime: OffsetDateTime,
         @RequestParam(THRESHOLD, required = false) thresholdInSeconds: Int?,
     ): List<AppUsage> {
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        requireKnownParticipant(realStudyId, participantId)
-        SynchronousExportLimits.validate(setOf(participantId), startDateTime, endDateTime)
+        val realStudyId = resolveUsageSurveyStudy(studyId, participantId, startDateTime, endDateTime)
         // Participant format validation prevents injection; data query is scoped to (studyId, participantId)
         val appUsageData = surveysService.getAndroidAppUsageData(realStudyId, participantId, startDateTime, endDateTime)
         val aggregate = surveysService.computeAggregateUsage(startDateTime, appUsageData)
 
-        val threshold = thresholdInSeconds ?: (studyService
-            .getStudySettings(realStudyId)
-            .getOrDefault(StudySettingType.Survey, SurveySettings()) as SurveySettings).appUsageThresholdInSeconds
+        val threshold = appUsageThreshold(realStudyId, thresholdInSeconds)
 
         //Only keep packages that exceed threshold usage time for query.
         val packagesToKeep = aggregate.filterValues { it > threshold }.keys

@@ -57,7 +57,9 @@ class ParticipantStatsOwnedTransactionTest {
             val study = UUID.randomUUID()
             val key = ParticipantKey(study, "single-slot-stats")
             val first = ParticipantStats(study, key.participantId, androidUniqueDates = setOf(LocalDate.parse("2026-09-01")))
-            val next = first.copy(androidUniqueDates = setOf(LocalDate.parse("2026-09-02")))
+            val capturedAt = java.time.OffsetDateTime.parse("2026-09-02T12:00:00Z")
+            val next = first.copy(androidUniqueDates = setOf(capturedAt.toLocalDate()),
+                androidFirstDate = capturedAt, androidLastDate = capturedAt)
             postgres.createConnection("").use { connection -> connection.createStatement().use {
                 it.execute("INSERT INTO studies (study_id, title) VALUES ('$study', 'owned stats')")
             } }
@@ -78,8 +80,15 @@ class ParticipantStatsOwnedTransactionTest {
                 }
                 mapstore.store(key, first)
                 assertEquals(first.androidUniqueDates + next.androidUniqueDates, mapstore.load(key)!!.androidUniqueDates)
+                Mockito.verify(map, Mockito.never()).get(any())
+                whenever(map[any()]).thenReturn(first)
+                // Model the enrollment-only cache value remaining until after-commit eviction runs.
+                val visible = cache.get(study, key.participantId)!!
+                assertEquals(capturedAt.toInstant(), visible.androidFirstDate!!.toInstant())
+                assertEquals(capturedAt.toInstant(), visible.androidLastDate!!.toInstant())
+                assertEquals(first.androidUniqueDates + next.androidUniqueDates, visible.androidUniqueDates)
             }
-            Mockito.verify(map, Mockito.never()).get(any())
+            Mockito.verify(map).get(any())
             Mockito.verify(studies, Mockito.never()).executeOnKey(any(), any<StudyStorageRead>())
         }
         } finally { executor.shutdownNow() }

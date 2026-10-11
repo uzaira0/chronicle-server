@@ -91,15 +91,15 @@ public open class ParticipantFormAccessController(
         }
 
         val accessCodeResponse = try {
-            participantFormAccessService.createAccessCode(
-                studyId = studyId,
-                participantId = participantId,
-                formKind = request.formKind,
-                resourceId = request.resourceId,
-                logicalDate = request.logicalDate,
-                requestedExpiresAt = request.expiresAt,
-                issuerType = issuerType,
-                issuedBy = issuedBy,
+            val issue = if (issuerType == ParticipantAccessCodeIssuerType.RESEARCHER &&
+                request.formKind == ParticipantFormKind.ENROLLMENT) {
+                participantFormAccessService::createReplacingAccessCode
+            } else {
+                participantFormAccessService::createAccessCode
+            }
+            issue(
+                studyId, participantId, request.formKind, request.resourceId, request.logicalDate,
+                request.expiresAt, issuerType, issuedBy,
             )
         } catch (exception: IllegalArgumentException) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, exception.message, exception)

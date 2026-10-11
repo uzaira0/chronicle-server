@@ -3,8 +3,10 @@ package com.openlattice.chronicle.services.anonymization
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.anonymization.AnonymizationConfig
 import com.openlattice.chronicle.anonymization.DateGeneralization
+import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.storage.StorageResolver
-import org.slf4j.LoggerFactory
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
 import java.security.SecureRandom
 import java.time.OffsetDateTime
 import java.time.temporal.ChronoUnit
@@ -16,18 +18,10 @@ public open class AnonymizationService(
     private val storageResolver: StorageResolver
 ) {
     internal companion object {
-        private val logger = LoggerFactory.getLogger(AnonymizationService::class.java)
         private val mapper = ObjectMappers.newJsonMapper()
 
         private const val GET_CONFIG_SQL = """
             SELECT config FROM study_anonymization_config WHERE study_id = ?
-        """
-
-        private const val UPSERT_CONFIG_SQL = """
-            INSERT INTO study_anonymization_config (study_id, config, updated_at)
-            VALUES (?, ?::jsonb, now())
-            ON CONFLICT (study_id) DO UPDATE
-                SET config = EXCLUDED.config, updated_at = now()
         """
 
         private const val GET_PSEUDONYM_SQL = """
@@ -69,16 +63,9 @@ public open class AnonymizationService(
         }
     }
 
+    @Suppress("UnusedParameter")
     public fun updateConfig(studyId: UUID, config: AnonymizationConfig): AnonymizationConfig {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(UPSERT_CONFIG_SQL).use { ps ->
-                ps.setObject(1, studyId)
-                ps.setString(2, mapper.writeValueAsString(config))
-                ps.executeUpdate()
-            }
-        }
-        logger.info("Anonymization config updated for study {}", studyId)
-        return config
+        throw ResponseStatusException(HttpStatus.NOT_IMPLEMENTED, Messages.get("error.anonymization.notImplemented"))
     }
 
     public fun pseudonymize(studyId: UUID, participantId: String): String {

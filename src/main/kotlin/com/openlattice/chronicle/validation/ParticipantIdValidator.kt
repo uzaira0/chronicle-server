@@ -6,6 +6,10 @@ import org.springframework.web.server.ResponseStatusException
 
 private val EMAIL_PATTERN = Regex(".*@.*\\..*")
 private val SSN_PATTERN = Regex("\\d{3}-\\d{2}-\\d{4}")
+private val NATIONAL_ID_PATTERN = Regex("(?:[0-9]{1,2}\\.[0-9]{3}\\.[0-9]{3}-?|[0-9]{7,8}-)([0-9kK])")
+private const val RUT_MODULUS = 11
+private const val RUT_MIN_WEIGHT = 2
+private const val RUT_MAX_WEIGHT = 7
 private val PHONE_PATTERN = Regex("^\\+?\\d[\\d\\s-]{8,}$")
 private val WHITESPACE_PATTERN = Regex("\\s+")
 private const val MAX_PARTICIPANT_ID_LENGTH = 255
@@ -26,11 +30,27 @@ public fun validateParticipantIdNotPii(participantId: String) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.participantId.email"))
         SSN_PATTERN.matches(trimmed) ->
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.participantId.ssn"))
+        isNationalId(trimmed) ->
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.participantId.nationalId"))
         PHONE_PATTERN.matches(trimmed) ->
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.participantId.phone"))
         looksLikeFullName(trimmed) ->
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.participantId.name"))
     }
+}
+
+private fun isNationalId(value: String): Boolean {
+    val match = NATIONAL_ID_PATTERN.matchEntire(value) ?: return false
+    val digits = value.dropLast(1).filter { it in '0'..'9' }
+    val sum = digits.reversed().mapIndexed { index, digit ->
+        digit.digitToInt() * (RUT_MIN_WEIGHT + index % (RUT_MAX_WEIGHT - RUT_MIN_WEIGHT + 1))
+    }.sum()
+    val checkDigit = when (val remainder = RUT_MODULUS - sum % RUT_MODULUS) {
+        RUT_MODULUS -> '0'
+        RUT_MODULUS - 1 -> 'K'
+        else -> remainder.digitToChar()
+    }
+    return match.groupValues[1].uppercase() == checkDigit.toString()
 }
 
 private fun looksLikeFullName(value: String): Boolean {

@@ -21,10 +21,20 @@ import org.springframework.web.server.ResponseStatusException
 class ParticipantIdValidatorPropertyTest {
 
     @Test
-    fun `alphanumeric IDs within length limit never throw`() { runBlocking {
+    fun `RUT national ID formats with check digit are rejected`() {
+        listOf("12.345.678-5", "12345678-5", "10.000.013-K", "10000013-k").forEach { id ->
+            val error = org.junit.Assert.assertThrows(ResponseStatusException::class.java) {
+                validateParticipantIdNotPii(id)
+            }
+            org.junit.Assert.assertEquals("Participant ID must not contain a national ID", error.reason)
+        }
+    }
+
+    @Test
+    fun `prefixed alphanumeric IDs within length limit never throw`() { runBlocking {
         forAll(Arb.string(1..200, Codepoint.alphanumeric())) { id ->
             try {
-                validateParticipantIdNotPii(id)
+                validateParticipantIdNotPii("p$id")
                 true
             } catch (_: ResponseStatusException) {
                 false
@@ -126,4 +136,11 @@ class ParticipantIdValidatorPropertyTest {
             result1.isSuccess == result2.isSuccess
         }
     } }
+    @Test
+    fun `short numeric and unformatted identifiers are not national IDs`() {
+        listOf("20261008", "10000001", "1234567K", "12.345.678-K", "10000013-X").forEach {
+            validateParticipantIdNotPii(it)
+        }
+    }
+
 }
