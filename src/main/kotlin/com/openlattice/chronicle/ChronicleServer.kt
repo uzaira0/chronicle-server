@@ -21,7 +21,6 @@ import com.openlattice.ioc.providers.LateInitProvidersPod
 import com.geekbeast.jdbc.JdbcPod
 import com.geekbeast.postgres.PostgresPod
 import com.geekbeast.pods.TaskSchedulerPod
-import com.geekbeast.rhizome.configuration.ConfigurationConstants
 import com.openlattice.chronicle.constants.ChronicleProfiles
 import com.openlattice.chronicle.hazelcast.pods.HazelcastQueuePod
 import com.openlattice.chronicle.pods.servlet.ChronicleServerSecurityPod
@@ -72,8 +71,7 @@ public open class ChronicleServer(vararg pods: Class<*>) : BaseRhizomeServer(
             RLSSecurityPod::class.java,
         )
 
-        private val LOCAL_TEST_PROFILES = arrayOf(
-            ConfigurationConstants.Profiles.LOCAL_CONFIGURATION_PROFILE,
+        private val DEFAULT_PROFILES = arrayOf(
             PostgresDataTables.POSTGRES_DATA_ENVIRONMENT,
             PostgresPod.PROFILE,
             ChronicleProfiles.MEDIA_LOCAL_PROFILE)
@@ -83,7 +81,7 @@ public open class ChronicleServer(vararg pods: Class<*>) : BaseRhizomeServer(
         @JvmStatic
         public fun main(args: Array<String>) {
             val chronicleServer = ChronicleServer()
-            chronicleServer.start(*LOCAL_TEST_PROFILES)
+            chronicleServer.start(*(DEFAULT_PROFILES + args))
         }
 
         init {

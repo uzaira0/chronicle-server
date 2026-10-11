@@ -1,10 +1,8 @@
-enable-persistence:  false
-session-clustering-enabled: false
+enable-persistence:  true
 
 hazelcast:
   server: true
   group: "local"
-  password: "trellis"
   cp-member-count: 0
   seed-nodes:
     - "localhost"
@@ -13,7 +11,6 @@ hazelcast-clients:
   IDS:
     server: false
     group: "local"
-    password: "test"
     cp-member-count: 0
     seed-nodes:
       - "127.0.0.1:5710"

@@ -1,6 +1,1 @@
-smtpHost: localhost
-smtpPort: 587
-username: user
-password: pwd
-defaultFromEmail: ""
-enabled: false
+{}
