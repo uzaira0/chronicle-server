@@ -62,7 +62,7 @@ public open class AmbientAudioUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} ambient audio events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} ambient audio events ",
             level = Level.INFO,
             logger = logger,
         ).use {

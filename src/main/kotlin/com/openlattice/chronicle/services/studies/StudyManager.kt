@@ -58,12 +58,12 @@ public interface StudyManager {
     public fun getStudyPhoneNumber(studyId: UUID): String?
     public fun updateParticipantAnnotations(studyId: UUID, participantId: String, annotations: Map<String, Any?>)
     public fun updateParticipationStatus(studyId: UUID, participantId: String, participationStatus: ParticipationStatus)
+    public fun pauseEnrolledParticipants(studyId: UUID): Int
     public fun countStudyParticipants(connection: Connection, studyIds: Set<UUID>): Map<UUID, Long>
     public fun countStudyParticipants(studyId: UUID): Long
     public fun countStudyParticipants(studyIds: Set<UUID>): Map<UUID, Long>
 
     public fun updateLastDevicePing(studyId: UUID, participantId: String, sourceDevice: SourceDevice)
     public fun updateLastDevicePing(studyId: UUID, participantId: String)
-    public fun expireStudies(studyIds: Set<UUID>)
     public fun getAllStudyIds(): Iterable<UUID>
 }

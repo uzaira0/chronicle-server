@@ -90,6 +90,115 @@ class CollectionHaltWriteAtomicityTest {
     }
 
     @Test
+    fun pausedAndCompletedEnrollmentAcceptsOnlyDatedCapturesBeforeItsCutoff() {
+        for (status in listOf("PAUSED", "COLLECTION_COMPLETED")) {
+            val studyId = newStudy(required = false, settingsVersion = 1)
+            val device = UUID.randomUUID()
+            val cutoff = postgres.createConnection("").use { connection ->
+                connection.prepareStatement(
+                    "UPDATE study_participants SET participation_status = ? WHERE study_id = ? RETURNING capture_cutoff").use {
+                    it.setString(1, status); it.setObject(2, studyId)
+                    it.executeQuery().use { rows -> assertTrue(rows.next()); rows.getObject(1, OffsetDateTime::class.java).toInstant() }
+                }
+            }
+            val queued = UUID.randomUUID()
+            service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, device, latestCapturedAt = cutoff.minusSeconds(1)) { insertProbe(queued,
+                studyId) }
+            assertTrue(probeExists(queued))
+            for (capturedAt in listOf(null, cutoff, cutoff.plusSeconds(1))) {
+                val fresh = UUID.randomUUID()
+                assertThrows(CollectionHaltedException::class.java) {
+                    service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, device, latestCapturedAt = capturedAt) { insertProbe(fresh, studyId) }
+                }
+                assertFalse(probeExists(fresh))
+            }
+        }
+    }
+
+    @Test
+    fun historicalVersionCannotAuthorizePostRevisionCaptures() {
+        val studyId = newStudy(required = false, settingsVersion = 1)
+        val deviceId = UUID.randomUUID()
+        val keyId = UUID.randomUUID()
+        val modules = setOf(CollectionModuleId.BATTERY_TELEMETRY)
+        val supersededAt = postgres.createConnection("").use { connection ->
+            connection.prepareStatement("""
+                INSERT INTO api_keys (key_id, study_id, key_hash, key_prefix, scope, created_by,
+                    expires_at, participant_id, device_id)
+                VALUES (?, ?, ?, 'test', 'WRITE', 'atomicity', now() + interval '1 day', ?, ?)
+            """.trimIndent()).use { statement ->
+                statement.setObject(1, keyId)
+                statement.setObject(2, studyId)
+                statement.setString(3, keyId.toString())
+                statement.setString(4, PARTICIPANT_ID)
+                statement.setObject(5, deviceId)
+                statement.executeUpdate()
+            }
+            connection.prepareStatement("""
+                INSERT INTO participant_collection_acknowledgment (id, study_id, participant_id,
+                    source_device_id, acknowledged_modules, acknowledged_at, settings_version,
+                    evidence_access_code_id, evidence_api_key_id)
+                VALUES (?, ?, ?, ?, ?::jsonb, now(), 1, ?, ?)
+            """.trimIndent()).use { statement ->
+                statement.setObject(1, UUID.randomUUID())
+                statement.setObject(2, studyId)
+                statement.setString(3, PARTICIPANT_ID)
+                statement.setString(4, deviceId.toString())
+                statement.setString(5, mapper.writeValueAsString(modules.map { it.id }))
+                statement.setObject(6, UUID.randomUUID())
+                statement.setObject(7, keyId)
+                statement.executeUpdate()
+            }
+            updateCollectionSettings(connection, studyId, required = true, settingsVersion = 2)
+            connection.prepareStatement("SELECT issued_at FROM data_collection_settings_revisions WHERE study_id = ? AND settings_version = 2")
+                .use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        rows.getObject(1, OffsetDateTime::class.java).toInstant()
+                    }
+                }
+        }
+        val oldProbe = UUID.randomUUID()
+        service.withCollectionUploadRecheck(studyId, PARTICIPANT_ID, deviceId, modules, 1, false,
+            supersededAt.minusSeconds(1)) { insertProbe(oldProbe, studyId) }
+        assertTrue("The pre-revision offline queue still flushes", probeExists(oldProbe))
+        for (capturedAt in listOf(null, supersededAt, supersededAt.plusSeconds(1))) {
+            val freshProbe = UUID.randomUUID()
+            assertThrows(CollectionHaltedException::class.java) {
+                service.withCollectionUploadRecheck(studyId, PARTICIPANT_ID, deviceId, modules, 1, false,
+                    capturedAt) { insertProbe(freshProbe, studyId) }
+            }
+            assertFalse("The old version must not authorize fresh or undated data", probeExists(freshProbe))
+        }
+        postgres.createConnection("").use { connection ->
+            updateCollectionSettings(connection, studyId, required = false, settingsVersion = 3, enabled = false)
+        }
+        val legacyProbe = UUID.randomUUID()
+        service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, deviceId, modules,
+            supersededAt.minusSeconds(1)) { insertProbe(legacyProbe, studyId) }
+        assertTrue("Legacy queues also preserve pre-revision captures", probeExists(legacyProbe))
+        assertThrows(CollectionHaltedException::class.java) {
+            service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, deviceId, modules,
+                supersededAt.plusSeconds(1)) { insertProbe(UUID.randomUUID(), studyId) }
+        }
+    }
+
+    @Test
+    fun `an optional module without acceptance cannot commit a write`() {
+        val studyId = newStudy(required = false, settingsVersion = 1)
+        val deviceId = UUID.randomUUID()
+        val probeId = UUID.randomUUID()
+        assertFalse(service.isCollectionHalted(studyId, PARTICIPANT_ID, deviceId))
+        assertThrows(CollectionHaltedException::class.java) {
+            service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, deviceId, setOf(CollectionModuleId.BATTERY_TELEMETRY)) {
+                insertProbe(probeId, studyId)
+            }
+        }
+        assertFalse(probeExists(probeId))
+    }
+
+    @Test
     fun `halt recorded after the gate and before the write rejects the write`() {
         val studyId = newStudy(required = false, settingsVersion = 1)
         val deviceId = UUID.randomUUID()
@@ -247,6 +356,10 @@ class CollectionHaltWriteAtomicityTest {
                 statement.setString(2, settingsJson(required, settingsVersion))
                 assertEquals(1, statement.executeUpdate())
             }
+            connection.prepareStatement(
+                "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, ?, ?, 'ENROLLED')").use {
+                it.setObject(1, studyId); it.setString(2, PARTICIPANT_ID); it.setObject(3, UUID.randomUUID()); it.executeUpdate()
+            }
         }
         return studyId
     }
@@ -263,21 +376,22 @@ class CollectionHaltWriteAtomicityTest {
         studyId: UUID,
         required: Boolean,
         settingsVersion: Int,
+        enabled: Boolean = true,
     ) {
         connection.prepareStatement("UPDATE studies SET settings = ?::jsonb WHERE study_id = ?").use { statement ->
-            statement.setString(1, settingsJson(required, settingsVersion))
+            statement.setString(1, settingsJson(required, settingsVersion, enabled))
             statement.setObject(2, studyId)
             assertEquals(1, statement.executeUpdate())
         }
     }
 
-    private fun settingsJson(required: Boolean, settingsVersion: Int): String = mapper.writeValueAsString(
+    private fun settingsJson(required: Boolean, settingsVersion: Int, enabled: Boolean = true): String = mapper.writeValueAsString(
         StudySettings(
             mapOf(
                 StudySettingType.DataCollection to AndroidDataCollectionSetting(
                     modules = linkedMapOf(
                         CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(
-                            enabled = true,
+                            enabled = enabled,
                             required = required,
                         ),
                     ),
@@ -312,4 +426,43 @@ class CollectionHaltWriteAtomicityTest {
             statement.executeQuery().use { resultSet -> resultSet.next() }
         }
     }
+    @Test
+    fun archiveRejectsAnUploadAndAnExistingFormSubmission() {
+        com.openlattice.chronicle.controllers.TestSecurityUtils.setupSecurityContext()
+        try {
+            val studyId = newStudy(required = false, settingsVersion = 1)
+            val forms = com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService(storageResolver)
+            val code = forms.createAccessCode(studyId, PARTICIPANT_ID,
+                com.openlattice.chronicle.participantaccess.ParticipantFormKind.TIME_USE_DIARY, null, null, null,
+                com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType.RESEARCHER, "archive-test")
+            val session = checkNotNull(forms.exchangeAccessCode(code.accessCode))
+            val scope = checkNotNull(forms.resolveSession(session.rawSessionToken, session.response.csrfToken, true))
+            val ids = Mockito.mock(com.openlattice.chronicle.ids.HazelcastIdGenerationService::class.java)
+            Mockito.`when`(ids.getNextId()).thenReturn(UUID.randomUUID())
+            StudyLifecycleService(storageResolver, Mockito.mock(StudyService::class.java),
+                Mockito.mock(com.openlattice.chronicle.authorization.AuthorizationManager::class.java), ids,
+                Mockito.mock(com.openlattice.chronicle.auditing.AuditingManager::class.java),
+                Mockito.mock(com.openlattice.chronicle.services.delete.DataDeletionOrchestrator::class.java),
+                Mockito.mock(com.openlattice.chronicle.services.webhooks.WebhookService::class.java),
+                Mockito.mock(StudyLimitsManager::class.java))
+                .archiveStudy(studyId, "archive-test")
+            val probe = UUID.randomUUID()
+            org.junit.Assert.assertThrows(CollectionHaltedException::class.java) {
+                service.withCollectionHaltRecheck(studyId, PARTICIPANT_ID, UUID.randomUUID()) { insertProbe(probe, studyId) }
+            }
+            val receipts = com.openlattice.chronicle.services.participantaccess.ParticipantFormSubmissionReceiptService(storageResolver, mapper)
+            val error = org.junit.Assert.assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+                receipts.executeWithSubmissionId(scope, scope.formKind, "archived", UUID.randomUUID(), emptyList<String>()) {
+                    insertProbe(probe, studyId)
+                    probe
+                }
+            }
+            assertEquals(org.springframework.http.HttpStatus.FORBIDDEN, error.statusCode)
+            assertFalse(probeExists(probe))
+            org.junit.Assert.assertNull(forms.resolveSession(session.rawSessionToken, session.response.csrfToken, true))
+        } finally {
+            com.openlattice.chronicle.controllers.TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
 }

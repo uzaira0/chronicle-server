@@ -9,7 +9,6 @@ import com.openlattice.chronicle.sensorkit.SensorType
 import com.openlattice.chronicle.sensorkit.SensorDataSample
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
-import com.openlattice.chronicle.storage.DeletionStudyFence
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOADED_AT
@@ -62,40 +61,29 @@ public open class SensorDataUploadService(
     ): Int {
         require(data.size <= 10_000) { "Sensor data upload batch too large: ${data.size} samples (max 10,000)" }
         StopWatch(
-            log = "Writing ${data.size} entites to Postgres upload buffer for studyId = $studyId, participantId = $participantId ",
+            log = "Writing ${data.size} entites to Postgres upload buffer  ",
             level = Level.INFO,
             logger = logger,
         ).use {
-            storageResolver.getPlatformStorage().connection.use { connection ->
-                val ownsTransaction = connection.autoCommit
-                if (ownsTransaction) connection.autoCommit = false
+            ParticipantPurgeCutoff.withPermittedBatch(
+                storageResolver.getPlatformStorage(), studyId, participantId, data,
+                { if (it.sensor == SensorType.deviceUsage) minOf(it.endDate, it.dateRecorded) else it.dateRecorded },
+                capturedAt = { if (it.sensor == SensorType.deviceUsage) it.endDate else it.dateRecorded },
+            ) { connection, retained ->
+                // Validate only admitted samples; old payloads are silently acknowledged and discarded.
                 try {
-                    // A guarded caller's pinned connection owns the transaction. Keep the erasure
-                    // predicate and queue write inside that transaction and its study fence.
-                    DeletionStudyFence.shared(connection, studyId)
-                    val cutoff = ParticipantPurgeCutoff.load(connection, studyId, participantId)
-                    val retained = data.filter { ParticipantPurgeCutoff.permits(cutoff, if (it.sensor == SensorType.deviceUsage) minOf(it.endDate, it.dateRecorded) else it.dateRecorded) }
-                    // Validate only admitted samples; old payloads are silently acknowledged and discarded.
-                    try {
-                        retained.forEach { mapSensorDataToStorage(listOf(it)) }
-                    } catch (invalidPayload: JacksonException) {
-                        throw IllegalArgumentException("Invalid iOS sensor payload", invalidPayload)
-                    } catch (invalidTimestamp: DateTimeException) {
-                        throw IllegalArgumentException("Invalid iOS sensor timestamp or timezone", invalidTimestamp)
-                    }
-                    if (retained.isNotEmpty()) connection.prepareStatement(INSERT_UPLOAD_BUFFER_SQL).use { ps ->
-                        ps.setObject(1, studyId)
-                        ps.setString(2, participantId)
-                        ps.setString(3, mapper.writeValueAsString(retained.map(::withoutDeviceName)))
-                        ps.setObject(4, deviceId)
-                        check(ps.executeUpdate() == 1) { "iOS sensor upload was not queued" }
-                    }
-                    if (ownsTransaction) connection.commit()
-                } catch (failure: Exception) {
-                    if (ownsTransaction) connection.rollback()
-                    throw failure
-                } finally {
-                    if (ownsTransaction) connection.autoCommit = true
+                    retained.forEach { mapSensorDataToStorage(listOf(it)) }
+                } catch (invalidPayload: JacksonException) {
+                    throw IllegalArgumentException("Invalid iOS sensor payload", invalidPayload)
+                } catch (invalidTimestamp: DateTimeException) {
+                    throw IllegalArgumentException("Invalid iOS sensor timestamp or timezone", invalidTimestamp)
+                }
+                if (retained.isNotEmpty()) connection.prepareStatement(INSERT_UPLOAD_BUFFER_SQL).use { ps ->
+                    ps.setObject(1, studyId)
+                    ps.setString(2, participantId)
+                    ps.setString(3, mapper.writeValueAsString(retained.map(::withoutDeviceName)))
+                    ps.setObject(4, deviceId)
+                    check(ps.executeUpdate() == 1) { "iOS sensor upload was not queued" }
                 }
             }
         }

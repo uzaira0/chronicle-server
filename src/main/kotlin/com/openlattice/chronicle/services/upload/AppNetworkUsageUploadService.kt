@@ -52,7 +52,7 @@ public open class AppNetworkUsageUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} app network usage events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} app network usage events ",
             level = Level.INFO,
             logger = logger,
         ).use {
@@ -68,7 +68,8 @@ public open class AppNetworkUsageUploadService(
         data: List<AndroidAppNetworkUsageEvent>,
     ) {
         ParticipantPurgeCutoff.withPermittedBatch(
-                storageResolver.getPlatformStorage(), studyId, participantId, data, { java.time.Instant.ofEpochMilli(it.bucketEndMillis).atOffset(java.time.ZoneOffset.UTC) },
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { java.time.Instant.ofEpochMilli(it.bucketEndMillis).atOffset(
+                    java.time.ZoneOffset.UTC) },
             ) { connection, retained ->
             connection.prepareStatement(INSERT_APP_NETWORK_USAGE_SQL).use { ps ->
                 retained.forEach { event ->

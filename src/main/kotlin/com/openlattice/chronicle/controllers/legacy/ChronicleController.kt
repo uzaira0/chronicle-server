@@ -9,7 +9,7 @@ import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.legacy.LegacyEdmResolver
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.services.upload.AppDataUploadManager
-import com.openlattice.chronicle.util.DeviceIdUtils
+import com.openlattice.chronicle.services.upload.uploadLegacy
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Size
 import org.springframework.http.MediaType
@@ -53,10 +53,7 @@ public open class ChronicleController : ChronicleApi {
             @PathVariable(ChronicleApi.DATASOURCE_ID) datasourceId: String,
             @Valid @RequestBody @Size(max = 10_000) data: List<SetMultimap<UUID, Any>>
     ): Int {
-        val realStudyId = studyManager.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, datasourceId)
-        return dataUploadManager.upload(realStudyId, participantId, deviceId, data)
+        return dataUploadManager.uploadLegacy(studyManager, studyId, participantId, datasourceId, data)
     }
 
     @Timed

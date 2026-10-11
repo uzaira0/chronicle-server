@@ -12,6 +12,7 @@ import com.openlattice.chronicle.services.legacy.LegacyEdmResolver
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.surveys.SurveysManager
 import com.openlattice.chronicle.services.upload.AppDataUploadManager
+import com.openlattice.chronicle.services.upload.uploadLegacy
 import com.openlattice.chronicle.sources.SourceDevice
 import com.openlattice.chronicle.util.DeviceIdUtils
 import jakarta.validation.Valid
@@ -139,10 +140,7 @@ public open class ChronicleControllerV2 : ChronicleApi {
             @PathVariable(ChronicleApi.DATASOURCE_ID) datasourceId: String,
             @Valid @RequestBody @Size(max = 10_000) data: List<SetMultimap<UUID, Any>>
     ): Int {
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, datasourceId)
-        return dataUploadManager.upload(realStudyId, participantId, deviceId, data)
+        return dataUploadManager.uploadLegacy(studyService, studyId, participantId, datasourceId, data)
     }
 
     @Timed

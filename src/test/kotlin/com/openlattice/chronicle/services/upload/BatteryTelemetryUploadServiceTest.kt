@@ -1,13 +1,20 @@
 package com.openlattice.chronicle.services.upload
 
 import com.openlattice.chronicle.collection.BatterySample
+import com.openlattice.chronicle.collection.BatteryChargingState
+import com.openlattice.chronicle.collection.IosBatterySample
 import com.openlattice.chronicle.storage.StorageResolver
+import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
+import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
+import java.time.OffsetDateTime
 import java.util.UUID
 
 /**
@@ -63,5 +70,40 @@ class BatteryTelemetryUploadServiceTest {
         } catch (_: Exception) {
             // Expected: storage is mocked, so the call fails after the size guard passes.
         }
+    }
+
+    @Test
+    fun iosSamplesBindScopeAndIdentityAlongsideNullableLowPowerMode() {
+        val dataSource = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val cutoff = Mockito.mock(PreparedStatement::class.java)
+        val insert = Mockito.mock(PreparedStatement::class.java)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenAnswer {
+            if ((it.arguments[0] as String).contains("INSERT INTO")) insert else cutoff
+        }
+        Mockito.`when`(cutoff.executeQuery()).thenReturn(Mockito.mock(ResultSet::class.java))
+        val studyId = UUID.randomUUID()
+        val timestamp = OffsetDateTime.parse("2026-10-01T12:00:00Z")
+        val sample = IosBatterySample(
+            UUID.randomUUID().toString(), timestamp, "America/Chicago", 42, BatteryChargingState.CHARGING, false,
+        )
+        val unknown = sample.copy(id = UUID.randomUUID().toString(), lowPowerMode = null)
+
+        assertEquals(2, service.uploadIos(studyId, "p1", listOf(sample, unknown)))
+
+        Mockito.verify(insert, Mockito.times(2)).setObject(1, studyId)
+        Mockito.verify(insert, Mockito.times(2)).setString(2, "p1")
+        Mockito.verify(insert).setString(3, sample.id)
+        Mockito.verify(insert).setString(3, unknown.id)
+        Mockito.verify(insert, Mockito.times(2)).setObject(4, timestamp)
+        Mockito.verify(insert, Mockito.times(2)).setString(5, sample.timezone)
+        Mockito.verify(insert, Mockito.times(2)).setInt(6, sample.levelPercent)
+        Mockito.verify(insert, Mockito.times(2)).setString(7, sample.chargingState.name)
+        Mockito.verify(insert).setObject(8, false)
+        Mockito.verify(insert).setObject(8, null)
+        Mockito.verify(insert, Mockito.times(2)).addBatch()
+        Mockito.verify(insert).executeBatch()
     }
 }

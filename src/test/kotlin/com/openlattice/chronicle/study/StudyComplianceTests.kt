@@ -10,13 +10,18 @@ class StudyComplianceTests : ChronicleServerTests() {
 
     @Test
     fun testGetComplianceViolationsNewStudy() {
-        val study = TestDataFactory.study()
+        val study = Study(title = "Default compliance settings", contact = "test@example.org")
         val studyId = clientUser1.studyApi.createStudy(study)
+        prepareUsageFixture(clientUser1, studyId)
         val participant = TestDataFactory.participant(ParticipationStatus.ENROLLED)
         clientUser1.studyApi.registerParticipant(studyId, participant)
 
+        val device = TestDataFactory.androidDevice()
+        enrollUsageFixture(studyId, participant.participantId, device.deviceId, device)
+
         val violations = clientUser1.studyComplianceApi.getStudyComplianceViolations(studyId)
-        Assert.assertNotNull("Violations map should not be null", violations)
+        Assert.assertTrue("An enrolled Android device without uploads violates the default upload policy",
+            violations.getValue(studyId).getValue(participant.participantId).any { it.reason == ViolationReason.NO_RECENT_DATA_UPLOADED })
     }
 
     @Test

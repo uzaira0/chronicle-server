@@ -135,4 +135,37 @@ class ParticipantFormAccessFilterTest {
         logicalDate = null,
         absoluteExpiresAt = OffsetDateTime.now().plusHours(1),
     )
+    @Test
+    fun encodedAndNoncanonicalAnonymousRoutesFailClosed() {
+        val encodedStudy = studyId.toString().replaceFirst("-", "%2D")
+        listOf(
+            surveyPath().replace(studyId.toString(), encodedStudy),
+            surveyPath() + "/",
+            surveyPath().replace("survey", "%73urvey"),
+            surveyPath().replace("/participant/", ";ignored=x/participant/"),
+            "/chronicle/v3/survey/$studyId/unknown-route",
+        ).forEach { path ->
+            val response = MockHttpServletResponse()
+            val chain = MockFilterChain()
+            filter.doFilter(request("GET", path), response, chain)
+            assertEquals(path, 401, response.status)
+            assertNull(path, chain.request)
+        }
+    }
+
+    @Test
+    fun encodedParticipantPathPreservesLiteralPlusAndValidCapability() {
+        val participant = "participant+test"
+        whenever(service.resolveSession(any(), eq(null), eq(false)))
+            .thenReturn(scope(ParticipantFormKind.APP_USAGE).copy(participantId = participant))
+        val request = request("GET", surveyPath().replace(participantId, "participant%2Btest")).apply {
+            setCookies(Cookie(ParticipantFormAccessFilter.SESSION_COOKIE, "session-token-value-that-is-long-enough"))
+        }
+        val response = MockHttpServletResponse()
+        val chain = MockFilterChain()
+        filter.doFilter(request, response, chain)
+        assertEquals(200, response.status)
+        assertSame(request, chain.request)
+    }
+
 }

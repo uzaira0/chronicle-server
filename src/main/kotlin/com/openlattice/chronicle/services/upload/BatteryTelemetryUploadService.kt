@@ -3,6 +3,7 @@ package com.openlattice.chronicle.services.upload
 import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.BatterySample
 import com.openlattice.chronicle.collection.IosBatterySample
+import com.openlattice.chronicle.postgres.bindCollectionEvent
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
@@ -71,7 +72,7 @@ public open class BatteryTelemetryUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} battery telemetry samples for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} battery telemetry samples ",
             level = Level.INFO,
             logger = logger,
         ).use {
@@ -80,11 +81,7 @@ public open class BatteryTelemetryUploadService(
             ) { connection, retained ->
                 connection.prepareStatement(INSERT_BATTERY_TELEMETRY_SQL).use { ps ->
                     retained.forEach { sample ->
-                        ps.setObject(1, studyId)
-                        ps.setString(2, participantId)
-                        ps.setString(3, sample.id)
-                        ps.setObject(4, sample.timestamp)
-                        ps.setString(5, sample.timezone)
+                        ps.bindCollectionEvent(studyId, participantId, sample.id, sample.timestamp, sample.timezone)
                         ps.setInt(6, sample.levelPercent)
                         ps.setString(7, sample.chargingState.name)
                         ps.setString(8, sample.plugType.name)
@@ -120,7 +117,7 @@ public open class BatteryTelemetryUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} iOS battery telemetry samples for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} iOS battery telemetry samples ",
             level = Level.INFO,
             logger = logger,
         ).use {
@@ -129,11 +126,7 @@ public open class BatteryTelemetryUploadService(
             ) { connection, retained ->
                 connection.prepareStatement(INSERT_IOS_BATTERY_TELEMETRY_SQL).use { ps ->
                     retained.forEach { sample ->
-                        ps.setObject(1, studyId)
-                        ps.setString(2, participantId)
-                        ps.setString(3, sample.id)
-                        ps.setObject(4, sample.timestamp)
-                        ps.setString(5, sample.timezone)
+                        ps.bindCollectionEvent(studyId, participantId, sample.id, sample.timestamp, sample.timezone)
                         ps.setInt(6, sample.levelPercent)
                         ps.setString(7, sample.chargingState.name)
                         ps.setObject(8, sample.lowPowerMode)

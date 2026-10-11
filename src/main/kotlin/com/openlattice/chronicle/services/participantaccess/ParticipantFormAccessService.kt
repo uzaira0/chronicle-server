@@ -367,7 +367,9 @@ public class ParticipantFormAccessService(
                     connection.rollback()
                     return@use null
                 }
-                if (accessCode.studyId != studyId) { connection.rollback(); return@use null }
+                if (accessCode.studyId != studyId ||
+                    !com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, studyId, accessCode.participantId)
+                ) { connection.rollback(); return@use null }
                 val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
                 val absoluteExpiry = minOf(accessCode.expiresAt, now.plus(SESSION_LIFETIME))
                 val idleExpiry = minOf(absoluteExpiry, now.plus(IDLE_LIFETIME))
@@ -632,8 +634,10 @@ public class ParticipantFormAccessService(
                         statement.setObject(5, now)
                     } ?: cookieSession.takeIf { !requireCsrf && it.idleExpiresAt.isAfter(now) }
                 }
-                session?.let {
-                    DeletionStudyFence.shared(connection, it.scope.studyId)
+                val activeSession = session?.takeIf {
+                    com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, it.scope.studyId, it.scope.participantId)
+                }
+                activeSession?.let {
                     connection.prepareStatement(
                         "UPDATE participant_form_sessions SET last_seen_at = ?, idle_expires_at = ? WHERE session_id = ?"
                     ).use { update ->
@@ -644,7 +648,7 @@ public class ParticipantFormAccessService(
                     }
                 }
                 connection.commit()
-                session?.scope
+                activeSession?.scope
             } catch (failure: Exception) {
                 connection.rollback()
                 throw failure

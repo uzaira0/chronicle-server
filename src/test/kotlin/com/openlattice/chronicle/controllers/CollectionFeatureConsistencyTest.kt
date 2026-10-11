@@ -3,14 +3,20 @@ package com.openlattice.chronicle.controllers
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionDefaults
 import com.openlattice.chronicle.collection.CollectionModuleId
+import com.openlattice.chronicle.services.studies.collectionSettingsForFeatures
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudyFeature
 import com.openlattice.chronicle.study.StudyUpdate
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.mockito.kotlin.*
+import org.mockito.kotlin.any
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -18,6 +24,20 @@ import java.util.UUID
 import com.geekbeast.mappers.mappers.ObjectMappers
 
 class CollectionFeatureConsistencyTest {
+    @Test fun sparseSettingsStaySparseWhileFeatureOffStopsEffectiveDefaults() {
+        val sparse = AndroidDataCollectionSetting(modules = mapOf(
+            CollectionModuleId.USAGE_EVENTS to CollectionDefaults.moduleSetting(CollectionModuleId.USAGE_EVENTS, enabled = true),
+        ))
+        val settings = StudySettings(mapOf(StudySettingType.DataCollection to sparse))
+        val active = collectionSettingsForFeatures(settings, setOf(StudyFeature.CHRONICLE_DATA_COLLECTION.name))[
+            StudySettingType.DataCollection] as AndroidDataCollectionSetting
+        assertSame(sparse, active)
+        assertEquals(sparse.modules, active.modules)
+        assertTrue(active.effectiveModules().getValue(CollectionModuleId.DEVICE_LIFECYCLE).enabled)
+        val stopped = collectionSettingsForFeatures(settings, emptySet())[StudySettingType.DataCollection] as AndroidDataCollectionSetting
+        assertFalse(stopped.modules.getValue(CollectionModuleId.DEVICE_LIFECYCLE).enabled)
+    }
+
     @Test fun featureOffStopsCollectionOnCreateAndOnLockedPartialUpdates() {
         val settings = StudySettings(mapOf(StudySettingType.DataCollection to CollectionDefaults.androidDataCollectionSetting()))
         val initial = stampInitialDataCollectionSettings(Study(title = "No collection", contact = "research@example.org", settings = settings))

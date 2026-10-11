@@ -5,6 +5,7 @@ import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
 import com.openlattice.chronicle.android.AndroidSensorSetting
+import com.openlattice.chronicle.android.AndroidSensorSample
 import com.openlattice.chronicle.android.AndroidSensorType
 import com.openlattice.chronicle.android.ChronicleData
 import com.openlattice.chronicle.android.ChronicleUsageEvent
@@ -16,6 +17,7 @@ import com.openlattice.chronicle.collection.BatteryChargingState
 import com.openlattice.chronicle.collection.BatteryHealth
 import com.openlattice.chronicle.collection.BatteryPlugType
 import com.openlattice.chronicle.collection.BatterySample
+import com.openlattice.chronicle.collection.IosBatterySample
 import com.openlattice.chronicle.collection.CollectionAcknowledgment
 import com.openlattice.chronicle.collection.CollectionAcknowledgmentEntry
 import com.openlattice.chronicle.collection.CollectionDefaults
@@ -41,6 +43,7 @@ import com.openlattice.chronicle.services.enrollment.EnrollmentService
 import com.openlattice.chronicle.filters.MobileEnrollmentAuthenticationToken
 import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
 import com.openlattice.chronicle.apikey.ApiKeyScope
+import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.services.jobs.JobService
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
 import com.openlattice.chronicle.services.studies.ParticipantCollectionAcknowledgmentService
@@ -78,6 +81,7 @@ import com.openlattice.chronicle.services.upload.UserIdentificationTrigger
 import com.openlattice.chronicle.sensorkit.SensorDataSample
 import com.openlattice.chronicle.sensorkit.SensorType
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.util.tests.TestDataFactory
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.sources.AndroidDevice
 import com.openlattice.chronicle.study.Study
@@ -167,11 +171,14 @@ class StudyControllerTest {
         // a transaction; here it just runs the write so these tests still exercise the upload path.
         Mockito.`when`(
             participantCollectionAcknowledgmentService.withCollectionHaltRecheck<Any?>(
-                kAny<UUID>(), kAnyString(), kAny<UUID>(), kAny<Function0<Any?>>(),
+                kAny<UUID>(), kAnyString(), kAny<UUID>(), kAny<Set<CollectionModuleId>>(), org.mockito.kotlin.anyOrNull(),
+                Mockito.anyBoolean(),
+                kAny<Function1<Set<CollectionModuleId>, Any?>>(),
             ),
         ).thenAnswer { invocation ->
             @Suppress("UNCHECKED_CAST")
-            (invocation.getArgument<Any>(3) as () -> Any?).invoke()
+            (invocation.getArgument<Any>(6) as (Set<CollectionModuleId>) -> Any?)
+                .invoke(invocation.getArgument(3))
         }
 
         controller = StudyController(
@@ -196,11 +203,167 @@ class StudyControllerTest {
         }
 
         TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(
+            kAny(), kAny(), kEq(EnumSet.of(Permission.WRITE)),
+        )).thenReturn(true)
+    }
+
+    private fun stubConsentedUploadModules(modules: Set<CollectionModuleId>) {
+        Mockito.doAnswer { invocation ->
+            invocation.getArgument<Function1<Set<CollectionModuleId>, Any?>>(6).invoke(modules)
+        }.`when`(participantCollectionAcknowledgmentService).withCollectionHaltRecheck<Any?>(
+            kAny(), kAnyString(), kAny(), kAny<Set<CollectionModuleId>>(), org.mockito.kotlin.anyOrNull(),
+            Mockito.anyBoolean(),
+            kAny<Function1<Set<CollectionModuleId>, Any?>>(),
+        )
     }
 
     @Test
     fun testControllerConstructsSuccessfully() {
         assertNotNull(controller)
+    }
+
+    @Test
+    fun testOversizedJsonExportReturnsItsPooledConnectionBeforeResponding413() {
+        val postgres = com.openlattice.chronicle.contract.ChronicleContractTestSchema.sharedPostgres
+        com.zaxxer.hikari.HikariDataSource(com.zaxxer.hikari.HikariConfig().apply {
+            jdbcUrl = postgres.jdbcUrl
+            username = postgres.username
+            password = postgres.password
+            maximumPoolSize = 1
+        }).use { pool ->
+            val studyId = UUID.randomUUID()
+            val participants = setOf("participant-1")
+            val start = OffsetDateTime.parse("2026-10-01T00:00:00Z")
+            val end = start.plusDays(1)
+            val rows = com.openlattice.chronicle.converters.PostgresDownloadWrapper(
+                com.geekbeast.postgres.streams.BasePostgresIterable<Map<String, Any>>(
+                    com.geekbeast.postgres.streams.PreparedStatementHolderSupplier(
+                        pool, "SELECT generate_series(1, ${SynchronousExportLimits.MAX_JSON_ROWS + 2})", 100,
+                    ) {},
+                ) { emptyMap() },
+            )
+            Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
+            Mockito.`when`(downloadService.getParticipantsUsageEventsData(studyId, participants, start, end))
+                .thenReturn(rows)
+
+            val error = assertThrows(ResponseStatusException::class.java) {
+                controller.getParticipantsData(studyId, com.openlattice.chronicle.study.ParticipantDataType.UsageEvents,
+                    participants, start, end, com.openlattice.chronicle.data.FileType.json, null, null,
+                    org.springframework.mock.web.MockHttpServletResponse())
+            }
+            assertEquals(HttpStatus.CONTENT_TOO_LARGE, error.statusCode)
+            assertEquals(0, pool.hikariPoolMXBean.activeConnections)
+        }
+    }
+
+    @Test
+    fun wideJsonRowsAreRejectedBelowTheRowLimitWithoutConsumingTheRest() {
+        val studyId = UUID.randomUUID()
+        val participants = setOf("participant-1")
+        val start = OffsetDateTime.parse("2026-10-01T00:00:00Z")
+        val end = start.plusDays(1)
+        val wideRow = mapOf<String, Any>("title" to "x".repeat(256 * 1024))
+        var consumed = 0
+        var closed = false
+        val rows = generateSequence { wideRow }.onEach { consumed++ }.iterator()
+        val cursor = object : Iterator<Map<String, Any>> by rows, AutoCloseable {
+            override fun close() { closed = true }
+        }
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
+        Mockito.`when`(downloadService.getParticipantsUsageEventsData(studyId, participants, start, end))
+            .thenReturn(Iterable { cursor })
+        val error = assertThrows(ResponseStatusException::class.java) {
+            controller.getParticipantsData(studyId, com.openlattice.chronicle.study.ParticipantDataType.UsageEvents,
+                participants, start, end, com.openlattice.chronicle.data.FileType.json, null, null,
+                org.springframework.mock.web.MockHttpServletResponse())
+        }
+        assertEquals(HttpStatus.CONTENT_TOO_LARGE, error.statusCode)
+        assertTrue(consumed < SynchronousExportLimits.MAX_JSON_ROWS)
+        assertTrue(closed)
+    }
+
+    @Test
+    fun testAnonymousUnsignedV3EnrollmentRejectsBeforeCreatingDeviceOrKey() {
+        val fixture = replayEnrollmentFixture()
+        SecurityContextHolder.clearContext()
+        val error = assertThrows(ResponseStatusException::class.java) {
+            controller.enroll(fixture.studyId, fixture.participantId, fixture.sourceDeviceId, fixture.sourceDevice)
+        }
+        assertEquals(HttpStatus.UNAUTHORIZED, error.statusCode)
+        Mockito.verifyNoInteractions(enrollmentService, apiKeyService)
+    }
+
+    @Test
+    fun testReadOnlyResearcherCannotWriteThroughMobileUploadGate() {
+        val studyId = UUID.randomUUID()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(false)
+        assertThrows(ForbiddenException::class.java) {
+            controller.uploadAndroidSensorData(studyId, "participant-1", "device-1", emptyList())
+        }
+        Mockito.verifyNoInteractions(androidSensorDataUploadService)
+    }
+
+    @Test
+    fun testLegacyUploadCannotUseAnotherDeviceWithAMatchingKeyHeader() {
+        val studyId = UUID.randomUUID()
+        val participantId = "participant-1"
+        val keyId = UUID.randomUUID()
+        SecurityContextHolder.getContext().authentication = ApiKeyAuthenticationToken(
+            principal = "apikey:$keyId", keyId = keyId, studyId = studyId,
+            participantId = participantId,
+            deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, "device-1"),
+            scope = ApiKeyScope.WRITE, authorities = emptyList(),
+        )
+        val error = assertThrows(ResponseStatusException::class.java) {
+            controller.uploadAndroidSensorData(studyId, participantId, "device-2", emptyList())
+        }
+        assertEquals(HttpStatus.FORBIDDEN, error.statusCode)
+        Mockito.verifyNoInteractions(androidSensorDataUploadService)
+    }
+
+    @Test
+    fun testParticipantVerificationRequiresStudyReadAccessBeforeLookup() {
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(false)
+        assertThrows(ForbiddenException::class.java) {
+            controller.isKnownParticipant(UUID.randomUUID(), "participant-1")
+        }
+        Mockito.verifyNoInteractions(enrollmentService)
+    }
+
+    @Test
+    fun testDeclinedOptionalModuleReturns403WithoutWritingData() {
+        val studyId = UUID.randomUUID()
+        val participantId = "participant-1"
+        val sourceDeviceId = "device-1"
+        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
+        val module = CollectionModuleId.INTERACTION_EVENTS
+        val settings = AndroidDataCollectionSetting(
+            modules = linkedMapOf(module to com.openlattice.chronicle.collection.CollectionModuleSetting(enabled = true)),
+            settingsVersion = 1,
+        )
+        val decisions = mapOf(module to com.openlattice.chronicle.services.studies.IssuedCollectionDecision(
+            com.openlattice.chronicle.services.studies.IssuedCollectionDecisionState.DECLINED, 1,
+        ))
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(ParticipationStatus.ENROLLED)
+        Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
+        Mockito.doAnswer { invocation ->
+            val modules = invocation.getArgument<Set<CollectionModuleId>>(3)
+            if (com.openlattice.chronicle.services.studies.collectionIsHalted(settings, listOf(settings), decisions, modules)) {
+                throw com.openlattice.chronicle.services.studies.CollectionHaltedException(studyId, participantId, deviceId)
+            }
+            invocation.getArgument<Function1<Set<CollectionModuleId>, Any?>>(6).invoke(modules)
+        }.`when`(participantCollectionAcknowledgmentService).withCollectionHaltRecheck<Any?>(
+            kAny(), kAnyString(), kAny(), kAny<Set<CollectionModuleId>>(), org.mockito.kotlin.anyOrNull(),
+            Mockito.anyBoolean(),
+            kAny<Function1<Set<CollectionModuleId>, Any?>>(),
+        )
+        val error = assertThrows(ResponseStatusException::class.java) {
+            controller.uploadInteractionEvents(studyId, participantId, sourceDeviceId, emptyList())
+        }
+        assertEquals(HttpStatus.FORBIDDEN, error.statusCode)
+        Mockito.verifyNoInteractions(interactionEventsUploadService)
     }
 
     @Test
@@ -284,7 +447,10 @@ class StudyControllerTest {
             contact = "research@example.org",
             settings = StudySettings(mapOf(StudySettingType.DataCollection to submittedSetting)),
         )
-        Mockito.`when`(studyService.createStudy(kAny())).thenReturn(studyId)
+        Mockito.`when`(studyService.createStudy(kAny<Study>(), kAny<(Connection, UUID) -> Unit>())).thenAnswer { invocation ->
+            invocation.getArgument<(Connection, UUID) -> Unit>(1)(Mockito.mock(Connection::class.java), studyId)
+            studyId
+        }
         Mockito.`when`(
             studySettingsAuditService.generateChangeSummary(
                 StudySettingType.DataCollection,
@@ -296,13 +462,47 @@ class StudyControllerTest {
         assertEquals(studyId, controller.createStudy(submittedStudy))
 
         val persistedStudy = argumentCaptor<Study>().apply {
-            verify(studyService).createStudy(capture())
+            verify(studyService).createStudy(capture(), kAny())
         }.firstValue
         assertEquals(expectedSetting, persistedStudy.settings[StudySettingType.DataCollection])
         val auditInvocation = Mockito.mockingDetails(studySettingsAuditService).invocations.single {
             it.method.name == "recordSettingsChange"
         }
         assertEquals(expectedSetting, auditInvocation.arguments[5])
+    }
+
+    @Test
+    fun settingsAuditUsesTheMutationConnectionAndFailureRollsBack() {
+        val studyId = UUID.randomUUID()
+        val pool = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val rows = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(pool)
+        Mockito.`when`(pool.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(kAnyString())).thenReturn(statement)
+        Mockito.`when`(statement.executeQuery()).thenReturn(rows)
+        Mockito.`when`(rows.next()).thenReturn(true)
+        Mockito.`when`(rows.getString(1)).thenReturn("{}")
+        Mockito.`when`(studySettingsAuditService.generateChangeSummary(kAny(), org.mockito.kotlin.anyOrNull(), kAny()))
+            .thenReturn("Changed settings")
+        val setting = com.openlattice.chronicle.notifications.StudyNotificationSettings("", "test")
+        controller.updateStudySettings(studyId, StudySettingType.Notifications, setting)
+        val audit = Mockito.mockingDetails(studySettingsAuditService).invocations.single { it.method.name == "recordSettingsChange" }
+        assertTrue(audit.arguments[7] === connection)
+        val order = Mockito.inOrder(studySettingsAuditService, connection)
+        order.verify(studySettingsAuditService).recordSettingsChange(kAny(), kAnyString(), org.mockito.kotlin.anyOrNull(), kAny(),
+            org.mockito.kotlin.anyOrNull(), kAny(), kAnyString(), org.mockito.kotlin.eq(connection))
+        order.verify(connection).commit()
+        Mockito.clearInvocations(connection)
+        Mockito.doAnswer { throw java.sql.SQLException("Audit write unavailable") }.`when`(studySettingsAuditService)
+            .recordSettingsChange(kAny(), kAnyString(), org.mockito.kotlin.anyOrNull(), kAny(), org.mockito.kotlin.anyOrNull(),
+                kAny(), kAnyString(), org.mockito.kotlin.eq(connection))
+        assertThrows(java.sql.SQLException::class.java) {
+            controller.updateStudySettings(studyId, StudySettingType.Notifications, setting)
+        }
+        verify(connection).rollback()
+        verify(connection, never()).commit()
     }
 
     @Test
@@ -329,7 +529,7 @@ class StudyControllerTest {
         }
 
         assertTrue(error.message.orEmpty().contains("usage_events.collectionCadence is not supported"))
-        verify(studyService, never()).createStudy(kAny())
+        verify(studyService, never()).createStudy(kAny<Study>(), kAny<(Connection, UUID) -> Unit>())
     }
 
     private data class ReplayEnrollmentFixture(
@@ -671,6 +871,50 @@ class StudyControllerTest {
     }
 
     @Test
+    fun testMixedUsageUploadDropsUnconsentedRowsAndRedactsOptionalFields() {
+        val studyId = UUID.randomUUID()
+        val participantId = "participant-1"
+        val sourceDeviceId = "device-1"
+        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
+        val usage = TestDataFactory.chronicleUsageEvents(studyId, participantId, count = 1).single() as ChronicleUsageEvent
+        val lifecycle = usage.copy(appPackageName = "android", interactionType = "Battery Low")
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(ParticipationStatus.ENROLLED)
+        Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
+        stubConsentedUploadModules(setOf(CollectionModuleId.USAGE_EVENTS))
+        Mockito.`when`(appDataUploadService.uploadAndroidUsageEvents(kAny(), kAnyString(), kAny(), kAnyList(), kAny()))
+            .thenReturn(1)
+
+        assertEquals(1, controller.uploadAndroidUsageEventData(
+            studyId, participantId, sourceDeviceId, ChronicleData(listOf(usage, lifecycle)),
+        ))
+        verify(appDataUploadService).uploadAndroidUsageEvents(
+            kEq(studyId), kEq(participantId), kEq(deviceId),
+            kEq(listOf(usage.copy(activityClass = null, user = ""))), kAny(),
+        )
+    }
+
+    @Test
+    fun testLegacyMixedSensorUploadReturnsRetryableCollectionHaltBeforeStoringAnyRows() {
+        val studyId = UUID.randomUUID()
+        val participantId = "participant-1"
+        val sourceDeviceId = "device-1"
+        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
+        val light = AndroidSensorSample(UUID.randomUUID(), AndroidSensorType.light, OffsetDateTime.now(), "UTC")
+        val accelerometer = light.copy(id = UUID.randomUUID(), sensor = AndroidSensorType.accelerometer)
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(ParticipationStatus.ENROLLED)
+        Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
+        stubConsentedUploadModules(setOf(CollectionModuleId.SENSOR_LIGHT))
+        Mockito.`when`(androidSensorDataUploadService.upload(kAny(), kAnyString(), kAny(), kAnyList())).thenReturn(1)
+
+        val error = assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+            controller.uploadAndroidSensorData(studyId, participantId, sourceDeviceId, listOf(light, accelerometer))
+        }
+        assertEquals(HttpStatus.FORBIDDEN, error.statusCode)
+        verify(androidSensorDataUploadService, never()).upload(kAny(), kAnyString(), kAny(), kAnyList())
+    }
+
+    @Test
     fun testParticipantEnrollmentDelegatesTransactionalPublicationToStudyService() {
         val studyId = UUID.randomUUID()
         val candidateId = UUID.randomUUID()
@@ -749,7 +993,7 @@ class StudyControllerTest {
     }
 
     @Test
-    fun testMobileUploadsRejectEveryNonEnrolledParticipationStatusWithoutWritingData() {
+    fun testMobileUploadsRejectInactiveParticipationStatusesWithoutWritingData() {
         val studyId = UUID.randomUUID()
         val participantId = "not-enrolled"
         val sourceDeviceId = "device-1"
@@ -758,7 +1002,9 @@ class StudyControllerTest {
         Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
 
         var expectedAuditCount = 0
-        ParticipationStatus.values().filter { it != ParticipationStatus.ENROLLED }.forEach { status ->
+        ParticipationStatus.values().filter {
+            it !in setOf(ParticipationStatus.ENROLLED, ParticipationStatus.PAUSED, ParticipationStatus.COLLECTION_COMPLETED)
+        }.forEach { status ->
             Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(status)
             val calls = mobileUploadCalls(studyId, participantId, sourceDeviceId)
             expectedAuditCount += calls.size
@@ -776,6 +1022,74 @@ class StudyControllerTest {
 
         assertNoMobileUploadWriteInteractions()
         assertFailureAuditCount(expectedAuditCount)
+    }
+
+    @Test
+    fun testPausedAndCompletedBatchUploadsReachPerRecordAdmission() {
+        val studyId = UUID.randomUUID()
+        val participantId = "queued-participant"
+        val sourceDeviceId = "device-1"
+        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
+        val cutoff = OffsetDateTime.parse("2026-07-12T04:00:00Z")
+        val connection = Mockito.mock(java.sql.Connection::class.java)
+        val statement = Mockito.mock(java.sql.PreparedStatement::class.java)
+        val rows = Mockito.mock(java.sql.ResultSet::class.java)
+        Mockito.`when`(connection.prepareStatement(kAnyString())).thenReturn(statement)
+        Mockito.`when`(statement.executeQuery()).thenReturn(rows)
+        Mockito.`when`(rows.next()).thenReturn(true)
+        Mockito.`when`(rows.getString("lifecycle_status")).thenReturn("ACTIVE")
+        Mockito.`when`(rows.getObject("capture_cutoff", OffsetDateTime::class.java)).thenReturn(cutoff)
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
+        Mockito.doAnswer { invocation ->
+            val capturedAt = invocation.getArgument<java.time.Instant?>(4)
+            if (!com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, studyId, participantId, capturedAt,
+                    invocation.getArgument(5))) {
+                throw com.openlattice.chronicle.services.studies.CollectionHaltedException(studyId, participantId, deviceId)
+            }
+            invocation.getArgument<Function1<Set<CollectionModuleId>, Any?>>(6).invoke(invocation.getArgument(3))
+        }.`when`(participantCollectionAcknowledgmentService).withCollectionHaltRecheck<Any?>(
+            kAny(), kAnyString(), kAny(), kAny<Set<CollectionModuleId>>(), org.mockito.kotlin.anyOrNull(),
+            Mockito.anyBoolean(),
+            kAny<Function1<Set<CollectionModuleId>, Any?>>(),
+        )
+
+        val queuedStatuses = listOf(ParticipationStatus.PAUSED, ParticipationStatus.COLLECTION_COMPLETED)
+        for (status in queuedStatuses) {
+            Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(status)
+            Mockito.`when`(rows.getString("participation_status")).thenReturn(status.name)
+            for (capturedAt in listOf(null, cutoff, cutoff.plusSeconds(1))) {
+                mobileUploadCalls(studyId, participantId, sourceDeviceId, capturedAt).forEach { (name, upload) ->
+                    if (name == "Android sensor availability" || name == "collection acknowledgment") {
+                        val error = assertThrows("$name must reject $status capture at $capturedAt", ResponseStatusException::class.java) { upload() }
+                        assertEquals(HttpStatus.FORBIDDEN, error.statusCode)
+                    } else upload()
+                }
+            }
+        }
+
+        val dataSource = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenReturn(connection)
+        for (status in queuedStatuses) {
+            Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(status)
+            Mockito.`when`(rows.getString("participation_status")).thenReturn(status.name)
+            mobileUploadCalls(studyId, participantId, sourceDeviceId, cutoff.minusSeconds(1), includeAcknowledgment = false)
+                .forEach { (_, upload) -> upload() }
+        }
+        verify(sensorDataUploadService, Mockito.times(24)).upload(kEq(studyId), kEq(participantId), kEq(deviceId), kAnyList())
+        verify(appDataUploadService, Mockito.times(6)).uploadAndroidUsageEvents(kEq(studyId), kEq(participantId), kEq(deviceId), kAnyList(),
+            org.mockito.kotlin.any())
+        listOf(androidSensorDataUploadService, batteryTelemetryUploadService, interactionEventsUploadService,
+            appAudioActivityUploadService, ambientAudioUploadService, appAudioContentUploadService,
+            notificationActivityUploadService, sleepEventsUploadService, activityRecognitionEventsUploadService,
+            healthMetricsUploadService, connectivityStateEventsUploadService, appNetworkUsageUploadService,
+            deviceSettingsUploadService).forEach { service ->
+            assertEquals("Every batch stream reaches its row admission even when its maximum crosses the cutoff", 8,
+                Mockito.mockingDetails(service).invocations.count { it.method.name == "upload" })
+        }
+        verify(batteryTelemetryUploadService, Mockito.times(8)).uploadIos(kEq(studyId), kEq(participantId), kAnyList())
+        verify(statement, Mockito.times(2)).executeUpdate()
     }
 
     @Test
@@ -956,6 +1270,12 @@ class StudyControllerTest {
         assertEquals(1, result.size)
         assertEquals(setOf(CollectionModuleId.HARDWARE_SENSORS), result[0].acknowledgedModules)
         verify(participantCollectionAcknowledgmentService).getAcknowledgments(kAny(), kAnyInt(), kAnyInt())
+        val audit = argumentCaptor<AuditLogEntry>()
+        verify(auditService).log(audit.capture())
+        assertEquals(com.openlattice.chronicle.audit.AuditAction.PARTICIPANT_DATA_ACCESS, audit.firstValue.action)
+        assertTrue(audit.firstValue.accessedPHI)
+        assertEquals(studyId, audit.firstValue.studyId)
+        assertEquals(1, audit.firstValue.additionalData?.get("participantCount"))
     }
 
     @Test
@@ -1275,6 +1595,7 @@ class StudyControllerTest {
 
     @Test
     fun testIsKnownParticipantDelegatesToService() {
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
         val studyId = UUID.randomUUID()
         val participantId = "p-123"
         // Controller delegates to enrollmentService, not enrollmentManager
@@ -1286,6 +1607,7 @@ class StudyControllerTest {
 
     @Test
     fun testIsKnownParticipantReturnsFalseForUnknown() {
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
         val studyId = UUID.randomUUID()
         val participantId = "unknown"
         Mockito.`when`(enrollmentService.isKnownParticipant(studyId, participantId)).thenReturn(false)
@@ -1551,9 +1873,11 @@ class StudyControllerTest {
         studyId: UUID,
         participantId: String,
         sourceDeviceId: String,
+        capturedAt: OffsetDateTime? = OffsetDateTime.parse("2026-07-12T03:10:17Z"),
+        includeAcknowledgment: Boolean = true,
     ): List<Pair<String, () -> Unit>> {
-        val timestamp = OffsetDateTime.parse("2026-07-12T03:10:17Z")
-        val sensorData = listOf(
+        val timestamp = capturedAt ?: OffsetDateTime.MIN
+        val sensorData = if (capturedAt == null) emptyList() else listOf(
             SensorDataSample(
                 id = UUID.randomUUID(),
                 dateRecorded = timestamp,
@@ -1566,7 +1890,7 @@ class StudyControllerTest {
                 endDate = timestamp.plusSeconds(1),
             )
         )
-        val batteryData = listOf(
+        val batteryData = if (capturedAt == null) emptyList() else listOf(
             BatterySample(
                 id = "battery-sample-1",
                 timestamp = timestamp,
@@ -1579,22 +1903,32 @@ class StudyControllerTest {
                 health = BatteryHealth.GOOD,
             )
         )
+        val iosBatteryData = batteryData.map {
+            IosBatterySample(it.id, it.timestamp, it.timezone, it.levelPercent, it.chargingState)
+        }
         val screenTimeEnvelope = ScreenTimeUsageEnvelope(
             deviceId = sourceDeviceId,
             studyId = studyId.toString(),
             participantId = participantId,
             generatedAt = timestamp,
-            records = emptyList(),
+            records = if (capturedAt == null) emptyList() else listOf(ScreenTimeUsageRecord(
+                id = UUID.randomUUID(), source = ScreenTimeCaptureSource.shortcutSnapshot,
+                confidence = ScreenTimeConfidence.externalShortcut, capturedAt = timestamp,
+                observationStart = timestamp.minusSeconds(1), observationEnd = timestamp,
+                timezoneIdentifier = "UTC", appName = "Maps", durationSeconds = 1,
+            )),
         )
         val userIdentificationEnvelope = UserIdentificationEnvelope(
             deviceId = sourceDeviceId,
             studyId = studyId.toString(),
             participantId = participantId,
             generatedAt = timestamp,
-            records = emptyList(),
+            records = if (capturedAt == null) emptyList() else listOf(UserIdentificationRecord(
+                UUID.randomUUID(), timestamp, "UTC", UserIdentificationTrigger.manualInApp, UserIdentificationChoice.participant,
+            )),
         )
         val androidUsageData = ChronicleData(
-            listOf(
+            if (capturedAt == null) emptyList() else listOf(
                 ChronicleUsageEvent(
                     studyId = studyId,
                     participantId = participantId,
@@ -1612,7 +1946,7 @@ class StudyControllerTest {
             acknowledgedAt = timestamp,
         )
 
-        return listOf(
+        val uploads: List<Pair<String, () -> Unit>> = listOf(
             "iOS SensorKit" to {
                 controller.uploadSensorData(studyId, participantId, sourceDeviceId, sensorData)
             },
@@ -1631,67 +1965,78 @@ class StudyControllerTest {
                 controller.uploadAndroidUsageEventData(studyId, participantId, sourceDeviceId, androidUsageData)
             },
             "Android sensors" to {
-                controller.uploadAndroidSensorData(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadAndroidSensorData(studyId, participantId, sourceDeviceId,
+                    if (capturedAt == null) emptyList() else listOf(AndroidSensorSample(UUID.randomUUID(), AndroidSensorType.light, timestamp,
+                        "UTC")))
             },
             "Android sensor availability" to {
                 controller.reportAndroidSensorAvailability(
                     studyId,
                     participantId,
                     sourceDeviceId,
-                    Mockito.mock(AndroidDeviceSensorAvailability::class.java),
+                    AndroidDeviceSensorAvailability(reportedAt = capturedAt),
                 )
             },
             "Android battery" to {
                 controller.uploadBatteryTelemetry(studyId, participantId, sourceDeviceId, batteryData)
             },
             "iOS battery" to {
-                controller.uploadIosBatteryTelemetry(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadIosBatteryTelemetry(studyId, participantId, sourceDeviceId, iosBatteryData)
             },
             "interaction events" to {
-                controller.uploadInteractionEvents(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadInteractionEvents(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "audio activity" to {
-                controller.uploadAudioActivity(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadAudioActivity(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "ambient audio" to {
-                controller.uploadAmbientAudio(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadAmbientAudio(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "audio content" to {
-                controller.uploadAudioContent(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadAudioContent(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "notification activity" to {
-                controller.uploadNotificationActivity(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadNotificationActivity(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "sleep events" to {
-                controller.uploadSleepEvents(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadSleepEvents(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "activity recognition" to {
-                controller.uploadActivityRecognitionEvents(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadActivityRecognitionEvents(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "health metrics" to {
-                controller.uploadHealthMetrics(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadHealthMetrics(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "connectivity state" to {
-                controller.uploadConnectivityStateEvents(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadConnectivityStateEvents(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "app network usage" to {
-                controller.uploadAppNetworkUsage(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadAppNetworkUsage(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
             "device settings" to {
-                controller.uploadDeviceSettings(studyId, participantId, sourceDeviceId, emptyList())
+                controller.uploadDeviceSettings(studyId, participantId, sourceDeviceId, mobileCapturedEvents(capturedAt))
             },
-            "collection acknowledgment" to {
+        )
+        return uploads + if (!includeAcknowledgment) emptyList() else listOf<Pair<String, () -> Unit>>("collection acknowledgment" to {
                 controller.reportCollectionAcknowledgmentV4(
                     studyId,
                     participantId,
                     sourceDeviceId,
                     acknowledgment,
                 )
-            },
-        )
+            })
     }
 
-    private fun assertNoMobileUploadWriteInteractions() {
+    private inline fun <reified T : Any> mobileCapturedEvents(capturedAt: OffsetDateTime?): List<T> =
+        if (capturedAt == null) emptyList() else listOf(Mockito.mock(T::class.java) { invocation ->
+            when (invocation.method.name) {
+                "getTimestamp" -> capturedAt
+                "getEndMillis", "getBucketEndMillis" -> capturedAt.toInstant().toEpochMilli()
+                else -> Mockito.RETURNS_DEFAULTS.answer(invocation)
+            }
+        })
+
+    private fun assertNoMobileUploadWriteInteractions(allowCollectionRecheck: Boolean = false) {
         Mockito.verifyNoInteractions(
             sensorDataUploadService,
             androidSensorDataUploadService,
@@ -1709,10 +2054,14 @@ class StudyControllerTest {
             deviceSettingsUploadService,
             encryptedPayloadUploadService,
             appDataUploadService,
-            participantCollectionAcknowledgmentService,
             storageResolver,
             webhookService,
         )
+        if (allowCollectionRecheck) {
+            verify(participantCollectionAcknowledgmentService, never()).recordAcknowledgment(kAny(), kAnyString(), kAnyString(), kAny(), kAny())
+        } else {
+            Mockito.verifyNoInteractions(participantCollectionAcknowledgmentService)
+        }
     }
 
     private fun assertFailureAuditCount(expectedCount: Int) {
@@ -1720,6 +2069,137 @@ class StudyControllerTest {
         verify(auditService, Mockito.times(expectedCount)).log(auditCaptor.capture())
         assertEquals(expectedCount, auditCaptor.allValues.size)
         assertTrue(auditCaptor.allValues.all { !it.success })
+    }
+
+
+    @Test fun obsoleteStudyPermissionsRoutesAreAbsent() {
+        org.junit.Assert.assertFalse(StudyController::class.java.methods.any {
+            it.name == "getStudyPermissions" || it.name == "updateStudyPermissions"
+        })
+        org.junit.Assert.assertFalse(com.openlattice.chronicle.study.StudyApi::class.java.methods.any {
+            it.name == "getStudyPermissions" || it.name == "updateStudyPermissions"
+        })
+    }
+
+    @Test
+    fun testLifecycleUploadKeepsDeviceStateWithoutActivityClassConsent() {
+        val studyId = UUID.randomUUID()
+        val participantId = "participant-1"
+        val sourceDeviceId = "device-1"
+        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
+        val sample = (TestDataFactory.chronicleUsageEvents(studyId, participantId, count = 1).single() as ChronicleUsageEvent)
+            .copy(appPackageName = "android", interactionType = "Battery Low", activityClass = "battery:low", user = "")
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participantId)).thenReturn(ParticipationStatus.ENROLLED)
+        Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)).thenReturn(true)
+        stubConsentedUploadModules(setOf(CollectionModuleId.DEVICE_LIFECYCLE))
+        Mockito.`when`(appDataUploadService.uploadAndroidUsageEvents(kAny(), kAnyString(), kAny(), kAnyList(), kAny())).thenReturn(1)
+
+        assertEquals(1, controller.uploadAndroidUsageEventData(studyId, participantId, sourceDeviceId, ChronicleData(listOf(sample))))
+        verify(appDataUploadService).uploadAndroidUsageEvents(kEq(studyId), kEq(participantId), kEq(deviceId), kEq(listOf(sample)), kAny())
+        verify(participantCollectionAcknowledgmentService).withCollectionHaltRecheck<Int>(
+            kEq(studyId), kEq(participantId), kEq(deviceId), kEq(setOf(CollectionModuleId.DEVICE_LIFECYCLE)), org.mockito.kotlin.anyOrNull(), kEq(
+                true), kAny(),
+        )
+    }
+
+    @Test
+    fun testBulkParticipantDeletionRequiresOwnerBeforeQuarantine() {
+        val studyId = UUID.randomUUID()
+        TestSecurityUtils.setupSecurityContext()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenAnswer {
+            com.openlattice.chronicle.authorization.Permission.OWNER !in it.getArgument<Set<com.openlattice.chronicle.authorization.Permission>>(2)
+        }
+        assertThrows(ForbiddenException::class.java) {
+            controller.deleteStudyParticipants(studyId, setOf("participant-1"))
+        }
+        Mockito.verifyNoInteractions(dataDeletionOrchestrator)
+    }
+
+    @Test
+    fun testSensorAvailabilityDisabledRejectsBeforeStorage() {
+        val studyId = UUID.randomUUID()
+        val participant = "participant-1"
+        val source = "device-1"
+        val device = DeviceIdUtils.deriveDeviceId(studyId, participant, source)
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(studyId, participant)).thenReturn(ParticipationStatus.ENROLLED)
+        Mockito.`when`(enrollmentManager.isKnownDatasource(studyId, participant, device)).thenReturn(true)
+        for (reportedAt in listOf(null, OffsetDateTime.parse("2026-10-01T00:00:00Z"))) {
+            Mockito.doThrow(com.openlattice.chronicle.services.studies.CollectionHaltedException(studyId, participant, device))
+                .`when`(participantCollectionAcknowledgmentService).withCollectionHaltRecheck<Any?>(
+                kEq(studyId), kEq(participant), kEq(device), kEq(setOf(CollectionModuleId.SENSOR_AVAILABILITY)),
+                org.mockito.kotlin.eq(reportedAt?.toInstant()), kEq(false), kAny(),
+            )
+            val error = assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+                controller.reportAndroidSensorAvailability(studyId, participant, source,
+                    com.openlattice.chronicle.android.AndroidDeviceSensorAvailability(reportedAt = reportedAt))
+            }
+            assertEquals(403, error.statusCode.value())
+            verify(participantCollectionAcknowledgmentService).withCollectionHaltRecheck<Any?>(
+                kEq(studyId), kEq(participant), kEq(device), kEq(setOf(CollectionModuleId.SENSOR_AVAILABILITY)),
+                org.mockito.kotlin.eq(reportedAt?.toInstant()), kEq(false), kAny(),
+            )
+        }
+        Mockito.verifyNoInteractions(storageResolver)
+    }
+
+    @Test
+    fun testMixedSensorReceiptIdentifiesStoredDiscardedAndHeldRows() {
+        val study = UUID.randomUUID()
+        val participant = "participant-1"
+        val source = "device-1"
+        val device = DeviceIdUtils.deriveDeviceId(study, participant, source)
+        val accepted = AndroidSensorSample(UUID.randomUUID(), AndroidSensorType.accelerometer, OffsetDateTime.now(), "UTC")
+        val discarded = accepted.copy(id = UUID.randomUUID(), sensor = AndroidSensorType.gyroscope)
+        val held = accepted.copy(id = UUID.randomUUID(), sensor = AndroidSensorType.light)
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(study, participant)).thenReturn(ParticipationStatus.ENROLLED)
+        Mockito.`when`(enrollmentManager.isKnownDatasource(study, participant, device)).thenReturn(true)
+        Mockito.doAnswer { invocation ->
+            @Suppress("UNCHECKED_CAST")
+            (invocation.getArgument<Any>(8) as (com.openlattice.chronicle.services.studies.CollectionUploadAuthorization) -> Any?)
+                .invoke(com.openlattice.chronicle.services.studies.CollectionUploadAuthorization(
+                    setOf(CollectionModuleId.SENSOR_ACCELEROMETER), setOf(CollectionModuleId.SENSOR_GYROSCOPE),
+                    setOf(CollectionModuleId.SENSOR_LIGHT), 2))
+        }.`when`(participantCollectionAcknowledgmentService).withCollectionUploadRecheck<Any?>(
+            kEq(study), kEq(participant), kEq(device), kAny(), org.mockito.kotlin.isNull(), kEq(true), org.mockito.kotlin.anyOrNull(), kEq(true),
+                kAny(),
+        )
+        val dataSource = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(kAnyString())).thenReturn(statement)
+        Mockito.`when`(statement.executeQuery()).thenReturn(Mockito.mock(ResultSet::class.java))
+        val receipt = controller.uploadAndroidSensorDataReceiptV4(study, participant, source, listOf(accepted, discarded, held))
+        receipt.validateSubmitted(setOf(accepted.id, discarded.id, held.id))
+        assertEquals(setOf(accepted.id), receipt.acceptedIds)
+        assertEquals(setOf(discarded.id), receipt.discardedIds)
+        assertEquals(setOf(held.id), receipt.heldIds)
+        verify(androidSensorDataUploadService).upload(study, participant, device, listOf(accepted))
+
+        val cutoff = accepted.timestamp.plusSeconds(1)
+        val atStop = accepted.copy(id = UUID.randomUUID(), timestamp = cutoff)
+        val lateHeld = held.copy(id = UUID.randomUUID(), timestamp = cutoff.plusSeconds(1))
+        val state = Mockito.mock(PreparedStatement::class.java)
+        val rows = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(state.executeQuery()).thenReturn(rows)
+        Mockito.`when`(rows.next()).thenReturn(true)
+        Mockito.`when`(rows.getString("lifecycle_status")).thenReturn("ACTIVE")
+        Mockito.`when`(rows.getString("participation_status")).thenReturn("PAUSED")
+        Mockito.`when`(rows.getObject("capture_cutoff", OffsetDateTime::class.java)).thenReturn(cutoff)
+        Mockito.`when`(connection.prepareStatement(kAnyString())).thenAnswer { invocation ->
+            if (invocation.getArgument<String>(0).contains("LEFT JOIN LATERAL")) state else statement
+        }
+        Mockito.`when`(enrollmentManager.getDeviceParticipationStatus(study, participant)).thenReturn(ParticipationStatus.PAUSED)
+        val submitted = listOf(accepted, discarded, held, atStop, lateHeld)
+        val stopped = controller.uploadAndroidSensorDataReceiptV4(study, participant, source, submitted)
+        stopped.validateSubmitted(submitted.mapTo(linkedSetOf()) { it.id })
+        assertEquals(setOf(accepted.id), stopped.acceptedIds)
+        assertEquals(setOf(discarded.id, atStop.id, lateHeld.id), stopped.discardedIds)
+        assertEquals(setOf(held.id), stopped.heldIds)
+        verify(androidSensorDataUploadService, Mockito.times(2)).upload(study, participant, device, listOf(accepted))
     }
 
 }

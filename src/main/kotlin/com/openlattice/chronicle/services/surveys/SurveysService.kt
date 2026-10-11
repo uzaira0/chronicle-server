@@ -91,6 +91,17 @@ public open class SurveysService(
         private val logger = LoggerFactory.getLogger(SurveysService::class.java)
         private val mapper = ObjectMappers.newJsonMapper()
 
+        internal fun loadLockedQuestionnaireSnapshot(connection: Connection, studyId: UUID, questionnaireId: UUID): String? =
+            connection.prepareStatement(
+                "SELECT jsonb_build_object('title', title, 'description', description, 'questions', questions, " +
+                    "'active', active, 'recurrenceRule', recurrence_rule)::text " +
+                    "FROM questionnaires WHERE study_id = ? AND questionnaire_id = ? FOR UPDATE"
+            ).use { statement ->
+                statement.setObject(1, studyId)
+                statement.setObject(2, questionnaireId)
+                statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+
         public const val UNKNOWN_BUNDLE = "Unknown"
         private val DEVICE_USAGE_EVENT_TYPES = setOf(
             ChronicleUsageEventType.MOVE_TO_BACKGROUND.value,
@@ -366,7 +377,10 @@ public open class SurveysService(
         )
 
         val numWritten = storageResolver.getPlatformStorage().connection.use { connection ->
-            submitAppUsageSurvey(connection, studyId, participantId, surveyResponses)
+            AuditedTransactionBuilder<Int>(connection, auditingManager)
+                .transaction { submitAppUsageSurvey(it, studyId, participantId, surveyResponses) }
+                .audit { emptyList() }
+                .buildAndRun()
         }
 
         if (numWritten != surveyResponses.size) {
@@ -381,6 +395,7 @@ public open class SurveysService(
         participantId: String,
         surveyResponses: List<AppUsage>,
     ): Int {
+        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId, participantId)
         require(surveyResponses.size <= 10_000) {
             "Survey response batch too large: ${surveyResponses.size} entries (max 10,000)"
         }
@@ -663,6 +678,20 @@ public open class SurveysService(
             storageResolver.getPlatformStorage().connection.use { connection ->
                 AuditedTransactionBuilder<Unit>(connection, auditingManager)
                     .transaction {
+                        loadLockedQuestionnaireSnapshot(connection, studyId, questionnaireId)
+                        connection.prepareStatement(
+                            "SELECT EXISTS (SELECT 1 FROM ${QUESTIONNAIRE_SUBMISSIONS.name} WHERE ${STUDY_ID.name} = ? AND ${QUESTIONNAIRE_ID.name} = ?)",
+                        ).use { statement ->
+                            statement.setObject(1, studyId)
+                            statement.setObject(2, questionnaireId)
+                            statement.executeQuery().use { rows ->
+                                check(rows.next())
+                                if (rows.getBoolean(1)) throw org.springframework.web.server.ResponseStatusException(
+                                    org.springframework.http.HttpStatus.CONFLICT,
+                                    com.openlattice.chronicle.i18n.Messages.get("error.questionnaire.responsesRetained"),
+                                )
+                            }
+                        }
                         connection.prepareStatement(DELETE_QUESTIONNAIRE_SQL).use { ps ->
                             ps.setObject(1, studyId)
                             ps.setObject(2, questionnaireId)
@@ -722,7 +751,10 @@ public open class SurveysService(
             }
 
             storageResolver.getPlatformStorage().connection.use { connection ->
-                submitQuestionnaireResponses(connection, studyId, participantId, questionnaireId, responses)
+                AuditedTransactionBuilder<UUID>(connection, auditingManager)
+                    .transaction { submitQuestionnaireResponses(it, studyId, participantId, questionnaireId, responses) }
+                    .audit { emptyList() }
+                    .buildAndRun()
             }
             logger.info(
                 "recorded {} questionnaire responses studyId={} participant={}",
@@ -745,6 +777,10 @@ public open class SurveysService(
         questionnaireId: UUID,
         responses: List<QuestionnaireResponse>,
     ): UUID {
+        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId, participantId)
+        requireNotNull(loadLockedQuestionnaireSnapshot(connection, studyId, questionnaireId)) {
+            com.openlattice.chronicle.i18n.Messages.get("error.questionnaire.unavailable")
+        }
         val submissionId = idGenerationService.getNextId()
         connection.prepareStatement(SUBMIT_QUESTIONNAIRE_SQL).use { statement ->
             statement.setObject(1, submissionId)

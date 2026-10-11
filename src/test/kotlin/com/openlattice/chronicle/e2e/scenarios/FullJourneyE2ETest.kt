@@ -11,7 +11,6 @@ import com.openlattice.chronicle.export.ExportRequest
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.study.ParticipantDataType
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -36,10 +35,12 @@ class FullJourneyE2ETest : ChronicleServerTests() {
                     val theParticipantId = participantId
 
                     device(providers.data.androidDevice()) {
-                        upload(providers.data.usageEvents(theStudyId, theParticipantId, count = 25)) {
+                        assertUsageStats(studyManager.getParticipantStats(theStudyId, theParticipantId))
+                        val events = providers.data.usageEvents(theStudyId, theParticipantId, count = 25)
+                        upload(events) {
                             // Verify upload landed (stats update synchronously in Hazelcast)
                             val stats = studyManager.getParticipantStats(theStudyId, theParticipantId)
-                            assertNotNull("Stats must exist after upload", stats)
+                            assertUsageStats(stats, events)
 
                             // Flush buffer → CHRONICLE_USAGE_EVENTS
                             flush()

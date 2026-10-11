@@ -65,7 +65,8 @@ internal object AndroidSensorDataWriter {
         samples: List<AndroidSensorSample>,
     ): Int {
         val cutoff = studyId?.let { ParticipantPurgeCutoff.load(ps.connection, it, participantId) }
-        samples.filter { ParticipantPurgeCutoff.permits(cutoff, it.timestamp) }.forEach { sample -> bind(ps, studyId, participantId, deviceId, sample) }
+        samples.filter { ParticipantPurgeCutoff.permits(cutoff, it.timestamp) }.forEach { sample -> bind(ps, studyId, participantId, deviceId,
+            sample) }
         val results = ps.executeBatch()
         ps.clearBatch()
         return results.sumOf { result ->

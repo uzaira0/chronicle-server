@@ -2,6 +2,7 @@ package com.openlattice.chronicle.controllers
 
 import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
 import com.openlattice.chronicle.android.AndroidSensorSample
+import com.openlattice.chronicle.android.SensorUploadReceipt
 import com.openlattice.chronicle.android.ChronicleData
 import com.openlattice.chronicle.collection.AmbientAudioClassificationEvent
 import com.openlattice.chronicle.collection.BatterySample
@@ -56,6 +57,18 @@ class StudyV4ControllerTest {
     @Test
     fun controllerConstructsSuccessfully() {
         assertNotNull(controller)
+    }
+
+    @Test
+    fun sensorReceiptForwardsSettingsEvidenceAndReturnsTheReceipt() {
+        val samples = listOf(Mockito.mock(AndroidSensorSample::class.java))
+        val receipt = SensorUploadReceipt(setOf(UUID.randomUUID()), emptySet(), emptySet(), 4)
+        Mockito.`when`(studyController.uploadAndroidSensorDataReceiptV4(studyId, participantId, deviceId, samples, 4))
+            .thenReturn(receipt)
+
+        assertSame(receipt, controller.uploadAndroidSensorDataReceiptV4(studyId, participantId, deviceId, samples, 4))
+        verify(studyController).uploadAndroidSensorDataReceiptV4(studyId, participantId, deviceId, samples, 4)
+        verifyNoMoreInteractions(studyController)
     }
 
     @Test

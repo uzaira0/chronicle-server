@@ -47,7 +47,7 @@ class QuestionnaireTests : ChronicleServerTests() {
 
         val http = HttpClient.newHttpClient()
         val resource = URI("http://localhost:$testHttpPort/chronicle/v3/survey/$studyId/questionnaire/$questionnaireId")
-        val token = jwtTokens.getValue(testUser1.id).first()
+        val token = activeFixtureToken(testUser1)
         val loaded = http.send(
             HttpRequest.newBuilder(resource).header("Authorization", "Bearer $token").GET().build(),
             HttpResponse.BodyHandlers.ofString(),
@@ -180,6 +180,12 @@ class QuestionnaireTests : ChronicleServerTests() {
         val responses = listOf(response1, response2)
 
         surveyApi.submitQuestionnaireResponses(studyId, participant.participantId, questionnaireId, responses)
+        val client = HttpClient.newHttpClient()
+        val request = HttpRequest.newBuilder(URI("http://localhost:$testHttpPort/chronicle/v3/survey/$studyId/questionnaire/$questionnaireId"))
+            .header("Authorization", "Bearer ${activeFixtureToken(testUser1)}").DELETE().build()
+        val rejected = client.send(request, HttpResponse.BodyHandlers.ofString())
+        Assert.assertEquals(rejected.body(), 409, rejected.statusCode())
+        Assert.assertEquals(questionnaireId, surveyApi.getQuestionnaire(studyId, questionnaireId).id)
     }
 
     private fun questionnaire(): Questionnaire {

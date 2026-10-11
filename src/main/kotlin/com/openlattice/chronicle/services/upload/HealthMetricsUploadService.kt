@@ -52,12 +52,13 @@ public open class HealthMetricsUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} health metrics for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} health metrics ",
             level = Level.INFO,
             logger = logger,
         ).use {
             ParticipantPurgeCutoff.withPermittedBatch(
-                storageResolver.getPlatformStorage(), studyId, participantId, data, { java.time.Instant.ofEpochMilli(it.endMillis).atOffset(java.time.ZoneOffset.UTC) },
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { java.time.Instant.ofEpochMilli(it.endMillis).atOffset(
+                    java.time.ZoneOffset.UTC) },
             ) { connection, retained ->
                 connection.prepareStatement(INSERT_HEALTH_METRICS_SQL).use { ps ->
                     batchInsert(ps, studyId, participantId, retained)

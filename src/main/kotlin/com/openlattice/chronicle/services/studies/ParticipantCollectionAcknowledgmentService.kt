@@ -8,6 +8,7 @@ import com.openlattice.chronicle.android.AndroidSensorSetting
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionAcknowledgment
 import com.openlattice.chronicle.collection.CollectionAcknowledgmentEntry
+import com.openlattice.chronicle.collection.CollectionDataDisposition
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.collection.ConsentTrigger
 import com.openlattice.chronicle.collection.SensorCollectionModules
@@ -42,6 +43,7 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.sql.Connection
 import java.sql.ResultSet
+import java.time.Instant
 import java.time.OffsetDateTime
 import java.util.UUID
 
@@ -112,22 +114,22 @@ public open class ParticipantCollectionAcknowledgmentService(
     internal companion object {
         private val logger = LoggerFactory.getLogger(ParticipantCollectionAcknowledgmentService::class.java)
 
+        private val ACK_COLUMNS = listOf(
+            AUDIT_ENTRY_ID, STUDY_ID, PARTICIPANT_ID, SOURCE_DEVICE_ID,
+            ACKNOWLEDGED_MODULES, ACKNOWLEDGED_AT, RECORDED_AT, APP_VERSION,
+            SETTINGS_VERSION, DECLINED_MODULES, UNAVAILABLE_MODULES,
+            COLLECTION_TRIGGER, DISCLOSURE_VERSION, MANIFEST_DIGEST,
+        ).joinToString(", ") { it.name }
+
         private val INSERT_ACK_SQL = """
             INSERT INTO ${PARTICIPANT_COLLECTION_ACKNOWLEDGMENT.name} (
-                ${AUDIT_ENTRY_ID.name}, ${STUDY_ID.name}, ${PARTICIPANT_ID.name}, ${SOURCE_DEVICE_ID.name},
-                ${ACKNOWLEDGED_MODULES.name}, ${ACKNOWLEDGED_AT.name}, ${RECORDED_AT.name}, ${APP_VERSION.name},
-                ${SETTINGS_VERSION.name}, ${DECLINED_MODULES.name}, ${UNAVAILABLE_MODULES.name},
-                ${COLLECTION_TRIGGER.name}, ${DISCLOSURE_VERSION.name}, ${MANIFEST_DIGEST.name},
+                $ACK_COLUMNS,
                 ${EVIDENCE_ACCESS_CODE_ID.name}, ${EVIDENCE_API_KEY_ID.name}
             ) VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?)
         """.trimIndent()
 
         private val SELECT_ACK_HISTORY_SQL = """
-            SELECT
-                ${AUDIT_ENTRY_ID.name}, ${STUDY_ID.name}, ${PARTICIPANT_ID.name}, ${SOURCE_DEVICE_ID.name},
-                ${ACKNOWLEDGED_MODULES.name}, ${ACKNOWLEDGED_AT.name}, ${RECORDED_AT.name}, ${APP_VERSION.name},
-                ${SETTINGS_VERSION.name}, ${DECLINED_MODULES.name}, ${UNAVAILABLE_MODULES.name},
-                ${COLLECTION_TRIGGER.name}, ${DISCLOSURE_VERSION.name}, ${MANIFEST_DIGEST.name}
+            SELECT $ACK_COLUMNS
             FROM ${PARTICIPANT_COLLECTION_ACKNOWLEDGMENT.name}
             WHERE ${STUDY_ID.name} = ?
             ORDER BY ${RECORDED_AT.name} DESC
@@ -183,11 +185,13 @@ public open class ParticipantCollectionAcknowledgmentService(
         participantId: String,
         deviceId: UUID,
     ): Boolean = withLockedDeviceEvidence(deviceId) { connection ->
-        loadCollectionHaltStatus(connection, studyId, participantId, deviceId)
+        loadConsentedUploadModules(connection, studyId, participantId, deviceId, emptySet()) == null
     }
 
     /**
-     * Runs [write] only if collection is still un-halted, atomically with the halt predicate.
+     * Runs [write] with the consented subset of uploaded modules, atomically with the halt predicate.
+     * Unresolved required consent or a wholly unconsented upload still rejects the write.
+     * Shared-stream callers must filter their rows and optional fields to the returned subset.
      *
      * [isCollectionHalted] is a cheap fast-fail that commits and releases its lock before the
      * caller writes, so a consent DECLINE or a required-settings revision landing in between used
@@ -208,23 +212,78 @@ public open class ParticipantCollectionAcknowledgmentService(
         studyId: UUID,
         participantId: String,
         deviceId: UUID,
-        write: () -> T,
+        uploadModules: Set<CollectionModuleId> = emptySet(),
+        latestCapturedAt: Instant? = null,
+        allowQueuedCaptures: Boolean = false,
+        write: (Set<CollectionModuleId>) -> T,
     ): T {
+        return withCollectionWrite(studyId, deviceId) { connection ->
+            val consented = RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
+                loadConsentedUploadModules(connection, studyId, participantId, deviceId, uploadModules, latestCapturedAt, allowQueuedCaptures)
+            }
+            if (consented == null || (uploadModules.isNotEmpty() && consented.isEmpty())) {
+                throw CollectionHaltedException(studyId, participantId, deviceId)
+            }
+            write(consented)
+        }
+    }
+
+    public open fun <T> withCollectionUploadRecheck(
+        studyId: UUID, participantId: String, deviceId: UUID, uploadModules: Set<CollectionModuleId>,
+        settingsVersion: Int?, allowPartial: Boolean,
+        latestCapturedAt: Instant? = null,
+        allowQueuedCaptures: Boolean = false,
+        write: (CollectionUploadAuthorization) -> T,
+    ): T = withCollectionWrite(studyId, deviceId) { connection ->
+        val authorization = RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
+            if (!com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, studyId, participantId, latestCapturedAt,
+                allowQueuedCaptures)) {
+                throw CollectionHaltedException(studyId, participantId, deviceId)
+            }
+            val latest = loadLatestCollectionSettings(connection, studyId)
+                ?: throw CollectionHaltedException(studyId, participantId, deviceId)
+            val revisions = loadCollectionRevisionsThrough(connection, studyId, latest.settingsVersion)
+            if (settingsVersion != null && settingsVersion !in revisions.map { it.settingsVersion }) {
+                throw CollectionHaltedException(studyId, participantId, deviceId)
+            }
+            val currentDecisions = loadIssuedCollectionDecisions(connection, studyId, participantId, deviceId)
+            // A revision header identifies the queue's policy, not when its data was captured.
+            // Unknown or later captures must satisfy current consent; older queues can still flush.
+            val effectiveVersion = if (settingsVersion != null && settingsVersion < latest.settingsVersion &&
+                !capturesPrecedeSupersedingRevision(connection, studyId, settingsVersion, latestCapturedAt)) {
+                latest.settingsVersion
+            } else settingsVersion
+            val capturedDecisions = if (effectiveVersion == null || effectiveVersion == latest.settingsVersion) currentDecisions else
+                loadIssuedCollectionDecisions(connection, studyId, participantId, deviceId, effectiveVersion)
+            collectionUploadAuthorization(latest, revisions, currentDecisions, capturedDecisions, uploadModules, effectiveVersion)
+                ?.let { authorization ->
+                    if (settingsVersion != null) authorization else {
+                        val consented = loadConsentedUploadModules(connection, studyId, participantId, deviceId,
+                            authorization.acceptedModules, latestCapturedAt, allowQueuedCaptures)
+                            ?: throw CollectionHaltedException(studyId, participantId, deviceId)
+                        authorization.copy(
+                            acceptedModules = authorization.acceptedModules.intersect(consented),
+                            heldModules = authorization.heldModules + (authorization.acceptedModules - consented),
+                        )
+                    }
+                }
+                ?: throw CollectionHaltedException(studyId, participantId, deviceId)
+        }
+        if (!allowPartial && !authorization.acceptedModules.containsAll(uploadModules)) {
+            throw CollectionHaltedException(studyId, participantId, deviceId)
+        }
+        write(authorization)
+    }
+
+    private fun <T> withCollectionWrite(studyId: UUID, deviceId: UUID, write: (Connection) -> T): T {
         val dataSource = storageResolver.getPlatformStorage()
         return dataSource.connection.use { connection ->
             val originalAutoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
                 com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
-                val halted = RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
-                    lockDeviceEvidence(connection, deviceId)
-                    loadCollectionHaltStatus(connection, studyId, participantId, deviceId)
-                }
-                if (halted) {
-                    throw CollectionHaltedException(studyId, participantId, deviceId)
-                }
-                val result = PinnedPlatformConnection.committing(dataSource, connection) { write() }
-                result
+                lockDeviceEvidence(connection, deviceId)
+                PinnedPlatformConnection.committing(dataSource, connection) { write(connection) }
             } catch (exception: Exception) {
                 connection.rollback()
                 throw exception
@@ -354,20 +413,47 @@ private fun acknowledgmentEntry(
     manifestDigest = acknowledgment.manifestDigest,
 )
 
-private fun loadCollectionHaltStatus(
+private fun loadConsentedUploadModules(
     connection: Connection,
     studyId: UUID,
     participantId: String,
     deviceId: UUID,
-): Boolean {
+    uploadModules: Set<CollectionModuleId>,
+    latestCapturedAt: Instant? = null,
+    allowQueuedCaptures: Boolean = false,
+): Set<CollectionModuleId>? {
+    if (!com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, studyId, participantId, latestCapturedAt,
+        allowQueuedCaptures)) return null
     val decisions = loadIssuedCollectionDecisions(connection, studyId, participantId, deviceId)
-    val latestSettings = loadLatestCollectionSettings(connection, studyId) ?: return true
+    val latestSettings = loadLatestCollectionSettings(connection, studyId) ?: return null
     val issuedRevisions = loadCollectionRevisionsThrough(
         connection,
         studyId,
         latestSettings.settingsVersion,
     )
-    return collectionIsHalted(latestSettings, issuedRevisions, decisions)
+    if (collectionIsHalted(latestSettings, issuedRevisions, decisions)) return null
+    return uploadModules.filterTo(linkedSetOf()) { moduleId ->
+        !collectionIsHalted(latestSettings, issuedRevisions, decisions, setOf(moduleId)) ||
+            (legacyFlushIsAccepted(latestSettings, issuedRevisions, decisions, moduleId) &&
+                capturesPrecedeSupersedingRevision(connection, studyId, decisions.getValue(moduleId).settingsVersion, latestCapturedAt))
+    }
+}
+
+private fun capturesPrecedeSupersedingRevision(
+    connection: Connection, studyId: UUID, settingsVersion: Int, latestCapturedAt: Instant?,
+): Boolean {
+    if (latestCapturedAt == null) return false
+    return connection.prepareStatement("""
+        SELECT min(issued_at) FROM data_collection_settings_revisions
+        WHERE study_id = ? AND settings_version > ?
+    """.trimIndent()).use { statement ->
+        statement.setObject(1, studyId)
+        statement.setInt(2, settingsVersion)
+        statement.executeQuery().use { rows ->
+            check(rows.next())
+            rows.getObject(1, OffsetDateTime::class.java)?.toInstant()?.let(latestCapturedAt::isBefore) == true
+        }
+    }
 }
 
 private fun loadIssuedCollectionDecisions(
@@ -375,6 +461,7 @@ private fun loadIssuedCollectionDecisions(
     studyId: UUID,
     participantId: String,
     deviceId: UUID,
+    maximumVersion: Int? = null,
 ): Map<CollectionModuleId, IssuedCollectionDecision> {
     return connection.prepareStatement(ParticipantCollectionAcknowledgmentService.ACTIVE_COLLECTION_DECISIONS_SQL)
         .use { statement ->
@@ -385,6 +472,7 @@ private fun loadIssuedCollectionDecisions(
             buildMap {
                 while (resultSet.next()) {
                     val version = nullableInt(resultSet, SETTINGS_VERSION.name) ?: continue
+                    if (maximumVersion != null && version > maximumVersion) continue
                     val accepted = decodeModules(resultSet.getString(ACKNOWLEDGED_MODULES.name))
                     val declined = decodeModules(resultSet.getString(DECLINED_MODULES.name) ?: "[]")
                     val unavailable = decodeModules(resultSet.getString(UNAVAILABLE_MODULES.name) ?: "[]")
@@ -457,11 +545,67 @@ private fun loadCollectionRevisionsThrough(
     }
 }
 
+private fun legacyFlushIsAccepted(
+    latest: AndroidDataCollectionSetting, revisions: List<AndroidDataCollectionSetting>,
+    decisions: Map<CollectionModuleId, IssuedCollectionDecision>, module: CollectionModuleId,
+): Boolean {
+    val policy = latest.effectiveModules()[module] ?: return false
+    if (policy.enabled || (policy.disableDisposition ?:
+        CollectionDataDisposition.FLUSH_THEN_STOP) != CollectionDataDisposition.FLUSH_THEN_STOP) return false
+    val decision = decisions[module] ?: return false
+    val accepted = revisions.singleOrNull { it.settingsVersion == decision.settingsVersion } ?: return false
+    return !collectionIsHalted(accepted, revisions.filter { it.settingsVersion <= accepted.settingsVersion }, decisions, setOf(module))
+}
+
+public data class CollectionUploadAuthorization(
+    val acceptedModules: Set<CollectionModuleId>,
+    val discardedModules: Set<CollectionModuleId>,
+    val heldModules: Set<CollectionModuleId>,
+    val settingsVersion: Int,
+)
+
+internal fun collectionUploadAuthorization(
+    latest: AndroidDataCollectionSetting, revisions: List<AndroidDataCollectionSetting>,
+    currentDecisions: Map<CollectionModuleId, IssuedCollectionDecision>,
+    capturedDecisions: Map<CollectionModuleId, IssuedCollectionDecision>,
+    modules: Set<CollectionModuleId>, capturedVersion: Int?,
+): CollectionUploadAuthorization? {
+    val captured = capturedVersion?.let { version ->
+        revisions.singleOrNull { it.settingsVersion == version } ?: return null
+    } ?: latest
+    if (captured.settingsVersion > latest.settingsVersion ||
+        collectionIsHalted(captured, revisions.filter { it.settingsVersion <= captured.settingsVersion }, capturedDecisions)) return null
+    // A current explicit required decline still stops the enrollment, including its historical queue.
+    if (latest.effectiveModules().any { (module, policy) -> policy.enabled && policy.required &&
+        currentDecisions[module]?.state == IssuedCollectionDecisionState.DECLINED }) return null
+    val accepted = linkedSetOf<CollectionModuleId>()
+    val discarded = linkedSetOf<CollectionModuleId>()
+    val held = linkedSetOf<CollectionModuleId>()
+    modules.forEach { module ->
+        val policy = latest.effectiveModules()[module]
+        val historicallyAccepted = currentDecisions[module]?.state == IssuedCollectionDecisionState.ACCEPTED &&
+            !collectionIsHalted(captured, revisions.filter { it.settingsVersion <= captured.settingsVersion },
+                capturedDecisions, setOf(module))
+        val pendingDisposition = policy?.disableDisposition.takeIf {
+            collectionIsHalted(latest, revisions, currentDecisions, setOf(module))
+        }
+        when {
+            pendingDisposition == CollectionDataDisposition.HOLD_PENDING -> held += module
+            pendingDisposition == CollectionDataDisposition.DISCARD_AND_STOP -> discarded += module
+            historicallyAccepted || (capturedVersion == null && legacyFlushIsAccepted(latest, revisions, currentDecisions, module)) ->
+                accepted += module
+            else -> held += module
+        }
+    }
+    return CollectionUploadAuthorization(accepted, discarded, held, latest.settingsVersion)
+}
+
 /** Pure upload-gate rule, split out so required/optional/disabled transitions are exhaustive. */
 internal fun collectionIsHalted(
     latestSettings: AndroidDataCollectionSetting,
     issuedRevisions: List<AndroidDataCollectionSetting>,
     decisions: Map<CollectionModuleId, IssuedCollectionDecision>,
+    uploadModules: Set<CollectionModuleId> = emptySet(),
 ): Boolean {
     val latestModules = latestSettings.effectiveModules()
     val latestEnabled = latestSettings.effectiveEnabledModuleIds()
@@ -470,18 +614,21 @@ internal fun collectionIsHalted(
             moduleId in latestEnabled && moduleSetting.required
         }
         .keys
-    if (latestRequired.isEmpty()) return false
+    if (!latestEnabled.containsAll(uploadModules)) return true
+    val checkedModules = latestRequired + uploadModules
+    if (checkedModules.isEmpty()) return false
 
     val revisionsByVersion = issuedRevisions.associateBy(AndroidDataCollectionSetting::settingsVersion)
     if (revisionsByVersion.size != issuedRevisions.size) return true
     if (revisionsByVersion[latestSettings.settingsVersion] != latestSettings) return true
 
-    return latestRequired.any { moduleId ->
+    return checkedModules.any { moduleId ->
         val decision = decisions[moduleId] ?: return@any true
         if (decision.settingsVersion > latestSettings.settingsVersion) return@any true
         when (decision.state) {
             IssuedCollectionDecisionState.DECLINED -> true
             IssuedCollectionDecisionState.UNAVAILABLE -> {
+                if (moduleId in uploadModules) return@any true
                 if (!SensorCollectionModules.isSensorModule(moduleId)) return@any true
                 !hasUnchangedAuthoritativeModulePolicy(
                     moduleId,

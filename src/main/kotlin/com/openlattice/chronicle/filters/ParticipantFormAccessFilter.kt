@@ -14,8 +14,7 @@ import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.filter.OncePerRequestFilter
 import org.springframework.web.context.request.RequestAttributes
 import org.springframework.web.context.request.RequestContextHolder
-import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
+import org.springframework.web.util.UrlPathHelper
 import java.util.UUID
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
@@ -60,20 +59,24 @@ public class ParticipantFormAccessFilter(
         )
     }
 
-    override fun shouldNotFilter(request: HttpServletRequest): Boolean = target(request) == null
+    override fun shouldNotFilter(request: HttpServletRequest): Boolean {
+        val path = normalizedPath(request)
+        return listOf("/chronicle/v3/survey", "/chronicle/v3/time-use-diary")
+            .none { path == it || path.startsWith("$it/") }
+    }
 
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
         filterChain: FilterChain,
     ) {
-        val target = target(request) ?: run {
-            filterChain.doFilter(request, response)
-            return
-        }
         val authentication = SecurityContextHolder.getContext().authentication
         if (authentication?.isAuthenticated == true && authentication !is AnonymousAuthenticationToken) {
             filterChain.doFilter(request, response)
+            return
+        }
+        val target = target(request) ?: run {
+            response.sendError(HttpStatus.UNAUTHORIZED.value(), Messages.get("error.form.sessionInvalid", request))
             return
         }
 
@@ -119,13 +122,13 @@ public class ParticipantFormAccessFilter(
     }
 
     private fun target(request: HttpServletRequest): Target? {
-        val path = request.requestURI
+        val path = normalizedPath(request)
         SURVEY_PARTICIPANT.matchEntire(path)?.let { match ->
             if (request.method !in setOf(HttpMethod.GET.name(), HttpMethod.POST.name())) return null
             return Target(
                 kind = ParticipantFormKind.APP_USAGE,
                 studyId = uuid(match.groupValues[1]) ?: return null,
-                participantId = decodePathSegment(match.groupValues[2]),
+                participantId = match.groupValues[2],
             )
         }
         SURVEY_FREQUENCY.matchEntire(path)?.let { match ->
@@ -145,7 +148,7 @@ public class ParticipantFormAccessFilter(
             return Target(
                 ParticipantFormKind.QUESTIONNAIRE,
                 uuid(match.groupValues[1]) ?: return null,
-                participantId = decodePathSegment(match.groupValues[2]),
+                participantId = match.groupValues[2],
                 resourceId = uuid(match.groupValues[3]) ?: return null,
             )
         }
@@ -158,7 +161,7 @@ public class ParticipantFormAccessFilter(
             return Target(
                 ParticipantFormKind.TIME_USE_DIARY,
                 uuid(match.groupValues[1]) ?: return null,
-                participantId = decodePathSegment(match.groupValues[2]),
+                participantId = match.groupValues[2],
             )
         }
         return null
@@ -166,8 +169,8 @@ public class ParticipantFormAccessFilter(
 
     private fun uuid(value: String): UUID? = runCatching { UUID.fromString(value) }.getOrNull()
 
-    private fun decodePathSegment(value: String): String =
-        URLDecoder.decode(value, StandardCharsets.UTF_8)
+    private fun normalizedPath(request: HttpServletRequest): String =
+        UrlPathHelper.defaultInstance.getPathWithinApplication(request).removeSuffix("/")
 
     private data class Target(
         val kind: ParticipantFormKind,

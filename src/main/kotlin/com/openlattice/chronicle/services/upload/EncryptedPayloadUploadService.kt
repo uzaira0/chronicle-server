@@ -65,7 +65,7 @@ public open class EncryptedPayloadUploadService(
 
         val decoder = Base64.getDecoder()
         StopWatch(
-            log = "Writing ${data.size} encrypted payloads for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} encrypted payloads ",
             level = Level.INFO,
             logger = logger,
         ).use {

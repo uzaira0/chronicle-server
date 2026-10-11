@@ -2,13 +2,17 @@ package com.openlattice.chronicle.services.upload
 
 import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AndroidDeviceSettingsEvent
+import com.openlattice.chronicle.postgres.bindCollectionEvent
+import com.openlattice.chronicle.postgres.setBooleanOrNull
+import com.openlattice.chronicle.postgres.setDoubleOrNull
+import com.openlattice.chronicle.postgres.setIntOrNull
+import com.openlattice.chronicle.postgres.setLongOrNull
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.sql.PreparedStatement
-import java.sql.Types
 import java.util.UUID
 
 /**
@@ -63,7 +67,7 @@ public open class DeviceSettingsUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} device settings snapshots for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} device settings snapshots ",
             level = Level.INFO,
             logger = logger,
         ).use {
@@ -89,11 +93,7 @@ public open class DeviceSettingsUploadService(
         participantId: String,
         event: AndroidDeviceSettingsEvent,
     ) {
-        ps.setObject(1, studyId)
-        ps.setString(2, participantId)
-        ps.setString(3, event.id)
-        ps.setObject(4, event.timestamp)
-        ps.setString(5, event.timezone)
+        ps.bindCollectionEvent(studyId, participantId, event.id, event.timestamp, event.timezone)
         ps.setBooleanOrNull(6, event.darkMode)
         ps.setDoubleOrNull(7, event.fontScale?.toDouble())
         ps.setBooleanOrNull(8, event.accessibilityEnabled)
@@ -116,20 +116,4 @@ public open class DeviceSettingsUploadService(
         ps.setIntOrNull(25, event.alarmVolumeMax)
         ps.setString(26, event.ringerMode?.name)
     }
-}
-
-private fun PreparedStatement.setIntOrNull(index: Int, value: Int?) {
-    if (value != null) setInt(index, value) else setNull(index, Types.INTEGER)
-}
-
-private fun PreparedStatement.setLongOrNull(index: Int, value: Long?) {
-    if (value != null) setLong(index, value) else setNull(index, Types.BIGINT)
-}
-
-private fun PreparedStatement.setBooleanOrNull(index: Int, value: Boolean?) {
-    if (value != null) setBoolean(index, value) else setNull(index, Types.BOOLEAN)
-}
-
-private fun PreparedStatement.setDoubleOrNull(index: Int, value: Double?) {
-    if (value != null) setDouble(index, value) else setNull(index, Types.DOUBLE)
 }

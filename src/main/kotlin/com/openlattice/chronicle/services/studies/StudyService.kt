@@ -48,6 +48,7 @@ import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.PARTI
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.PERMISSIONS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS
+import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS_WITH_WITHDRAWALS
 import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACL_KEY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CONTACT
@@ -119,6 +120,27 @@ public open class StudyService(
     internal companion object {
         private val logger = LoggerFactory.getLogger(StudyService::class.java)
         private val mapper = ObjectMappers.newJsonMapper()
+
+        /** The caller holds the studies row lock, shared with manifest validation and every settings writer. */
+        internal fun loadLockedStudyFeatures(connection: Connection, studyId: UUID): Set<String> =
+            connection.prepareStatement("SELECT modules FROM studies WHERE study_id = ? FOR UPDATE").use { statement ->
+                statement.setObject(1, studyId)
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "Study is unavailable" }
+                    val json = rows.getString("modules") ?: "{}"
+                    ObjectMappers.getJsonMapper().readTree(json).fieldNames().asSequence().toSet()
+                }
+            }
+
+        internal fun loadLockedParticipantAnnotations(connection: Connection, studyId: UUID, participantId: String): String? =
+            connection.prepareStatement(
+                "SELECT jsonb_build_object('participantNotes', participant_notes, 'participantTags', participant_tags)::text " +
+                    "FROM study_participants WHERE study_id = ? AND participant_id = ? FOR UPDATE"
+            ).use { statement ->
+                statement.setObject(1, studyId)
+                statement.setString(2, participantId)
+                statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
         private val STUDY_COLUMNS_LIST = listOf(
             STUDY_ID,
             TITLE,
@@ -328,7 +350,7 @@ public open class StudyService(
         """.trimIndent()
 
         internal val SELECT_STUDY_PARTICIPANTS_SQL = """
-            SELECT * FROM ${STUDY_PARTICIPANTS.name} WHERE ${STUDY_ID.name} = ?
+            SELECT * FROM $STUDY_PARTICIPANTS_WITH_WITHDRAWALS WHERE ${STUDY_ID.name} = ?
             ORDER BY ${PARTICIPANT_ID.name}
             LIMIT ? OFFSET ?
         """.trimIndent()
@@ -385,6 +407,12 @@ public open class StudyService(
             WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ?
         """.trimIndent()
 
+        private val PAUSE_ENROLLED_PARTICIPANTS_SQL = """
+            UPDATE ${STUDY_PARTICIPANTS.name}
+            SET ${PARTICIPATION_STATUS.name} = '${ParticipationStatus.PAUSED.name}'
+            WHERE ${STUDY_ID.name} = ? AND ${PARTICIPATION_STATUS.name} = '${ParticipationStatus.ENROLLED.name}'
+        """.trimIndent()
+
         /**
          * PreparedStatement bind order
          * 1) participantNotes
@@ -399,7 +427,9 @@ public open class StudyService(
         """.trimIndent()
     }
 
-    override fun createStudy(study: Study): UUID {
+    override fun createStudy(study: Study): UUID = createStudy(study) { _, _ -> }
+
+    internal fun createStudy(study: Study, beforeCommit: (Connection, UUID) -> Unit): UUID {
         val (flavor, baseStorage) = storageResolver.getDefaultPlatformStorage()
         val hds = com.openlattice.chronicle.storage.PinnedPlatformConnection.resolve(baseStorage)
         check(flavor == PostgresFlavor.VANILLA) { "Only vanilla postgres supported for studies." }
@@ -409,7 +439,10 @@ public open class StudyService(
         val aclKey = AclKey(study.id)
         hds.connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
-                .transaction { createStudy(it, study) }
+                .transaction {
+                    createStudy(it, study)
+                    beforeCommit(it, study.id)
+                }
                 .audit {
                     listOf(
                         AuditableEvent(
@@ -456,21 +489,6 @@ public open class StudyService(
             com.openlattice.chronicle.storage.PinnedPlatformConnection.afterCommit(baseStorage, aclKey, warmCaches)
         } else warmCaches()
         return study.id
-    }
-
-    override fun expireStudies(studyIds: Set<UUID>) {
-        studyIds.forEach { studyId ->
-            val aclKey = AclKey(studyId)
-            //Ensure admin role still has access to the study by default.
-            authorizationService.addPermission(aclKey, Principals.getAdminRole(), EnumSet.allOf(Permission::class.java))
-
-            authorizationService
-                .getAllSecurableObjectPermissions(aclKey)
-                .aces.filterNot { it.principal == Principals.getAdminRole() }
-                .forEach { ace ->
-                    authorizationService.removePermission(aclKey, ace.principal, EnumSet.copyOf(ace.permissions))
-                }
-        }
     }
 
     override fun createStudy(connection: Connection, study: Study) {
@@ -624,36 +642,70 @@ public open class StudyService(
                 }
         }
 
+    override fun pauseEnrolledParticipants(studyId: UUID): Int =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            AuditedTransactionBuilder<Int>(connection, auditingManager)
+                .transaction { conn ->
+                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
+                    conn.prepareStatement(PAUSE_ENROLLED_PARTICIPANTS_SQL).use { statement ->
+                        statement.setObject(1, studyId)
+                        statement.executeUpdate()
+                    }
+                }
+                .audit { count ->
+                    if (count == 0) emptyList() else listOf(
+                        AuditableEvent(
+                            aclKey = AclKey(studyId),
+                            securablePrincipalId = IdConstants.CHRONICLE.id,
+                            principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
+                            eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
+                            description = "Paused $count enrolled participants after study duration elapsed",
+                            study = studyId,
+                            data = mapOf("affectedParticipants" to count),
+                        ),
+                    )
+                }
+                .buildAndRun()
+        }
+
     override fun updateParticipationStatus(
         studyId: UUID,
         participantId: String,
         participationStatus: ParticipationStatus,
     ) {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            AuditedTransactionBuilder<AuditableEvent>(connection, auditingManager)
+                .transaction { conn -> updateParticipationStatus(conn, studyId, participantId, participationStatus) }
+                .audit { listOf(it) }
+                .buildAndRun()
+        }
+    }
+
+    /** Uses the caller's transaction and returns its audit event without publishing it. */
+    internal fun updateParticipationStatus(
+        connection: Connection,
+        studyId: UUID,
+        participantId: String,
+        participationStatus: ParticipationStatus,
+    ): AuditableEvent {
         logger.info(
             "Updating participation status for study {} and {}",
             studyId,
             LogSanitizer.stableFingerprint(participantId, "participant"),
         )
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            AuditedTransactionBuilder<Unit>(connection, auditingManager)
-                .transaction { conn ->
-                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
-                    conn.prepareStatement(SET_PARTICIPATION_STATUS_SQL).use { ps ->
-                        ps.setString(1, participationStatus.name)
-                        ps.setObject(2, studyId)
-                        ps.setString(3, participantId)
-                        ps.executeUpdate()
-                    }
-                }.audit {
-                    listOf(
-                        AuditableEvent(
-                            aclKey = AclKey(studyId),
-                            eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
-                            description = "Set participation status of participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId to $participationStatus"
-                        )
-                    )
-                }.buildAndRun()
+        com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
+        connection.prepareStatement(SET_PARTICIPATION_STATUS_SQL).use { ps ->
+            ps.setString(1, participationStatus.name)
+            ps.setObject(2, studyId)
+            ps.setString(3, participantId)
+            ps.executeUpdate()
         }
+        return AuditableEvent(
+            aclKey = AclKey(studyId),
+            eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
+            description =
+                "Set participation status of participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId to $participationStatus"
+        )
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -686,7 +738,8 @@ public open class StudyService(
                         AuditableEvent(
                             aclKey = AclKey(studyId),
                             eventType = AuditEventType.UPDATE_PARTICIPANT_ANNOTATIONS,
-                            description = "Updated annotations for participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId"
+                            description =
+                                "Updated annotations for participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId"
                         )
                     )
                 }.buildAndRun()
@@ -1076,6 +1129,40 @@ public open class StudyService(
     private fun requireStudyVisible(studyId: UUID) {
         if (!quarantineAwareStudies.isVisible(studyId)) {
             throw NoSuchElementException("No study found for id $studyId")
+        }
+    }
+}
+
+/** Serialize disclosure and recipient changes with enrollment manifest validation. */
+internal fun loadEnrollmentDisclosureActivity(connection: Connection, studyId: UUID): Pair<Boolean, Boolean> {
+    connection.prepareStatement("SELECT 1 FROM studies WHERE study_id = ? FOR UPDATE").use { statement ->
+        statement.setObject(1, studyId)
+        statement.executeQuery().use { rows ->
+            if (!rows.next()) throw org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND,
+                com.openlattice.chronicle.i18n.Messages.get("error.study.notFound"),
+            )
+        }
+    }
+    return connection.prepareStatement(
+        """
+        SELECT
+            (EXISTS (SELECT 1 FROM study_participants WHERE study_id = ? AND participation_status = 'ENROLLED')
+             OR EXISTS (SELECT 1 FROM devices WHERE study_id = ?)) AS active_enrollment,
+            EXISTS (
+                SELECT 1 FROM participant_form_access_codes
+                WHERE study_id = ? AND form_kind = 'ENROLLMENT'
+                  AND enrollment_attempt_id IS NOT NULL
+                  AND enrollment_replay_expires_at > now() AND revoked_at IS NULL
+            ) AS pending_enrollment
+        """.trimIndent(),
+    ).use { statement ->
+        statement.setObject(1, studyId)
+        statement.setObject(2, studyId)
+        statement.setObject(3, studyId)
+        statement.executeQuery().use { rows ->
+            check(rows.next()) { "Participant-policy activity query returned no row" }
+            rows.getBoolean(1) to rows.getBoolean(2)
         }
     }
 }

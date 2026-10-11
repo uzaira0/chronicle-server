@@ -5,7 +5,8 @@ import com.openlattice.chronicle.e2e.dsl.chronicleScenario
 import com.openlattice.chronicle.e2e.dsl.di.ProvidersBundle
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.study.ParticipantDataType
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.OffsetDateTime
@@ -21,11 +22,13 @@ class DataUploadE2ETest : ChronicleServerTests() {
             study(providers.data.study("UploadStats")) {
                 participant {
                     device {
-                        upload(providers.data.usageEvents(studyId, participantId, count = 10)) {
+                        assertUsageStats(studyManager.getParticipantStats(studyId, participantId))
+                        val events = providers.data.usageEvents(studyId, participantId, count = 10)
+                        upload(events) {
                             assertTrue("Expected rowsWritten > 0", rowsWritten > 0)
 
                             val stats = studyManager.getParticipantStats(studyId, participantId)
-                            assertNotNull("Expected stats entry for participant", stats)
+                            assertUsageStats(stats, events)
                         }
                     }
                 }
@@ -59,4 +62,23 @@ class DataUploadE2ETest : ChronicleServerTests() {
             }
         }
     }
+}
+
+internal fun assertUsageStats(
+    stats: com.openlattice.chronicle.participants.ParticipantStats?,
+    events: com.openlattice.chronicle.android.ChronicleData? = null,
+) {
+    if (events == null) {
+        assertNull("Enrollment alone cannot populate first capture", stats?.androidFirstDate)
+        assertNull("Enrollment alone cannot populate last capture", stats?.androidLastDate)
+        assertTrue("Enrollment alone cannot populate capture dates", stats?.androidUniqueDates.isNullOrEmpty())
+        return
+    }
+    val dates = events.filterIsInstance<com.openlattice.chronicle.android.ChronicleUsageEvent>()
+        .map { it.timestamp.atZoneSameInstant(java.time.ZoneId.of(it.timezone)) }
+    assertTrue("Fixture must contain usage captures", dates.isNotEmpty())
+    val updated = checkNotNull(stats) { "Upload must create capture stats before flush" }
+    assertEquals(dates.min().toInstant(), updated.androidFirstDate?.toInstant())
+    assertEquals(dates.max().toInstant(), updated.androidLastDate?.toInstant())
+    assertEquals(dates.map { it.toLocalDate() }.toSet(), updated.androidUniqueDates)
 }

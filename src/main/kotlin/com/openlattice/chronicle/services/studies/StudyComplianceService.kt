@@ -11,7 +11,6 @@ import com.openlattice.chronicle.auditing.AuditingComponent
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.hazelcast.HazelcastMap
-import com.openlattice.chronicle.mapstores.storage.StudyMapstore.Companion.NOTIFY_RESEARCHERS_INDEX
 import com.openlattice.chronicle.notifications.StudyNotificationSettings
 import com.openlattice.chronicle.postgres.ResultSetAdapters
 import com.openlattice.chronicle.sources.SourceDeviceType
@@ -68,7 +67,7 @@ public open class StudyComplianceService(
 
         public fun getDataUploadedSql(dataTable: String): String {
             return """
-            SELECT ${PostgresEventColumns.STUDY_ID.name},${PostgresEventColumns.PARTICIPANT_ID.name}
+            SELECT ${PostgresEventColumns.STUDY_ID.name}::text AS ${PostgresEventColumns.STUDY_ID.name},${PostgresEventColumns.PARTICIPANT_ID.name}
             FROM $dataTable
             WHERE
         """.trimIndent()
@@ -109,6 +108,24 @@ public open class StudyComplianceService(
 
         }
 
+        internal fun androidUploadsSql(
+            settings: Map<UUID, Map<StudySettingType, StudySetting>>,
+            flavor: PostgresFlavor,
+        ): String {
+            // Ingestion already enforces module consent. Any accepted research stream
+            // counts as activity; availability reports and diagnostics do not.
+            val sources = listOf(
+                PostgresEventTables.CHRONICLE_USAGE_EVENTS.name to PostgresEventColumns.TIMESTAMP.name,
+                ChroniclePostgresTables.ANDROID_SENSOR_DATA.name to PostgresColumns.SAMPLE_TIMESTAMP.name,
+                ChroniclePostgresTables.AMBIENT_AUDIO_EVENTS.name to PostgresColumns.SAMPLE_TIMESTAMP.name,
+            ) + com.openlattice.chronicle.services.download.DataDownloadService.COLLECTION_EXPORTS
+                .filterKeys { it != com.openlattice.chronicle.study.ParticipantDataType.SensorAvailability }
+                .values.map { it.table.name to it.timestampColumn.name }
+            return sources.joinToString(" UNION ") { (table, timestamp) ->
+                buildSql(table, timestamp, settings, true, flavor)
+            }
+        }
+
         public fun getDurationPolicy(
             studyId: UUID,
             enabledStudiesSettings: Map<UUID, Map<StudySettingType, StudySetting>>,
@@ -131,7 +148,7 @@ public open class StudyComplianceService(
     private fun getNonCompliantParticipantsByStudy(studies: Collection<UUID>): Map<UUID, Map<String, List<ComplianceViolation>>> {
         logger.info("Getting non-compliant participants for the following studies: $studies")
         //Studies being empty in this function means that it will return all studies.
-        val enabledStudiesSettings = getStudiesWithNotificationsEnabled(studies)
+        val enabledStudiesSettings = getVisibleStudySettings(studies)
         if (enabledStudiesSettings.isEmpty()) {
             logger.info("No partcipants without data uploads in the specified timeframes.")
             return mapOf()
@@ -142,13 +159,7 @@ public open class StudyComplianceService(
         return activeParticipants.flatMap { (sourceDeviceType, participants) ->
             when (sourceDeviceType) {
                 SourceDeviceType.Android -> getStudyParticipantsWithoutRecentUploads(
-                    buildSql(
-                        PostgresEventTables.CHRONICLE_USAGE_EVENTS.name,
-                        PostgresEventColumns.TIMESTAMP.name,
-                        enabledStudiesSettings,
-                        true,
-                        storageResolver.getDefaultEventStorage().first
-                    ), enabledStudiesSettings,
+                    androidUploadsSql(enabledStudiesSettings, storageResolver.getDefaultEventStorage().first), enabledStudiesSettings,
                     participants,
                     sourceDeviceType
                 ).asSequence()
@@ -274,33 +285,14 @@ public open class StudyComplianceService(
 
     // reason: vararg Hazelcast Predicates.in API requires the spread; studyId arrays are small
     @Suppress("SpreadOperator")
-    private fun getStudiesWithNotificationsEnabled(studyIds: Collection<UUID>): Map<UUID, Map<StudySettingType, StudySetting>> {
-        val candidates = studies
-            .values(
-                if (studyIds.isEmpty()) {
-                    Predicates.equal(NOTIFY_RESEARCHERS_INDEX, true)
-                } else {
-                    Predicates.and(
-                        Predicates.`in`<UUID, Study>("__key", *studyIds.toTypedArray()),
-                        Predicates.equal<UUID, Study>(NOTIFY_RESEARCHERS_INDEX, true)
-                    )
-                }
-            )
-        return quarantineAwareStudies
-            .filterVisible(candidates)
-            .filter { it.settings.containsKey(StudySettingType.Notifications) }
-            .associateBy({ it.id }, { it.settings })
-//        return studyService.getStudySettings(
-//            BasePostgresIterable(
-//                PreparedStatementHolderSupplier(
-//                    storageResolver.getPlatformStorage(),
-//                    NOTIFICATION_ENABLED_STUDIES,
-//                    1024
-//                ) { ps -> ps.setArray(1, PostgresArrays.createUuidArray(ps.connection, studyIds)) }
-//            ) { rs -> rs.getObject(PostgresColumns.STUDY_ID.name, UUID::class.java) }.toList()
-//        ).filter { studySettings ->
-//            studySettings.value[StudySettingType.Notifications] != null
-//        }
+    private fun getVisibleStudySettings(studyIds: Collection<UUID>): Map<UUID, Map<StudySettingType, StudySetting>> {
+        val candidates = if (studyIds.isEmpty()) studies.values else {
+            studies.values(Predicates.`in`<UUID, Study>("__key", *studyIds.toTypedArray()))
+        }
+        return quarantineAwareStudies.filterVisible(candidates).associateBy({ it.id }, {
+            it.settings + (StudySettingType.Notifications to
+                (it.settings[StudySettingType.Notifications] ?: StudyNotificationSettings("", it.title)))
+        })
     }
 
 

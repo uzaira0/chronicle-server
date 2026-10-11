@@ -18,6 +18,8 @@ import com.openlattice.chronicle.study.StudyEncryptionSetting
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.study.StudyUpdate
+import com.openlattice.chronicle.study.StudyWithdrawalSetting
+import com.openlattice.chronicle.study.WithdrawalMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -31,6 +33,20 @@ import java.sql.ResultSet
 import java.util.UUID
 
 class DataCollectionSettingsVersionTest {
+    @Test fun withdrawalDefaultsToErasureAndRejectsInvalidSettings() {
+        assertEquals(StudyWithdrawalSetting(WithdrawalMode.ERASE),
+            Study(title = "withdrawal policy", contact = "research@example.org").settings[StudySettingType.Withdrawal])
+        assertThrows(IllegalArgumentException::class.java) {
+            mergeStudySetting(StudySettings(), StudySettingType.Withdrawal, StudyEncryptionSetting())
+        }
+        assertThrows(com.fasterxml.jackson.core.JsonProcessingException::class.java) {
+            ObjectMappers.getJsonMapper().readValue(
+                """{"Withdrawal":{"@class":"com.openlattice.chronicle.study.StudyWithdrawalSetting","mode":"UNKNOWN_MODE"}}""",
+                StudySettings::class.java,
+            )
+        }
+    }
+
     @Test
     fun `new study without collection policy receives server issued initial default`() {
         val study = Study(title = "initial policy", contact = "research@example.org",

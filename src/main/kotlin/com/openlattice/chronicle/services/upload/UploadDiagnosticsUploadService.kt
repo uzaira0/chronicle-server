@@ -2,6 +2,7 @@ package com.openlattice.chronicle.services.upload
 
 import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.DeletionStudyFence
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.SQLException
@@ -24,7 +25,7 @@ public open class UploadDiagnosticsUploadService(
             WHERE NOT EXISTS (
                 SELECT 1 FROM upload_diagnostic_erasures
                 WHERE study_id = ?
-                  AND participant_block_token = md5(?::text || ':' || ?)
+                  AND participant_block_token = chronicle_participant_block_token(?::uuid, ?::text)
                   AND event_id = ?::uuid
             )
             ON CONFLICT (study_id, participant_id, device_id, event_id)
@@ -41,7 +42,7 @@ public open class UploadDiagnosticsUploadService(
          * Completion clears participant_id, so the operation is matched by its block token.
          */
         private val ERASURE_CUTOFF_SQL = """
-            WITH subject AS (SELECT ?::uuid AS study_id, md5(?::text || ':' || ?) AS token)
+            WITH subject AS (SELECT ?::uuid AS study_id, chronicle_participant_block_token(?::uuid, ?::text) AS token)
             SELECT max(cutoff) FROM (
                 SELECT COALESCE(operation.started_at, operation.completed_at) AS cutoff
                 FROM data_deletion_operations operation JOIN subject USING (study_id)
@@ -50,12 +51,6 @@ public open class UploadDiagnosticsUploadService(
                 SELECT purge.cutoff FROM participant_purge_cutoffs purge JOIN subject USING (study_id)
                 WHERE purge.participant_block_token = subject.token
             ) erasures
-        """.trimIndent()
-
-        private val DELETION_STUDY_LOCK_SQL = """
-            SELECT pg_advisory_xact_lock_shared(
-                hashtextextended('chronicle-deletion:' || ?::text, 0)
-            )
         """.trimIndent()
 
         /** Exception class names only (binary names allow `$` for nested classes). */
@@ -82,15 +77,12 @@ public open class UploadDiagnosticsUploadService(
             connection.autoCommit = false
             try {
                 // Serialize the cutoff read and insert against completion of a study purge.
-                connection.prepareStatement(DELETION_STUDY_LOCK_SQL).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeQuery().use { resultSet ->
-                        check(resultSet.next()) { "Deletion study lock was not acquired" }
-                    }
-                }
+                DeletionStudyFence.shared(connection, studyId)
                 val cutoff = erasureCutoff(connection, studyId, participantId)
                 // Keep the cutoff for unseen events; the upsert also fences erased IDs regardless of device time.
-                val retained = if (cutoff == null) data else data.filter { !it.firstOccurredAt.isBefore(cutoff) }
+                val captures = com.openlattice.chronicle.storage.ParticipantCollectionGate.retainQueuedCaptures(
+                    connection, studyId, participantId, data, { it.lastOccurredAt })
+                val retained = if (cutoff == null) captures else captures.filter { !it.firstOccurredAt.isBefore(cutoff) }
                 if (retained.isNotEmpty()) persistBatch(connection, studyId, participantId, deviceId, retained)
                 connection.commit()
             } catch (error: SQLException) {

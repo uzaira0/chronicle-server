@@ -1,13 +1,16 @@
 package com.openlattice.chronicle.services.upload
 
 import com.geekbeast.util.StopWatch
+import com.openlattice.chronicle.postgres.postgresText
 import com.openlattice.chronicle.collection.AndroidNotificationActivityEvent
+import com.openlattice.chronicle.postgres.bindCollectionEvent
+import com.openlattice.chronicle.postgres.setBooleanOrNull
+import com.openlattice.chronicle.postgres.setIntOrNull
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
-import java.sql.Types
 import java.util.UUID
 
 /**
@@ -65,7 +68,7 @@ public open class NotificationActivityUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} notification activity events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} notification activity events ",
             level = Level.INFO,
             logger = logger,
         ).use {
@@ -74,18 +77,12 @@ public open class NotificationActivityUploadService(
             ) { connection, retained ->
                 connection.prepareStatement(INSERT_NOTIFICATION_ACTIVITY_SQL).use { ps ->
                     retained.forEach { event ->
-                        ps.setObject(1, studyId)
-                        ps.setString(2, participantId)
-                        ps.setString(3, event.id)
-                        ps.setObject(4, event.timestamp)
-                        ps.setString(5, event.timezone)
+                        ps.bindCollectionEvent(studyId, participantId, event.id, event.timestamp, event.timezone)
                         ps.setString(6, event.eventType.name)
-                        ps.setString(7, event.packageName)
-                        ps.setString(8, event.category)
-                        val ongoing = event.ongoing
-                        if (ongoing != null) ps.setBoolean(9, ongoing) else ps.setNull(9, Types.BOOLEAN)
-                        val importance = event.importance
-                        if (importance != null) ps.setInt(10, importance) else ps.setNull(10, Types.INTEGER)
+                        ps.setString(7, event.packageName.postgresText())
+                        ps.setString(8, event.category?.postgresText())
+                        ps.setBooleanOrNull(9, event.ongoing)
+                        ps.setIntOrNull(10, event.importance)
                         ps.addBatch()
                     }
                     ps.executeBatch()

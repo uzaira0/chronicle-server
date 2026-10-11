@@ -415,7 +415,8 @@ class PayloadFixtureIngestionTest {
         val operation = orchestrator.quarantineParticipant(SHARED_STUDY_ID, participantId,
             DataDeletionMode.COLLECTED_DATA_PURGE, "fixture-purge", UUID.randomUUID())
         hds().connection.use { connection ->
-            connection.prepareStatement("UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
+            connection.prepareStatement(
+                "UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
                 it.setObject(1, operation); it.executeUpdate()
             }
         }
@@ -446,6 +447,23 @@ class PayloadFixtureIngestionTest {
             assertEquals(3, ingest(SHARED_STUDY_ID, participantId, mixed))
             assertEquals("$familyName: mixed retry keeps only fresh rows", 2,
                 scopedCount(table, SHARED_STUDY_ID, participantId))
+            val stop = OffsetDateTime.parse(fresh.path("timestamp").asText()).plusHours(12)
+            for (status in listOf("PAUSED", "COLLECTION_COMPLETED")) {
+                stopParticipant(SHARED_STUDY_ID, participantId, status)
+                hds().connection.use { connection ->
+                    connection.prepareStatement("UPDATE study_participants SET capture_cutoff = ? WHERE study_id = ? AND participant_id = ?").use {
+                        it.setObject(1, stop); it.setObject(2, SHARED_STUDY_ID); it.setString(3, participantId); it.executeUpdate()
+                    }
+                    connection.prepareStatement("DELETE FROM $table WHERE study_id = ? AND participant_id = ?").use {
+                        it.setObject(1, SHARED_STUDY_ID); it.setString(2, participantId); it.executeUpdate()
+                    }
+                }
+                mapper.writeValue(mixed, listOf(fresh, newest))
+                assertEquals("$familyName: the entire $status batch is acknowledged", 2, ingest(SHARED_STUDY_ID, participantId, mixed))
+                assertEquals("$familyName: only the pre-stop capture is stored", 1, scopedCount(table, SHARED_STUDY_ID, participantId))
+                assertEquals(2, ingest(SHARED_STUDY_ID, participantId, mixed))
+                assertEquals("$familyName: retries do not store the forbidden sibling", 1, scopedCount(table, SHARED_STUDY_ID, participantId))
+            }
         } finally { mixed.delete() }
     }
 
@@ -590,6 +608,12 @@ class PayloadFixtureIngestionTest {
                 scopedCount(registryEntry.backendTable, SHARED_STUDY_ID, participantId),
             )
         }
+        for (status in listOf("PAUSED", "COLLECTION_COMPLETED")) {
+            stopParticipant(SHARED_STUDY_ID, participantId, status)
+            assertEquals("Undated envelopes cannot prove pre-stop captures, but the queue must drain", 1,
+                ingest(validFixture("encrypted-payloads")))
+            assertEquals(0, scopedCount(registryEntry.backendTable, SHARED_STUDY_ID, participantId))
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -598,6 +622,23 @@ class PayloadFixtureIngestionTest {
 
     private fun bufferCount(studyId: UUID, participantId: String): Int =
         scopedCount(ChroniclePostgresTables.UPLOAD_BUFFER.name, studyId, participantId)
+
+    private fun stopParticipant(studyId: UUID, participantId: String, status: String): OffsetDateTime =
+        hds().connection.use { connection ->
+            connection.prepareStatement("""UPDATE study_participants SET participation_status = ?
+                WHERE study_id = ? AND participant_id = ? RETURNING capture_cutoff""").use {
+                it.setString(1, status); it.setObject(2, studyId); it.setString(3, participantId)
+                it.executeQuery().use { rows -> assertTrue(rows.next()); rows.getObject(1, OffsetDateTime::class.java) }
+            }
+        }
+
+    private fun sampleRows(table: String, sampleId: UUID): Int =
+        hds().connection.use { c ->
+            c.prepareStatement("SELECT count(*) FROM $table WHERE sample_id = ?").use { ps ->
+                ps.setString(1, sampleId.toString())
+                ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+            }
+        }
 
     /**
      * sensor_data stores study_id as TEXT_UUID (varchar) — the iOS mover binds it with
@@ -674,6 +715,17 @@ class PayloadFixtureIngestionTest {
             assertIngestionRejects("android-sensor-data", invalid, ::ingest)
             assertEquals(0, bufferCount(SHARED_STUDY_ID, participantId))
             assertEquals(expected.size, scopedCount(table, SHARED_STUDY_ID, participantId))
+        }
+        val permitted = expected.toMutableMap()
+        val template = decodeList(valid, AndroidSensorSample::class.java).first()
+        for ((index, status) in listOf("PAUSED", "COLLECTION_COMPLETED").withIndex()) {
+            val cutoff = stopParticipant(SHARED_STUDY_ID, participantId, status)
+            val before = template.copy(id = UUID.randomUUID(), timestamp = cutoff.minusSeconds(index + 1L))
+            val after = template.copy(id = UUID.randomUUID(), timestamp = cutoff.plusSeconds(1))
+            assertEquals(2, service.upload(SHARED_STUDY_ID, participantId, deviceId, listOf(before, after)))
+            permitted[before.id.toString()] = before.timestamp
+            assertTimestampsPreserved("android-sensor-data", permitted,
+                persistedEventTimestamps(table, "sample_id", SHARED_STUDY_ID, participantId))
         }
     }
 
@@ -846,6 +898,26 @@ class PayloadFixtureIngestionTest {
             assertIngestionRejects("ios-sensorkit-data", invalid, ::ingest)
             assertEquals(0, bufferCount(SHARED_STUDY_ID, participantId))
             assertEquals(expectedRows, sensorDataCount(table, SHARED_STUDY_ID, participantId))
+        }
+        for ((index, status) in listOf("PAUSED", "COLLECTION_COMPLETED").withIndex()) {
+            val cutoff = stopParticipant(SHARED_STUDY_ID, participantId, status)
+            val before = samples.single().copy(id = UUID.randomUUID(), dateRecorded = cutoff.plusMinutes(10),
+                startDate = cutoff.minusMinutes(1), endDate = cutoff.minusSeconds(index + 1L))
+            val after = before.copy(id = UUID.randomUUID(), endDate = cutoff.plusSeconds(1))
+            assertEquals(2, service.upload(SHARED_STUDY_ID, participantId, deviceId, listOf(before, after)))
+            hds().connection.use { connection ->
+                connection.prepareStatement("SELECT data FROM upload_buffer WHERE study_id = ? AND participant_id = ?").use {
+                    it.setObject(1, SHARED_STUDY_ID); it.setString(2, participantId)
+                    it.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        assertEquals(listOf(before.id.toString()), mapper.readTree(rows.getString(1)).map { sample -> sample.path("id").asText() })
+                    }
+                }
+            }
+            mover.runTask()
+            // The legacy iOS dedup collapses content-equal samples regardless of id and timestamps,
+            // so assert on the post-cutoff sample id rather than on a row count.
+            assertEquals(0, sampleRows(table, after.id))
         }
     }
 

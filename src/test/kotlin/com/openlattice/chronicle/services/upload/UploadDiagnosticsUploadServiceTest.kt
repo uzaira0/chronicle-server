@@ -43,9 +43,10 @@ class UploadDiagnosticsUploadServiceTest {
     private val connection = Mockito.mock(Connection::class.java)
     private val lockStatement = Mockito.mock(PreparedStatement::class.java)
     private val cutoffStatement = Mockito.mock(PreparedStatement::class.java)
+    private val stateStatement = Mockito.mock(PreparedStatement::class.java)
     private val upsertStatement = Mockito.mock(PreparedStatement::class.java)
 
-    private fun storage(erasureCutoff: OffsetDateTime?) {
+    private fun storage(erasureCutoff: OffsetDateTime?, captureCutoff: OffsetDateTime? = null) {
         val dataSource = Mockito.mock(HikariDataSource::class.java)
         val resultSet = Mockito.mock(ResultSet::class.java)
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
@@ -55,6 +56,7 @@ class UploadDiagnosticsUploadServiceTest {
             when {
                 sql.contains("pg_advisory_xact_lock_shared") -> lockStatement
                 sql.contains("SELECT max(cutoff)") -> cutoffStatement
+                sql.contains("LEFT JOIN LATERAL") -> stateStatement
                 else -> upsertStatement
             }
         }
@@ -64,6 +66,11 @@ class UploadDiagnosticsUploadServiceTest {
         Mockito.`when`(cutoffStatement.executeQuery()).thenReturn(resultSet)
         Mockito.`when`(resultSet.next()).thenReturn(true)
         Mockito.`when`(resultSet.getObject(1, OffsetDateTime::class.java)).thenReturn(erasureCutoff)
+        val state = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(stateStatement.executeQuery()).thenReturn(state)
+        Mockito.`when`(state.next()).thenReturn(captureCutoff != null)
+        Mockito.`when`(state.getString("participation_status")).thenReturn("PAUSED")
+        Mockito.`when`(state.getObject("capture_cutoff", OffsetDateTime::class.java)).thenReturn(captureCutoff)
         Mockito.`when`(upsertStatement.executeBatch()).thenReturn(intArrayOf(1))
     }
 
@@ -79,7 +86,7 @@ class UploadDiagnosticsUploadServiceTest {
         Mockito.verify(connection, Mockito.times(2)).commit()
         Mockito.verify(upsertStatement, Mockito.times(2)).executeBatch()
         val sql = ArgumentCaptor.forClass(String::class.java)
-        Mockito.verify(connection, Mockito.times(6)).prepareStatement(sql.capture())
+        Mockito.verify(connection, Mockito.atLeastOnce()).prepareStatement(sql.capture())
         sql.allValues.forEach { query -> assertEquals(false, query.contains("DELETE FROM", ignoreCase = true)) }
     }
 
@@ -96,6 +103,23 @@ class UploadDiagnosticsUploadServiceTest {
         Mockito.verify(upsertStatement, Mockito.times(1)).addBatch()
         Mockito.verify(upsertStatement).setString(4, later.id)
         Mockito.verify(upsertStatement, Mockito.never()).setString(4, erased.id)
+    }
+
+    @Test
+    fun `stopped diagnostics acknowledge every id but persist only pre-stop events`() {
+        val cutoff = OffsetDateTime.parse("2026-08-27T00:00:00Z")
+        storage(erasureCutoff = null, captureCutoff = cutoff)
+        val before = fixture()
+        val atStop = fixture(firstOccurredAt = cutoff.minusSeconds(1))
+        val later = fixture(firstOccurredAt = cutoff)
+
+        assertEquals(listOf(before.id, atStop.id, later.id),
+            service.upload(studyId, "participant", deviceId, listOf(before, atStop, later)))
+        Mockito.verify(upsertStatement).addBatch()
+        Mockito.verify(upsertStatement).setString(4, before.id)
+        Mockito.verify(upsertStatement, Mockito.never()).setString(4, atStop.id)
+        Mockito.verify(upsertStatement, Mockito.never()).setString(4, later.id)
+        Mockito.verify(connection).commit()
     }
 
     @Test

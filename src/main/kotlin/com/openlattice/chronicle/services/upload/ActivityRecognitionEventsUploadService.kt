@@ -53,7 +53,7 @@ public open class ActivityRecognitionEventsUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} activity recognition events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} activity recognition events ",
             level = Level.INFO,
             logger = logger,
         ).use {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.participantaccess.ParticipantFormKind
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ResponseStatus
 import java.security.MessageDigest
@@ -75,45 +76,47 @@ public class ParticipantFormSubmissionReceiptService(
             connection.autoCommit = false
             try {
                 com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, scope.studyId)
-                val receiptId = UUID.randomUUID()
-                val inserted = connection.prepareStatement(
-                    """
-                    INSERT INTO participant_form_submission_receipts
-                        (receipt_id, access_code_id, study_id, participant_id, form_kind,
-                         resource_key, idempotency_key, request_hash, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING')
-                    ON CONFLICT (access_code_id, form_kind, resource_key, idempotency_key) DO NOTHING
-                    """.trimIndent()
-                ).use { statement ->
-                    statement.setObject(1, receiptId)
-                    statement.setObject(2, scope.accessCodeId)
-                    statement.setObject(3, scope.studyId)
-                    statement.setString(4, scope.participantId)
-                    statement.setString(5, formKind.name)
-                    statement.setString(6, resourceKey)
-                    statement.setObject(7, idempotencyKey)
-                    statement.setBytes(8, requestHash)
-                    statement.executeUpdate() == 1
-                }
-
-                val result = if (inserted) {
-                    val submissionId = action(connection)
-                    connection.prepareStatement(
+                com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, scope.studyId, scope.participantId)
+                val result = PinnedPlatformConnection.committing(storageResolver.getPlatformStorage(), connection) {
+                    val receiptId = UUID.randomUUID()
+                    val inserted = connection.prepareStatement(
                         """
-                        UPDATE participant_form_submission_receipts
-                        SET status = 'COMPLETED', submission_id = ?, completed_at = now()
-                        WHERE receipt_id = ? AND status = 'PROCESSING'
+                        INSERT INTO participant_form_submission_receipts
+                            (receipt_id, access_code_id, study_id, participant_id, form_kind,
+                             resource_key, idempotency_key, request_hash, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PROCESSING')
+                        ON CONFLICT (access_code_id, form_kind, resource_key, idempotency_key) DO NOTHING
                         """.trimIndent()
                     ).use { statement ->
-                        statement.setObject(1, submissionId)
-                        statement.setObject(2, receiptId)
-                        check(statement.executeUpdate() == 1) { "Participant receipt completion failed" }
+                        statement.setObject(1, receiptId)
+                        statement.setObject(2, scope.accessCodeId)
+                        statement.setObject(3, scope.studyId)
+                        statement.setString(4, scope.participantId)
+                        statement.setString(5, formKind.name)
+                        statement.setString(6, resourceKey)
+                        statement.setObject(7, idempotencyKey)
+                        statement.setBytes(8, requestHash)
+                        statement.executeUpdate() == 1
                     }
-                    IdempotentSubmissionResult(submissionId, replayed = false)
-                } else {
-                    loadCommittedReceipt(connection, scope, formKind, resourceKey, idempotencyKey, requestHash)
+
+                    if (inserted) {
+                        val submissionId = action(connection)
+                        connection.prepareStatement(
+                            """
+                            UPDATE participant_form_submission_receipts
+                            SET status = 'COMPLETED', submission_id = ?, completed_at = now()
+                            WHERE receipt_id = ? AND status = 'PROCESSING'
+                            """.trimIndent()
+                        ).use { statement ->
+                            statement.setObject(1, submissionId)
+                            statement.setObject(2, receiptId)
+                            check(statement.executeUpdate() == 1) { "Participant receipt completion failed" }
+                        }
+                        IdempotentSubmissionResult(submissionId, replayed = false)
+                    } else {
+                        loadCommittedReceipt(connection, scope, formKind, resourceKey, idempotencyKey, requestHash)
+                    }
                 }
-                connection.commit()
                 ChronicleMetrics.participantFormSubmissionTotal
                     .labels(formKind.name, if (result.replayed) "replayed" else "committed")
                     .inc()

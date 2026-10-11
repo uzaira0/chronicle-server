@@ -7,6 +7,7 @@ import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
+import com.openlattice.chronicle.postgres.postgresText
 import java.sql.Types
 import java.util.UUID
 
@@ -64,7 +65,7 @@ public open class AppAudioContentUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} audio content events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} audio content events ",
             level = Level.INFO,
             logger = logger,
         ).use {
@@ -78,10 +79,10 @@ public open class AppAudioContentUploadService(
                         ps.setString(3, event.id)
                         ps.setObject(4, event.timestamp)
                         ps.setString(5, event.timezone)
-                        ps.setString(6, event.audioPackage)
-                        ps.setString(7, event.title)
-                        ps.setString(8, event.artist)
-                        ps.setString(9, event.album)
+                        ps.setString(6, event.audioPackage.postgresText())
+                        ps.setString(7, event.title?.postgresText())
+                        ps.setString(8, event.artist?.postgresText())
+                        ps.setString(9, event.album?.postgresText())
                         val durationMillis = event.durationMillis
                         if (durationMillis != null) ps.setLong(10, durationMillis) else ps.setNull(10, Types.BIGINT)
                         val positionMillis = event.positionMillis

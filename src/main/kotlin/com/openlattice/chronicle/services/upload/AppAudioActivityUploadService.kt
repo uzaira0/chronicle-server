@@ -67,7 +67,7 @@ public open class AppAudioActivityUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} audio activity events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} audio activity events ",
             level = Level.INFO,
             logger = logger,
         ).use {

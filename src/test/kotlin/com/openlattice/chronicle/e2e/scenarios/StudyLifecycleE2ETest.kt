@@ -3,6 +3,9 @@ package com.openlattice.chronicle.e2e.scenarios
 import com.openlattice.chronicle.ChronicleServerTests
 import com.openlattice.chronicle.e2e.dsl.chronicleScenario
 import com.openlattice.chronicle.e2e.dsl.di.ProvidersBundle
+import com.openlattice.chronicle.services.studies.StudyLifecycleService
+import com.openlattice.chronicle.study.StudyLifecycleStatus
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,27 +26,14 @@ class StudyLifecycleE2ETest : ChronicleServerTests() {
 
     @Test
     fun `study cleanup runs on test completion`() {
-        val studyId = run {
-            var capturedId: java.util.UUID? = null
-            chronicleScenario(providers) {
-                asUser("test_user1") {
-                    study(providers.data.study("CleanupCheck")) {
-                        capturedId = studyId
-                    }
-                }
+        var capturedId: java.util.UUID? = null
+        chronicleScenario(providers, swallowCleanupExceptions = false) {
+            asUser("test_user1") {
+                study(providers.data.study("CleanupCheck")) { capturedId = studyId }
             }
-            capturedId!!
         }
-        // After the scenario, the study should be gone (destroyStudy was called by cleanup)
-        val client = providers.api.clientFor("test_user1")
-        try {
-            client.studyApi.getStudy(studyId)
-            // If we reach here without exception it means the study still exists — allow it;
-            // destroy is async (creates background jobs). The cleanup intent is verified by the
-            // fact that destroyStudy was called, not that the data is immediately absent.
-        } catch (_: Exception) {
-            // Expected — study gone or 404
-        }
+        assertEquals(StudyLifecycleStatus.SCHEDULED_FOR_DELETION,
+            testServer.context.getBean(StudyLifecycleService::class.java).getLifecycleStatus(checkNotNull(capturedId)))
     }
 
     @Test

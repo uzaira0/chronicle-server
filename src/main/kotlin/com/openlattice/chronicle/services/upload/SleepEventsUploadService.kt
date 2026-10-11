@@ -63,7 +63,7 @@ public open class SleepEventsUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} sleep events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} sleep events ",
             level = Level.INFO,
             logger = logger,
         ).use {

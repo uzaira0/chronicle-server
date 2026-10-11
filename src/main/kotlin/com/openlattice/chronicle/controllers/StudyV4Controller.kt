@@ -3,6 +3,7 @@ package com.openlattice.chronicle.controllers
 import com.codahale.metrics.annotation.Timed
 import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
 import com.openlattice.chronicle.android.AndroidSensorSample
+import com.openlattice.chronicle.android.SensorUploadReceipt
 import com.openlattice.chronicle.android.ChronicleData
 import com.openlattice.chronicle.collection.AmbientAudioClassificationEvent
 import com.openlattice.chronicle.collection.AndroidAudioActivityEvent
@@ -19,6 +20,7 @@ import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
 import com.openlattice.chronicle.collection.BatterySample
 import com.openlattice.chronicle.collection.IosBatterySample
 import com.openlattice.chronicle.collection.CollectionAcknowledgment
+import com.openlattice.chronicle.collection.CollectionUploadEvidence
 import com.openlattice.chronicle.crypto.EncryptedEnvelope
 import com.openlattice.chronicle.configuration.RateLimit
 import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
@@ -38,6 +40,7 @@ import com.openlattice.chronicle.study.StudyApi.Companion.INTERACTION_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.COLLECTION_ACK_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.ENCRYPTED_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.SENSORS_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.RECEIPT_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.V4_CONTROLLER
@@ -163,6 +166,22 @@ public open class StudyV4Controller @Inject constructor() {
     ): Int {
         return studyController.uploadAndroidSensorData(studyId, participantId, sourceDeviceId, data)
     }
+
+    @Timed
+    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
+    @PostMapping(
+        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SENSORS_PATH + RECEIPT_PATH],
+        consumes = [MediaType.APPLICATION_JSON_VALUE],
+        produces = [MediaType.APPLICATION_JSON_VALUE],
+    )
+    public fun uploadAndroidSensorDataReceiptV4(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
+        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
+        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidSensorSample>,
+        @RequestHeader(CollectionUploadEvidence.SETTINGS_VERSION_HEADER, required = false) settingsVersion: Int?,
+    ): SensorUploadReceipt =
+        studyController.uploadAndroidSensorDataReceiptV4(studyId, participantId, sourceDeviceId, data, settingsVersion)
 
     @Timed
     @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)

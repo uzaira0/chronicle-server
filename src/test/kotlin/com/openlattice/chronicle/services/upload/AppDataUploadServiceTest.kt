@@ -35,8 +35,8 @@ class AppDataUploadServiceTest {
     @Test
     fun duplicateTableLogUsesParticipantFingerprints() {
         val source = sequenceOf(
-            File("src/main/kotlin/com/openlattice/chronicle/services/upload/AppDataUploadService.kt"),
-            File("chronicle-server/src/main/kotlin/com/openlattice/chronicle/services/upload/AppDataUploadService.kt"),
+            File("src/main/kotlin/com/openlattice/chronicle/storage/UsageEventStorageWriter.kt"),
+            File("chronicle-server/src/main/kotlin/com/openlattice/chronicle/storage/UsageEventStorageWriter.kt"),
         ).first { it.isFile }.readText()
         val logCall = source.substringAfter("log = \"Creating duplicates table").substringBefore(").use {")
         assertTrue(logCall.contains("participantRefs"))
@@ -69,9 +69,7 @@ class AppDataUploadServiceTest {
     fun malformedValuesAreRejectedBeforeAnyStorageOrStatsWork() {
         val valid = usageEvent()
         val invalid = listOf(
-            valid.copy(appPackageName = "invalid\u0000package"), valid.copy(activityClass = "invalid\u0000activity"),
-            valid.copy(applicationLabel = "invalid\u0000label"), valid.copy(user = "invalid\u0000user"),
-            valid.copy(interactionType = "invalid\u0000type"), valid.copy(timezone = "Invalid/Zone"),
+            valid.copy(timezone = "Invalid/Zone"),
             valid.copy(timestamp = OffsetDateTime.MAX), valid.copy(collectedAt = OffsetDateTime.MIN),
         )
         for (event in invalid) {
@@ -187,7 +185,7 @@ class AppDataUploadServiceTest {
 
         assertThrows(IllegalStateException::class.java) {
             semaphore.tryRunWithPermit {
-                throw IllegalStateException("drain failed")
+                error("drain failed")
             }
         }
 

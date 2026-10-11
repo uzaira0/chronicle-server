@@ -1,13 +1,15 @@
 package com.openlattice.chronicle.e2e.dsl.di
 
 import com.openlattice.chronicle.android.ChronicleData
+import com.openlattice.chronicle.ChronicleServerTests
+import com.openlattice.chronicle.authorization.Principal
+import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.client.ChronicleClient
 import com.openlattice.chronicle.e2e.dsl.util.e2eTitle
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.services.upload.AppDataUploadService
 import com.openlattice.chronicle.sources.AndroidDevice
 import com.openlattice.chronicle.study.Study
-import com.openlattice.chronicle.users.ConfiguredUserListingService
 import com.openlattice.chronicle.util.tests.TestDataFactory
 import org.springframework.context.ApplicationContext
 import java.util.UUID
@@ -20,10 +22,9 @@ class ProvidersBundle(
 ) {
     companion object {
         fun fromSpringContext(context: ApplicationContext): ProvidersBundle {
-            val userService = context.getBean(ConfiguredUserListingService::class.java)
             val uploadService = context.getBean(AppDataUploadService::class.java)
 
-            val authProvider = TestingTokenAuthProvider(userService)
+            val authProvider = TestingTokenAuthProvider()
             return ProvidersBundle(
                 auth = authProvider,
                 api = RetrofitChronicleApiClient(authProvider),
@@ -34,11 +35,9 @@ class ProvidersBundle(
     }
 }
 
-class TestingTokenAuthProvider(
-    private val userService: ConfiguredUserListingService,
-) : AuthProvider {
+class TestingTokenAuthProvider : AuthProvider {
     override fun tokenFor(userId: String): String {
-        return userService.jwtTokens.getValue(userId).first()
+        return ChronicleServerTests.activeFixtureToken(Principal(PrincipalType.USER, userId))
     }
 }
 
@@ -53,8 +52,11 @@ class DefaultTestDataProvider : TestDataProvider {
     )
     override fun participant(): Participant = TestDataFactory.participant()
     override fun androidDevice(): AndroidDevice = TestDataFactory.androidDevice()
+    // Upload stats persist through JDBC; PostgreSQL timestamps have microsecond precision.
     override fun usageEvents(studyId: UUID, participantId: String, count: Int): ChronicleData =
-        TestDataFactory.chronicleUsageEvents(studyId, participantId, count)
+        ChronicleData(TestDataFactory.chronicleUsageEvents(studyId, participantId, count)
+            .filterIsInstance<com.openlattice.chronicle.android.ChronicleUsageEvent>()
+            .map { it.copy(timestamp = it.timestamp.truncatedTo(java.time.temporal.ChronoUnit.MICROS)) })
 }
 
 class InProcessFlusher(private val uploadService: AppDataUploadService) : DataPipelineFlusher {

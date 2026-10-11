@@ -36,12 +36,12 @@ public open class AndroidSensorDataUploadService(
         val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
         StopWatch(
             log = "Writing ${data.size} android sensor samples to storage for " +
-                "studyId = {}, participantRef = {}, deviceId = {}",
+                "studyRef = {}, participantRef = {}, deviceId = {}",
             level = Level.INFO,
             logger = logger,
-            studyId,
+            LogSanitizer.stableFingerprint(studyId.toString(), "study"),
             participantRef,
-            deviceId,
+            LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
         ).use {
             try {
                 storageResolver.getPlatformStorage().connection.use { connection ->
@@ -49,19 +49,21 @@ public open class AndroidSensorDataUploadService(
                     connection.autoCommit = false
                     try {
                         DeletionStudyFence.shared(connection, studyId)
+                        val retained = com.openlattice.chronicle.storage.ParticipantCollectionGate.retainQueuedCaptures(
+                            connection, studyId, participantId, data, { it.timestamp })
                         val inserted = AndroidSensorDataWriter.write(
                             connection,
                             studyId,
                             participantId,
                             deviceId,
-                            data,
+                            retained,
                         )
                         // Ack only after final-table data is durable. Retried sample ids are intentionally ignored.
                         connection.commit()
                         logger.info(
-                            "Committed android sensor upload - studyId = {}, participantRef = {}, " +
+                            "Committed android sensor upload - studyRef = {}, participantRef = {}, " +
                                 "acceptedSamples = {}, insertedSamples = {}",
-                            studyId,
+                            LogSanitizer.stableFingerprint(studyId.toString(), "study"),
                             participantRef,
                             data.size,
                             inserted,

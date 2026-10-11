@@ -2,12 +2,13 @@ package com.openlattice.chronicle.services.upload
 
 import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AndroidConnectivityStateEvent
+import com.openlattice.chronicle.postgres.bindCollectionEvent
+import com.openlattice.chronicle.postgres.setBooleanOrNull
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
-import java.sql.Types
 import java.util.UUID
 
 /**
@@ -54,7 +55,7 @@ public open class ConnectivityStateEventsUploadService(
         }
 
         StopWatch(
-            log = "Writing ${data.size} connectivity state events for studyId = $studyId, participantId = $participantId",
+            log = "Writing ${data.size} connectivity state events ",
             level = Level.INFO,
             logger = logger,
         ).use {
@@ -63,18 +64,12 @@ public open class ConnectivityStateEventsUploadService(
             ) { connection, retained ->
                 connection.prepareStatement(INSERT_CONNECTIVITY_EVENTS_SQL).use { ps ->
                     retained.forEach { event ->
-                        ps.setObject(1, studyId)
-                        ps.setString(2, participantId)
-                        ps.setString(3, event.id)
-                        ps.setObject(4, event.timestamp)
-                        ps.setString(5, event.timezone)
+                        ps.bindCollectionEvent(studyId, participantId, event.id, event.timestamp, event.timezone)
                         ps.setString(6, event.eventType.name)
                         ps.setString(7, event.transport.name)
                         ps.setBoolean(8, event.connected)
-                        val metered = event.metered
-                        if (metered != null) ps.setBoolean(9, metered) else ps.setNull(9, Types.BOOLEAN)
-                        val validated = event.validated
-                        if (validated != null) ps.setBoolean(10, validated) else ps.setNull(10, Types.BOOLEAN)
+                        ps.setBooleanOrNull(9, event.metered)
+                        ps.setBooleanOrNull(10, event.validated)
                         ps.addBatch()
                     }
                     ps.executeBatch()
