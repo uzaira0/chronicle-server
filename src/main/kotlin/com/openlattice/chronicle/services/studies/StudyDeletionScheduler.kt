@@ -22,12 +22,16 @@ public open class StudyDeletionScheduler(
             RLSRequestContext.withSystemContext {
                 lifecycleService.executeScheduledDeletions()
             }
+        } catch (ex: Exception) {
+            logger.error("Error reconciling scheduled study deletions", ex)
+        }
+        try {
             val verifiedOperations = dataDeletionOrchestrator.processDueOperations()
             if (verifiedOperations > 0) {
                 logger.info("Completed and verified {} quarantined data deletion operations", verifiedOperations)
             }
         } catch (ex: Exception) {
-            logger.error("Error processing scheduled study deletions", ex)
+            logger.error("Error processing quarantined data deletions", ex)
         }
     }
 
@@ -43,4 +47,14 @@ public open class StudyDeletionScheduler(
             logger.error("Error auto-archiving expired studies", ex)
         }
     }
+    @Scheduled(cron = "@daily")
+    @Suppress("TooGenericExceptionCaught")
+    public fun reportOverdueRetentionHolds() {
+        try {
+            dataDeletionOrchestrator.reportOverdueRetentionHolds()
+        } catch (ex: Exception) {
+            logger.error("Error reviewing overdue retention holds", ex)
+        }
+    }
+
 }

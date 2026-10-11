@@ -102,6 +102,12 @@ public object ChronicleMetrics {
         .buckets(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
         .register()
 
+    public val browserErrorsTotal: Counter = Counter.build()
+        .name("chronicle_browser_errors_total")
+        .help("Authenticated browser failures by finite error kind")
+        .labelNames("kind")
+        .register()
+
     public val apiErrorsTotal: Counter = Counter.build()
         .name("chronicle_api_errors_total")
         .help("Total number of API errors")
@@ -155,6 +161,11 @@ public object ChronicleMetrics {
         .labelNames("action")
         .register()
 
+    public val retentionHoldsOverdue: Gauge = Gauge.build()
+        .name("chronicle_retention_holds_overdue")
+        .help("Unreleased retention holds past their review deadline")
+        .register()
+
     public val dataQualityEvaluationsTotal: Counter = Counter.build()
         .name("chronicle_data_quality_evaluations_total")
         .help("Data-quality evaluation runs by trigger and outcome")
@@ -191,6 +202,11 @@ public object ChronicleMetrics {
     // =========================================================================
     // STUDY METRICS
     // =========================================================================
+
+    public val studiesRetentionExpired: Gauge = Gauge.build()
+        .name("chronicle_studies_retention_expired")
+        .help("Studies past their retention deadline awaiting explicit study deletion")
+        .register()
 
     // =========================================================================
     // ACTIVE REQUESTS (gauge-like via concurrent counter)

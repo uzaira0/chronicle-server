@@ -2,7 +2,6 @@ package com.openlattice.chronicle.studies.tasks
 
 import com.geekbeast.tasks.HazelcastFixedRateTask
 import com.geekbeast.tasks.HazelcastTaskDependencies
-import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.services.studies.StudyLimitsManager
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.storage.StorageResolver
@@ -25,9 +24,14 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
 
     override fun getTimeUnit(): TimeUnit = TimeUnit.HOURS
 
+    @Suppress("TooGenericExceptionCaught")
     override fun runTask() {
         RLSRequestContext.withSystemContext {
-            pauseParticipantsForStudiesOverDuration()
+            try {
+                pauseParticipantsForStudiesOverDuration()
+            } catch (exception: Exception) {
+                logger.error("Unable to enumerate studies past their duration", exception)
+            }
             expireStudiesOutsideOfRetentionPeriod()
         }
     }
@@ -37,30 +41,25 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
     override fun getDependenciesClass(): Class<StudyLimitsEnforcementTaskDependencies> =
         StudyLimitsEnforcementTaskDependencies::class.java
 
+    @Suppress("TooGenericExceptionCaught")
     private fun pauseParticipantsForStudiesOverDuration() {
         val deps = getDependency()
         deps.studyLimitsManager.getStudiesExceedingDurationLimit().forEach { studyId ->
-            logger.info("Pausing data collection for all participants in study {}", studyId)
-            deps.studyService.getStudyParticipants(studyId).forEach { participant ->
-                deps.studyService.updateParticipationStatus(
-                    studyId,
-                    participant.participantId,
-                    ParticipationStatus.PAUSED
-                )
+            try {
+                val paused = deps.studyService.pauseEnrolledParticipants(studyId)
+                logger.info("Paused {} enrolled participants in study {}", paused, studyId)
+            } catch (exception: Exception) {
+                logger.error("Unable to pause enrolled participants in study {}", studyId, exception)
             }
         }
     }
 
-    /**
-     * Expiry only revokes non-admin access; it never erases data. Owner decision 2026-09-28: a
-     * date or clock bug must not be able to destroy study data, so erasure stays an explicit,
-     * human-started operation. Do not start a study erasure from here.
-     */
+    /** Retention expiry alerts operators; deletion remains an explicit study action. */
     private fun expireStudiesOutsideOfRetentionPeriod() {
         val deps = getDependency()
         val studiesToExpire = deps.studyLimitsManager.getStudiesExcceedingDataRetentionPeriod()
-        logger.info("Revoking non-admin access to studies past their retention period: {}", studiesToExpire)
-        deps.studyService.expireStudies(studiesToExpire)
+        com.openlattice.chronicle.observability.ChronicleMetrics.studiesRetentionExpired.set(studiesToExpire.size.toDouble())
+        logger.info("{} studies have ended their retention period and require deletion", studiesToExpire.size)
     }
 }
 
