@@ -21,7 +21,7 @@ class V111DeviceNameMigrationTest {
                 s.execute("""INSERT INTO devices (study_id, device_id, participant_id, device_type, source_device)
                     VALUES ('$study', '$phone', 'p1', 'Ios',
                     '{"@class":"com.openlattice.chronicle.sources.IOSDevice","name":"Alex''s iPhone","model":"iPhone"}')""")
-                for ((sample, name) in listOf("a" to "Alex's iPhone", "b" to "Alex's iPhone", "c" to "Old iPad")) {
+                for ((sample, name) in listOf("a" to "Alex's iPhone", "b" to "Alex's iPhone", "c" to "Old iPad", "d" to phone.toString())) {
                     s.execute("""INSERT INTO sensor_data (study_id, participant_id, sample_id, sensor_type, sample_duration,
                         device_version, device_name, device_model, device_system_name)
                         VALUES ('$study', 'p1', '$sample', 'deviceUsage', 1, '17.0', '${name.replace("'", "''")}', 'iPhone',
@@ -36,6 +36,7 @@ class V111DeviceNameMigrationTest {
                     buildList { while (r.next()) { add(r.getString(2)); assertEquals("", r.getString(3)) } }
                 }
                 assertEquals(phone.toString(), keys[0]); assertEquals(phone.toString(), keys[1])
+                assertEquals("An enrolled device key must survive the scrub", phone.toString(), keys[3])
                 assertNotEquals("Devices must stay apart for screen-time deltas", keys[0], keys[2])
                 assertFalse(keys[2].contains("iPad"))
                 s.executeQuery("SELECT source_device ? 'name', source_device ->> 'model' FROM devices").use { r ->

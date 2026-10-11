@@ -1,7 +1,9 @@
 package com.openlattice.chronicle.upgrades
 
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.testcontainers.containers.PostgreSQLContainer
 import java.sql.Connection
@@ -85,8 +87,10 @@ class V109RevisionMigrationTest {
         } }
         assertTrue(ChronicleContractTestSchema.migrate(pg).success)
         pg.createConnection("").use { c -> c.createStatement().use { s ->
-            s.executeQuery("SELECT request = '{}'::jsonb FROM export_jobs WHERE export_id = '$export'").use { r -> r.next(); assertTrue(r.getBoolean(1)) }
-            s.executeQuery("SELECT request <> '{}'::jsonb FROM export_jobs WHERE export_id = '$control'").use { r -> r.next(); assertTrue(r.getBoolean(1)) }
+            s.executeQuery("SELECT request = '{}'::jsonb FROM export_jobs WHERE export_id = '$export'").use { r -> r.next(); assertTrue(r.getBoolean(
+                1)) }
+            s.executeQuery("SELECT request <> '{}'::jsonb FROM export_jobs WHERE export_id = '$control'").use { r -> r.next(); assertTrue(
+                r.getBoolean(1)) }
         } }
         assertEquals(0, ChronicleContractTestSchema.migrate(pg).migrationsExecuted)
     }
@@ -106,7 +110,9 @@ class V109RevisionMigrationTest {
         val study = UUID.randomUUID(); val webhook = UUID.randomUUID()
         pg.createConnection("").use { c -> c.createStatement().use { s ->
             s.execute("INSERT INTO studies (study_id, title) VALUES ('$study', 'revision')")
-            s.execute("INSERT INTO webhook_registrations (webhook_id, study_id, url, created_by) VALUES ('$webhook', '$study', 'https://example.org', 'revision')")
+            s.execute(
+                "INSERT INTO webhook_registrations (webhook_id, study_id, url, created_by) VALUES ('$webhook', '$study', " +
+                "'https://example.org', 'revision')")
             s.execute("""INSERT INTO webhook_deliveries (webhook_id, event_type, payload)
                 SELECT '$webhook', 'DATA_SUBMITTED', '{}'::jsonb FROM generate_series(1, 1000)""")
             s.execute("""INSERT INTO webhook_deliveries (webhook_id, event_type, payload)

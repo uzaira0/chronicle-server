@@ -64,6 +64,7 @@ public class FlywayMigrationService(
          */
         public fun baseConfiguration(): FluentConfiguration = Flyway.configure()
             .locations(MIGRATION_LOCATION)
+            .callbacks(ErasedStudyRevisionBackfillCallback(), IosDeviceKeyBackfillCallback())
             // Self-host Postgres bounds every statement and lock wait server-wide; a migration
             // that rewrites a large table must never be cancelled halfway through an upgrade.
             .initSql(MIGRATION_SESSION_SQL)
