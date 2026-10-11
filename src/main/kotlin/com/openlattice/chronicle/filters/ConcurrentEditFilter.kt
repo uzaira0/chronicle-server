@@ -1,9 +1,15 @@
 package com.openlattice.chronicle.filters
 
+import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.authorization.StudyAuthorizationService
 import com.openlattice.chronicle.authorization.StudyPermission
+import com.openlattice.chronicle.services.studies.StudyService
+import com.openlattice.chronicle.services.surveys.SurveysService
 import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.util.normalizeEntityTag
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -15,9 +21,11 @@ import java.util.UUID
 internal class ConcurrentEditFilter(
     private val storage: StorageResolver,
     private val authorization: StudyAuthorizationService,
+    private val auditService: AuditService,
 ) : OncePerRequestFilter() {
     override fun doFilterInternal(request: HttpServletRequest, response: HttpServletResponse, chain: FilterChain) {
-        if (ANNOTATIONS.matches(request.requestURI.removePrefix("/chronicle")) || QUESTIONNAIRE.matches(request.requestURI.removePrefix("/chronicle"))) guarded(request, response, chain)
+        if (ANNOTATIONS.matches(request.requestURI.removePrefix("/chronicle")) || QUESTIONNAIRE.matches(request.requestURI.removePrefix(
+            "/chronicle"))) guarded(request, response, chain)
         else chain.doFilter(request, response)
     }
 
@@ -40,34 +48,27 @@ internal class ConcurrentEditFilter(
         try {
             authorization.requirePermission(study, if (request.method == "PATCH") StudyPermission.MODIFY_STUDY else StudyPermission.READ_STUDY)
         } catch (denied: com.geekbeast.controllers.exceptions.ForbiddenException) {
-            error(response, 403, "Access denied")
+            writeFilterError(response, 403, "Access denied")
             return
         }
         val pool = storage.getPlatformStorage()
         pool.connection.use { connection ->
             connection.autoCommit = false
             try {
-                val sql = if (annotation != null) {
-                    "SELECT jsonb_build_object('participantNotes', participant_notes, 'participantTags', participant_tags)::text " +
-                        "FROM study_participants WHERE study_id = ? AND participant_id = ? FOR UPDATE"
+                val json = if (annotation != null) {
+                    StudyService.loadLockedParticipantAnnotations(connection, study, match.groupValues[2])
                 } else {
-                    "SELECT jsonb_build_object('title', title, 'description', description, 'questions', questions, " +
-                        "'active', active, 'recurrenceRule', recurrence_rule)::text " +
-                        "FROM questionnaires WHERE study_id = ? AND questionnaire_id = ? FOR UPDATE"
+                    SurveysService.loadLockedQuestionnaireSnapshot(connection, study, UUID.fromString(match.groupValues[2]))
                 }
-                val json = connection.prepareStatement(sql).use { statement ->
-                    statement.setObject(1, study)
-                    if (annotation != null) statement.setString(2, match.groupValues[2])
-                    else statement.setObject(2, UUID.fromString(match.groupValues[2]))
-                    statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-                }
-                if (json == null) { error(response, 404, "Resource not found"); connection.rollback(); return }
+                if (json == null) { writeFilterError(response, 404, "Resource not found"); connection.rollback(); return }
                 val revision = revision(json)
                 response.setHeader("ETag", revision)
                 if (request.method == "PATCH") {
                     val expected = request.getHeader("If-Match")
-                    if (expected == null) { error(response, 428, "Reload before saving; a resource revision is required"); connection.rollback(); return }
-                    if (expected != revision) { error(response, 412, "This resource changed; reload and merge before saving"); connection.rollback(); return }
+                    if (expected == null) { writeFilterError(response, 428, "Reload before saving; a resource revision is required");
+                        connection.rollback(); return }
+                    if (normalizeEntityTag(expected) != normalizeEntityTag(revision)) { writeFilterError(response, 412,
+                        "This resource changed; reload and merge before saving"); connection.rollback(); return }
                 }
                 if (annotation != null && request.method == "GET") {
                     response.status = 200
@@ -75,21 +76,26 @@ internal class ConcurrentEditFilter(
                     response.characterEncoding = "UTF-8"
                     response.writer.write(json)
                     connection.commit()
+                    auditService.logWithContext {
+                        action(AuditAction.PARTICIPANT_DATA_ACCESS)
+                        resourceType("ParticipantAnnotations")
+                        studyId(study)
+                        success(true)
+                        accessedPHI(true)
+                        phiFields(listOf("participantId", "participantNotes", "participantTags"))
+                        additionalData(mapOf("participantId" to match.groupValues[2]))
+                    }
                 } else if (request.method == "HEAD") {
                     response.status = 204
                     connection.commit()
                 } else {
-                    PinnedPlatformConnection.pinning(pool, connection) { chain.doFilter(request, response) }
-                    if (response.status < 400) connection.commit() else connection.rollback()
+                    if (request.method == "PATCH") response.setHeader("ETag", null)
+                    PinnedPlatformConnection.committing(pool, connection, { response.status < 400 }) {
+                        chain.doFilter(request, response)
+                    }
                 }
             } catch (failure: Exception) { connection.rollback(); throw failure }
         }
-    }
-
-    private fun error(response: HttpServletResponse, status: Int, message: String) {
-        response.status = status
-        response.contentType = "application/json"
-        response.writer.write("""{"status":$status,"message":"$message"}""")
     }
 
     internal companion object {

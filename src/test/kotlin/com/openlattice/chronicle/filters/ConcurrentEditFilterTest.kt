@@ -4,9 +4,18 @@ import com.openlattice.chronicle.authorization.StudyAuthorizationService
 import com.openlattice.chronicle.storage.StorageResolver
 import com.zaxxer.hikari.HikariDataSource
 import jakarta.servlet.FilterChain
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
-import org.mockito.Mockito.*
+import org.mockito.Mockito.anyString
+import org.mockito.Mockito.clearInvocations
+import org.mockito.Mockito.doThrow
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.verify
+import org.mockito.Mockito.verifyNoInteractions
+import org.mockito.Mockito.`when`
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.mock.web.MockHttpServletResponse
 import java.sql.Connection
@@ -15,8 +24,17 @@ import java.sql.ResultSet
 import java.util.UUID
 
 class ConcurrentEditFilterTest {
+    private val auditService = mock(com.openlattice.chronicle.audit.AuditService::class.java)
     @Test fun annotationTabsCannotOverwriteTheFirstSave() = twoTabs("participant/P-1/annotations")
     @Test fun questionnaireTabsCannotOverwriteTheFirstSave() = twoTabs("questionnaire/${UUID.randomUUID()}")
+
+    @Test fun compressedEntityTagsMatchOnlyTheirOwnRevision() {
+        for (resource in listOf("participant/P-1/annotations", "questionnaire/${UUID.randomUUID()}")) {
+            for (suffix in listOf("--gzip", "-gzip", "--br", "-br", "--zstd", "-zstd", "--deflate")) {
+                twoTabs(resource) { revision -> "W/\"${revision.trim('"')}$suffix\"" }
+            }
+        }
+    }
 
     @Test fun participantQuestionnaireReadDoesNotRequireResearcherAcl() {
         org.springframework.security.core.context.SecurityContextHolder.clearContext()
@@ -34,7 +52,7 @@ class ConcurrentEditFilterTest {
         doThrow(com.geekbeast.controllers.exceptions.ForbiddenException("No researcher ACL"))
             .`when`(authorization).requirePermission(study, com.openlattice.chronicle.authorization.StudyPermission.MODIFY_STUDY)
         val storage = mock(StorageResolver::class.java)
-        val edits = ConcurrentEditFilter(storage, authorization)
+        val edits = ConcurrentEditFilter(storage, authorization, auditService)
         val participants = ParticipantFormAccessFilter(service)
         val response = MockHttpServletResponse()
         val request = MockHttpServletRequest("GET", "/chronicle/v3/survey/$study/questionnaire/$questionnaire").apply {
@@ -52,7 +70,7 @@ class ConcurrentEditFilterTest {
         org.springframework.security.core.context.SecurityContextHolder.clearContext()
     }
 
-    private fun twoTabs(resource: String) {
+    private fun twoTabs(resource: String, ifMatch: (String) -> String = { it }) {
         val storage = mock(StorageResolver::class.java)
         val pool = mock(HikariDataSource::class.java)
         val connection = mock(Connection::class.java)
@@ -65,33 +83,70 @@ class ConcurrentEditFilterTest {
         `when`(rows.next()).thenReturn(true)
         var persisted = "{\"title\":\"original\"}"
         `when`(rows.getString(1)).thenAnswer { persisted }
-        val filter = ConcurrentEditFilter(storage, mock(StudyAuthorizationService::class.java))
+        val filter = ConcurrentEditFilter(storage, mock(StudyAuthorizationService::class.java), auditService)
         val path = "/chronicle/v3/${if (resource.startsWith("questionnaire")) "survey" else "study"}/${UUID.randomUUID()}/$resource"
         val head = MockHttpServletResponse()
         filter.doFilter(MockHttpServletRequest("HEAD", path), head, FilterChain { _, _ -> })
-        val revision = head.getHeader("ETag")
-        assertNotNull(revision)
+        val revision = requireNotNull(head.getHeader("ETag")) { "HEAD response should include the resource revision" }
+        assertEquals(204, head.status)
+        assertEquals("", head.contentAsString)
         if (resource.startsWith("participant")) {
             val loaded = MockHttpServletResponse()
             filter.doFilter(MockHttpServletRequest("GET", path), loaded,
                 FilterChain { _, _ -> fail("annotation snapshot must come from the locked row") })
+            assertEquals(200, loaded.status)
+            assertEquals("application/json;charset=UTF-8", loaded.contentType)
             assertEquals(persisted, loaded.contentAsString)
             assertEquals(revision, loaded.getHeader("ETag"))
+            val audit = org.mockito.kotlin.argumentCaptor<com.openlattice.chronicle.audit.AuditLogEntry>()
+            verify(auditService).log(audit.capture())
+            assertEquals(com.openlattice.chronicle.audit.AuditAction.PARTICIPANT_DATA_ACCESS, audit.firstValue.action)
+            assertTrue(audit.firstValue.accessedPHI)
+            clearInvocations(auditService)
         }
         var writes = 0
         val first = MockHttpServletResponse()
-        filter.doFilter(MockHttpServletRequest("PATCH", path).apply { addHeader("If-Match", revision!!) }, first,
+        filter.doFilter(MockHttpServletRequest("PATCH", path).apply { addHeader("If-Match", ifMatch(revision)) }, first,
             FilterChain { _, _ -> persisted = "{\"title\":\"first tab\"}"; writes++ })
         assertEquals(200, first.status)
         val stale = MockHttpServletResponse()
-        filter.doFilter(MockHttpServletRequest("PATCH", path).apply { addHeader("If-Match", revision!!) }, stale,
+        filter.doFilter(MockHttpServletRequest("PATCH", path).apply { addHeader("If-Match", ifMatch(revision)) }, stale,
             FilterChain { _, _ -> persisted = "second tab"; writes++ })
         assertEquals(412, stale.status)
+        assertEquals("""{"status":412,"message":"This resource changed; reload and merge before saving"}""", stale.contentAsString)
+        assertEquals(ConcurrentEditFilter.revision(persisted), stale.getHeader("ETag"))
         assertEquals(1, writes)
         assertEquals("{\"title\":\"first tab\"}", persisted)
         val missing = MockHttpServletResponse()
         filter.doFilter(MockHttpServletRequest("PATCH", path), missing, FilterChain { _, _ -> writes++ })
         assertEquals(428, missing.status)
+        assertEquals("""{"status":428,"message":"Reload before saving; a resource revision is required"}""", missing.contentAsString)
+        assertEquals(ConcurrentEditFilter.revision(persisted), missing.getHeader("ETag"))
         assertEquals(1, writes)
     }
+
+    @Test fun successfulPatchOmitsTheOldRevisionAndRunsCommittedCallbacks() {
+        val storage = mock(StorageResolver::class.java)
+        val pool = mock(HikariDataSource::class.java)
+        val connection = mock(Connection::class.java)
+        val statement = mock(PreparedStatement::class.java)
+        val rows = mock(ResultSet::class.java)
+        `when`(storage.getPlatformStorage()).thenReturn(pool)
+        `when`(pool.connection).thenReturn(connection)
+        `when`(connection.prepareStatement(anyString())).thenReturn(statement)
+        `when`(statement.executeQuery()).thenReturn(rows)
+        `when`(rows.next()).thenReturn(true)
+        val json = "{}"
+        `when`(rows.getString(1)).thenReturn(json)
+        var committed = false
+        val response = MockHttpServletResponse()
+        val request = MockHttpServletRequest("PATCH", "/chronicle/v3/study/${UUID.randomUUID()}/participant/p1/annotations")
+        request.addHeader("If-Match", ConcurrentEditFilter.revision(json))
+        ConcurrentEditFilter(storage, mock(StudyAuthorizationService::class.java), auditService).doFilter(request, response,
+            FilterChain { _, _ -> com.openlattice.chronicle.storage.PinnedPlatformConnection.afterCommit(pool, "audit") { committed = true } })
+        assertNull(response.getHeader("ETag"))
+        assertTrue(committed)
+        verify(connection).commit()
+    }
+
 }
