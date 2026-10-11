@@ -46,7 +46,7 @@ public open class StudyLimitsStreamSerializer : TestableSelfRegisteringStreamSer
         public fun serializeStudyDuration(out: ObjectDataOutput, studyDuration: StudyDuration) {
             out.writeShort(studyDuration.years.toInt())
             out.writeShort(studyDuration.months.toInt())
-            out.writeShort(studyDuration.days.toInt())
+            out.writeInt(studyDuration.days)
         }
 
         @JvmStatic
@@ -55,7 +55,7 @@ public open class StudyLimitsStreamSerializer : TestableSelfRegisteringStreamSer
             return StudyDuration(
                 input.readShort(),
                 input.readShort(),
-                input.readShort()
+                input.readInt()
             )
         }
 
