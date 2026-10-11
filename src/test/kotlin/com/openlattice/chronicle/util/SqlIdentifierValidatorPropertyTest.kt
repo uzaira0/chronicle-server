@@ -7,7 +7,6 @@ import io.kotest.property.arbitrary.az
 import io.kotest.property.arbitrary.codepoints
 import io.kotest.property.arbitrary.element
 import io.kotest.property.arbitrary.int
-import io.kotest.property.arbitrary.long
 import io.kotest.property.arbitrary.map
 import io.kotest.property.arbitrary.string
 import io.kotest.property.forAll
@@ -231,52 +230,9 @@ class SqlIdentifierValidatorPropertyTest {
 
     // --- validateTimeout ---
 
-    @Test
-    fun `valid timeouts in range 0 to 3600000 always pass`() { runBlocking {
-        forAll(Arb.long(0L..3600000L)) { timeout ->
-            SqlIdentifierValidator.validateTimeout(timeout) == timeout
-        }
-    } }
 
-    @Test
-    fun `negative timeouts are always rejected`() { runBlocking {
-        forAll(Arb.long(Long.MIN_VALUE..-1L)) { timeout ->
-            try {
-                SqlIdentifierValidator.validateTimeout(timeout)
-                false
-            } catch (_: IllegalArgumentException) {
-                true
-            }
-        }
-    } }
 
-    @Test
-    fun `timeouts exceeding 1 hour are always rejected`() { runBlocking {
-        forAll(Arb.long(3600001L..7200000L)) { timeout ->
-            try {
-                SqlIdentifierValidator.validateTimeout(timeout)
-                false
-            } catch (_: IllegalArgumentException) {
-                true
-            }
-        }
-    } }
 
     // --- quoteIdentifier ---
 
-    @Test
-    fun `quoteIdentifier wraps valid identifiers in double quotes`() { runBlocking {
-        val startChar = Arb.element(('a'..'z') + listOf('_'))
-        val restChars = Arb.codepoints(('a'..'z') + ('0'..'9') + listOf('_'))
-        forAll<Char, String>(startChar, Arb.string(0..20, restChars)) { first, rest ->
-            val id = "$first$rest"
-            try {
-                val quoted = SqlIdentifierValidator.quoteIdentifier(id)
-                quoted.startsWith("\"") && quoted.endsWith("\"") && quoted.contains(id)
-            } catch (_: SqlIdentifierValidator.InvalidSqlIdentifierException) {
-                // May be a keyword - acceptable
-                true
-            }
-        }
-    } }
 }

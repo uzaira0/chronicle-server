@@ -49,10 +49,8 @@ public open class OrganizationAuthorizationAspect(
                 "Could not extract organization ID from method {} — check @RequiresOrganizationAccess configuration",
                 joinPoint.signature.toShortString()
             )
-            throw IllegalStateException(
-                "Organization ID not found in method parameters. " +
-                        "Ensure the method has a parameter named '${requiresAccess.organizationIdParam}'."
-            )
+            error("Organization ID not found in method parameters. " +
+                    "Ensure the method has a parameter named '${requiresAccess.organizationIdParam}'.")
         }
 
         val userId = Principals.getCurrentUser().id

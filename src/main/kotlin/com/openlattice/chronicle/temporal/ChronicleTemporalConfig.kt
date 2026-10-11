@@ -9,11 +9,7 @@ import io.temporal.worker.WorkerFactory
 import io.temporal.worker.WorkerFactoryOptions
 import io.temporal.worker.WorkerOptions
 import com.openlattice.chronicle.temporal.activities.NotificationActivitiesImpl
-import com.openlattice.chronicle.temporal.activities.DeletionActivitiesImpl
-import com.openlattice.chronicle.temporal.activities.PipelineActivitiesImpl
 import com.openlattice.chronicle.temporal.workflows.NotificationWorkflowImpl
-import com.openlattice.chronicle.temporal.workflows.DeletionWorkflowImpl
-import com.openlattice.chronicle.temporal.workflows.PipelineWorkflowImpl
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Conditional
@@ -77,8 +73,6 @@ public open class ChronicleTemporalConfig {
     public open fun chronicleWorker(
         factory: WorkerFactory,
         notificationActivities: NotificationActivitiesImpl,
-        deletionActivities: DeletionActivitiesImpl,
-        pipelineActivities: PipelineActivitiesImpl,
     ): WorkerFactory {
         val options = WorkerOptions.newBuilder()
             .setMaxConcurrentActivityExecutionSize(4)
@@ -90,15 +84,11 @@ public open class ChronicleTemporalConfig {
         // Register workflow implementations
         worker.registerWorkflowImplementationTypes(
             NotificationWorkflowImpl::class.java,
-            DeletionWorkflowImpl::class.java,
-            PipelineWorkflowImpl::class.java,
         )
 
         // Register activity implementations (Spring-managed beans with injected dependencies)
         worker.registerActivitiesImplementations(
             notificationActivities,
-            deletionActivities,
-            pipelineActivities,
         )
 
         logger.info("Temporal worker registered on task queue '{}'", TASK_QUEUE)

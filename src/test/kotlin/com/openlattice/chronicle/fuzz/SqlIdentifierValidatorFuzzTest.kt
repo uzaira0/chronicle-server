@@ -69,26 +69,6 @@ class SqlIdentifierValidatorFuzzTest {
         }
     }
 
-    @FuzzTest(maxDuration = "5m")
-    fun fuzzQuoteIdentifier(input: String) {
-        try {
-            val quoted = SqlIdentifierValidator.quoteIdentifier(input)
-            // Quoted identifier must be wrapped in double quotes
-            assert(quoted.startsWith("\"") && quoted.endsWith("\"")) {
-                "quoteIdentifier produced unbalanced quotes: $quoted"
-            }
-            // The inner content should have no unescaped double quotes
-            val inner = quoted.substring(1, quoted.length - 1)
-            val unescapedQuoteCount = inner.replace("\"\"", "").count { it == '"' }
-            assert(unescapedQuoteCount == 0) {
-                "quoteIdentifier has unescaped quotes in: $quoted"
-            }
-        } catch (expected: SqlIdentifierValidator.InvalidSqlIdentifierException) {
-            // Expected — input failed validation before quoting
-        } catch (expected: SecurityException) {
-            // Expected
-        }
-    }
 
     @FuzzTest(maxDuration = "5m")
     fun fuzzSqlInjectionVectors(data: ByteArray) {

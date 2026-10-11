@@ -2,7 +2,7 @@ package com.openlattice.chronicle.constants;
 
 import java.time.OffsetDateTime;
 
-public class OutputConstants {
+public final class OutputConstants {
 
     private OutputConstants() {
     }

@@ -132,22 +132,6 @@ public open class RoleService(
             .sortedWith(compareBy<RoleAssignment> { it.principalType.name }.thenBy { it.principalId })
     }
 
-    public fun getRoleForPrincipal(
-        principalId: String,
-        scopeType: ScopeType,
-        scopeId: UUID
-    ): ChronicleStudyRole? {
-        require(scopeType == ScopeType.STUDY) {
-            "Only STUDY role scopes are supported by the study ACL"
-        }
-        return authorizationManager
-            .getAllSecurableObjectPermissions(AclKey(scopeId))
-            .aces
-            .firstOrNull {
-                it.principal.type == PrincipalType.USER && it.principal.id == principalId
-            }
-            ?.let { roleForPermissions(it.permissions) }
-    }
 
     private fun validateRouteBoundAssignment(studyId: UUID, assignment: RoleAssignment) {
         validateRouteBoundScopeAndPrincipal(studyId, assignment)

@@ -20,7 +20,6 @@
 
 package com.openlattice.chronicle.hazelcast
 
-import com.hazelcast.auditlog.AuditableEvent
 import com.hazelcast.collection.IQueue
 import com.hazelcast.core.HazelcastInstance
 import java.util.*
@@ -51,7 +50,6 @@ public open class HazelcastQueue<T> internal constructor(public val name: String
         // @formatter:off
 
         // When adding new entries to this list, please make sure to keep it sorted and keep the name in sync
-        @JvmField val AUDITING = HazelcastQueue<AuditableEvent>("AUDITING")
 //        @JvmField val EMAIL_SPOOL = HazelcastQueue<RenderableEmailRequest>("EMAIL_SPOOL")
         @JvmField val ID_GENERATION = HazelcastQueue<UUID>("ID_GENERATION")
 //        @JvmField val TWILIO = HazelcastQueue<MessageRequest>("TWILIO")

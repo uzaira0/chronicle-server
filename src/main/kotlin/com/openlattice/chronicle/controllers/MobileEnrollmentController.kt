@@ -32,7 +32,7 @@ public open class MobileEnrollmentController(
         authentication: Authentication,
     ): EnrollmentWithdrawalResponse {
         val token = authentication as? ApiKeyAuthenticationToken
-            ?: throw IllegalStateException("A mobile API key is required")
+            ?: error("A mobile API key is required")
         val requestId = requireNotNull(MobileWithdrawalRequestIds.parse(withdrawalRequestId)) {
             "Withdrawal request id must be a canonical lowercase UUID"
         }

@@ -1,28 +1,23 @@
 package com.openlattice.chronicle.util;
 
-import com.openlattice.chronicle.constants.*;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import com.openlattice.chronicle.data.FileType;
-import com.openlattice.chronicle.services.enrollment.EnrollmentManager;
-import com.openlattice.chronicle.study.ParticipantDataType;
-import org.apache.olingo.commons.api.edm.FullQualifiedName;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 import jakarta.servlet.http.HttpServletResponse;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
-import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 import static com.openlattice.chronicle.constants.EdmConstants.PARTICIPANTS_PREFIX;
+import com.openlattice.chronicle.constants.CustomMediaType;
 
 /**
  * @author alfoncenzioka &lt;alfonce@openlattice.com&gt;
  */
-public class ChronicleServerUtil {
+public final class ChronicleServerUtil {
+
+    private ChronicleServerUtil() {}
 
     public static String ORG_STUDY_PARTICIPANT            = " - orgId = {}, studyId = {}, participantId = {}";
     public static String ORG_STUDY_PARTICIPANT_DATASOURCE = " - orgId = {}, studyId = {}, participantId = {}, dataSourceId = {}";
@@ -30,57 +25,9 @@ public class ChronicleServerUtil {
     public static final String STUDY_PARTICIPANT = " - studyId = {}, participantId = {}";
     public static final String STUDY_PARTICIPANTS = " - studyId = {}, participantIds = {}";
 
-    public static String getFirstValueOrNull( Map<FullQualifiedName, Set<Object>> entity, FullQualifiedName fqn ) {
-        if ( entity.getOrDefault( fqn, Set.of() ).isEmpty() ) {
-            return null;
-        }
-        return entity.get( fqn ).iterator().next().toString();
-    }
-
-    public static UUID getFirstUUIDOrNull( Map<FullQualifiedName, Set<Object>> entity, FullQualifiedName fqn ) {
-        String firstValue = getFirstValueOrNull( entity, fqn );
-        if ( firstValue == null ) {
-            return null;
-        }
-
-        try {
-            return UUID.fromString( firstValue );
-        } catch ( IllegalArgumentException e ) {
-            return null;
-        }
-    }
-
     @Deprecated( since = "apps v2" )
     public static String getParticipantEntitySetName( UUID studyId ) {
         return PARTICIPANTS_PREFIX.concat( studyId.toString() );
-    }
-
-    /* --------------------------------DATA DOWNLOAD UTILS ------------------------------------ */
-
-    public static String getSensorDataFileName(
-            String participantId
-    ) {
-        StringBuilder builder = new StringBuilder()
-                .append("SensorData_")
-                .append(LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE))
-                .append("_")
-                .append(participantId);
-        return builder.toString();
-    }
-
-    public static String getParticipantDataFileName(
-            EnrollmentManager enrollmentManager,
-            String fileNamePrefix,
-            UUID organizationId,
-            UUID studyId,
-            String participantId ) {
-
-        StringBuilder fileNameBuilder = new StringBuilder()
-                .append( fileNamePrefix )
-                .append( LocalDate.now().format( DateTimeFormatter.BASIC_ISO_DATE ) )
-                .append( "-" )
-                .append( participantId );
-        return fileNameBuilder.toString();
     }
 
     public static void setDownloadContentType( HttpServletResponse response, FileType fileType ) {

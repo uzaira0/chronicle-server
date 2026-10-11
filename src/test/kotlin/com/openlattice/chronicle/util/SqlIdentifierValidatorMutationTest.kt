@@ -154,31 +154,10 @@ class SqlIdentifierValidatorMutationTest {
 
     // ---- quoteIdentifier ----
 
-    @Test
-    fun `quoteIdentifier validates then double-quotes the identifier`() {
-        assertEquals("\"my_col\"", SqlIdentifierValidator.quoteIdentifier("my_col"))
-    }
 
-    @Test
-    fun `quoteIdentifier rejects an invalid identifier`() {
-        expectInvalid { SqlIdentifierValidator.quoteIdentifier("bad-col") }
-    }
 
     // ---- validateTimeout ----
 
-    @Test
-    fun `validateTimeout accepts boundary values`() {
-        assertEquals(0L, SqlIdentifierValidator.validateTimeout(0L))
-        assertEquals(3600000L, SqlIdentifierValidator.validateTimeout(3600000L))
-    }
 
-    @Test
-    fun `validateTimeout rejects negative`() {
-        assertThrows(IllegalArgumentException::class.java) { SqlIdentifierValidator.validateTimeout(-1L) }
-    }
 
-    @Test
-    fun `validateTimeout rejects over one hour`() {
-        assertThrows(IllegalArgumentException::class.java) { SqlIdentifierValidator.validateTimeout(3600001L) }
-    }
 }

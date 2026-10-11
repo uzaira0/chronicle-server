@@ -15,33 +15,12 @@ public open class PermissionMapListener(private val eventBus: EventBus) : EntryA
                                                               EntryRemovedListener<AceKey, AceValue>,
                                                               EntryUpdatedListener<AceKey, AceValue> {
     override fun entryAdded(event: EntryEvent<AceKey, AceValue>) {
-        if (isMaterializationEvent(event)) {
-            postMaterializationEvent(event)
-        }
     }
 
     override fun entryRemoved(event: EntryEvent<AceKey, AceValue>) {
-        if (isMaterializationEvent(event)) {
-            postMaterializationEvent(event)
-        }
     }
 
     override fun entryUpdated(event: EntryEvent<AceKey, AceValue>) {
-        if (isMaterializationEvent(event)) {
-            postMaterializationEvent(event)
-        }
-    }
-
-    // reason: intentional no-op placeholder; param retained to match the event-handler stub signature
-    @Suppress("UnusedParameter")
-    private fun postMaterializationEvent(event: EntryEvent<AceKey, AceValue>) {
-        // no-op: materialization events are not handled at this layer (see class doc)
-    }
-
-    // reason: intentional placeholder stub; param + constant return retained to match handler signature
-    @Suppress("UnusedParameter", "FunctionOnlyReturningConstant")
-    private fun isMaterializationEvent(event: EntryEvent<AceKey, AceValue>): Boolean {
-        return false
     }
 
     override fun equals(other: Any?): Boolean {

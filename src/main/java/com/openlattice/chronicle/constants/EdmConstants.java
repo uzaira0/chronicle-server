@@ -10,7 +10,7 @@ import static java.util.Map.entry;
 /**
  * @author alfoncenzioka &lt;alfonce@openlattice.com&gt;
  */
-public class EdmConstants {
+public final class EdmConstants {
 
     private EdmConstants() {
     }

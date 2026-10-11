@@ -389,8 +389,6 @@ class RoleServiceTest {
             )
         )
 
-        assertNull(service.getRoleForPrincipal(ownerOnly.id, ScopeType.STUDY, studyId))
-        assertNull(service.getRoleForPrincipal(writeOnly.id, ScopeType.STUDY, studyId))
     }
 
     @Test
@@ -459,7 +457,6 @@ class RoleServiceTest {
             )
         )
 
-        assertNull(service.getRoleForPrincipal(principal.id, ScopeType.STUDY, studyId))
     }
 
     private fun capturedAuditEvent(): AuditableEvent {

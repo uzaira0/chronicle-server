@@ -327,33 +327,4 @@ public object SqlIdentifierValidator {
         "FORCE", "FREEZE", "VERBOSE", "ANALYZE", "VACUUM", "REINDEX", "CLUSTER"
     )
 
-    /**
-     * Creates a quoted identifier for PostgreSQL.
-     * This can be used for identifiers that need to be quoted but should still be validated first.
-     *
-     * @param identifier The identifier to quote
-     * @return The quoted identifier
-     * @throws InvalidSqlIdentifierException if the identifier is invalid
-     */
-    @JvmStatic
-    public fun quoteIdentifier(identifier: String): String {
-        validateIdentifier(identifier)
-        // Double any embedded quotes to prevent injection
-        val escaped = identifier.replace("\"", "\"\"")
-        return "\"$escaped\""
-    }
-
-    /**
-     * Validates that a numeric timeout value is within acceptable bounds.
-     *
-     * @param timeoutMillis The timeout value in milliseconds
-     * @return The validated timeout value
-     * @throws IllegalArgumentException if the timeout is invalid
-     */
-    @JvmStatic
-    public fun validateTimeout(timeoutMillis: Long): Long {
-        require(timeoutMillis >= 0) { "Timeout cannot be negative: $timeoutMillis" }
-        require(timeoutMillis <= 3600000) { "Timeout exceeds maximum of 1 hour: $timeoutMillis" }
-        return timeoutMillis
-    }
 }

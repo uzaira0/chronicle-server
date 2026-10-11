@@ -61,34 +61,12 @@ public object SecureCompare {
      * @param b The second string to compare (e.g., stored API key)
      * @return true if the strings are equal, false otherwise
      *
-     * @throws NullPointerException if either string is null. Use [equalsNullSafe]
-     *         if null values are possible.
+     * @throws NullPointerException if either string is null. Check for null values before comparing.
      */
     public fun equals(a: String, b: String): Boolean {
         val aBytes = a.toByteArray(Charsets.UTF_8)
         val bBytes = b.toByteArray(Charsets.UTF_8)
         return MessageDigest.isEqual(aBytes, bBytes)
-    }
-
-    /**
-     * Performs a null-safe constant-time comparison of two strings.
-     *
-     * Returns true only if both strings are non-null and equal.
-     * Returns false if either string is null or if they differ.
-     *
-     * Note: The null checks themselves are NOT constant-time, but this is
-     * acceptable because null checks don't reveal information about the
-     * actual secret values.
-     *
-     * @param a The first string to compare (may be null)
-     * @param b The second string to compare (may be null)
-     * @return true if both strings are non-null and equal, false otherwise
-     */
-    public fun equalsNullSafe(a: String?, b: String?): Boolean {
-        if (a == null || b == null) {
-            return false
-        }
-        return equals(a, b)
     }
 
     /**
@@ -107,53 +85,4 @@ public object SecureCompare {
         return MessageDigest.isEqual(a, b)
     }
 
-    /**
-     * Performs a null-safe constant-time comparison of two byte arrays.
-     *
-     * Returns true only if both arrays are non-null and equal.
-     *
-     * @param a The first byte array to compare (may be null)
-     * @param b The second byte array to compare (may be null)
-     * @return true if both arrays are non-null and equal, false otherwise
-     */
-    public fun equalsNullSafe(a: ByteArray?, b: ByteArray?): Boolean {
-        if (a == null || b == null) {
-            return false
-        }
-        return equals(a, b)
-    }
-
-    /**
-     * Validates an API key against a stored value using constant-time comparison.
-     *
-     * This is a convenience method that provides clearer semantics for API key
-     * validation. It returns false for null or blank input without comparing.
-     *
-     * @param providedKey The API key provided by the client (may be null or blank)
-     * @param storedKey The stored API key to validate against (may be null or blank)
-     * @return true if both keys are non-blank and equal, false otherwise
-     */
-    public fun validateApiKey(providedKey: String?, storedKey: String?): Boolean {
-        if (providedKey.isNullOrBlank() || storedKey.isNullOrBlank()) {
-            return false
-        }
-        return equals(providedKey, storedKey)
-    }
-
-    /**
-     * Validates a token against an expected value using constant-time comparison.
-     *
-     * This is a convenience method that provides clearer semantics for token
-     * validation. It returns false for null or blank input without comparing.
-     *
-     * @param providedToken The token provided by the client (may be null or blank)
-     * @param expectedToken The expected token value (may be null or blank)
-     * @return true if both tokens are non-blank and equal, false otherwise
-     */
-    public fun validateToken(providedToken: String?, expectedToken: String?): Boolean {
-        if (providedToken.isNullOrBlank() || expectedToken.isNullOrBlank()) {
-            return false
-        }
-        return equals(providedToken, expectedToken)
-    }
 }

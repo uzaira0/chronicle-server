@@ -76,11 +76,9 @@ public open class StudyAuthorizationAspect(
                 "Could not extract study ID from method {} - check @RequiresStudyAccess configuration",
                 joinPoint.signature.toShortString()
             )
-            throw IllegalStateException(
-                "Study ID not found in method parameters. " +
-                        "Ensure the method has a parameter named '${requiresAccess.studyIdParam}' " +
-                        "or a parameter annotated with @StudyId."
-            )
+            error("Study ID not found in method parameters. " +
+                    "Ensure the method has a parameter named '${requiresAccess.studyIdParam}' " +
+                    "or a parameter annotated with @StudyId.")
         }
 
         logger.debug(
