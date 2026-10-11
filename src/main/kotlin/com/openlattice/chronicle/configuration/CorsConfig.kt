@@ -112,7 +112,7 @@ public data class CorsConfiguration(
         "X-Chronicle-Nonce",
         // Optimistic-concurrency precondition for study-settings writes (V103).
         "If-Match",
-        "Idempotency-Key"
+        com.openlattice.chronicle.filters.ParticipantFormAccessFilter.IDEMPOTENCY_HEADER
     ),
 
     /**
@@ -125,6 +125,7 @@ public data class CorsConfiguration(
         "X-RateLimit-Limit",
         "X-RateLimit-Remaining",
         "X-RateLimit-Reset",
+        com.openlattice.chronicle.authorization.JwtBlocklist.IDLE_DEADLINE_HEADER,
         // Study-settings revision the dashboard sends back as If-Match.
         "ETag"
     ),

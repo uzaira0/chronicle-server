@@ -22,6 +22,8 @@ import java.util.*
 
 class JwtBlocklistFilterTest {
 
+    private val revokedTokenClock = org.mockito.Mockito.mock(java.time.Clock::class.java)
+
     companion object {
         private lateinit var hz: HazelcastInstance
         private lateinit var blocklist: JwtBlocklist
@@ -95,10 +97,11 @@ class JwtBlocklistFilterTest {
         val response = MockHttpServletResponse()
         val chain = MockFilterChain()
 
-        filter.doFilter(request, response, chain)
+        JwtBlocklistFilter(blocklist, clock = revokedTokenClock).doFilter(request, response, chain)
 
         assertNull("Blocked-by-JTI token should NOT pass through", chain.request)
         assertEquals(401, response.status)
+        org.mockito.Mockito.verifyNoInteractions(revokedTokenClock)
         SecurityContextHolder.clearContext()
     }
 
@@ -113,10 +116,11 @@ class JwtBlocklistFilterTest {
         val response = MockHttpServletResponse()
         val chain = MockFilterChain()
 
-        filter.doFilter(request, response, chain)
+        JwtBlocklistFilter(blocklist, clock = revokedTokenClock).doFilter(request, response, chain)
 
         assertNull("Blocked-by-value token should NOT pass through", chain.request)
         assertEquals(401, response.status)
+        org.mockito.Mockito.verifyNoInteractions(revokedTokenClock)
         SecurityContextHolder.clearContext()
     }
 
@@ -220,6 +224,7 @@ class JwtBlocklistFilterTest {
 
         assertNull("Token should NOT pass through when revocation state is unavailable", chain.request)
         assertEquals(503, response.status)
+        assertEquals("""{"error":"token_revocation_unavailable","message":"Token revocation status could not be verified"}""", response.contentAsString)
         assertTrue(
             "Response body should report revocation unavailability",
             response.contentAsString.contains("token_revocation_unavailable")
@@ -243,7 +248,9 @@ class JwtBlocklistFilterTest {
 
         filter.doFilter(request, response, chain)
 
+        assertEquals(401, response.status)
         assertEquals("application/json", response.contentType)
+        assertEquals("""{"error":"token_revoked","message":"Token has been revoked"}""", response.contentAsString)
         assertTrue(
             "Response body should contain error field",
             response.contentAsString.contains("token_revoked")

@@ -1,6 +1,8 @@
 package com.openlattice.chronicle.controllers
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.hazelcast.core.HazelcastInstance
+import com.hazelcast.map.IMap
 import com.openlattice.chronicle.audit.AuditAction
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.authorization.JwtBlocklist
@@ -8,6 +10,7 @@ import com.openlattice.chronicle.filters.JwtBlocklistFilter
 import jakarta.servlet.http.Cookie
 import org.springframework.mock.web.MockFilterChain
 import org.springframework.security.core.context.SecurityContextHolder
+import com.openlattice.chronicle.configuration.MobileSecurityConfiguration
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
 import com.openlattice.chronicle.services.auth.RefreshTokenService
@@ -38,6 +41,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 class AuthTokenControllerTest {
 
     private companion object {
+        private const val INTERNAL_SECRET = "test-internal-proxy-secret-with-32-bytes"
+        private val mobileSecurity = MobileSecurityConfiguration(internalWebSecret = INTERNAL_SECRET)
         private const val DASHBOARD_PASSWORD = "selfhost-dashboard-test-password"
 
         // A real hash produced by `caddy hash-password`, exactly the format Caddy's
@@ -56,9 +61,13 @@ class AuthTokenControllerTest {
         Mockito.`when`(it.activeProfiles).thenReturn(emptyArray())
     }
     private val auditService = Mockito.mock(AuditService::class.java)
-    private val jwtBlocklist = Mockito.mock(JwtBlocklist::class.java).also {
-        Mockito.`when`(it.isSessionActive(org.mockito.kotlin.any(), org.mockito.kotlin.any(), org.mockito.kotlin.any(),
-            org.mockito.kotlin.any(), org.mockito.kotlin.any())).thenReturn(true)
+    private val jwtBlocklist = Mockito.spy(JwtBlocklist(org.mockito.kotlin.mock<HazelcastInstance>().also {
+        val state = org.mockito.kotlin.mock<IMap<String, Long>>()
+        Mockito.`when`(it.getMap<String, Long>(org.mockito.kotlin.any()))
+            .thenReturn(state)
+    })).also {
+        Mockito.doReturn(true).`when`(it).isSessionActive(org.mockito.kotlin.any(), org.mockito.kotlin.any(),
+            org.mockito.kotlin.any(), org.mockito.kotlin.any(), org.mockito.kotlin.any())
     }
     private val controller = AuthTokenController(
         jwtDecoder,
@@ -134,6 +143,9 @@ class AuthTokenControllerTest {
     @Test
     fun testGetSessionReturnsAuthenticatedMetadataWhenJwtPrincipalExists() {
         val jwt = createJwt("existing-token", "user-456")
+        val idleDeadline = Instant.now().plusSeconds(300)
+        Mockito.doReturn(idleDeadline).`when`(jwtBlocklist).sessionIdleDeadline(jwt.id, jwt.tokenValue,
+            jwt.issuedAt, jwt.expiresAt, java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes))
         val request = MockHttpServletRequest()
         val authToken = JwtAuthenticationToken(jwt)
         authToken.isAuthenticated = true
@@ -147,6 +159,7 @@ class AuthTokenControllerTest {
         assertEquals(true, result.body?.get("authenticated"))
         assertEquals("existing-csrf", result.body?.get("csrfToken"))
         assertEquals("user-456", result.body?.get("subject"))
+        assertEquals(idleDeadline.toEpochMilli(), result.body?.get("idleExpiresAt"))
         assertEquals("sso-session", result.body?.get("tokenSource"))
         assertEquals(0, response.cookies.size)
     }
@@ -167,6 +180,23 @@ class AuthTokenControllerTest {
     }
 
     @Test
+    fun testingLoginRefusesMissingForgedAndUnconfiguredInternalMarkersBeforeIssuingTokens() {
+        for (secret in listOf(INTERNAL_SECRET, "")) {
+            val enabled = AuthTokenController(jwtDecoder, chronicleAuthConfiguration.copy(testingLoginEnabled = true),
+                objectMapper, userListingService, refreshTokenService, environment, auditService, jwtBlocklist,
+                MobileSecurityConfiguration(internalWebSecret = secret))
+            for (marker in listOf(null, "true", "forged", INTERNAL_SECRET.takeIf { secret.isEmpty() })) {
+                val request = MockHttpServletRequest()
+                marker?.let { request.addHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER, it) }
+                val response = MockHttpServletResponse()
+                assertEquals(403, enabled.testingLogin(null, request, response).statusCode.value())
+                assertTrue(response.cookies.isEmpty())
+                Mockito.verifyNoInteractions(userListingService, jwtDecoder, refreshTokenService)
+            }
+        }
+    }
+
+    @Test
     fun testTestingLoginReturnsCookiesAndBootstrapMetadata() {
         val enabledController = AuthTokenController(
             jwtDecoder,
@@ -177,12 +207,13 @@ class AuthTokenControllerTest {
             environment,
             auditService,
             jwtBlocklist,
+            mobileSecurity,
         )
         val jwt = createJwt("testing-token", "user-789")
         Mockito.`when`(userListingService.issueTestingToken("test-user")).thenReturn("testing-token")
         Mockito.`when`(jwtDecoder.decode("testing-token")).thenReturn(jwt)
 
-        val request = MockHttpServletRequest()
+        val request = MockHttpServletRequest().also { it.addHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER, INTERNAL_SECRET) }
         val response = MockHttpServletResponse()
 
         val result = enabledController.testingLogin(mapOf("userId" to "test-user"), request, response)
@@ -203,7 +234,8 @@ class AuthTokenControllerTest {
             AuditAction.LOGIN_FAILED, false, "disabled", mapOf("method" to "testing"))
         Mockito.clearInvocations(auditService)
         val enabled = AuthTokenController(jwtDecoder, chronicleAuthConfiguration.copy(testingLoginEnabled = true),
-            objectMapper, userListingService, refreshTokenService, environment, auditService, jwtBlocklist)
+            objectMapper, userListingService, refreshTokenService, environment, auditService, jwtBlocklist, mobileSecurity)
+        request.addHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER, INTERNAL_SECRET)
         val token = "credentialPayloadSentinel"
         Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(token)
         Mockito.`when`(jwtDecoder.decode(token)).thenReturn(createJwt(token, "issued-user"))
@@ -408,8 +440,10 @@ class AuthTokenControllerTest {
             .`when`(jwtBlocklist).blockToken(org.mockito.kotlin.any(), org.mockito.kotlin.any())
         Mockito.doAnswer { revoked.add(it.getArgument(0)); true }
             .`when`(jwtBlocklist).blockTokenByValue(org.mockito.kotlin.any(), org.mockito.kotlin.any())
-        Mockito.`when`(jwtBlocklist.isBlocked(org.mockito.kotlin.any())).thenAnswer { revoked.contains(it.getArgument(0)) }
-        Mockito.`when`(jwtBlocklist.isBlockedByValue(org.mockito.kotlin.any())).thenAnswer { revoked.contains(it.getArgument(0)) }
+        Mockito.doAnswer { revoked.contains(it.getArgument<String>(0)) }
+            .`when`(jwtBlocklist).isBlocked(org.mockito.kotlin.any())
+        Mockito.doAnswer { revoked.contains(it.getArgument<String>(0)) }
+            .`when`(jwtBlocklist).isBlockedByValue(org.mockito.kotlin.any())
         for (cookie in listOf(true, false)) {
             val token = "captured-$cookie"
             val builder = Jwt.withTokenValue(token).header("alg", "HS256").subject("researcher")
@@ -485,4 +519,32 @@ class AuthTokenControllerTest {
             .issuedAt(Instant.parse("2026-01-01T00:00:00Z"))
             .build()
     }
+
+    @Test fun cookieOnlySessionCreatesCsrfWithoutSecurityContext() {
+        org.springframework.security.core.context.SecurityContextHolder.clearContext()
+        val jwt = createJwt("cookie-only", "cookie-subject")
+        Mockito.`when`(jwtDecoder.decode("cookie-only")).thenReturn(jwt)
+        val request = MockHttpServletRequest().apply {
+            setCookies(jakarta.servlet.http.Cookie(AuthTokenController.AUTH_COOKIE_NAME, "cookie-only"))
+        }
+        val response = MockHttpServletResponse()
+        val result = controller.getSession(request, response)
+        assertEquals(true, result.body?.get("authenticated"))
+        assertNotNull(response.cookies.firstOrNull { it.name == AuthTokenController.CSRF_COOKIE_NAME })
+    }
+
+
+    @Test fun cookieSessionChecksTheSubjectsPrivilegeCutoff() {
+        val jwt = createJwt("revoked-cookie", "changed-subject")
+        Mockito.`when`(jwtDecoder.decode("revoked-cookie")).thenReturn(jwt)
+        Mockito.doReturn("privileges changed").`when`(jwtBlocklist).credentialRejectionReason(org.mockito.kotlin.anyOrNull(), org.mockito.kotlin.any(
+            ),
+            org.mockito.kotlin.anyOrNull(), org.mockito.kotlin.anyOrNull(), org.mockito.kotlin.any(),
+            org.mockito.kotlin.any(), org.mockito.kotlin.eq("changed-subject"))
+        val request = MockHttpServletRequest().apply { setCookies(jakarta.servlet.http.Cookie(AuthTokenController.AUTH_COOKIE_NAME,
+            "revoked-cookie")) }
+        val result = controller.getSession(request, MockHttpServletResponse())
+        assertEquals(false, result.body?.get("authenticated"))
+    }
+
 }

@@ -51,9 +51,7 @@ import com.openlattice.chronicle.organizations.initializers.OrganizationsInitial
 import com.openlattice.chronicle.services.ScheduledTasksManager
 import com.openlattice.chronicle.services.security.SecretRotationService
 import com.openlattice.chronicle.services.candidates.CandidateService
-import com.openlattice.chronicle.services.delete.DataDeletionManager
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
-import com.openlattice.chronicle.services.delete.DataDeletionService
 import com.openlattice.chronicle.services.delete.ParticipantPurgeService
 import com.openlattice.chronicle.services.delete.RestoreContinuityReconciler
 import com.openlattice.chronicle.services.quality.DataQualityService
@@ -66,8 +64,6 @@ import com.openlattice.chronicle.services.jobs.JobService
 import com.openlattice.chronicle.services.notifications.NotificationService
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormSubmissionReceiptService
-import com.openlattice.chronicle.services.settings.OrganizationSettingsManager
-import com.openlattice.chronicle.services.settings.OrganizationSettingsService
 import com.openlattice.chronicle.services.studies.ParticipantCollectionAcknowledgmentService
 import com.openlattice.chronicle.services.studies.StudyComplianceService
 import com.openlattice.chronicle.services.studies.StudyDeletionScheduler
@@ -139,6 +135,7 @@ import jakarta.inject.Inject
     com.openlattice.chronicle.configuration.JwtKeyConfig::class,
     com.openlattice.chronicle.configuration.JacksonSecurityConfig::class,
     com.openlattice.chronicle.configuration.SecurityHardeningConfig::class,
+    com.openlattice.chronicle.configuration.ParameterPollutionConfig::class,
     com.openlattice.chronicle.configuration.CorsValidationFilterConfig::class,
     com.openlattice.chronicle.configuration.MobileApiSecurityConfig::class,
     com.openlattice.chronicle.configuration.RateLimitConfig::class,
@@ -194,7 +191,7 @@ public open class ChronicleServerServicesPod {
 
     @Bean
     public fun jwtBlocklist(): com.openlattice.chronicle.authorization.JwtBlocklist {
-        return com.openlattice.chronicle.authorization.JwtBlocklist(hazelcast)
+        return com.openlattice.chronicle.authorization.JwtBlocklist(hazelcast, storageResolver)
     }
 
     @Bean
@@ -205,11 +202,6 @@ public open class ChronicleServerServicesPod {
         )
     }
 
-    @Bean
-    @Throws(IOException::class, ExecutionException::class)
-    public fun dataDeletionManager(): DataDeletionManager {
-        return DataDeletionService(enrollmentManager())
-    }
 
     @Bean
     public fun participantStatsCache(): ParticipantStatsCache =
@@ -302,10 +294,6 @@ public open class ChronicleServerServicesPod {
     }
 
 
-    @Bean
-    public fun organizationSettingsManager(): OrganizationSettingsManager {
-        return OrganizationSettingsService(storageResolver)
-    }
 
     @Bean
     @Throws(IOException::class, ExecutionException::class)
@@ -357,7 +345,7 @@ public open class ChronicleServerServicesPod {
 
     @Bean
     public fun authorizationService(): AuthorizationManager {
-        return HazelcastAuthorizationService(hazelcast, storageResolver, eventBus, principalsMapManager())
+        return HazelcastAuthorizationService(hazelcast, storageResolver, eventBus, principalsMapManager(), jwtBlocklist(), refreshTokenService())
     }
 
     @Bean
@@ -462,6 +450,7 @@ public open class ChronicleServerServicesPod {
         idGenerationService: HazelcastIdGenerationService,
         auditingManager: AuditingManager,
         dataDeletionOrchestrator: DataDeletionOrchestrator,
+        studyLimitsMgr: StudyLimitsManager,
     ): StudyLifecycleService {
         return StudyLifecycleService(
             storageResolver,
@@ -471,6 +460,7 @@ public open class ChronicleServerServicesPod {
             auditingManager,
             dataDeletionOrchestrator,
             webhookService(),
+            studyLimitsMgr,
         )
     }
 
@@ -727,7 +717,7 @@ public open class ChronicleServerServicesPod {
 
     @Bean
     public fun envelopeDecryptionService(): EnvelopeDecryptionService {
-        return EnvelopeDecryptionService(storageResolver, studyKeyStore(), authorizationService())
+        return EnvelopeDecryptionService(studyKeyStore())
     }
 
     @Bean
@@ -816,7 +806,8 @@ public open class ChronicleServerServicesPod {
 
     @PostConstruct
     public fun init() {
-        Principals.init(principalsManager(), hazelcast)
+        Principals.init(principalsManager(), hazelcast,
+            com.openlattice.chronicle.authorization.CreatorPrincipalResolver(storageResolver, chronicleAuthConfiguration))
         storageResolver.setStudyStorage(hazelcast)
     }
 }

@@ -221,9 +221,10 @@ public class RefreshTokenService(
      * Revokes all refresh tokens for a user (e.g., on password change or account lockout).
      */
     public fun revokeAllForUser(userId: String) {
-        storageResolver.getPlatformStorage().connection.use { conn ->
+        val refreshUserId = runCatching { UUID.fromString(userId) }.getOrNull() ?: return
+        storageResolver.getDefaultPlatformStorage().second.connection.use { conn ->
             conn.prepareStatement(REVOKE_ALL_FOR_USER_SQL).use { ps ->
-                ps.setString(1, userId)
+                ps.setObject(1, refreshUserId)
                 val count = ps.executeUpdate()
                 logger.info("Revoked {} refresh tokens for user={}", count, userId)
             }

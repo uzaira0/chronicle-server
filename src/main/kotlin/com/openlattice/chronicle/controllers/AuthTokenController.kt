@@ -2,6 +2,7 @@ package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.openlattice.chronicle.configuration.MobileSecurityConfiguration
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.openlattice.chronicle.audit.AuditAction
 import com.openlattice.chronicle.audit.AuditService
@@ -84,6 +85,8 @@ public open class AuthTokenController(
     private val environment: Environment,
     private val auditService: AuditService,
     private val jwtBlocklist: JwtBlocklist,
+    private val mobileSecurityConfiguration: MobileSecurityConfiguration =
+        MobileSecurityConfiguration(),
 ) {
     internal companion object {
         private val logger = LoggerFactory.getLogger(AuthTokenController::class.java)
@@ -183,7 +186,7 @@ public open class AuthTokenController(
                     null
                 }
                 if (decodedCookieJwt != null && sessionIsActive(decodedCookieJwt)) {
-                    val csrfToken = ensureCsrfCookie(request, response)
+                    val csrfToken = ensureCookieSession(request, cookieToken, response)
                     return ResponseEntity.ok(buildAuthenticatedSession(decodedCookieJwt, csrfToken))
                 }
             }
@@ -365,6 +368,14 @@ public open class AuthTokenController(
                     "status" to "awaiting-sso"
                 )
             )
+        }
+
+        if (!MobileSecurityConfiguration.isTrustedInternalWebMarker(
+                mobileSecurityConfiguration.internalWebSecret,
+                request.getHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER),
+            )) {
+            auditLogin(request, "testing", null, "untrusted_proxy")
+            return ResponseEntity.status(403).build()
         }
 
         val token = userListingService.issueTestingToken(body?.get("userId"))
@@ -786,11 +797,11 @@ public open class AuthTokenController(
     }
 
     private fun sessionIsActive(jwt: org.springframework.security.oauth2.jwt.Jwt): Boolean =
-        (jwt.id.isNullOrBlank() || !jwtBlocklist.isBlocked(jwt.id)) &&
-            !jwtBlocklist.isBlockedByValue(jwt.tokenValue) &&
-            jwtBlocklist.isSessionActive(jwt.id?.takeIf(String::isNotBlank)?.let { "JTI:$it" } ?: jwt.tokenValue,
-                jwt.issuedAt, jwt.expiresAt,
-                java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes))
+        jwtBlocklist.credentialRejectionReason(
+            jwt.id?.takeIf(String::isNotBlank), jwt.tokenValue, jwt.issuedAt, jwt.expiresAt,
+            java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes),
+            subject = jwt.subject,
+        ) == null
 
     private fun readCookie(request: HttpServletRequest, name: String): String? {
         return request.cookies
@@ -882,6 +893,9 @@ public open class AuthTokenController(
         )
 
         jwt.expiresAt?.let { metadata["expiresAt"] = it.toEpochMilli() }
+        jwtBlocklist.sessionIdleDeadline(jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt,
+            java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes))
+            ?.let { metadata["idleExpiresAt"] = it.toEpochMilli() }
         jwt.subject?.let { metadata["subject"] = it }
         val roles = extractRoles(jwt.claims)
 

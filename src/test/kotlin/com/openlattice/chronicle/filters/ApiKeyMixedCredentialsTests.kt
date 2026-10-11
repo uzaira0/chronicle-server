@@ -25,8 +25,8 @@ class ApiKeyMixedCredentialsTests : ChronicleServerTests() {
     @Test
     fun keySentWithABearerTokenOrAuthCookieIsRefusedBeforeAnyHandler() {
         val studyId = clientUser1.studyApi.createStudy(Study(title = "mixed credentials", contact = "test@openlattice.com"))
-        val userToken = jwtTokens.getValue(testUser1.id).first()
-        val adminToken = jwtTokens.getValue(adminUser.id).first()
+        val userToken = activeFixtureToken(testUser1)
+        val adminToken = activeFixtureToken(adminUser)
         val created = send(
             HttpRequest.newBuilder(URI("$base/$studyId/api-keys"))
                 .header("Authorization", "Bearer $userToken")

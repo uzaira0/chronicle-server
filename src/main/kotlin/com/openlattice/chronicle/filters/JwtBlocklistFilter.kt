@@ -38,24 +38,15 @@ public class JwtBlocklistFilter(private val jwtBlocklist: JwtBlocklist,
             try {
                 val jwt = authentication.token
 
-                // Check individual token block (by JTI)
-                val jti = jwt.id
-                if (jti != null && jwtBlocklist.isBlocked(jti)) {
-                    rejectToken(response, "Token has been revoked")
+                val rejection = jwtBlocklist.credentialRejectionReason(
+                    jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt, idleWindow, clock::instant, subject = jwt.subject,
+                )
+                if (rejection != null) {
+                    rejectToken(response, rejection)
                     return
                 }
-
-                // Check token value hash
-                if (jwtBlocklist.isBlockedByValue(jwt.tokenValue)) {
-                    rejectToken(response, "Token has been revoked")
-                    return
-                }
-
-                if (!jwtBlocklist.isSessionActive(jwt.id?.takeIf(String::isNotBlank)?.let { "JTI:$it" } ?: jwt.tokenValue,
-                    jwt.issuedAt, jwt.expiresAt, idleWindow, clock.instant())) {
-                    rejectToken(response, "Session has expired due to inactivity")
-                    return
-                }
+                jwtBlocklist.sessionIdleDeadline(jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt, idleWindow)
+                    ?.let { response.setHeader(JwtBlocklist.IDLE_DEADLINE_HEADER, it.toEpochMilli().toString()) }
 
                 // Check "revoke all before" timestamp
                 val revokeAllBefore = jwtBlocklist.getRevokeAllTimestamp()

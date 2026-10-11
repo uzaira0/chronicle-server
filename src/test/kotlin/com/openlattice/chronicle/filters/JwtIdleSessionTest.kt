@@ -41,6 +41,9 @@ class JwtIdleSessionTest {
                     .doFilter(org.springframework.mock.web.MockHttpServletRequest("GET", "/chronicle/v3/study"), response,
                         jakarta.servlet.FilterChain { _, res -> (res as jakarta.servlet.http.HttpServletResponse).status = 200 })
                 org.junit.Assert.assertEquals("$token is still within its absolute expiry", expected, response.status)
+                if (expected == 401) {
+                    org.junit.Assert.assertEquals("""{"error":"token_revoked","message":"Session has expired due to inactivity"}""", response.contentAsString)
+                }
             }
         } finally {
             org.springframework.security.core.context.SecurityContextHolder.clearContext()

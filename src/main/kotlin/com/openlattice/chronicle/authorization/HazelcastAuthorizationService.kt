@@ -50,6 +50,8 @@ public open class HazelcastAuthorizationService(
     @Suppress("UnusedPrivateProperty")
     private val eventBus: EventBus,
     private val principalsMapManager: PrincipalsMapManager,
+    private val jwtBlocklist: JwtBlocklist? = null,
+    private val refreshTokenService: com.openlattice.chronicle.services.auth.RefreshTokenService? = null,
 ) : AuthorizationManager {
     private val authorizationStorage = storageResolver.getDefaultPlatformStorage()
     private val aces: IMap<AceKey, AceValue> = HazelcastMap.PERMISSIONS.getMap(hazelcastInstance)
@@ -326,7 +328,7 @@ public open class HazelcastAuthorizationService(
                 .map { ace -> ace.principal }
                 .toSet()
 
-            withAclMutationLock(aclKey) {
+            withAclMutationLock(aclKey, { acl.aces.map { it.principal } }) {
                 if (owners.isNotEmpty()) {
                     ensureAclKeyHasOtherUserOwner(aclKey, owners)
                 }
@@ -343,7 +345,7 @@ public open class HazelcastAuthorizationService(
         principal: Principal,
         permissions: EnumSet<Permission>
     ) {
-        withAclMutationLock(aclKey) {
+        withAclMutationLock(aclKey, { setOf(principal) }) {
             if (permissions.contains(Permission.OWNER)) {
                 ensureAclKeyHasOtherUserOwner(aclKey, setOf(principal))
             }
@@ -352,11 +354,14 @@ public open class HazelcastAuthorizationService(
     }
 
     override fun deletePermissions(aclKey: AclKey) {
-        securableObjectTypes.delete(aclKey)
-        aces.removeAll(hasAclKey(aclKey))
+        withAclMutationLock(aclKey, { aces.keySet(hasAclKey(aclKey)).map { it.principal } }) {
+            securableObjectTypes.delete(aclKey)
+            aces.removeAll(hasAclKey(aclKey))
+        }
     }
 
     override fun deletePrincipalPermissions(principal: Principal) {
+        revokeSessions(listOf(principal))
         aces.removeAll(hasPrincipal(principal))
     }
 
@@ -368,7 +373,7 @@ public open class HazelcastAuthorizationService(
 
         acls.forEach { acl ->
             val aclKey = AclKey(acl.aclKey)
-            withAclMutationLock(aclKey) {
+            withAclMutationLock(aclKey, { principalsLosingPermissions(aclKey, acl.aces.associate { it.principal to it.permissions }) }) {
                 val principalsLosingPermanentOwnership = acl.aces
                     .filterNot { ace ->
                         ace.permissions.contains(Permission.OWNER) &&
@@ -412,7 +417,7 @@ public open class HazelcastAuthorizationService(
         expirationDate: OffsetDateTime
     ) {
         ensurePrincipalsExist(setOf(principal))
-        withAclMutationLock(aclKey) {
+        withAclMutationLock(aclKey, { principalsLosingPermissions(aclKey, mapOf(principal to permissions)) }) {
             if (!permissions.contains(Permission.OWNER) || expirationDate != OffsetDateTime.MAX) {
                 ensureAclKeyHasOtherUserOwner(aclKey, setOf(principal))
             }
@@ -428,7 +433,7 @@ public open class HazelcastAuthorizationService(
         ensurePrincipalsExist(principals)
         val securableObjectTypesForAclKeys = securableObjectTypes.getAll(aclKeys)
         aclKeys.forEach { aclKey ->
-            withAclMutationLock(aclKey) {
+            withAclMutationLock(aclKey, { principalsLosingPermissions(aclKey, principals.associateWith { permissions }) }) {
                 if (!permissions.contains(Permission.OWNER)) {
                     ensureAclKeyHasOtherUserOwner(aclKey, principals)
                 }
@@ -446,7 +451,7 @@ public open class HazelcastAuthorizationService(
         val securableObjectTypesForAclKeys = securableObjectTypes.getAll(permissions.keys.map { it.aclKey }.toSet())
 
         permissions.entries.groupBy { it.key.aclKey }.forEach { (aclKey, aclEntries) ->
-            withAclMutationLock(aclKey) {
+            withAclMutationLock(aclKey, { principalsLosingPermissions(aclKey, aclEntries.associate { it.key.principal to it.value }) }) {
                 val principalsLosingOwnership = aclEntries
                     .filterNot { it.value.contains(Permission.OWNER) }
                     .mapTo(mutableSetOf()) { it.key.principal }
@@ -713,6 +718,7 @@ public open class HazelcastAuthorizationService(
     }
 
     override fun deleteAllPrincipalPermissions(principal: Principal) {
+        revokeSessions(listOf(principal))
         /*
         This will delete from db and then evict from memory.
         Since we check if principal exists before adding a permission it should fail cleanly as long as principal
@@ -768,12 +774,35 @@ public open class HazelcastAuthorizationService(
         }
     }
 
-    private inline fun <T> withAclMutationLock(aclKey: AclKey, mutation: () -> T): T {
+    /**
+     * Runs an ACL mutation under the object's lock. [losingAccess] is evaluated under the lock, before the
+     * mutation, and names the principals whose sessions must end because they lose permissions; grants pass
+     * nothing, since a grant never needs a session to end (authorization is evaluated per request).
+     */
+    private inline fun <T> withAclMutationLock(
+        aclKey: AclKey,
+        losingAccess: () -> Collection<Principal> = { emptyList() },
+        mutation: () -> T,
+    ): T {
         securableObjectTypes.lock(aclKey)
         return try {
+            revokeSessions(losingAccess())
             mutation()
         } finally {
             securableObjectTypes.unlock(aclKey)
+        }
+    }
+
+    private fun principalsLosingPermissions(aclKey: AclKey, replacement: Map<Principal, Set<Permission>>): List<Principal> =
+        replacement.filter { (principal, permissions) ->
+            val current = aces[AceKey(aclKey, principal)]?.permissions
+            current != null && !permissions.containsAll(current)
+        }.keys.toList()
+
+    private fun revokeSessions(principals: Collection<Principal>) {
+        principals.filter { it.type == PrincipalType.USER }.distinct().forEach {
+            jwtBlocklist?.revokePrincipalBefore(it.id)
+            refreshTokenService?.revokeAllForUser(it.id)
         }
     }
 
@@ -785,7 +814,8 @@ public open class HazelcastAuthorizationService(
 
             acl.aces.forEach {
                 map.put(
-                    AceValue(EnumSet.noneOf(Permission::class.java).apply { addAll(it.permissions) }, getDefaultObjectType(types, aclKey), it.expirationDate),
+                    AceValue(EnumSet.noneOf(Permission::class.java).apply { addAll(it.permissions) }, getDefaultObjectType(types, aclKey),
+                        it.expirationDate),
                     AceKey(aclKey, it.principal)
                 )
             }
@@ -835,7 +865,7 @@ public open class HazelcastAuthorizationService(
                 val principalTreesMap = HazelcastMap.PRINCIPAL_TREES.getMap(hazelcastInstance)
                 usersToProvision.forEach { principal ->
                     logger.info("Auto-provisioning user principal: {}", principal.id)
-                    val aclKey = AclKey(UUID.randomUUID())
+                    val aclKey = AclKey(Principals.getUserId(principal.id))
                     val sp = SecurablePrincipal(
                         Optional.of(aclKey.first()),
                         principal,

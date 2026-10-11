@@ -1,12 +1,14 @@
 package com.openlattice.chronicle.controllers
 
 import com.hazelcast.map.IMap
+import com.openlattice.chronicle.authorization.CreatorPrincipalResolver
 import com.openlattice.chronicle.authorization.Principal
 import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.authorization.SecurablePrincipal
 import com.openlattice.chronicle.authorization.SortedPrincipalSet
 import com.openlattice.chronicle.authorization.SystemRole
 import com.openlattice.chronicle.authorization.principals.Principals
+import com.openlattice.chronicle.authorization.principals.SecurePrincipalsManager
 import org.mockito.Mockito
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.security.oauth2.jwt.Jwt
@@ -63,6 +65,17 @@ object TestSecurityUtils {
             Optional.of("test user")
         )
         Mockito.`when`(securableMap[subject]).thenReturn(securableUser)
+
+        // Principals outside the injected maps resolve through persisted membership; here: the user alone.
+        val resolver = injectStaticMock(Principals::class.java, "principalResolver") {
+            Mockito.mock(CreatorPrincipalResolver::class.java)
+        } as CreatorPrincipalResolver
+        Mockito.`when`(resolver.resolve(Mockito.anyString())).thenAnswer {
+            setOf(Principal(PrincipalType.USER, it.getArgument(0)))
+        }
+        injectStaticMock(Principals::class.java, "principalManager") {
+            Mockito.mock(SecurePrincipalsManager::class.java)
+        }
     }
 
     private fun injectStaticMock(targetClass: Class<*>, fieldName: String, factory: () -> Any): Any {
