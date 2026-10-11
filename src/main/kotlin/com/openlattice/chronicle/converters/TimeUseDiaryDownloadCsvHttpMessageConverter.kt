@@ -1,13 +1,6 @@
 package com.openlattice.chronicle.converters
 
-import com.fasterxml.jackson.databind.SerializationFeature
-import com.fasterxml.jackson.dataformat.csv.CsvGenerator
-import com.fasterxml.jackson.dataformat.csv.CsvMapper
 import com.fasterxml.jackson.dataformat.csv.CsvSchema
-import com.fasterxml.jackson.datatype.guava.GuavaModule
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
-import com.fasterxml.jackson.module.blackbird.BlackbirdModule
 import com.openlattice.chronicle.constants.CustomMediaType
 import org.springframework.http.HttpInputMessage
 import org.springframework.http.HttpOutputMessage
@@ -20,16 +13,7 @@ import java.lang.reflect.Type
 public open class TimeUseDiaryDownloadCsvHttpMessageConverter : AbstractGenericHttpMessageConverter<TimeUseDiaryPostgresDownloadWrapper>(
     CustomMediaType.TEXT_CSV
 ) {
-    private val csvMapper = CsvMapper()
-
-    init {
-        csvMapper.registerModule(BlackbirdModule())
-        csvMapper.registerModule(GuavaModule())
-        csvMapper.registerModule(JavaTimeModule())
-        csvMapper.registerModule(Jdk8Module())
-        csvMapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-        csvMapper.configure(CsvGenerator.Feature.STRICT_CHECK_FOR_QUOTING, true)
-    }
+    private val csvMapper = downloadCsvMapper()
 
     override fun read(type: Type, contextClass: Class<*>?, inputMessage: HttpInputMessage): TimeUseDiaryPostgresDownloadWrapper {
         throw UnsupportedOperationException("CSV is not a a supported input format")

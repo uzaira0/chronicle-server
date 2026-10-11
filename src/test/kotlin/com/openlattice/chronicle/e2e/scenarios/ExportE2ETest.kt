@@ -46,7 +46,7 @@ class ExportE2ETest : ChronicleServerTests() {
     }
 
     @Test
-    fun `export status transitions from pending to completed`() = chronicleScenario(providers) {
+    fun `export status reaches completed`() = chronicleScenario(providers) {
         asUser("test_admin") {
             study(providers.data.study("ExportStatus")) {
                 val theStudyId = studyId
@@ -67,8 +67,8 @@ class ExportE2ETest : ChronicleServerTests() {
                 )) {
                     val info = awaitCompletion(timeoutMs = 30_000, intervalMs = 200)
                     assertTrue(
-                        "Expected COMPLETED or FAILED, got ${info.status}",
-                        info.status == ExportJobStatus.COMPLETED || info.status == ExportJobStatus.FAILED
+                        "Expected COMPLETED, got ${info.status}",
+                        info.status == ExportJobStatus.COMPLETED
                     )
                 }
             }

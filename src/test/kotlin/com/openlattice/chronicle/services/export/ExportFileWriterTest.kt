@@ -2,9 +2,18 @@ package com.openlattice.chronicle.services.export
 
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.StatementHolder
+import com.geekbeast.postgres.streams.StatementHolderSupplier
+import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.dataformat.csv.CsvSchema
 import com.openlattice.chronicle.converters.PostgresDownloadWrapper
+import com.openlattice.chronicle.converters.downloadCsvMapper
 import com.openlattice.chronicle.export.ExportFormat
+import com.openlattice.chronicle.storage.PostgresEventColumns
+import com.openlattice.chronicle.storage.PostgresEventTables
+import com.openlattice.chronicle.study.ParticipantDataType
 import org.apache.poi.ss.usermodel.WorkbookFactory
 import org.mockito.Mockito
 import org.junit.Assert.assertEquals
@@ -30,19 +39,79 @@ import java.util.concurrent.TimeUnit
 class ExportFileWriterTest {
 
     @Test
+    fun csvDatabaseDatasetsFitOneConnectionAndCloseBeforeOpeningTheNext() {
+        val postgres = ChronicleContractTestSchema.sharedPostgres
+        HikariDataSource(HikariConfig().apply {
+            jdbcUrl = postgres.jdbcUrl
+            username = postgres.username
+            password = postgres.password
+            maximumPoolSize = 1
+            connectionTimeout = TimeUnit.SECONDS.toMillis(1)
+            connectionInitSql = "SET idle_in_transaction_session_timeout = '60s'"
+        }).use { storage ->
+            val columns = listOf("value")
+            val datasets = listOf("alpha", "zeta").associateWith {
+                PostgresDownloadWrapper(BasePostgresIterable<Map<String, Any>>(
+                    StatementHolderSupplier(storage, "SELECT generate_series(1, 2001) AS value", fetchSize = 1000),
+                ) { row -> mapOf("value" to row.getInt("value")) }).withColumnAdvice(columns)
+            }
+            val result = ExportFileWriter.writeMultiDataTypeExport(datasets, ExportFormat.CSV, UUID.randomUUID())
+            try {
+                assertEquals(4002L, result.rowCount)
+                assertEquals(0, storage.hikariPoolMXBean.activeConnections)
+                val csv = Files.readString(result.path)
+                assertTrue(csv.contains("alpha,2001"))
+                assertTrue(csv.contains("zeta,2001"))
+            } finally {
+                Files.deleteIfExists(result.path)
+            }
+        }
+    }
+
+    @Test
+    fun csvUsageRowsWithDifferentOptionalFieldsKeepDeclaredSchema() {
+        val columns = PostgresEventTables.CHRONICLE_USAGE_EVENTS.columns.map { it.name }
+        val participant = mapOf<String, Any>(PostgresEventColumns.PARTICIPANT_ID.name to "participant-1")
+        val activity = mapOf<String, Any>(PostgresEventColumns.ACTIVITY_CLASS.name to "MainActivity")
+        val user = mapOf<String, Any>(PostgresEventColumns.USERNAME.name to "user-1")
+        val rows = listOf(participant, participant + activity, participant + user, participant + activity + user)
+        val dataType = ParticipantDataType.UsageEvents.name
+        val result = ExportFileWriter.writeMultiDataTypeExport(
+            mapOf(dataType to postgresRows(columns, rows)), ExportFormat.CSV, UUID.randomUUID(),
+        )
+        try {
+            val csv = Files.readString(result.path)
+            assertEquals(
+                (listOf(ExportFileWriter.CSV_DATA_TYPE_COLUMN) + columns.sorted()).joinToString(","),
+                csv.lineSequence().first(),
+            )
+            val exported = downloadCsvMapper().readerFor(Map::class.java)
+                .with(CsvSchema.emptySchema().withHeader())
+                .readValues<Map<String, String>>(csv).use { it.readAll() }
+            assertEquals(rows.size.toLong(), result.rowCount)
+            assertEquals(rows.size, exported.size)
+            exported.forEachIndexed { index, row ->
+                assertEquals(dataType, row[ExportFileWriter.CSV_DATA_TYPE_COLUMN])
+                columns.forEach { column ->
+                    assertEquals("row $index, column $column", rows[index][column]?.toString().orEmpty(), row[column])
+                }
+            }
+        } finally {
+            Files.deleteIfExists(result.path)
+        }
+    }
+
+    @Test
     fun excelSpillBudgetAbortsDuringGenerationAndCleansPartials() {
         val id = UUID.randomUUID()
         var generated = 0
         val random = java.util.Random(42)
         val data = Iterable {
-            object : Iterator<Map<String, Any>> {
-                override fun hasNext() = generated < 2000
-                override fun next(): Map<String, Any> {
-                    generated++
-                    val bytes = ByteArray(8192).also(random::nextBytes)
-                    return mapOf("title" to java.util.Base64.getEncoder().encodeToString(bytes))
-                }
-            }
+            (0 until 2000).asSequence().map {
+                generated++
+                val bytes = ByteArray(8192).also(random::nextBytes)
+                mapOf<String, Any>("title" to java.util.Base64.getEncoder().encodeToString(bytes))
+            }.iterator()
         }
         assertThrows(ExportResourceLimitException::class.java) {
             ExportFileWriter.writeMultiDataTypeExport(mapOf("AudioContent" to data), ExportFormat.EXCEL, id,
@@ -415,7 +484,7 @@ class ExportFileWriterTest {
         val exportId = UUID.randomUUID()
         val results = ExportFormat.entries.associateWith { format ->
             ExportFileWriter.writeMultiDataTypeExport(
-                mapOf("BatteryTelemetry" to emptyPostgresRows(advised)),
+                mapOf("BatteryTelemetry" to postgresRows(advised)),
                 format,
                 exportId,
             )
@@ -482,8 +551,8 @@ class ExportFileWriterTest {
             ExportFileWriter.writeMultiDataTypeExport(populated, format, UUID.randomUUID())
         }
         val empty = linkedMapOf<String, Iterable<Map<String, Any>>>(
-            "UploadDiagnostics" to emptyPostgresRows(diagnosticColumns),
-            "DataQualityAlerts" to emptyPostgresRows(alertColumns),
+            "UploadDiagnostics" to postgresRows(diagnosticColumns),
+            "DataQualityAlerts" to postgresRows(alertColumns),
         )
         val emptyFiles = ExportFormat.entries.associateWith { format ->
             ExportFileWriter.writeMultiDataTypeExport(empty, format, UUID.randomUUID())
@@ -522,10 +591,13 @@ class ExportFileWriterTest {
         }
     }
 
-    /** A [PostgresDownloadWrapper] over a result set that is exhausted before its first row. */
-    private fun emptyPostgresRows(columns: List<String>): PostgresDownloadWrapper {
+    private fun postgresRows(
+        columns: List<String>,
+        rows: List<Map<String, Any>> = emptyList(),
+    ): PostgresDownloadWrapper {
+        val rowIterator = rows.iterator()
         val resultSet = Mockito.mock(ResultSet::class.java)
-        Mockito.`when`(resultSet.next()).thenReturn(false)
+        Mockito.`when`(resultSet.next()).thenAnswer { rowIterator.hasNext() }
         val iterable = BasePostgresIterable(
             Supplier {
                 StatementHolder(
@@ -534,7 +606,7 @@ class ExportFileWriterTest {
                     resultSet,
                 )
             },
-        ) { rs -> columns.associateWith { rs.getObject(it) } }
+        ) { rowIterator.next() }
         return PostgresDownloadWrapper(iterable).withColumnAdvice(columns)
     }
 
@@ -600,4 +672,73 @@ class ExportFileWriterTest {
             Files.deleteIfExists(spill)
         }
     }
+    @Test
+    fun concurrentExportReadersShareTheFenceAndErasureWaitsForAllReaders() {
+        val studyId = UUID.randomUUID()
+        val secondReader = CountDownLatch(1)
+        val releaseReader = CountDownLatch(1)
+        val erasureStarted = CountDownLatch(1)
+        val erasureAcquired = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+        val first = ExportFileWriter.acquireStudyExportLock(studyId, shared = true)
+        try {
+            executor.execute {
+                ExportFileWriter.acquireStudyExportLock(studyId, shared = true).use {
+                    secondReader.countDown()
+                    releaseReader.await(5, TimeUnit.SECONDS)
+                }
+            }
+            assertTrue("parallel download or generation must not wait", secondReader.await(5, TimeUnit.SECONDS))
+            executor.execute {
+                erasureStarted.countDown()
+                ExportFileWriter.acquireStudyExportLock(studyId).use { erasureAcquired.countDown() }
+            }
+            assertTrue(erasureStarted.await(5, TimeUnit.SECONDS))
+            assertFalse(erasureAcquired.await(100, TimeUnit.MILLISECONDS))
+            first.close()
+            assertFalse("another reader is still active", erasureAcquired.await(100, TimeUnit.MILLISECONDS))
+            releaseReader.countDown()
+            assertTrue(erasureAcquired.await(5, TimeUnit.SECONDS))
+        } finally {
+            first.close()
+            releaseReader.countDown()
+            executor.shutdownNow()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+        }
+    }
+
+    @Test
+    fun usageExportsPopulateEventTypeAndTransportTimestamps() {
+        val rs = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(rs.getString(Mockito.anyString())).thenReturn("fixture")
+        Mockito.`when`(rs.getString(PostgresEventColumns.TIMEZONE.name)).thenReturn("UTC")
+        Mockito.`when`(rs.getInt(PostgresEventColumns.EVENT_TYPE.name)).thenReturn(3)
+        val timestamps = mapOf(
+            PostgresEventColumns.TIMESTAMP to java.time.OffsetDateTime.parse("2026-10-01T10:00:00Z"),
+            PostgresEventColumns.COLLECTED_AT to java.time.OffsetDateTime.parse("2026-10-01T10:01:00Z"),
+            PostgresEventColumns.UPLOADED_AT to java.time.OffsetDateTime.parse("2026-10-02T10:00:00Z"),
+        )
+        timestamps.forEach { (column, value) ->
+            Mockito.`when`(rs.getObject(column.name, java.time.OffsetDateTime::class.java)).thenReturn(value)
+        }
+        val row = com.openlattice.chronicle.services.download.DataDownloadService.usageEventRow(rs)
+        val columns = PostgresEventTables.CHRONICLE_USAGE_EVENTS.columns.map { it.name }
+        listOf(ExportFormat.CSV, ExportFormat.JSON).forEach { format ->
+            val result = ExportFileWriter.writeMultiDataTypeExport(
+                mapOf("usage" to postgresRows(columns, listOf(row))), format, UUID.randomUUID(),
+            )
+            try {
+                val exported = if (format == ExportFormat.CSV) {
+                    downloadCsvMapper().readerFor(Map::class.java).with(CsvSchema.emptySchema().withHeader())
+                        .readValues<Map<String, String>>(Files.readString(result.path)).use { it.readAll().single() }
+                } else ObjectMapper().readTree(Files.readString(result.path)).single()
+                    .fields().asSequence().associate { it.key to it.value.asText() }
+                assertEquals("3", exported[PostgresEventColumns.EVENT_TYPE.name])
+                timestamps.forEach { (column, value) -> assertEquals(value, java.time.OffsetDateTime.parse(exported.getValue(column.name))) }
+            } finally {
+                Files.deleteIfExists(result.path)
+            }
+        }
+    }
+
 }

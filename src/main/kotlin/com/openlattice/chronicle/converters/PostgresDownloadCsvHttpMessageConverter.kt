@@ -69,16 +69,7 @@ public open class PostgresDownloadCsvHttpMessageConverter : AbstractGenericHttpM
         }
     }
 
-    private val csvMapper = CsvMapper()
-
-    init {
-        csvMapper.registerModule(BlackbirdModule())
-        csvMapper.registerModule(GuavaModule())
-        csvMapper.registerModule(JavaTimeModule())
-        csvMapper.registerModule(Jdk8Module())
-        csvMapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
-        csvMapper.configure(CsvGenerator.Feature.STRICT_CHECK_FOR_QUOTING, true)
-    }
+    private val csvMapper = downloadCsvMapper()
 
     @Throws(HttpMessageNotReadableException::class)
     override fun read(type: Type, contextClass: Class<*>?, inputMessage: HttpInputMessage): PostgresDownloadWrapper {
@@ -112,6 +103,15 @@ public open class PostgresDownloadCsvHttpMessageConverter : AbstractGenericHttpM
 
         return schemaBuilder.setUseHeader(true).build()
     }
+}
+
+internal fun downloadCsvMapper(): CsvMapper = CsvMapper().apply {
+    registerModule(BlackbirdModule())
+    registerModule(GuavaModule())
+    registerModule(JavaTimeModule())
+    registerModule(Jdk8Module())
+    configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
+    configure(CsvGenerator.Feature.STRICT_CHECK_FOR_QUOTING, true)
 }
 
 /**

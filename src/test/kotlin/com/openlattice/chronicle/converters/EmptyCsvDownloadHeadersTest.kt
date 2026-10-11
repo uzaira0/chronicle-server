@@ -10,9 +10,35 @@ import org.springframework.mock.http.MockHttpOutputMessage
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Statement
+import java.time.OffsetDateTime
 import java.util.function.Supplier
 
 class EmptyCsvDownloadHeadersTest {
+    private fun postgresRows(vararg rows: Map<String, Any>): BasePostgresIterable<Map<String, Any>> {
+        val resultSet = Mockito.mock(ResultSet::class.java)
+        val remaining = rows.iterator()
+        Mockito.`when`(resultSet.next()).thenAnswer { remaining.hasNext() }
+        return BasePostgresIterable(
+            Supplier {
+                StatementHolder(Mockito.mock(Connection::class.java), Mockito.mock(Statement::class.java), resultSet)
+            },
+        ) { remaining.next() }
+    }
+
+    @Test
+    fun currentDownloadsKeepDateAndQuotingSerialization() {
+        val timestamp = OffsetDateTime.parse("2026-09-01T12:00:00-03:00")
+        val row = linkedMapOf<String, Any>("timestamp" to timestamp, "text" to "hello, \"quoted\"")
+        val columns = row.keys.toList()
+        val current = PostgresDownloadWrapper(postgresRows(row)).withColumnAdvice(columns)
+        val currentOutput = MockHttpOutputMessage()
+
+        PostgresDownloadCsvHttpMessageConverter().write(current, current::class.java, CustomMediaType.TEXT_CSV, currentOutput)
+
+        val expected = "timestamp,text\n2026-09-01T12:00:00-03:00,\"hello, \"\"quoted\"\"\"\n"
+        assertEquals(expected, currentOutput.bodyAsString)
+    }
+
     @Test
     fun emptyTimeUseDiaryAndPostgresDownloadsWriteHeaders() {
         val tudResultSet = Mockito.mock(ResultSet::class.java)

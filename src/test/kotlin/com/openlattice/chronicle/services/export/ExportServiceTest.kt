@@ -73,7 +73,7 @@ class ExportServiceTest {
                 else org.springframework.security.core.context.SecurityContextHolder.clearContext()
                 val output = java.io.ByteArrayOutputStream()
                 service.streamExportFile(studyId, exportId, user, output)
-                assertTrue(output.toString().contains("safe"))
+                assertTrue(output.toString(Charsets.UTF_8).contains("safe"))
             }
             org.springframework.security.core.context.SecurityContextHolder.clearContext()
             val forbidden = assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
@@ -102,13 +102,13 @@ class ExportServiceTest {
             timeoutDisabled.set(true); true
         }
         val data = Iterable {
-            object : Iterator<Map<String, Any>> {
-                var pending = true
+            val rows = listOf(mapOf<String, Any>("title" to "value")).iterator()
+            object : Iterator<Map<String, Any>> by rows {
                 override fun hasNext(): Boolean {
+                    val pending = rows.hasNext()
                     if (pending && !timeoutDisabled.get()) throw SQLException("idle transaction terminated", "08006")
                     return pending
                 }
-                override fun next(): Map<String, Any> { pending = false; return mapOf("title" to "value") }
             }
         }
         org.mockito.kotlin.whenever(downloadManager.getParticipantsUsageEventsData(
@@ -766,4 +766,14 @@ class ExportServiceTest {
         order.verify(mockStatement).execute("SET LOCAL idle_in_transaction_session_timeout = 0")
         order.verify(mockConnection).prepareStatement(kAnyString())
     }
+    @Test
+    fun testCleanupDisablesIdleTimeoutBeforeWaitingForFilesystemFence() {
+        `when`(mockRs.next()).thenReturn(false)
+        service.cleanupExpiredExportFiles()
+        val order = Mockito.inOrder(mockConnection, mockStatement)
+        order.verify(mockConnection).autoCommit = false
+        order.verify(mockStatement).execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+        order.verify(mockConnection).prepareStatement(kAnyString())
+    }
+
 }

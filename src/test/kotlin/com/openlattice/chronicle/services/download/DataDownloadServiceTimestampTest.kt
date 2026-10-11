@@ -3,6 +3,7 @@ package com.openlattice.chronicle.services.download
 import com.geekbeast.postgres.PostgresColumnDefinition
 import com.geekbeast.postgres.PostgresDatatype
 import com.openlattice.chronicle.storage.PostgresColumns
+import com.openlattice.chronicle.storage.PostgresEventColumns
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -24,8 +25,10 @@ class DataDownloadServiceTimestampTest {
     fun timestampsRenderInTheRowTimezone() {
         val rs = Mockito.mock(ResultSet::class.java)
         Mockito.`when`(rs.getString(PostgresColumns.SENSOR_TIMEZONE.name)).thenReturn("America/Santiago")
+        val stored = OffsetDateTime.of(2026, 9, 3, 22, 59, 34, 0, ZoneOffset.UTC)
         Mockito.`when`(rs.getObject("sample_timestamp", OffsetDateTime::class.java))
-            .thenReturn(OffsetDateTime.of(2026, 9, 3, 22, 59, 34, 0, ZoneOffset.UTC))
+            .thenReturn(stored)
+        Mockito.`when`(rs.getObject(PostgresEventColumns.TIMESTAMP.name, OffsetDateTime::class.java)).thenReturn(stored)
 
         val zone = DataDownloadService.rowZone(rs, listOf(sampleTimestamp, PostgresColumns.SENSOR_TIMEZONE))
         val rendered = DataDownloadService.localizedTimestamp(rs, sampleTimestamp, zone)
@@ -33,6 +36,7 @@ class DataDownloadServiceTimestampTest {
         assertEquals(ZoneId.of("America/Santiago"), zone)
         // America/Santiago is on standard time (-04:00) on 2026-09-03.
         assertEquals("2026-09-03T18:59:34-04:00", rendered.toString())
+        assertEquals(rendered, DataDownloadService.usageEventRow(rs)[PostgresEventColumns.TIMESTAMP.name])
     }
 
     @Test

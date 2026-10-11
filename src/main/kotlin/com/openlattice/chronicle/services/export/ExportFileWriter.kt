@@ -34,7 +34,8 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.locks.ReentrantLock
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantReadWriteLock
 
 internal data class ExportWriteResult(
     val path: Path,
@@ -114,7 +115,7 @@ public class ExportFileWriter private constructor() {
         )
         private const val IN_PROCESS_STUDY_LOCK_STRIPES = 256
         private val inProcessStudyLocks =
-            Array(IN_PROCESS_STUDY_LOCK_STRIPES) { ReentrantLock() }
+            Array(IN_PROCESS_STUDY_LOCK_STRIPES) { StudyExportLock() }
         private val capacityProbe = BoundedExportCapacityProbe(
             readUsableBytes = { EXPORT_DIR.toFile().usableSpace },
             readManagedArtifactBytes = ::managedArtifactBytes,
@@ -142,7 +143,7 @@ public class ExportFileWriter private constructor() {
             capacityProbe.refreshAsync()
         }
 
-        private const val CSV_DATA_TYPE_COLUMN = "data_type"
+        internal const val CSV_DATA_TYPE_COLUMN = "data_type"
         private val spreadsheetFormulaPrefixes = setOf('=', '+', '-', '@')
         private val spreadsheetControlPrefixes = setOf('\t', '\r', '\n')
 
@@ -223,25 +224,18 @@ public class ExportFileWriter private constructor() {
                 dataByType.toSortedMap().forEach { (dataType, rows) ->
                     require(dataType.isNotBlank()) { "CSV export data type must not be blank" }
                     val advised = (rows as? PostgresDownloadWrapper)?.columnAdvice.orEmpty()
-                    val cursor = TypedCsvCursor(dataType, rows.iterator(), advised)
+                    require(rows !is PostgresDownloadWrapper || advised.isNotEmpty()) {
+                        "Database CSV exports must advise their columns before opening a cursor"
+                    }
+                    val cursor = TypedCsvCursor(dataType, { rows.iterator() }, advised)
                     cursors.add(cursor)
-                    cursor.prime()
+                    if (rows !is PostgresDownloadWrapper) cursor.prime()
                 }
                 val dataColumns = sortedSetOf<String>()
                 cursors.forEach { cursor ->
                     cursor.expectedColumns?.let(dataColumns::addAll)
                 }
                 val columns = listOf(CSV_DATA_TYPE_COLUMN) + dataColumns
-                if (cursors.none(TypedCsvCursor::hasNext)) {
-                    // A zero-row export still carries its header (when the loaders advised
-                    // one): the researcher can tell an empty result from a broken download.
-                    Files.writeString(
-                        filePath,
-                        if (dataColumns.isEmpty()) "" else columns.joinToString(",", postfix = "\n"),
-                    )
-                    return
-                }
-
                 val schemaBuilder = CsvSchema.builder()
                 columns.forEach(schemaBuilder::addColumn)
                 val schema = schemaBuilder.setUseHeader(true).build()
@@ -249,13 +243,19 @@ public class ExportFileWriter private constructor() {
                 boundedOutput(filePath, budget).use { output ->
                     csvMapper.writer(schema).writeValues(output).use { writer ->
                         cursors.forEach { cursor ->
-                            while (cursor.hasNext()) {
-                                val row = budget.accept(cursor.next())
-                                cursor.validate(row)
-                                writer.write(typedCsvRow(cursor.dataType, dataColumns, row))
+                            cursor.use {
+                                while (cursor.hasNext()) {
+                                    val row = budget.accept(cursor.next())
+                                    cursor.validate(row)
+                                    writer.write(typedCsvRow(cursor.dataType, dataColumns, row))
+                                }
                             }
                         }
                     }
+                }
+                if (budget.rowCount == 0L) {
+                    // Preserve loader-advised headers even when every dataset is empty.
+                    Files.writeString(filePath, if (dataColumns.isEmpty()) "" else columns.joinToString(",", postfix = "\n"))
                 }
             } catch (failure: Exception) {
                 primaryFailure = failure
@@ -344,15 +344,7 @@ public class ExportFileWriter private constructor() {
                     boundedOutput(filePath, budget).use { wb.writeAvoidingTempFiles(it) }
                     return
                 }
-                val first = budget.accept(rows.next())
-                val columns = first.keys.toList()
-                val headerRow = sheet.createRow(0)
-                columns.forEachIndexed { idx, col -> headerRow.createCell(idx).setCellValue(col) }
-                writeExcelRow(sheet, 1, columns, first)
-                var rowIndex = 2
-                while (rows.hasNext()) {
-                    writeExcelRow(sheet, rowIndex++, columns, budget.accept(rows.next()))
-                }
+                writeExcelSheet(sheet, rows, budget)
                 boundedOutput(filePath, budget).use { wb.writeAvoidingTempFiles(it) }
             } finally {
                 rows.close()
@@ -378,15 +370,7 @@ public class ExportFileWriter private constructor() {
                     val rows = ClosingIterator(listOf(data))
                     try {
                         if (rows.hasNext()) {
-                            val first = budget.accept(rows.next())
-                            val columns = first.keys.toList()
-                            val headerRow = sheet.createRow(0)
-                            columns.forEachIndexed { idx, col -> headerRow.createCell(idx).setCellValue(col) }
-                            writeExcelRow(sheet, 1, columns, first)
-                            var rowIndex = 2
-                            while (rows.hasNext()) {
-                                writeExcelRow(sheet, rowIndex++, columns, budget.accept(rows.next()))
-                            }
+                            writeExcelSheet(sheet, rows, budget)
                         } else {
                             // No rows for this type: still write the header so an empty sheet
                             // shows its schema instead of a blank grid.
@@ -423,6 +407,22 @@ public class ExportFileWriter private constructor() {
 
         internal fun reservationBytes(format: ExportFormat, maximumBytes: Long): Long =
             if (format == ExportFormat.EXCEL) saturatingAdd(maximumBytes, maximumBytes) else maximumBytes
+
+        private fun writeExcelSheet(
+            sheet: org.apache.poi.ss.usermodel.Sheet,
+            rows: Iterator<Map<String, Any>>,
+            budget: ExportBudget,
+        ) {
+            val first = budget.accept(rows.next())
+            val columns = first.keys.toList()
+            val headerRow = sheet.createRow(0)
+            columns.forEachIndexed { idx, col -> headerRow.createCell(idx).setCellValue(col) }
+            writeExcelRow(sheet, 1, columns, first)
+            var rowIndex = 2
+            while (rows.hasNext()) {
+                writeExcelRow(sheet, rowIndex++, columns, budget.accept(rows.next()))
+            }
+        }
 
         private fun writeExcelRow(
             sheet: org.apache.poi.ss.usermodel.Sheet,
@@ -576,10 +576,8 @@ public class ExportFileWriter private constructor() {
             environmentValue: String?,
         ): String = systemPropertyValue?.takeIf { it.isNotBlank() }
             ?: environmentValue?.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException(
-                "Chronicle export storage must be explicitly configured with " +
-                    "chronicle.export.dir or CHRONICLE_EXPORT_DIR",
-            )
+            ?: error("Chronicle export storage must be explicitly configured with " +
+                "chronicle.export.dir or CHRONICLE_EXPORT_DIR")
 
         private fun workingPath(finalPath: Path, attemptId: java.util.UUID): Path =
             finalPath.resolveSibling("${finalPath.fileName}.$attemptId.part")
@@ -650,34 +648,54 @@ public class ExportFileWriter private constructor() {
          * write is still executing, so erasure cannot prove completion before
          * the in-flight filesystem operation has stopped and been swept.
          */
-        internal fun acquireStudyExportLock(studyId: UUID): AutoCloseable {
-            val inProcessLock = inProcessStudyLocks[
-                Math.floorMod(studyId.hashCode(), IN_PROCESS_STUDY_LOCK_STRIPES)
-            ]
-            inProcessLock.lockInterruptibly()
+        private class StudyExportLock {
+            val lock = ReentrantReadWriteLock(true)
+            val readers = mutableMapOf<UUID, Pair<FileChannel, Int>>()
+        }
+
+        internal fun acquireStudyExportLock(studyId: UUID, shared: Boolean = false): AutoCloseable {
+            val stripe = inProcessStudyLocks[Math.floorMod(studyId.hashCode(), IN_PROCESS_STUDY_LOCK_STRIPES)]
+            val localLock: java.util.concurrent.locks.Lock = if (shared) stripe.lock.readLock() else stripe.lock.writeLock()
+            localLock.lockInterruptibly()
             var channel: FileChannel? = null
             try {
-                val lockPath = EXPORT_DIR.resolve(".study-$studyId.lock")
-                channel = FileChannel.open(
-                    lockPath,
-                    setOf(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.WRITE,
-                        LinkOption.NOFOLLOW_LINKS,
-                    ),
-                    PosixFilePermissions.asFileAttribute(EXPORT_FILE_PERMISSIONS),
-                )
-                check(Files.isRegularFile(lockPath, LinkOption.NOFOLLOW_LINKS)) {
-                    "Export study lock path is not a regular file"
+                synchronized(stripe) {
+                    val readers = stripe.readers[studyId]
+                    if (shared && readers != null) {
+                        channel = readers.first
+                        stripe.readers[studyId] = readers.first to readers.second + 1
+                    } else {
+                        val lockPath = EXPORT_DIR.resolve(".study-$studyId.lock")
+                        val opened = FileChannel.open(
+                            lockPath,
+                            setOf(StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS),
+                            PosixFilePermissions.asFileAttribute(EXPORT_FILE_PERMISSIONS),
+                        )
+                        channel = opened
+                        check(Files.isRegularFile(lockPath, LinkOption.NOFOLLOW_LINKS)) {
+                            "Export study lock path is not a regular file"
+                        }
+                        Files.setPosixFilePermissions(lockPath, EXPORT_FILE_PERMISSIONS)
+                        opened.lock(0, Long.MAX_VALUE, shared)
+                        if (shared) stripe.readers[studyId] = opened to 1
+                    }
                 }
-                Files.setPosixFilePermissions(lockPath, EXPORT_FILE_PERMISSIONS)
-                channel.lock()
-                val lockedChannel = channel
+                val closed = AtomicBoolean()
                 return AutoCloseable {
-                    try {
-                        lockedChannel.close()
-                    } finally {
-                        inProcessLock.unlock()
+                    if (closed.compareAndSet(false, true)) {
+                        try {
+                            synchronized(stripe) {
+                                if (shared) {
+                                    val readers = checkNotNull(stripe.readers[studyId])
+                                    if (readers.second == 1) {
+                                        stripe.readers.remove(studyId)
+                                        readers.first.close()
+                                    } else stripe.readers[studyId] = readers.first to readers.second - 1
+                                } else channel?.close()
+                            }
+                        } finally {
+                            localLock.unlock()
+                        }
                     }
                 }
             } catch (failure: Exception) {
@@ -686,7 +704,7 @@ public class ExportFileWriter private constructor() {
                 } catch (cleanupFailure: Exception) {
                     failure.addSuppressed(cleanupFailure)
                 } finally {
-                    inProcessLock.unlock()
+                    localLock.unlock()
                 }
                 throw failure
             }
@@ -849,11 +867,13 @@ public class ExportFileWriter private constructor() {
 
         private class TypedCsvCursor(
             val dataType: String,
-            private val iterator: Iterator<Map<String, Any>>,
-            /** Loader-advised columns, used as the schema when the type has no rows. */
+            iteratorSupplier: () -> Iterator<Map<String, Any>>,
+            /** Loader-advised columns let database streams stay closed until their turn. */
             private val advisedColumns: List<String> = emptyList(),
         ) : Iterator<Map<String, Any>>, AutoCloseable {
-            var expectedColumns: Set<String>? = null
+            private val iteratorDelegate = lazy(iteratorSupplier)
+            private val iterator by iteratorDelegate
+            var expectedColumns: Set<String>? = advisedColumns.takeIf { it.isNotEmpty() }?.toSet()
                 private set
             private var firstRow: Map<String, Any>? = null
             private var primed = false
@@ -868,7 +888,8 @@ public class ExportFileWriter private constructor() {
                     require(CSV_DATA_TYPE_COLUMN !in row) {
                         "CSV export row uses reserved column $CSV_DATA_TYPE_COLUMN"
                     }
-                    expectedColumns = row.keys.toSet()
+                    if (expectedColumns == null) expectedColumns = row.keys.toSet()
+                    validate(row)
                     firstRow = row
                     firstPending = true
                 } else if (advisedColumns.isNotEmpty()) {
@@ -880,13 +901,13 @@ public class ExportFileWriter private constructor() {
             }
 
             fun validate(row: Map<String, Any>) {
-                require(row.keys == expectedColumns) {
-                    "CSV export rows for data type $dataType do not have a stable schema"
+                require(expectedColumns?.containsAll(row.keys) == true) {
+                    "CSV export row for data type $dataType contains undeclared columns"
                 }
             }
 
             override fun hasNext(): Boolean {
-                check(primed) { "CSV cursor must be primed before use" }
+                if (!primed) prime()
                 return firstPending || iterator.hasNext()
             }
 
@@ -902,8 +923,8 @@ public class ExportFileWriter private constructor() {
             override fun close() {
                 if (closed) return
                 closed = true
-                if (iterator is AutoCloseable) {
-                    iterator.close()
+                if (iteratorDelegate.isInitialized()) {
+                    (iterator as? AutoCloseable)?.close()
                 }
             }
         }

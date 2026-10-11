@@ -75,6 +75,7 @@ public open class ExportController(
         path = [StudyApi.STUDY_ID_PATH + ExportApi.EXPORT_PATH + ExportApi.EXPORT_ID_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
+    @RateLimit(type = RateLimitType.READ)
     override fun getExportStatus(
         @PathVariable(StudyApi.STUDY_ID) studyId: UUID,
         @PathVariable(ExportApi.EXPORT_ID) exportId: UUID
@@ -87,6 +88,7 @@ public open class ExportController(
         path = [StudyApi.STUDY_ID_PATH + ExportApi.EXPORT_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
+    @RateLimit(type = RateLimitType.READ)
     override fun listExports(
         @PathVariable(StudyApi.STUDY_ID) studyId: UUID,
         @RequestParam(defaultValue = "100") limit: Int,

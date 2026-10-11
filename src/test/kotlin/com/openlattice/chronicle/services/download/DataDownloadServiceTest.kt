@@ -8,11 +8,68 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito
+import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.UUID
 
 class DataDownloadServiceTest {
+
+    @Test
+    fun `usage download scope preserves study bindings participant selection and streaming timeout`() {
+        val storageResolver = Mockito.mock(StorageResolver::class.java)
+        val dataSource = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val participantArray = Mockito.mock(java.sql.Array::class.java)
+        Mockito.`when`(statement.connection).thenReturn(connection)
+        Mockito.`when`(connection.createArrayOf(Mockito.anyString(), Mockito.any())).thenReturn(participantArray)
+        val studyId = UUID.randomUUID()
+        val start = OffsetDateTime.parse("2026-09-01T00:00:00Z")
+        val end = start.plusDays(1)
+
+        assertEquals(1, DataDownloadService.bindDownloadScope(statement, studyId, emptySet(), eventStorage = true))
+        Mockito.verify(statement).setString(1, studyId.toString())
+        Mockito.verify(statement).queryTimeout = 600
+        Mockito.verify(statement, Mockito.never()).setArray(Mockito.anyInt(), Mockito.any())
+
+        Mockito.clearInvocations(statement)
+        assertEquals(2, DataDownloadService.bindDownloadScope(statement, studyId, setOf("participant-1")))
+        Mockito.verify(statement).setObject(1, studyId)
+        Mockito.verify(statement).setArray(2, participantArray)
+
+        Mockito.clearInvocations(statement)
+        Mockito.`when`(storageResolver.getPlatformReadStorage()).thenReturn(dataSource)
+        Mockito.`when`(dataSource.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
+        Mockito.`when`(statement.executeQuery()).thenReturn(Mockito.mock(ResultSet::class.java))
+        val rows = DataDownloadService(storageResolver).getParticipantsAppUsageSurveyData(
+            studyId, setOf("participant-1"), start, end,
+        )
+        assertFalse(rows.iterator().hasNext())
+        Mockito.verify(statement).setObject(1, studyId)
+        Mockito.verify(statement).setArray(2, participantArray)
+        Mockito.verify(statement).setObject(3, start)
+        Mockito.verify(statement).setObject(4, end)
+
+        val service = DataDownloadService(storageResolver)
+        Mockito.clearInvocations(statement)
+        assertFalse(service.getParticipantsUploadDiagnosticsData(studyId, emptySet(), start, end.plusHours(1)).iterator().hasNext())
+        Mockito.verify(statement).setObject(2, start.toLocalDate())
+        Mockito.verify(statement).setObject(3, end.toLocalDate().plusDays(1))
+
+        Mockito.clearInvocations(statement)
+        assertFalse(service.getParticipantsDataQualityAlertsData(studyId, emptySet(), start, end).iterator().hasNext())
+        Mockito.verify(statement).setObject(2, start)
+        Mockito.verify(statement).setObject(3, end)
+
+        Mockito.clearInvocations(statement)
+        assertFalse(service.getParticipantsUploadDiagnosticsData(studyId, emptySet(), OffsetDateTime.MIN, OffsetDateTime.MAX).iterator().hasNext())
+        Mockito.verify(statement).setObject(1, studyId)
+        Mockito.verify(statement, Mockito.never()).setObject(Mockito.eq(2), Mockito.any())
+    }
 
     @Test
     fun testEmptyIosSensorSelectionReturnsNoRowsWithoutTouchingStorage() {

@@ -132,7 +132,7 @@ public open class ExportService(
                    ) AS revoked
             FROM ${EXPORT_JOBS.name} AS job
             WHERE job.${EXPORT_ID.name} = ? AND job.${STUDY_ID.name} = ?
-            FOR UPDATE OF job
+            FOR SHARE OF job
         """.trimIndent()
 
         private val LOCK_EXPORT_FOR_COMPLETION_SQL = """
@@ -383,6 +383,7 @@ public open class ExportService(
                 // session, the final commit fails and the response is aborted mid-body.
                 connection.createStatement().use { it.execute(DISABLE_IDLE_IN_TRANSACTION_TIMEOUT_SQL) }
                 acquireExportStudyTransactionLock(connection, studyId)
+                val downloadLockSavepoint = connection.setSavepoint()
                 val jobInfo = connection.prepareStatement(LOCK_EXPORT_FOR_DOWNLOAD_SQL).use { statement ->
                     statement.setObject(1, exportId)
                     statement.setObject(2, studyId)
@@ -398,11 +399,13 @@ public open class ExportService(
                 check(jobInfo.status == ExportJobStatus.COMPLETED) {
                     "Export job $exportId is not completed (status: ${jobInfo.status})"
                 }
-                exportStorageLock = ExportFileWriter.acquireStudyExportLock(studyId)
                 val filePath = checkNotNull(jobInfo.filePath) { "Export file not found for job $exportId" }
                 try {
                     ExportFileWriter.verifyManagedExportFile(filePath)
                 } catch (missingArtifact: IllegalStateException) {
+                    // Release the shared row lock before taking the update lock. Two missing-file
+                    // readers must not deadlock while upgrading their locks.
+                    connection.rollback(downloadLockSavepoint)
                     connection.prepareStatement(
                         """
                         UPDATE ${EXPORT_JOBS.name}
@@ -416,9 +419,7 @@ public open class ExportService(
                     ).use { statement ->
                         statement.setObject(1, exportId)
                         statement.setObject(2, studyId)
-                        check(statement.executeUpdate() == 1) {
-                            "Missing export artifact state changed while locked"
-                        }
+                        statement.executeUpdate()
                     }
                     connection.prepareStatement(
                         "DELETE FROM export_capacity_reservations WHERE export_id = ?",
@@ -429,6 +430,7 @@ public open class ExportService(
                     connection.commit()
                     throw missingArtifact
                 }
+                exportStorageLock = ExportFileWriter.acquireStudyExportLock(studyId, shared = true)
                 ExportFileWriter.copyManagedExportFile(filePath, outputStream)
                 connection.commit()
                 return jobInfo
@@ -742,7 +744,7 @@ public open class ExportService(
                         }
                     }
 
-                    exportStorageLock = ExportFileWriter.acquireStudyExportLock(claim.studyId)
+                    exportStorageLock = ExportFileWriter.acquireStudyExportLock(claim.studyId, shared = true)
                     ExportFileWriter.deleteExportArtifactsForErasure(claim.exportId, null)
                     if (revoked) {
                         failRevokedExport(connection, claim)
@@ -1152,7 +1154,7 @@ public open class ExportService(
         connection.prepareStatement(
             """
             SELECT pg_advisory_lock_shared(
-                hashtextextended('chronicle-deletion:' || ?::text, 0)
+                ${com.openlattice.chronicle.storage.DeletionStudyFence.EXPORT_LOCK_KEY_SQL}
             )
             """.trimIndent(),
         ).use { statement ->
@@ -1164,18 +1166,7 @@ public open class ExportService(
     }
 
     private fun acquireExportStudyTransactionLock(connection: Connection, studyId: UUID) {
-        connection.prepareStatement(
-            """
-            SELECT pg_advisory_xact_lock_shared(
-                hashtextextended('chronicle-deletion:' || ?::text, 0)
-            )
-            """.trimIndent(),
-        ).use { statement ->
-            statement.setObject(1, studyId)
-            statement.executeQuery().use { resultSet ->
-                check(resultSet.next()) { "Export download study lock was not acquired" }
-            }
-        }
+        com.openlattice.chronicle.storage.DeletionStudyFence.exportShared(connection, studyId)
     }
 
     @Suppress("TooGenericExceptionCaught")
@@ -1184,7 +1175,7 @@ public open class ExportService(
             connection.prepareStatement(
                 """
                 SELECT pg_advisory_unlock_shared(
-                    hashtextextended('chronicle-deletion:' || ?::text, 0)
+                    ${com.openlattice.chronicle.storage.DeletionStudyFence.EXPORT_LOCK_KEY_SQL}
                 )
                 """.trimIndent(),
             ).use { statement ->
@@ -1434,6 +1425,7 @@ public open class ExportService(
             var exportStorageLock: AutoCloseable? = null
             connection.autoCommit = false
             try {
+                connection.createStatement().use { it.execute(DISABLE_IDLE_IN_TRANSACTION_TIMEOUT_SQL) }
                 val candidate = connection.prepareStatement(
                     """
                     SELECT export_id, study_id

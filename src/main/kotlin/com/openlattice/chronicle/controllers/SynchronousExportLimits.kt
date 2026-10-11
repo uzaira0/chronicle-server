@@ -10,6 +10,7 @@ import java.time.OffsetDateTime
 internal object SynchronousExportLimits {
     const val MAX_PARTICIPANTS: Int = 100
     const val MAX_JSON_ROWS: Int = 50_000
+    const val MAX_JSON_BYTES: Long = 64L * 1024 * 1024
     private const val MAX_RANGE_DAYS: Long = 31
     private val MAX_RANGE: Duration = Duration.ofDays(MAX_RANGE_DAYS)
 

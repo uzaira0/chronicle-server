@@ -16,6 +16,9 @@ import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.APP_USERS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SUBMISSION_DATE
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APPLICATION_LABEL
+import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.EVENT_TYPE
+import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.COLLECTED_AT
+import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.UPLOADED_AT
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.ACCELEROMETER_SENSOR_COLS
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_DATETIME_START
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.ACTIVITY_CLASS
@@ -133,12 +136,12 @@ public open class DataDownloadService(
             ORDER BY ${PostgresColumns.SAMPLE_TIMESTAMP.name} ASC
         """.trimIndent()
 
-        private data class CollectionExportDefinition(
+        internal data class CollectionExportDefinition(
             val table: PostgresTableDefinition,
             val timestampColumn: PostgresColumnDefinition,
         )
 
-        private val COLLECTION_EXPORTS: Map<StudyParticipantDataType, CollectionExportDefinition> = mapOf(
+        internal val COLLECTION_EXPORTS: Map<StudyParticipantDataType, CollectionExportDefinition> = mapOf(
             StudyParticipantDataType.SensorAvailability to
                 CollectionExportDefinition(ANDROID_DEVICE_SENSOR_AVAILABILITY, PostgresColumns.REPORTED_AT),
             StudyParticipantDataType.BatteryTelemetry to
@@ -233,6 +236,34 @@ public open class DataDownloadService(
             statement.queryTimeout = QUERY_TIMEOUT_SECONDS
         }
 
+        internal fun bindDownloadScope(
+            statement: PreparedStatement,
+            studyId: UUID,
+            participantIds: Set<String>,
+            eventStorage: Boolean = false,
+        ): Int {
+            configureStreamingStatement(statement)
+            if (eventStorage) statement.setString(1, studyId.toString()) else statement.setObject(1, studyId)
+            if (participantIds.isEmpty()) return 1
+            statement.setArray(2, PostgresArrays.createTextArray(statement.connection, participantIds))
+            return 2
+        }
+
+        internal fun usageEventRow(rs: ResultSet): Map<String, Any> = mapOf(
+            associateString(rs, STUDY_ID),
+            associateString(rs, PARTICIPANT_ID),
+            associateString(rs, APP_PACKAGE_NAME),
+            associateString(rs, ACTIVITY_CLASS),
+            associateString(rs, INTERACTION_TYPE),
+            associateInteger(rs, EVENT_TYPE),
+            associateOffsetDatetimeWithTimezone(rs, TIMEZONE, TIMESTAMP),
+            associateOffsetDatetimeWithTimezone(rs, TIMEZONE, COLLECTED_AT),
+            associateOffsetDatetimeWithTimezone(rs, TIMEZONE, UPLOADED_AT),
+            associateString(rs, TIMEZONE),
+            associateString(rs, USERNAME),
+            associateString(rs, APPLICATION_LABEL),
+        )
+
         public fun associateString(rs: ResultSet, pcd: PostgresColumnDefinition) = pcd.name to rs.getString(pcd.name)
         public fun associateInteger(rs: ResultSet, pcd: PostgresColumnDefinition) = pcd.name to rs.getInt(pcd.name)
         public fun associateDouble(rs: ResultSet, pcd: PostgresColumnDefinition) = pcd.name to rs.getDouble(pcd.name)
@@ -325,17 +356,7 @@ public open class DataDownloadService(
                 ps.setString(1, studyId.toString())
                 ps.setString(2, participantId)
             }) { rs ->
-            mapOf(
-                associateString(rs, STUDY_ID),
-                associateString(rs, PARTICIPANT_ID),
-                associateString(rs, APP_PACKAGE_NAME),
-                associateString(rs, ACTIVITY_CLASS),
-                associateString(rs, INTERACTION_TYPE),
-                associateOffsetDatetimeWithTimezone(rs, TIMEZONE, TIMESTAMP),
-                associateString(rs, TIMEZONE),
-                associateString(rs, USERNAME),
-                associateString(rs, APPLICATION_LABEL)
-            )
+            usageEventRow(rs)
         }
 
         return PostgresDownloadWrapper(pgIter).withColumnAdvice(CHRONICLE_USAGE_EVENTS.columns.map { it.name })
@@ -373,12 +394,7 @@ public open class DataDownloadService(
                 query.sql,
                 FETCH_SIZE
             ) { ps ->
-                configureStreamingStatement(ps)
-                var index = 0
-                ps.setString(++index, studyId.toString())
-                if (participantIds.isNotEmpty()) {
-                    ps.setArray(++index, PostgresArrays.createTextArray(ps.connection, participantIds))
-                }
+                var index = bindDownloadScope(ps, studyId, participantIds, eventStorage = true)
                 if (query.sensorFilter.isNotEmpty()) {
                     ps.setArray(
                         ++index,
@@ -415,12 +431,7 @@ public open class DataDownloadService(
                 appUsageSurveySql(filterParticipants),
                 FETCH_SIZE
             ) { ps ->
-                configureStreamingStatement(ps)
-                var index = 0
-                ps.setObject(++index, studyId)
-                if (filterParticipants) {
-                    ps.setArray(++index, PostgresArrays.createTextArray(ps.connection, participantIds))
-                }
+                var index = bindDownloadScope(ps, studyId, participantIds)
                 ps.setObject(++index, startDateTime)
                 ps.setObject(++index, endDateTime)
             }
@@ -454,26 +465,11 @@ public open class DataDownloadService(
                 chronicleUsageEventSql(filterParticipants),
                 FETCH_SIZE
             ) { ps ->
-                configureStreamingStatement(ps)
-                var index = 0
-                ps.setString(++index, studyId.toString())
-                if (filterParticipants) {
-                    ps.setArray(++index, PostgresArrays.createTextArray(ps.connection, participantIds))
-                }
+                var index = bindDownloadScope(ps, studyId, participantIds, eventStorage = true)
                 ps.setObject(++index, startDateTime)
                 ps.setObject(++index, endDateTime)
             }) { rs ->
-            mapOf(
-                associateString(rs, STUDY_ID),
-                associateString(rs, PARTICIPANT_ID),
-                associateString(rs, APP_PACKAGE_NAME),
-                associateString(rs, ACTIVITY_CLASS),
-                associateString(rs, INTERACTION_TYPE),
-                associateOffsetDatetimeWithTimezone(rs, TIMEZONE, TIMESTAMP),
-                associateString(rs, TIMEZONE),
-                associateString(rs, USERNAME),
-                associateString(rs, APPLICATION_LABEL)
-            )
+            usageEventRow(rs)
         }
 
         return PostgresDownloadWrapper(pgIter).withColumnAdvice(CHRONICLE_USAGE_EVENTS.columns.map { it.name })
@@ -498,12 +494,7 @@ public open class DataDownloadService(
                 preprocessedDataSql(filterParticipants),
                 FETCH_SIZE
             ) { ps ->
-                configureStreamingStatement(ps)
-                var index = 0
-                ps.setString(++index, studyId.toString())
-                if (filterParticipants) {
-                    ps.setArray(++index, PostgresArrays.createTextArray(ps.connection, participantIds))
-                }
+                var index = bindDownloadScope(ps, studyId, participantIds, eventStorage = true)
                 ps.setObject(++index, startDateTime)
                 ps.setObject(++index, endDateTime)
             }
@@ -542,12 +533,7 @@ public open class DataDownloadService(
                 sql,
                 FETCH_SIZE
             ) { ps ->
-                configureStreamingStatement(ps)
-                var index = 0
-                ps.setObject(++index, studyId)
-                if (filterParticipants) {
-                    ps.setArray(++index, PostgresArrays.createTextArray(ps.connection, participantIds))
-                }
+                var index = bindDownloadScope(ps, studyId, participantIds)
                 ps.setObject(++index, startDateTime)
                 ps.setObject(++index, endDateTime)
                 if (hasSensorFilter) {
@@ -593,12 +579,7 @@ public open class DataDownloadService(
                 collectionDataSql(dataType, filterParticipants),
                 FETCH_SIZE,
             ) { statement ->
-                configureStreamingStatement(statement)
-                var index = 0
-                statement.setObject(++index, studyId)
-                if (filterParticipants) {
-                    statement.setArray(++index, PostgresArrays.createTextArray(statement.connection, participantIds))
-                }
+                var index = bindDownloadScope(statement, studyId, participantIds)
                 statement.setObject(++index, startDateTime)
                 statement.setObject(++index, endDateTime)
             },
@@ -624,30 +605,35 @@ public open class DataDownloadService(
         return PostgresDownloadWrapper(iterable).withColumnAdvice(definition.table.columns.map { it.name })
     }
 
+    private fun retainedDataSupplier(
+        studyId: UUID,
+        participantIds: Set<String>,
+        startDateTime: OffsetDateTime,
+        endDateTime: OffsetDateTime,
+        sql: (Boolean, Boolean, Boolean) -> String,
+        dayBounds: Boolean = false,
+    ): PreparedStatementHolderSupplier {
+        val filterStart = startDateTime != OffsetDateTime.MIN
+        val filterEnd = endDateTime != OffsetDateTime.MAX
+        return PreparedStatementHolderSupplier(
+            storageResolver.getPlatformReadStorage(),
+            sql(participantIds.isNotEmpty(), filterStart, filterEnd),
+            FETCH_SIZE,
+        ) { statement ->
+            var index = bindDownloadScope(statement, studyId, participantIds)
+            if (filterStart) statement.setObject(++index, if (dayBounds) startDateTime.toLocalDate() else startDateTime)
+            if (filterEnd) statement.setObject(++index, if (dayBounds) diagnosticsExclusiveEndDay(endDateTime) else endDateTime)
+        }
+    }
+
     override fun getParticipantsUploadDiagnosticsData(
         studyId: UUID,
         participantIds: Set<String>,
         startDateTime: OffsetDateTime,
         endDateTime: OffsetDateTime,
     ): Iterable<Map<String, Any>> {
-        val filterParticipants = participantIds.isNotEmpty()
-        val filterStart = startDateTime != OffsetDateTime.MIN
-        val filterEnd = endDateTime != OffsetDateTime.MAX
         val iterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
-                storageResolver.getPlatformReadStorage(),
-                retainedDiagnosticsSql(filterParticipants, filterStart, filterEnd),
-                FETCH_SIZE,
-            ) { statement ->
-                configureStreamingStatement(statement)
-                var index = 0
-                statement.setObject(++index, studyId)
-                if (filterParticipants) {
-                    statement.setArray(++index, PostgresArrays.createTextArray(statement.connection, participantIds))
-                }
-                if (filterStart) statement.setObject(++index, startDateTime.toLocalDate())
-                if (filterEnd) statement.setObject(++index, diagnosticsExclusiveEndDay(endDateTime))
-            },
+            retainedDataSupplier(studyId, participantIds, startDateTime, endDateTime, ::retainedDiagnosticsSql, dayBounds = true),
         ) { resultSet ->
             val httpStatus = resultSet.getInt("http_status").let { if (resultSet.wasNull()) "" else it }
             mapOf(
@@ -675,24 +661,8 @@ public open class DataDownloadService(
         startDateTime: OffsetDateTime,
         endDateTime: OffsetDateTime,
     ): Iterable<Map<String, Any>> {
-        val filterParticipants = participantIds.isNotEmpty()
-        val filterStart = startDateTime != OffsetDateTime.MIN
-        val filterEnd = endDateTime != OffsetDateTime.MAX
         val iterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
-                storageResolver.getPlatformReadStorage(),
-                retainedQualityAlertsSql(filterParticipants, filterStart, filterEnd),
-                FETCH_SIZE,
-            ) { statement ->
-                configureStreamingStatement(statement)
-                var index = 0
-                statement.setObject(++index, studyId)
-                if (filterParticipants) {
-                    statement.setArray(++index, PostgresArrays.createTextArray(statement.connection, participantIds))
-                }
-                if (filterStart) statement.setObject(++index, startDateTime)
-                if (filterEnd) statement.setObject(++index, endDateTime)
-            },
+            retainedDataSupplier(studyId, participantIds, startDateTime, endDateTime, ::retainedQualityAlertsSql),
         ) { resultSet ->
             mapOf(
                 "study_id" to (resultSet.getString("study_id") ?: ""),
