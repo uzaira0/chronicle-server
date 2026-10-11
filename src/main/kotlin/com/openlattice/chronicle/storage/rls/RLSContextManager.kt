@@ -244,10 +244,31 @@ public open class RLSContextManager(
      * @param block The code block to execute
      * @return The result of the block
      */
-    // reason: boundary catch — must capture any block/cleanup failure to guarantee context is always cleared
-    @Suppress("TooGenericExceptionCaught")
     public fun <T> withUserContext(connection: Connection, block: () -> T): T {
         setCurrentUserContext(connection)
+        return withClearedContext(connection, block)
+    }
+
+    /**
+     * Executes a block of code with admin RLS context (bypass).
+     *
+     * @param connection The database connection to use
+     * @param systemUserId An identifier for the system operation
+     * @param block The code block to execute
+     * @return The result of the block
+     */
+    public fun <T> withAdminContext(
+        connection: Connection,
+        systemUserId: String = "system",
+        block: () -> T
+    ): T {
+        setAdminContext(connection, systemUserId)
+        return withClearedContext(connection, block)
+    }
+
+    // Preserve the block failure if clearing the context also fails.
+    @Suppress("TooGenericExceptionCaught")
+    private fun <T> withClearedContext(connection: Connection, block: () -> T): T {
         var blockResult: T? = null
         var blockException: Throwable? = null
         try {
@@ -270,43 +291,6 @@ public open class RLSContextManager(
         return blockResult as T
     }
 
-    /**
-     * Executes a block of code with admin RLS context (bypass).
-     *
-     * @param connection The database connection to use
-     * @param systemUserId An identifier for the system operation
-     * @param block The code block to execute
-     * @return The result of the block
-     */
-    // reason: boundary catch — must capture any block/cleanup failure to guarantee admin context is always cleared
-    @Suppress("TooGenericExceptionCaught")
-    public fun <T> withAdminContext(
-        connection: Connection,
-        systemUserId: String = "system",
-        block: () -> T
-    ): T {
-        setAdminContext(connection, systemUserId)
-        var blockResult: T? = null
-        var blockException: Throwable? = null
-        try {
-            blockResult = block()
-        } catch (e: Throwable) {
-            blockException = e
-        } finally {
-            try {
-                clearContext(connection)
-            } catch (clearEx: Exception) {
-                if (blockException != null) {
-                    blockException.addSuppressed(clearEx)
-                } else {
-                    blockException = clearEx
-                }
-            }
-        }
-        if (blockException != null) throw blockException
-        @Suppress("UNCHECKED_CAST")
-        return blockResult as T
-    }
 }
 
 /**

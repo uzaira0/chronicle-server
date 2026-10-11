@@ -20,15 +20,11 @@ import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.ClassRule
 import org.junit.Test
 import org.mockito.Mockito
 import java.lang.reflect.InvocationTargetException
-import java.sql.SQLException
 import java.time.OffsetDateTime
 import java.util.Properties
 import java.util.UUID
@@ -89,7 +85,8 @@ class IosSensorErasureReplayTest {
             val operation = orchestrator.quarantineParticipant(studyId, participantId,
                 DataDeletionMode.COLLECTED_DATA_PURGE, "ios-replay-test", UUID.randomUUID())
             postgres.createConnection("").use { connection ->
-                connection.prepareStatement("UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
+                connection.prepareStatement(
+                    "UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
                     it.setObject(1, operation); assertEquals(1, it.executeUpdate())
                 }
             }
@@ -124,7 +121,8 @@ class IosSensorErasureReplayTest {
             val operation = orchestrator.quarantineParticipant(studyId, participantId,
                 DataDeletionMode.COLLECTED_DATA_PURGE, "sensorkit-reread-test", UUID.randomUUID())
             postgres.createConnection("").use { connection ->
-                connection.prepareStatement("UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
+                connection.prepareStatement(
+                    "UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
                     it.setObject(1, operation); assertEquals(1, it.executeUpdate())
                 }
             }
@@ -148,7 +146,8 @@ class IosSensorErasureReplayTest {
                 it.setObject(1, studyId)
                 it.executeUpdate()
             }
-            connection.prepareStatement("INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, ?, ?, 'ENROLLED')").use {
+            connection.prepareStatement(
+                "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, ?, ?, 'ENROLLED')").use {
                 it.setObject(1, studyId)
                 it.setString(2, participantId)
                 it.setObject(3, UUID.randomUUID())

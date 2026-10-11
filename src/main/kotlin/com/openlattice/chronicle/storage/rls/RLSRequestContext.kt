@@ -30,7 +30,7 @@ public object RLSRequestContext {
         isAdmin = true,
     )
     private val deletionWorkerContext = RLSConnectionContext(
-        principalId = "chronicle-deletion-worker",
+        principalId = RLSConnectionCustomizer.DELETION_WORKER_ID,
         authorizedStudyIds = emptySet(),
         isAdmin = true,
     )
@@ -261,7 +261,7 @@ private class RLSAwareHikariDataSource(
     override fun toString(): String = "RLSAwareHikariDataSource($delegate)"
 }
 
-private object RLSConnectionSql {
+internal object RLSConnectionSql {
     private const val SET_RLS_CONTEXT_SQL = """
         SELECT
             set_config('app.current_user_id', ?, false),

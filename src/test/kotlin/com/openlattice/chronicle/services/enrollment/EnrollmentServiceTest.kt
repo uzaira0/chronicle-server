@@ -61,7 +61,9 @@ class EnrollmentServiceTest {
         val rows = Mockito.mock(ResultSet::class.java)
         `when`(rows.next()).thenReturn(true)
         `when`(fence.executeQuery()).thenReturn(rows)
-        `when`(connection.prepareStatement(Mockito.argThat { sql: String? -> sql != null && (sql.contains("AS erased") || sql.contains("pg_advisory_xact_lock")) })).thenReturn(fence)
+        `when`(rows.getString("lifecycle_status")).thenReturn("ACTIVE")
+        `when`(connection.prepareStatement(Mockito.argThat { sql: String? -> sql != null && (sql.contains("AS erased") || sql.contains(
+            "pg_advisory_xact_lock") || sql.contains("SELECT lifecycle_status")) })).thenReturn(fence)
     }
 
     @Test
@@ -447,4 +449,13 @@ class EnrollmentServiceTest {
 
         assertTrue(service.studyExists(UUID.randomUUID()))
     }
+
+    @Test fun erasedDeviceStatusPreservesTheErasureSignal() {
+        `when`(mockConnection.createStatement()).thenReturn(Mockito.mock(java.sql.Statement::class.java))
+        `when`(mockConnection.prepareStatement(Mockito.contains("chronicle_has_participant_erasure"))).thenReturn(mockPs)
+        `when`(mockRs.next()).thenReturn(true)
+        `when`(mockRs.getBoolean("erased")).thenReturn(true)
+        assertEquals(ParticipationStatus.ERASED, service.getDeviceParticipationStatus(UUID.randomUUID(), "erased-subject"))
+    }
+
 }

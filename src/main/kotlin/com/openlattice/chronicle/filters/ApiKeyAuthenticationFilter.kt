@@ -63,7 +63,7 @@ public open class ApiKeyAuthenticationFilter(
             """/chronicle/v[34]/study/([0-9a-fA-F-]+)/participant/([^/]+)(?:/.*)?"""
         )
         public const val CURRENT_ENROLLMENT_PATH: String = "/chronicle/v4/mobile/enrollments/current"
-        // With the withdrawal route, the only route a key deleted by erasure may still reach: it answers NOT_ENROLLED.
+        // With the withdrawal route, the only route a key deleted by erasure may still reach: it answers ERASED.
         private val PARTICIPATION_STATUS_PATH_REGEX = Regex(
             """/chronicle/v4/study/[0-9a-fA-F-]+/participant/[^/]+/status"""
         )
@@ -122,10 +122,11 @@ public open class ApiKeyAuthenticationFilter(
             apiKeyService.authenticateApiKey(rawKey)
         }
         // A device key that participant or study erasure deleted keeps only a hash tombstone. It reaches the
-        // status read (NOT_ENROLLED) and the withdrawal acknowledgment; a merely revoked key stays 401.
+        // status read (ERASED) and the withdrawal acknowledgment; a merely revoked key stays 401.
         if (keyInfo == null && (statusRequest || currentEnrollmentRequest) && apiKeyService.isErasedDeviceKey(rawKey)) {
             ChronicleMetrics.apiKeyUsageTotal.labels("erased", "success").inc()
-            SecurityContextHolder.getContext().authentication = ApiKeyAuthenticationToken.erased()
+            SecurityContextHolder.getContext().authentication = ApiKeyAuthenticationToken.erased(
+                LogSanitizer.stableFingerprint(rawKey, "erased-key"))
             filterChain.doFilter(request, response)
             return
         }
@@ -301,8 +302,8 @@ public open class ApiKeyAuthenticationToken(
         private val NO_ID = java.util.UUID(0L, 0L)
 
         /** The tombstone holds no identifiers, so the token binds no key, study, participant or device. */
-        public fun erased(): ApiKeyAuthenticationToken = ApiKeyAuthenticationToken(
-            principal = "apikey:erased",
+        public fun erased(credentialReference: String = "erased"): ApiKeyAuthenticationToken = ApiKeyAuthenticationToken(
+            principal = "apikey:$credentialReference",
             keyId = NO_ID,
             studyId = NO_ID,
             participantId = null,

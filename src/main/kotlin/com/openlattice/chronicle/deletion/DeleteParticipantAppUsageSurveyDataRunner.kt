@@ -1,10 +1,8 @@
 package com.openlattice.chronicle.deletion
 
 import com.geekbeast.postgres.PostgresArrays
-import com.geekbeast.rhizome.jobs.JobStatus
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
-import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.services.jobs.AbstractChronicleDeleteJobRunner
 import com.openlattice.chronicle.services.jobs.ChronicleJob
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.APP_USAGE_SURVEY
@@ -13,7 +11,6 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import org.slf4j.LoggerFactory
 import com.openlattice.chronicle.util.LogSanitizer
 import java.sql.Connection
-import java.time.OffsetDateTime
 
 /**
  * @author Solomon Tang <solomon@openlattice.com>
@@ -33,24 +30,9 @@ public open class DeleteParticipantAppUsageSurveyDataRunner : AbstractChronicleD
         job.definition as DeleteParticipantAppUsageSurveyData
 
         val deletedRows = deleteAppUsageSurveyData(connection, job.definition)
-
-        // update jobData to include deletedRows
-        job.deletedRows = deletedRows
-        job.updatedAt = OffsetDateTime.now()
-        job.completedAt = job.updatedAt
-        job.status = JobStatus.FINISHED
-
-        updateFinishedDeleteJob(connection, job)
-
-        return listOf(
-            AuditableEvent(
-                AclKey(job.definition.studyId),
-                job.securablePrincipalId,
-                job.principal,
-                eventType = AuditEventType.BACKGROUND_APP_USAGE_SURVEY_DATA_DELETION,
-                data = mapOf( "definition" to job.definition),
-                study = job.definition.studyId
-            )
+        return finishDeleteJob(
+            connection, job, deletedRows, job.definition.studyId,
+            AuditEventType.BACKGROUND_APP_USAGE_SURVEY_DATA_DELETION,
         )
     }
 

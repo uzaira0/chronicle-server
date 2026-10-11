@@ -75,8 +75,10 @@ class EnrollmentServiceMutationTest {
         val fence: PreparedStatement = mock()
         val rows: ResultSet = mock()
         whenever(rows.next()).doReturn(true)
+        whenever(rows.getString("lifecycle_status")).doReturn(com.openlattice.chronicle.study.StudyLifecycleStatus.ACTIVE.name)
         whenever(fence.executeQuery()).doReturn(rows)
-        whenever(connection.prepareStatement(org.mockito.kotlin.argThat { contains("AS erased") || contains("pg_advisory_xact_lock") })).doReturn(fence)
+        whenever(connection.prepareStatement(org.mockito.kotlin.argThat { contains("AS erased") || contains("pg_advisory_xact_lock") || contains(
+            "SELECT lifecycle_status") })).doReturn(fence)
     }
 
     private fun wirePlatformStorage(): Wired {

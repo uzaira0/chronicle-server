@@ -32,6 +32,7 @@ import java.util.concurrent.Executors
  */
 public object RLSConnectionCustomizer {
 
+    internal const val DELETION_WORKER_ID = "chronicle-deletion-worker"
     private val logger = LoggerFactory.getLogger(RLSConnectionCustomizer::class.java)
     private val abortExecutor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "rls-connection-abort").apply { isDaemon = true }
@@ -126,6 +127,19 @@ public object RLSConnectionCustomizer {
         return userId.isEmpty() && studies.isEmpty() && isAdmin != "true"
     }
 
+    /** Session scope is cleared by [withAdminContext]; transaction scope ends on commit/rollback. */
+    @JvmStatic
+    public fun setDeletionWorkerContext(connection: Connection, transactionLocal: Boolean) {
+        connection.createStatement().use { statement ->
+            statement.execute(
+                """
+                SELECT set_config('app.current_user_id', '$DELETION_WORKER_ID', $transactionLocal),
+                       set_config('app.is_admin', 'true', $transactionLocal)
+                """.trimIndent(),
+            )
+        }
+    }
+
     @JvmStatic
     public fun <T> withAdminContext(connection: Connection, block: () -> T): T {
         connection.createStatement().use { stmt ->
@@ -166,6 +180,14 @@ public object RLSConnectionCustomizer {
             }
         }
     }
+
+    /** Only an authenticated enrollment lookup or withdrawal may bypass quarantine in this scope. */
+    @JvmStatic
+    public fun <T> withWithdrawalEnrollmentContext(connection: Connection, block: () -> T): T =
+        withRestoredAdminTransactionContext(connection) {
+            setDeletionWorkerContext(connection, transactionLocal = true)
+            block()
+        }
 
     private val RLS_CONTEXT_SETTINGS = listOf(
         "app.current_user_id",

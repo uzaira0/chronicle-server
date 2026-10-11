@@ -29,8 +29,8 @@ public interface EnrollmentManager {
 
     /**
      * Status for a caller that already proved a device key bound to this study and participant.
-     * A row hidden by the deletion quarantine, or already erased, reads as NOT_ENROLLED so the
-     * phone stops; researcher reads keep using [getParticipationStatus] and its quarantine policy.
+     * An erasure quarantine or completed erasure reads as ERASED. HTTP callers adapt that to
+     * NOT_ENROLLED for installed clients without the erasure-status capability.
      */
     public fun getDeviceParticipationStatus(studyId: UUID, participantId: String): ParticipationStatus
     public fun getStudyParticipantIds(studyId: UUID): Set<String>

@@ -55,9 +55,10 @@ internal object DeletionTableLockOrder {
         }
         // The study fence precedes every row/table write lock, including the buffer claim.
         DeletionStudyFence.shared(connection, studies)
+        // Serialize drains while allowing unrelated study writes and erasure.
         connection.createStatement().use { statement ->
             listOf("upload_buffer", destination, "participant_stats").sortedWith(comparator)
-                .forEach { statement.execute("LOCK TABLE public.$it IN ROW EXCLUSIVE MODE") }
+                .forEach { statement.execute("LOCK TABLE public.$it IN SHARE UPDATE EXCLUSIVE MODE") }
         }
         return studies
     }

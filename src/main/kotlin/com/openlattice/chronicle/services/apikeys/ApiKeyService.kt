@@ -26,6 +26,7 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCOPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.USAGE_COUNT
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
@@ -47,7 +48,7 @@ public open class ApiKeyService(
         private val logger = LoggerFactory.getLogger(ApiKeyService::class.java)
         private val secureRandom = SecureRandom()
         private const val KEY_LENGTH = 32
-        private const val PREFIX_LENGTH = 8
+        internal const val PREFIX_LENGTH = 8
         private const val MAX_KEY_NAME_LENGTH = 255
         private const val MAX_READ_ONLY_KEY_TTL_DAYS = 365
         private const val MAX_WRITE_KEY_TTL_DAYS = 90
@@ -68,14 +69,15 @@ public open class ApiKeyService(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.trimIndent()
 
-        private val LIST_API_KEYS_SQL = """
+        private val SELECT_API_KEYS_SQL = """
             SELECT ${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name},
                    ${CREATED_AT.name}, ${EXPIRES_AT.name}, ${LAST_USED_AT.name}, ${USAGE_COUNT.name},
                    participant_id, device_id
             FROM ${API_KEYS.name}
             WHERE ${STUDY_ID.name} = ? AND ${REVOKED.name} = false
-            ORDER BY ${CREATED_AT.name} DESC
         """.trimIndent()
+        private val LIST_API_KEYS_SQL = "$SELECT_API_KEYS_SQL ORDER BY ${CREATED_AT.name} DESC"
+        private val LOCK_API_KEY_FOR_ROTATION_SQL = "$SELECT_API_KEYS_SQL AND ${KEY_ID.name} = ? FOR UPDATE"
 
         private val REVOKE_API_KEY_SQL = """
             UPDATE ${API_KEYS.name}
@@ -101,18 +103,8 @@ public open class ApiKeyService(
                         WHERE sp.study_id = ${API_KEYS.name}.${STUDY_ID.name}
                           AND sp.participant_id = ${API_KEYS.name}.participant_id
                           AND sp.participation_status IN ('ENROLLED', 'PAUSED')
-                    ) AND NOT EXISTS (
-                        SELECT 1 FROM data_deletion_operations erasure
-                        WHERE erasure.${STUDY_ID.name} = ${API_KEYS.name}.${STUDY_ID.name}
-                          AND erasure.status NOT IN ('PREVIEW', 'CANCELLED')
-                          AND (
-                              erasure.mode = 'STUDY_ERASURE'
-                              OR (
-                                  erasure.mode = 'WITHDRAW_AND_ERASE'
-                                  AND erasure.participant_block_token =
-                                      md5(${API_KEYS.name}.${STUDY_ID.name}::text || ':' || ${API_KEYS.name}.participant_id)
-                              )
-                          )
+                    ) AND NOT chronicle_has_participant_erasure(
+                        ${API_KEYS.name}.${STUDY_ID.name}, ${API_KEYS.name}.participant_id
                     )
                         THEN now() + interval '$MAX_MOBILE_KEY_TTL_DAYS days'
                     ELSE ${EXPIRES_AT.name}
@@ -162,6 +154,9 @@ public open class ApiKeyService(
         // shared its material with an erased key before V115 stays an ordinary credential.
         private const val EXPIRE_ERASED_KEY_TOMBSTONES_SQL =
             "DELETE FROM erased_device_key_tombstones WHERE expires_at <= now()"
+
+        internal fun expireErasedDeviceKeyTombstones(connection: java.sql.Connection): Int =
+            connection.createStatement().use { it.executeUpdate(EXPIRE_ERASED_KEY_TOMBSTONES_SQL) }
         private val LOOKUP_ERASED_KEY_TOMBSTONE_SQL = """
             SELECT EXISTS (
                 SELECT 1 FROM erased_device_key_tombstones tombstone
@@ -351,23 +346,34 @@ public open class ApiKeyService(
     }
 
     public open fun rotateApiKey(studyId: UUID, keyId: UUID, userId: String): ApiKeyCreateResponse {
-        // Get the existing key info for name/scope
-        val existingKeys = listApiKeys(studyId)
-        val existing = existingKeys.find { it.keyId == keyId }
-            ?: throw IllegalArgumentException("API key $keyId not found for study $studyId")
-
-        // Revoke old key
-        revokeApiKey(studyId, keyId, userId)
-
-        // Create new key with same name/scope
-        return createApiKey(
-            studyId, userId,
-            ApiKeyCreateRequest(
-                name = existing.name,
-                scope = existing.scope,
-                expiresInDays = maxTtlDaysForScope(existing.scope)
-            )
-        )
+        val storage = storageResolver.getPlatformStorage()
+        return storage.connection.use { connection ->
+            AuditedTransactionBuilder<ApiKeyCreateResponse>(connection, auditingManager)
+                .transaction { conn ->
+                    PinnedPlatformConnection.pinning(storage, conn) {
+                        val existing = conn.prepareStatement(LOCK_API_KEY_FOR_ROTATION_SQL).use { statement ->
+                            statement.setObject(1, studyId)
+                            statement.setObject(2, keyId)
+                            statement.executeQuery().use { rows ->
+                                require(rows.next()) { "API key $keyId not found for study $studyId" }
+                                require(rows.getString("participant_id") == null && rows.getObject("device_id", UUID::class.java) == null) {
+                                    "Mobile API keys must be replaced through enrollment"
+                                }
+                                mapApiKeyInfo(rows)
+                            }
+                        }
+                        revokeApiKey(studyId, keyId, userId)
+                        createApiKey(studyId, userId, ApiKeyCreateRequest(
+                            name = existing.name,
+                            scope = existing.scope,
+                            expiresInDays = maxTtlDaysForScope(existing.scope),
+                        ))
+                    }
+                }
+                // The existing helpers stage both audit events in the pinned transaction.
+                .audit { emptyList() }
+                .buildAndRun()
+        }
     }
 
     public open fun authenticateApiKey(rawKey: String): ApiKeyInfo? {
@@ -376,9 +382,7 @@ public open class ApiKeyService(
             return RLSConnectionCustomizer.withAdminContext(connection) {
                 // The sliding predicate reads the enrollment row itself, past the deletion-quarantine
                 // RLS policy, so a collected-data purge does not freeze a live participant's key.
-                connection.createStatement().use { statement ->
-                    statement.execute("SELECT set_config('app.current_user_id', 'chronicle-deletion-worker', false)")
-                }
+                RLSConnectionCustomizer.setDeletionWorkerContext(connection, transactionLocal = false)
                 connection.prepareStatement(LOOKUP_AND_TOUCH_SQL).use { ps ->
                     ps.setString(1, hash)
                     val rs = ps.executeQuery()
@@ -400,7 +404,7 @@ public open class ApiKeyService(
         val hash = hashKey(rawKey)
         storageResolver.getPlatformStorage().connection.use { connection ->
             return RLSConnectionCustomizer.withAdminContext(connection) {
-                connection.createStatement().use { it.executeUpdate(EXPIRE_ERASED_KEY_TOMBSTONES_SQL) }
+                expireErasedDeviceKeyTombstones(connection)
                 connection.prepareStatement(LOOKUP_ERASED_KEY_TOMBSTONE_SQL).use { ps ->
                     ps.setString(1, hash)
                     ps.executeQuery().use { rs -> rs.next() && rs.getBoolean(1) }

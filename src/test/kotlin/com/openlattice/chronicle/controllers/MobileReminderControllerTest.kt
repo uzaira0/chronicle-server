@@ -196,7 +196,7 @@ class MobileReminderControllerTest {
         whenever(enrollmentManager.getParticipationStatus(studyId, participantId))
             .thenThrow(IllegalStateException("No row returned"))
         whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
-            .thenReturn(ParticipationStatus.NOT_ENROLLED)
+            .thenReturn(ParticipationStatus.ERASED)
 
         val status = controller.getParticipationStatus(studyId, participantId, deviceToken(), MockHttpServletResponse())
         val schedule = controller.getReminderSchedule(studyId, participantId, deviceToken(), MockHttpServletResponse())
@@ -211,7 +211,7 @@ class MobileReminderControllerTest {
     }
 
     @Test
-    fun erasedDeviceKeyReadsNotEnrolledWithoutStatusLookup() {
+    fun erasedDeviceKeySignalsErasureWithoutStatusLookup() {
         whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
             .thenReturn(ParticipationStatus.ENROLLED)
 
@@ -224,6 +224,18 @@ class MobileReminderControllerTest {
 
         assertEquals(ParticipationStatus.NOT_ENROLLED, status)
         verify(enrollmentManager, never()).getDeviceParticipationStatus(any(), any())
+    }
+
+    @Test
+    fun erasureAwareStatusDistinguishesBothQuarantineAndTombstoneAuthentication() {
+        whenever(enrollmentManager.getDeviceParticipationStatus(studyId, participantId))
+            .thenReturn(ParticipationStatus.ERASED)
+        listOf(deviceToken(), ApiKeyAuthenticationToken.erased()).forEach { token ->
+            assertEquals(ParticipationStatus.ERASED, controller.getParticipationStatus(
+                studyId, participantId, token, MockHttpServletResponse(), ParticipationStatus.ERASURE_STATUS_VERSION))
+            assertEquals(ParticipationStatus.NOT_ENROLLED, controller.getParticipationStatus(
+                studyId, participantId, token, MockHttpServletResponse()))
+        }
     }
 
     private fun deviceToken(boundParticipantId: String = participantId) = ApiKeyAuthenticationToken(

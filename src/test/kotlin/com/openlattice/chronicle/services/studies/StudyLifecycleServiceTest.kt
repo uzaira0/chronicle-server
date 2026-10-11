@@ -80,6 +80,7 @@ class StudyLifecycleServiceTest {
         service = StudyLifecycleService(
             storageResolver, studyService, authorizationService, idGenerationService, auditingManager,
             dataDeletionOrchestrator, webhookService,
+            Mockito.mock(StudyLimitsManager::class.java),
         )
     }
 
@@ -524,6 +525,7 @@ class StudyLifecycleServiceTest {
 
     @Test
     fun testExecuteScheduledDeletionsWithStudies() {
+        org.springframework.security.core.context.SecurityContextHolder.clearContext()
         val studyId = UUID.randomUUID()
         val operationId = UUID.randomUUID()
         val deleteAfter = OffsetDateTime.parse("2026-08-20T12:00:00Z")
@@ -560,6 +562,9 @@ class StudyLifecycleServiceTest {
         Mockito.verify(linkPs).setObject(1, operationId)
         Mockito.verify(linkPs).setObject(2, studyId)
         Mockito.verify(linkPs).executeUpdate()
+        val events = org.mockito.kotlin.argumentCaptor<List<com.openlattice.chronicle.auditing.AuditableEvent>>()
+        Mockito.verify(auditingManager).recordEvents(events.capture())
+        assertEquals(com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal, events.firstValue.single().principal)
     }
 
     // --- getStudyDataSummary tests ---

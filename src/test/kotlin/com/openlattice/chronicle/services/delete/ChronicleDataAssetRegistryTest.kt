@@ -11,6 +11,20 @@ import java.io.File
 import java.util.UUID
 
 class ChronicleDataAssetRegistryTest {
+    @Test
+    fun purgeObservationExpressionsMatchPersistedColumns() {
+        com.openlattice.chronicle.contract.ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
+            ChronicleDataAssetRegistry.participantAssets.forEach { asset ->
+                val captureTime = ChronicleDataAssetRegistry.purgeCaptureTimeSql(asset) ?: return@forEach
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT $captureTime FROM ${asset.tableName} LIMIT 0").use { rows ->
+                        assertEquals("${asset.id} must compare observation instants", "timestamptz", rows.metaData.getColumnTypeName(1))
+                    }
+                }
+            }
+        }
+    }
+
     @Before
     fun authenticate() {
         TestSecurityUtils.setupSecurityContext()

@@ -21,6 +21,7 @@ import org.springframework.security.core.Authentication
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import java.time.OffsetDateTime
@@ -54,7 +55,7 @@ public open class MobileReminderController(
         response: HttpServletResponse,
     ): MobileReminderConfiguration {
         val device = boundDevice(studyId, participantId, authentication)
-        val status = enrollmentManager.getDeviceParticipationStatus(studyId, participantId)
+        val status = enrollmentManager.getDeviceParticipationStatus(studyId, participantId).forDeviceClient(false)
         val forms = if (status == ParticipationStatus.ENROLLED) {
             buildForms(studyId, participantId, device, mintAccessCodes = true)
         } else {
@@ -79,7 +80,7 @@ public open class MobileReminderController(
         response: HttpServletResponse,
     ): MobileReminderConfiguration {
         val device = boundDevice(studyId, participantId, authentication)
-        val status = enrollmentManager.getDeviceParticipationStatus(studyId, participantId)
+        val status = enrollmentManager.getDeviceParticipationStatus(studyId, participantId).forDeviceClient(false)
         val forms = if (status == ParticipationStatus.ENROLLED) {
             buildForms(studyId, participantId, device, mintAccessCodes = false)
         } else {
@@ -93,8 +94,8 @@ public open class MobileReminderController(
     /**
      * Side-effect-free status read for the device's enrollment monitor. The reminder manifest
      * rotates form access codes, so polling it every 15 minutes would churn live links.
-     * A deleted participant reads NOT_ENROLLED. A key deleted by erasure is admitted here through its
-     * tombstone (see ApiKeyAuthenticationFilter), so a phone offline through the quarantine still learns it.
+     * Erasure-aware clients read ERASED; older clients read NOT_ENROLLED. A key deleted by erasure
+     * is admitted through its tombstone (see ApiKeyAuthenticationFilter), so an offline phone learns it.
      */
     @GetMapping(
         path = [
@@ -107,15 +108,17 @@ public open class MobileReminderController(
         @PathVariable participantId: String,
         authentication: Authentication,
         response: HttpServletResponse,
+        @RequestHeader(value = ParticipationStatus.ERASURE_STATUS_VERSION_HEADER, required = false)
+        erasureStatusVersion: String? = null,
     ): ParticipationStatus {
         response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store")
-        // An erased key carries no binding to check; it answers NOT_ENROLLED whatever the path names.
+        val supportsErasureStatus = erasureStatusVersion == ParticipationStatus.ERASURE_STATUS_VERSION
         if ((authentication as? ApiKeyAuthenticationToken)?.erased == true) {
             validateParticipantId(participantId)
-            return ParticipationStatus.NOT_ENROLLED
+            return ParticipationStatus.ERASED.forDeviceClient(supportsErasureStatus)
         }
         boundDevice(studyId, participantId, authentication)
-        return enrollmentManager.getDeviceParticipationStatus(studyId, participantId)
+        return enrollmentManager.getDeviceParticipationStatus(studyId, participantId).forDeviceClient(supportsErasureStatus)
     }
 
     private fun boundDevice(studyId: UUID, participantId: String, authentication: Authentication): ApiKeyAuthenticationToken {

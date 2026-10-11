@@ -28,7 +28,8 @@ class ApiKeyControllerTest {
     private val apiKeyService = Mockito.mock(ApiKeyService::class.java)
     private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
     private val creatorPrincipalResolver = Mockito.mock(com.openlattice.chronicle.authorization.CreatorPrincipalResolver::class.java).also {
-        Mockito.`when`(it.resolve(org.mockito.kotlin.any())).thenAnswer { com.openlattice.chronicle.authorization.principals.Principals.getCurrentPrincipals() }
+        Mockito.`when`(it.resolve(org.mockito.kotlin.any())).thenAnswer {
+            com.openlattice.chronicle.authorization.principals.Principals.getCurrentPrincipals() }
     }
     private val controller = ApiKeyController(apiKeyService, authorizationManager, creatorPrincipalResolver)
 

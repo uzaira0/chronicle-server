@@ -38,6 +38,7 @@ import com.openlattice.chronicle.study.StudyCloneRequest
 import com.openlattice.chronicle.study.StudyDataSummary
 import com.openlattice.chronicle.study.StudyLifecycleStatus
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
+import com.openlattice.chronicle.services.delete.bindErasureStudyId
 import com.openlattice.chronicle.services.webhooks.WebhookService
 import com.openlattice.chronicle.webhooks.WebhookEventType
 import org.slf4j.LoggerFactory
@@ -55,6 +56,7 @@ public open class StudyLifecycleService(
     override val auditingManager: AuditingManager,
     private val dataDeletionOrchestrator: DataDeletionOrchestrator,
     private val webhookService: WebhookService,
+    private val studyLimitsMgr: StudyLimitsManager,
     private val clock: Clock = Clock.systemUTC(),
 ) : AuditingComponent {
 
@@ -172,6 +174,7 @@ public open class StudyLifecycleService(
                 .transaction { conn ->
                     // Insert cloned study row
                     insertClonedStudy(conn, newStudyId, newTitle, originalStudy, request)
+                    studyLimitsMgr.initializeStudyLimits(conn, newStudyId)
 
                     // Clone organization associations
                     conn.prepareStatement(CLONE_ORG_STUDIES_SQL).use { ps ->
@@ -460,6 +463,8 @@ public open class StudyLifecycleService(
                         AclKey(due.studyId),
                         eventType = AuditEventType.SCHEDULE_STUDY_DELETION,
                         description = "Linked legacy deletion schedule to verified erasure processing",
+                        securablePrincipalId = IdConstants.CHRONICLE.id,
+                        principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
                         study = due.studyId,
                         organization = IdConstants.UNINITIALIZED.id,
                         data = mapOf("operationId" to operationId.toString()),
@@ -497,7 +502,9 @@ public open class StudyLifecycleService(
     }
 
     private fun studyErasureIdempotencyKey(studyId: UUID, deleteAfter: OffsetDateTime?): UUID =
-        UUID.nameUUIDFromBytes( // nosemgrep: chronicle-uuid-from-string -- deterministic retry idempotency key
+        // deterministic retry idempotency key
+        // nosemgrep: chronicle-uuid-from-string
+        UUID.nameUUIDFromBytes(
             "study-erasure:$studyId:${deleteAfter?.toInstant() ?: "default"}".toByteArray(Charsets.UTF_8)
         )
 
@@ -651,7 +658,7 @@ public open class StudyLifecycleService(
 
     private fun countRows(connection: Connection, tableName: String, studyId: UUID): Long {
         return connection.prepareStatement("SELECT COUNT(*) FROM $tableName WHERE study_id = ?").use { ps ->
-            ps.setObject(1, studyId)
+            ps.bindErasureStudyId(studyId)
             val rs = ps.executeQuery()
             if (rs.next()) rs.getLong(1) else 0L
         }

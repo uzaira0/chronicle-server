@@ -26,6 +26,7 @@ class DataDeletionOrchestratorProxyTest {
         Mockito.`when`(connection.prepareStatement(any())).thenReturn(statement)
         Mockito.`when`(statement.executeQuery()).thenReturn(rows)
         Mockito.`when`(rows.next()).thenReturn(true, false)
+        Mockito.`when`(rows.getBoolean(1)).thenReturn(true)
         Mockito.`when`(statement.executeUpdate()).thenReturn(1)
         val target = DataDeletionOrchestrator(storage, Mockito.mock(AuditingManager::class.java))
         val proxy = ProxyFactory(target).apply { isProxyTargetClass = true }.proxy as DataDeletionOrchestrator

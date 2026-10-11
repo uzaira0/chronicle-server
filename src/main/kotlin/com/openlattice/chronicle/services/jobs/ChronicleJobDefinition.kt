@@ -2,6 +2,12 @@ package com.openlattice.chronicle.services.jobs
 
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
+import com.openlattice.chronicle.deletion.DeleteParticipantSleepEventsData
+import com.openlattice.chronicle.deletion.DeleteParticipantConnectivityStateEventsData
+import com.openlattice.chronicle.deletion.DeleteParticipantHealthMetricsData
+import com.openlattice.chronicle.deletion.DeleteParticipantActivityRecognitionEventsData
+import com.openlattice.chronicle.deletion.DeleteParticipantAppNetworkUsageData
+import com.openlattice.chronicle.deletion.DeleteParticipantDeviceSettingsData
 import com.openlattice.chronicle.deletion.DeleteParticipantAndroidSensorData
 import com.openlattice.chronicle.deletion.DeleteParticipantAmbientAudioData
 import com.openlattice.chronicle.deletion.DeleteParticipantAppAudioActivityData
@@ -35,6 +41,23 @@ import com.openlattice.chronicle.services.notifications.Notification
  */
 @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "@type")
 @JsonSubTypes(
+    JsonSubTypes.Type(value = DeleteParticipantSleepEventsData::class, name = "DeleteParticipantSleepEventsData"),
+    JsonSubTypes.Type(value = DeleteParticipantSleepEventsData::class, name = "com.openlattice.chronicle.deletion.DeleteParticipantSleepEventsData"),
+    JsonSubTypes.Type(value = DeleteParticipantConnectivityStateEventsData::class, name = "DeleteParticipantConnectivityStateEventsData"),
+    JsonSubTypes.Type(value = DeleteParticipantConnectivityStateEventsData::class, name =
+        "com.openlattice.chronicle.deletion.DeleteParticipantConnectivityStateEventsData"),
+    JsonSubTypes.Type(value = DeleteParticipantHealthMetricsData::class, name = "DeleteParticipantHealthMetricsData"),
+    JsonSubTypes.Type(value = DeleteParticipantHealthMetricsData::class, name =
+        "com.openlattice.chronicle.deletion.DeleteParticipantHealthMetricsData"),
+    JsonSubTypes.Type(value = DeleteParticipantActivityRecognitionEventsData::class, name = "DeleteParticipantActivityRecognitionEventsData"),
+    JsonSubTypes.Type(value = DeleteParticipantActivityRecognitionEventsData::class, name =
+        "com.openlattice.chronicle.deletion.DeleteParticipantActivityRecognitionEventsData"),
+    JsonSubTypes.Type(value = DeleteParticipantAppNetworkUsageData::class, name = "DeleteParticipantAppNetworkUsageData"),
+    JsonSubTypes.Type(value = DeleteParticipantAppNetworkUsageData::class, name =
+        "com.openlattice.chronicle.deletion.DeleteParticipantAppNetworkUsageData"),
+    JsonSubTypes.Type(value = DeleteParticipantDeviceSettingsData::class, name = "DeleteParticipantDeviceSettingsData"),
+    JsonSubTypes.Type(value = DeleteParticipantDeviceSettingsData::class, name =
+        "com.openlattice.chronicle.deletion.DeleteParticipantDeviceSettingsData"),
     // Study-level jobs
     JsonSubTypes.Type(value = EmptyJobDefinition::class, name = "EmptyJobDefinition"),
     JsonSubTypes.Type(value = EmptyJobDefinition::class, name = "com.openlattice.chronicle.services.jobs.EmptyJobDefinition"),

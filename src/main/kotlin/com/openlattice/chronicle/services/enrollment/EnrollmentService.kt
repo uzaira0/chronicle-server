@@ -5,6 +5,7 @@ import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
 import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.study.StudyLifecycleStatus
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.postgres.ResultSetAdapters
@@ -19,6 +20,7 @@ import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.DEVIC
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ORGANIZATION_STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS
+import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS_WITH_WITHDRAWALS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CANDIDATE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_TOKEN
@@ -135,22 +137,19 @@ public open class EnrollmentService(
         """.trimIndent()
 
         /**
-         * 1. study id, 2. study id text, 3. participant id, 4. study id, 5. participant id.
+         * 1. study id, 2. participant id, 3. study id, 4. participant id.
          * A participant or study erasure that is quarantined, held, failed, erasing or completed
          * reads as erased; a collected-data purge does not.
          */
         private val GET_DEVICE_PARTICIPATION_STATUS = """
-            SELECT EXISTS (
-                SELECT 1 FROM data_deletion_operations erasure
-                WHERE erasure.study_id = ? AND erasure.status NOT IN ('PREVIEW', 'CANCELLED')
-                  AND (
-                      erasure.mode = 'STUDY_ERASURE'
-                      OR (erasure.mode = 'WITHDRAW_AND_ERASE' AND erasure.participant_block_token = md5(? || ':' || ?))
-                  )
-            ) AS erased,
+            SELECT chronicle_has_participant_erasure(?::uuid, ?::text) AS erased,
             (
-                SELECT ${PARTICIPATION_STATUS.name} FROM ${STUDY_PARTICIPANTS.name}
-                WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ?
+                SELECT CASE WHEN study.lifecycle_status <> '${StudyLifecycleStatus.ACTIVE.name}'
+                                  AND participant.${PARTICIPATION_STATUS.name} = '${ParticipationStatus.ENROLLED.name}'
+                            THEN '${ParticipationStatus.PAUSED.name}' ELSE participant.${PARTICIPATION_STATUS.name} END
+                FROM ${STUDY_PARTICIPANTS.name} participant
+                JOIN ${STUDIES.name} study USING (${STUDY_ID.name})
+                WHERE participant.${STUDY_ID.name} = ? AND participant.${PARTICIPANT_ID.name} = ?
             ) AS ${PARTICIPATION_STATUS.name}
         """.trimIndent()
 
@@ -165,7 +164,7 @@ public open class EnrollmentService(
          * 1. study id
          */
         private val GET_STUDY_PARTICIPANTS = """
-            SELECT * FROM ${STUDY_PARTICIPANTS.name} WHERE ${STUDY_ID.name} = ?
+            SELECT * FROM $STUDY_PARTICIPANTS_WITH_WITHDRAWALS WHERE ${STUDY_ID.name} = ?
         """.trimIndent()
 
         /**
@@ -255,6 +254,7 @@ public open class EnrollmentService(
             try {
                 com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
                 com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(connection, studyId, participantId)
+                com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId)
                 val result = connection.prepareStatement(INSERT_DEVICE).use { ps ->
                 ps.setObject(1, studyId)
                 ps.setObject(2, deviceId)
@@ -287,6 +287,7 @@ public open class EnrollmentService(
     ) {
         com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
         com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(connection, studyId, participantId)
+        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId)
         connection.prepareStatement(INSERT_PARTICIPANT).use { ps ->
             ps.setObject(1, studyId)
             ps.setString(2, participantId)
@@ -391,20 +392,16 @@ public open class EnrollmentService(
             val autoCommit = connection.autoCommit
             connection.autoCommit = false
             try {
-                RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
-                    connection.createStatement().use { statement ->
-                        statement.execute("SELECT set_config('app.current_user_id', 'chronicle-deletion-worker', true)")
-                    }
+                RLSConnectionCustomizer.withWithdrawalEnrollmentContext(connection) {
                     connection.prepareStatement(GET_DEVICE_PARTICIPATION_STATUS).use { ps ->
                         ps.setObject(1, studyId)
-                        ps.setString(2, studyId.toString())
-                        ps.setString(3, participantId)
-                        ps.setObject(4, studyId)
-                        ps.setString(5, participantId)
+                        ps.setString(2, participantId)
+                        ps.setObject(3, studyId)
+                        ps.setString(4, participantId)
                         ps.executeQuery().use {
                             check(it.next()) { "Device participation status returned no result" }
                             when {
-                                it.getBoolean("erased") -> ParticipationStatus.NOT_ENROLLED
+                                it.getBoolean("erased") -> ParticipationStatus.ERASED
                                 it.getString(PARTICIPATION_STATUS.name) == null ->
                                     error("No row returned for study=$studyId, participant=$participantId")
                                 else -> ResultSetAdapters.participantStatus(it)

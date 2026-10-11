@@ -1,5 +1,19 @@
 package com.openlattice.chronicle.services.delete
 
+import com.openlattice.chronicle.sensorkit.SensorType
+import com.openlattice.chronicle.storage.PostgresColumns
+import com.openlattice.chronicle.storage.PostgresEventColumns
+import java.sql.PreparedStatement
+import java.sql.Types
+import java.util.UUID
+
+internal const val STUDY_ERASURE_PREDICATE = "study_id = ?"
+
+/** An unspecified PostgreSQL parameter takes the native UUID or text column type. */
+internal fun PreparedStatement.bindErasureStudyId(studyId: UUID) {
+    setObject(1, studyId.toString(), Types.OTHER)
+}
+
 /**
  * Canonical, framework-neutral inventory of participant-scoped persisted assets.
  *
@@ -17,7 +31,7 @@ public data class ParticipantDataAsset(
 public enum class ParticipantScope(internal val predicate: String) {
     SCALAR_COLUMN("participant_id = ?"),
     TEXT_ARRAY_COLUMN("? = ANY(participant_ids)"),
-    BLOCK_TOKEN_COLUMN("participant_block_token = md5(study_id::text || ':' || ?)"),
+    BLOCK_TOKEN_COLUMN("participant_block_token = chronicle_participant_block_token(study_id, ?::text)"),
 
     /** Access codes minus the exchanged enrollment code a still-enrolled device acknowledges against. */
     NON_ENROLLMENT_EVIDENCE_CODES("participant_id = ? AND NOT $EXCHANGED_ENROLLMENT_CODE"),
@@ -104,4 +118,25 @@ public object ChronicleDataAssetRegistry {
     public fun participantAsset(assetId: String): ParticipantDataAsset =
         participantAssets.singleOrNull { it.id == assetId }
             ?: throw IllegalArgumentException("Unknown participant data asset")
+
+    /** Observation times match upload admission; receipt time cannot preserve an undated capture. */
+    internal fun purgeCaptureTimeSql(asset: ParticipantDataAsset): String? = when (asset.tableName) {
+        "chronicle_usage_events" -> "COALESCE(${PostgresEventColumns.TIMESTAMP.name}, ${PostgresEventColumns.COLLECTED_AT.name})"
+        "chronicle_usage_stats", "usage_event_annotations" -> PostgresEventColumns.TIMESTAMP.name
+        "preprocessed_usage_events" -> PostgresEventColumns.APP_DATETIME_END.name
+        "sensor_data" -> "LEAST(COALESCE(${PostgresEventColumns.EXACT_RECORDED_DATE_TIME.name}, ${PostgresEventColumns.RECORDED_DATE_TIME.name}), " +
+            "CASE WHEN ${PostgresEventColumns.SENSOR_TYPE.name} = '${SensorType.deviceUsage.name}' THEN ${PostgresEventColumns.END_DATE_TIME.name} END)"
+        "android_sensor_data", "battery_telemetry", "interaction_events", "app_audio_activity",
+        "app_audio_content", "ambient_audio_events", "notification_activity", "sleep_events",
+        "activity_recognition_events", "connectivity_state_events", "device_settings" ->
+            PostgresColumns.SAMPLE_TIMESTAMP.name
+        "health_metrics" -> "to_timestamp(${PostgresColumns.HEALTH_END_MILLIS.name} / 1000.0)"
+        "app_network_usage" -> "to_timestamp(${PostgresColumns.APP_NETWORK_BUCKET_END_MILLIS.name} / 1000.0)"
+        "app_usage_survey", "time_use_diary_submissions" -> PostgresColumns.SUBMISSION_DATE.name
+        "questionnaire_submissions" -> PostgresColumns.COMPLETED_AT.name
+        "android_device_sensor_availability" -> PostgresColumns.REPORTED_AT.name
+        "upload_diagnostics" -> "last_occurred_at"
+        // Aggregates and access artifacts have no single observation time; ciphertext is undated.
+        else -> null
+    }
 }

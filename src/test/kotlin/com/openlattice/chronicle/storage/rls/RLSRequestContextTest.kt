@@ -80,6 +80,9 @@ class RLSRequestContextTest {
                     RETURNS boolean LANGUAGE sql AS
                     'SELECT current_setting(''app.is_admin'', true) = ''true'''
                 """.trimIndent())
+                statement.execute(checkNotNull(javaClass.getResource(
+                    "/db/migration/V119__share_participant_erasure_predicate.sql",
+                )).readText())
                 statement.execute("GRANT SELECT ON data_deletion_operations TO chronicle_app")
             }
         }
@@ -235,6 +238,59 @@ class RLSRequestContextTest {
         assertEquals(setOf(studyId), context.authorizedStudyIds)
         assertFalse(context.isAdmin)
         assertTrue(context.authorizedOrganizationIds.isEmpty())
+    }
+
+    @Test
+    fun `withdrawal enrollment scope restores every caller setting after success and failure`() {
+        val context = RLSConnectionContext("researcher", setOf(UUID.randomUUID()), false, setOf(UUID.randomUUID()))
+        hds.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                RLSConnectionSql.applyContext(connection, context)
+                val settings = listOf("app.current_user_id", "app.authorized_studies", "app.is_admin", "app.authorized_orgs")
+                val original = settings.map { currentSetting(connection, it) }
+                for (fail in listOf(false, true)) {
+                    val action = {
+                        RLSConnectionCustomizer.withWithdrawalEnrollmentContext(connection) {
+                            assertEquals(RLSConnectionCustomizer.DELETION_WORKER_ID, currentSetting(connection, "app.current_user_id"))
+                            assertEquals("true", currentSetting(connection, "app.is_admin"))
+                            if (fail) throw IllegalArgumentException("caller failure")
+                            "result"
+                        }
+                    }
+                    if (fail) assertThrows(IllegalArgumentException::class.java) { action() }
+                    else assertEquals("result", action())
+                    assertEquals(original, settings.map { currentSetting(connection, it) })
+                    assertFalse(connection.autoCommit)
+                }
+            } finally {
+                connection.rollback()
+                connection.autoCommit = true
+                RLSConnectionSql.clear(connection)
+            }
+        }
+    }
+
+    @Test
+    fun `user and admin scopes clear context and preserve the block failure`() {
+        val manager = RLSContextManager(Mockito.mock(AuthorizationManager::class.java))
+        SecurityContextHolder.getContext().authentication = MobileApiHmacAuthenticationToken(UUID.randomUUID())
+        hds.connection.use { connection ->
+            for (admin in listOf(false, true)) {
+                val failure = IllegalArgumentException("caller failure")
+                val caught = assertThrows(IllegalArgumentException::class.java) {
+                    val block = {
+                        assertEquals(if (admin) "system" else "mobile-hmac-bootstrap", currentSetting(connection, "app.current_user_id"))
+                        throw failure
+                    }
+                    if (admin) manager.withAdminContext(connection, block = block)
+                    else manager.withUserContext(connection, block)
+                }
+                assertSame(failure, caught)
+                assertTrue(RLSConnectionCustomizer.validateContextCleared(connection))
+                assertEquals("", currentSetting(connection, "app.authorized_orgs"))
+            }
+        }
     }
 
     private fun currentSetting(connection: Connection, setting: String): String? {

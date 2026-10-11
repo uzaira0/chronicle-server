@@ -18,7 +18,6 @@ import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.mapstores.stats.TransactionOnlyParticipantStatsCache
-import com.openlattice.chronicle.participantaccess.ParticipantFormKind
 import com.openlattice.chronicle.services.candidates.CandidateManager
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
@@ -37,7 +36,13 @@ import com.geekbeast.rhizome.KotlinDelegatedStringSet
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.AfterClass
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.BeforeClass
 import org.junit.Test
 import org.mockito.Mockito
@@ -88,7 +93,8 @@ class ServerSweepConcurrencyTest {
             connection.prepareStatement("INSERT INTO studies (study_id, title, settings) VALUES (?, 'sweep', ?::jsonb)").use {
                 it.setObject(1, studyId); it.setString(2, settings); it.executeUpdate()
             }
-            connection.prepareStatement("INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, ?, ?, 'ENROLLED')").use {
+            connection.prepareStatement(
+                "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, ?, ?, 'ENROLLED')").use {
                 it.setObject(1, studyId); it.setString(2, participantId); it.setObject(3, UUID.randomUUID()); it.executeUpdate()
             }
         }
@@ -109,7 +115,8 @@ class ServerSweepConcurrencyTest {
     private fun awaitBlocked(name: String) {
         val deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos()
         postgres.createConnection("").use { connection ->
-            connection.prepareStatement("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock')").use { statement ->
+            connection.prepareStatement(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock')").use { statement ->
                 statement.setString(1, name)
                 while (System.nanoTime() < deadline) {
                     statement.executeQuery().use { if (it.next() && it.getBoolean(1)) return }
@@ -139,7 +146,8 @@ class ServerSweepConcurrencyTest {
                             deletionPool.connection.use { connection ->
                                 connection.autoCommit = false
                                 try {
-                                    connection.prepareStatement("SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:' || ?::text, 0))").use {
+                                    connection.prepareStatement(
+                                        "SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:' || ?::text, 0))").use {
                                         it.setObject(1, studyId); it.execute()
                                     }
                                     connection.createStatement().use { it.execute(rowUpdate) }
@@ -194,7 +202,9 @@ class ServerSweepConcurrencyTest {
         seed(studyId, participantId)
         val accessCodeId = UUID.randomUUID(); val rawCode = "a".repeat(48)
         postgres.createConnection("").use { connection ->
-            connection.prepareStatement("INSERT INTO participant_form_access_codes (access_code_id, token_hash, study_id, participant_id, form_kind, issuer_type, issued_by, expires_at) VALUES (?, ?, ?, ?, 'PORTAL', 'RESEARCHER', 'sweep', now() + interval '1 day')").use {
+            connection.prepareStatement(
+                "INSERT INTO participant_form_access_codes (access_code_id, token_hash, study_id, participant_id, form_kind, issuer_type, " +
+                "issued_by, expires_at) VALUES (?, ?, ?, ?, 'PORTAL', 'RESEARCHER', 'sweep', now() + interval '1 day')").use {
                 it.setObject(1, accessCodeId); it.setBytes(2, MessageDigest.getInstance("SHA-256").digest(rawCode.toByteArray()))
                 it.setObject(3, studyId); it.setString(4, participantId); it.executeUpdate()
             }
@@ -210,8 +220,8 @@ class ServerSweepConcurrencyTest {
         seed(studyId, participantId)
         val audit = Mockito.mock(AuditingManager::class.java)
         val events = mutableListOf<AuditableEvent>()
-        Mockito.doAnswer { events += it.getArgument<List<AuditableEvent>>(0); 1 }
-            .`when`(audit).recordEvents(org.mockito.kotlin.any())
+        Mockito.doAnswer { events += it.getArgument<List<AuditableEvent>>(1); 1 }
+            .`when`(audit).recordEvents(org.mockito.kotlin.any<Connection>(), org.mockito.kotlin.any())
         pool("sweep-audit").use { hds ->
             TestSecurityUtils.setupSecurityContext()
             try {

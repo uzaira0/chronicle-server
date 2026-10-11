@@ -49,7 +49,7 @@ class StudyErasureFinalizerConcurrencyTest {
     }
 
     @Test
-    fun `study finalization permits a queued independent sensor writer to finish`() {
+    fun `study finalization completes while another study holds a sensor writer lock`() {
         val erasedStudyId = UUID.randomUUID()
         val controlStudyId = UUID.randomUUID()
         val participantId = "control-participant-${UUID.randomUUID()}"
@@ -69,11 +69,7 @@ class StudyErasureFinalizerConcurrencyTest {
                     val worker = executor.submit<Int> { finalizer.processDueOperations(1) }
                     var insertStarted = false
                     try {
-                        postgres.createConnection("").use { observer ->
-                            awaitSensorInventoryLock(observer, finalizerName)
-                        }
-                        // The finalizer is queued behind this transaction's source lock. INSERT
-                        // now needs RowExclusive on the identity ledger from its AFTER trigger.
+                        assertEquals("Finalization must finish while another study holds a writer lock", 1, worker.get(20, TimeUnit.SECONDS))
                         insertStarted = true
                         val insertion = executor.submit<Int> {
                             try {
@@ -147,7 +143,8 @@ class StudyErasureFinalizerConcurrencyTest {
                         BEGIN IF current_setting('application_name') = '$drainName' THEN
                             PERFORM pg_advisory_xact_lock($barrierKey);
                         END IF; RETURN NULL; END ${'$'}${'$'}""")
-                    statement.execute("CREATE TRIGGER hold_buffer_drain AFTER DELETE ON upload_buffer FOR EACH STATEMENT EXECUTE FUNCTION hold_buffer_drain()")
+                    statement.execute(
+                        "CREATE TRIGGER hold_buffer_drain AFTER DELETE ON upload_buffer FOR EACH STATEMENT EXECUTE FUNCTION hold_buffer_drain()")
                     statement.execute("SELECT pg_advisory_lock($barrierKey)")
                 }
                 val draining = executor.submit {
@@ -159,12 +156,13 @@ class StudyErasureFinalizerConcurrencyTest {
                 try {
                     awaitQueryLock(observer, drainName, "%DELETE FROM upload_buffer%")
                     worker = executor.submit<Int> { finalizer.processDueOperations(1) }
-                    awaitQueryLock(observer, finalizerName, "%chronicle_lock_study_table_for_erasure%")
+                    assertEquals("An unrelated drain must not block erasure", 1, worker.get(10, TimeUnit.SECONDS))
                     observer.createStatement().use { it.execute("SELECT pg_advisory_unlock($barrierKey)") }
                     draining.get(10, TimeUnit.SECONDS)
                     assertEquals(1, worker.get(10, TimeUnit.SECONDS))
                     assertEquals("COMPLETED", finalizer.getOperation(operation).status)
-                    observer.createStatement().use { it.executeQuery("SELECT count(*) FROM chronicle_usage_events WHERE study_id = '$bufferedStudy'").use { rows ->
+                    observer.createStatement().use { it.executeQuery(
+                        "SELECT count(*) FROM chronicle_usage_events WHERE study_id = '$bufferedStudy'").use { rows ->
                         assertTrue(rows.next()); assertEquals(1L, rows.getLong(1))
                     } }
                 } finally {
@@ -198,10 +196,28 @@ class StudyErasureFinalizerConcurrencyTest {
             }
         }
         enqueue(first)
-        postgres.createConnection("").use { owner ->
+        val drainName = "census-drain-${UUID.randomUUID()}"
+        val executor = Executors.newSingleThreadExecutor()
+        pool(drainName).use { drainPool -> drainPool.connection.use { owner ->
             owner.autoCommit = false
-            val fenced = com.openlattice.chronicle.storage.DeletionTableLockOrder.lockDrain(owner, "chronicle_usage_events")
-            enqueue(arrived)
+            val fenced = postgres.createConnection("").use { barrier ->
+                barrier.autoCommit = false
+                com.openlattice.chronicle.storage.DeletionStudyFence.exclusive(barrier, first)
+                val census = executor.submit<List<UUID>> {
+                    com.openlattice.chronicle.storage.DeletionTableLockOrder.lockDrain(owner, "chronicle_usage_events")
+                }
+                try {
+                    // Pause after the census, before the fenced-study filter limits the claim.
+                    awaitQueryLock(barrier, drainName, "%pg_advisory_xact_lock_shared%")
+                    enqueue(arrived)
+                    barrier.commit()
+                    census.get(10, TimeUnit.SECONDS)
+                } finally {
+                    barrier.rollback()
+                    executor.shutdownNow()
+                    assertTrue("census drain did not stop", executor.awaitTermination(20, TimeUnit.SECONDS))
+                }
+            }
             fun claim(studies: List<UUID>): List<UUID> = owner.createStatement().use { statement ->
                 statement.executeQuery(com.openlattice.chronicle.storage.ChroniclePostgresTables.getMoveSql(
                     128, com.openlattice.chronicle.services.upload.UploadType.Android, studies,
@@ -214,14 +230,16 @@ class StudyErasureFinalizerConcurrencyTest {
             val nextFenced = com.openlattice.chronicle.storage.DeletionTableLockOrder.lockDrain(owner, "chronicle_usage_events")
             assertTrue(arrived in claim(nextFenced))
             owner.commit()
-        }
+        } }
     }
 
     private fun awaitQueryLock(connection: Connection, applicationName: String, queryPattern: String) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
-        connection.prepareStatement("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock' AND query LIKE ?)").use {
+        connection.prepareStatement(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name = ? AND wait_event_type = 'Lock' AND query LIKE ?)").use {
             it.setString(1, applicationName); it.setString(2, queryPattern)
             while (System.nanoTime() < deadline) {
+                connection.createStatement().use { statement -> statement.execute("SELECT pg_stat_clear_snapshot()") }
                 it.executeQuery().use { rows -> if (rows.next() && rows.getBoolean(1)) return }
                 Thread.sleep(10)
             }
@@ -367,28 +385,6 @@ class StudyErasureFinalizerConcurrencyTest {
             }
         }
         throw AssertionError("Expected $applicationName queued at the final study-table inventory lock")
-    }
-
-    private fun awaitSensorInventoryLock(connection: Connection, applicationName: String) {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
-        connection.prepareStatement("""
-            SELECT EXISTS (
-                SELECT 1 FROM pg_locks locks JOIN pg_stat_activity activity ON activity.pid = locks.pid
-                WHERE activity.application_name = ? AND activity.wait_event_type = 'Lock'
-                  AND activity.query LIKE 'SELECT chronicle_lock_study_table_for_erasure%'
-                  AND locks.relation = 'sensor_data'::regclass
-                  AND locks.mode = 'ShareRowExclusiveLock' AND NOT locks.granted
-            )
-        """.trimIndent()).use { statement ->
-            statement.setString(1, applicationName)
-            while (System.nanoTime() < deadline) {
-                statement.executeQuery().use { rows ->
-                    if (rows.next() && rows.getBoolean(1)) return
-                }
-                Thread.sleep(10)
-            }
-        }
-        throw AssertionError("Expected $applicationName queued at the sensor source-table inventory lock")
     }
 
     private fun exportLocksAtBarrier(connection: Connection, firstName: String, secondName: String): List<String> =

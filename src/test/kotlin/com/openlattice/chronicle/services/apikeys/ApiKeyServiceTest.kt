@@ -61,7 +61,8 @@ class ApiKeyServiceTest {
         val erasureRows = Mockito.mock(ResultSet::class.java)
         `when`(erasureRows.next()).thenReturn(true)
         `when`(erasure.executeQuery()).thenReturn(erasureRows)
-        `when`(mockConnection.prepareStatement(Mockito.argThat { sql: String -> sql.contains("AS erased") || sql.contains("pg_advisory_xact_lock") })).thenReturn(erasure)
+        `when`(mockConnection.prepareStatement(Mockito.argThat { sql: String -> sql.contains("AS erased") || sql.contains(
+            "pg_advisory_xact_lock") })).thenReturn(erasure)
         `when`(mockPs.executeQuery()).thenReturn(mockRs)
         `when`(mockPs.executeUpdate()).thenReturn(1)
         `when`(mockConnection.autoCommit).thenReturn(false)
@@ -216,6 +217,19 @@ class ApiKeyServiceTest {
 
     // --- rotateApiKey tests ---
 
+    @Test
+    fun rotatingAMobileKeyRejectsBeforeRevocationOrReplacement() {
+        val studyId = UUID.randomUUID()
+        val keyId = UUID.randomUUID()
+        `when`(mockRs.next()).thenReturn(true)
+        `when`(mockRs.getString("participant_id")).thenReturn("participant-1")
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            service.rotateApiKey(studyId, keyId, "user-1")
+        }
+        verify(mockPs, never()).executeUpdate()
+        Mockito.verifyNoInteractions(idGenerationService)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun testRotateApiKeyThrowsWhenKeyNotFound() {
         // listApiKeys returns empty
@@ -301,10 +315,11 @@ class ApiKeyServiceTest {
         assertTrue(statements[1].contains("FROM api_keys"))
         assertTrue(statements[2].contains("mobile_withdrawal_requests"))
         assertTrue(statements[3].contains("FROM data_deletion_operations"))
-        assertTrue(statements[4].contains("FROM study_participants"))
-        assertTrue(statements[5].contains("INSERT INTO mobile_withdrawal_requests"))
-        assertTrue(statements[6].contains("SET participation_status = 'NOT_ENROLLED'"))
-        assertTrue(statements[7].contains("SET revoked = true"))
+        assertTrue(statements[4].contains("FROM mobile_withdrawal_requests"))
+        assertTrue(statements[5].contains("FROM study_participants"))
+        assertTrue(statements[6].contains("INSERT INTO mobile_withdrawal_requests"))
+        assertTrue(statements[7].contains("SET participation_status = 'NOT_ENROLLED'"))
+        assertTrue(statements[8].contains("SET revoked = true"))
     }
 
     @Test
@@ -577,9 +592,8 @@ class ApiKeyServiceTest {
                 "expires_at = CASE WHEN participant_id IS NOT NULL AND device_id IS NOT NULL AND EXISTS ( " +
                     "SELECT 1 FROM study_participants sp WHERE sp.study_id = api_keys.study_id " +
                     "AND sp.participant_id = api_keys.participant_id " +
-                    "AND sp.participation_status IN ('ENROLLED', 'PAUSED') ) AND NOT EXISTS ( " +
-                    "SELECT 1 FROM data_deletion_operations erasure WHERE erasure.study_id = api_keys.study_id " +
-                    "AND erasure.status NOT IN ('PREVIEW', 'CANCELLED') ",
+                    "AND sp.participation_status IN ('ENROLLED', 'PAUSED') ) AND NOT chronicle_has_participant_erasure( " +
+                    "api_keys.study_id, api_keys.participant_id )",
             ),
         )
         assertTrue(normalized.contains("THEN now() + interval '365 days' ELSE expires_at END"))

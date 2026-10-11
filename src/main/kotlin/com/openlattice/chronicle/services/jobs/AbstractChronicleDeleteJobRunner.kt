@@ -1,11 +1,17 @@
 package com.openlattice.chronicle.services.jobs
 
+import com.geekbeast.rhizome.jobs.JobStatus
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.auditing.AuditableEvent
+import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.JOBS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.COMPLETED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DELETED_ROWS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.JOB_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPDATED_AT
 import java.sql.Connection
+import java.time.OffsetDateTime
+import java.util.UUID
 
 /**
  * @author Solomon Tang <solomon@openlattice.com>
@@ -34,6 +40,30 @@ public abstract class AbstractChronicleDeleteJobRunner<T : ChronicleJobDefinitio
             ps.setObject(index, job.id)
             ps.executeUpdate()
         }
+    }
+
+    protected fun finishDeleteJob(
+        connection: Connection,
+        job: ChronicleJob,
+        deletedRows: Long,
+        studyId: UUID,
+        eventType: AuditEventType,
+    ): List<AuditableEvent> {
+        job.deletedRows = deletedRows
+        job.updatedAt = OffsetDateTime.now()
+        job.completedAt = job.updatedAt
+        job.status = JobStatus.FINISHED
+        updateFinishedDeleteJob(connection, job)
+        return listOf(
+            AuditableEvent(
+                AclKey(studyId),
+                job.securablePrincipalId,
+                job.principal,
+                eventType = eventType,
+                data = mapOf("definition" to job.definition),
+                study = studyId,
+            ),
+        )
     }
 
 }

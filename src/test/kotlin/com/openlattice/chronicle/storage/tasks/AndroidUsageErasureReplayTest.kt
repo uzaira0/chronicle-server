@@ -19,7 +19,9 @@ import com.openlattice.chronicle.services.upload.AppDataUploadService
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import org.junit.AfterClass
-import org.junit.Assert.*
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.ClassRule
 import org.junit.Test
@@ -65,7 +67,8 @@ class AndroidUsageErasureReplayTest {
 
     @Test
     fun admissionAcknowledgesOldOnlyAndMixedRetriesWithoutRestoringPrePurgeEvents() = withFixture { fixture ->
-        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(java.time.temporal.ChronoUnit.MICROS))
+        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(
+            java.time.temporal.ChronoUnit.MICROS))
         val newest = fresh.copy(timestamp = fresh.timestamp!!.plusDays(1))
         Mockito.reset(fixture.studies)
         assertEquals(1, fixture.upload.uploadAndroidUsageEvents(fixture.studyId, fixture.participantId,
@@ -83,7 +86,9 @@ class AndroidUsageErasureReplayTest {
         val keyColumns = (com.openlattice.chronicle.storage.PostgresDataTables.CHRONICLE_USAGE_EVENTS.columns -
             com.openlattice.chronicle.storage.PostgresEventColumns.ACTIVITY_CLASS).map { it.name }
         val originallyNullable = postgres.createConnection("").use { connection ->
-            connection.createStatement().use { it.executeQuery("SELECT attname FROM pg_attribute WHERE attrelid = 'chronicle_usage_events'::regclass AND attnum > 0 AND NOT attnotnull").use { rows ->
+            connection.createStatement().use { it.executeQuery(
+                "SELECT attname FROM pg_attribute WHERE attrelid = 'chronicle_usage_events'::regclass AND attnum > 0 AND NOT attnotnull").use {
+                rows ->
                 buildSet { while (rows.next()) add(rows.getString(1)) }
             } }
         }
@@ -114,7 +119,8 @@ class AndroidUsageErasureReplayTest {
 
     @Test
     fun bufferedOnlyPurgeAcknowledgesOldOnlyAndMixedRetries() = withFixture(bufferedOnly = true) { fixture ->
-        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(java.time.temporal.ChronoUnit.MICROS))
+        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(
+            java.time.temporal.ChronoUnit.MICROS))
         val newest = fresh.copy(timestamp = fresh.timestamp!!.plusDays(1))
         assertEquals(1, fixture.upload.uploadAndroidUsageEvents(fixture.studyId, fixture.participantId,
             fixture.deviceId, listOf(fixture.original)))
@@ -127,7 +133,8 @@ class AndroidUsageErasureReplayTest {
 
     @Test
     fun inlineDrainDiscardsLegacyReplayAndUpdatesMetadataOnlyFromFreshRows() = withFixture { fixture ->
-        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(java.time.temporal.ChronoUnit.MICROS))
+        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(
+            java.time.temporal.ChronoUnit.MICROS))
         enqueueLegacy(fixture)
         fixture.upload.uploadAndroidUsageEvents(fixture.studyId, fixture.participantId, fixture.deviceId, listOf(fresh))
         Mockito.reset(fixture.studies)
@@ -146,7 +153,8 @@ class AndroidUsageErasureReplayTest {
 
     @Test
     fun backgroundDrainDiscardsLegacyReplayAndCommitsFreshRowsAcrossStudies() = withFixture { fixture ->
-        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(java.time.temporal.ChronoUnit.MICROS))
+        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(
+            java.time.temporal.ChronoUnit.MICROS))
         enqueueLegacy(fixture)
         fixture.upload.uploadAndroidUsageEvents(fixture.studyId, fixture.participantId, fixture.deviceId, listOf(fresh))
         val healthyStudy = seedParticipant()
@@ -161,7 +169,8 @@ class AndroidUsageErasureReplayTest {
 
     @Test
     fun infrastructureFailuresRestoreClaimsInBothDrainPaths() = withFixture { fixture ->
-        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(java.time.temporal.ChronoUnit.MICROS))
+        val fresh = fixture.original.copy(timestamp = OffsetDateTime.now(java.time.ZoneOffset.UTC).plusDays(1).truncatedTo(
+            java.time.temporal.ChronoUnit.MICROS))
         fixture.upload.uploadAndroidUsageEvents(fixture.studyId, fixture.participantId, fixture.deviceId, listOf(fresh))
         val suffix = UUID.randomUUID().toString().replace("-", "")
         postgres.createConnection("").use { connection -> connection.createStatement().use { statement ->
@@ -169,7 +178,8 @@ class AndroidUsageErasureReplayTest {
                 BEGIN IF NEW.study_id = '${fixture.studyId}' THEN
                     RAISE EXCEPTION 'simulated destination infrastructure failure' USING ERRCODE = '08006';
                 END IF; RETURN NEW; END ${'$'}${'$'}""")
-            statement.execute("CREATE TRIGGER fail_usage_$suffix BEFORE INSERT ON chronicle_usage_events FOR EACH ROW EXECUTE FUNCTION fail_usage_$suffix()")
+            statement.execute(
+                "CREATE TRIGGER fail_usage_$suffix BEFORE INSERT ON chronicle_usage_events FOR EACH ROW EXECUTE FUNCTION fail_usage_$suffix()")
         } }
         try {
             assertEquals("08006", assertThrows(SQLException::class.java) {
@@ -215,7 +225,8 @@ class AndroidUsageErasureReplayTest {
             val operation = orchestrator.quarantineParticipant(studyId, original.participantId,
                 DataDeletionMode.COLLECTED_DATA_PURGE, "usage-replay-test", UUID.randomUUID())
             postgres.createConnection("").use { connection ->
-                connection.prepareStatement("UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
+                connection.prepareStatement(
+                    "UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
                     it.setObject(1, operation); assertEquals(1, it.executeUpdate())
                 }
             }
@@ -237,7 +248,9 @@ class AndroidUsageErasureReplayTest {
             connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, 'Android usage replay')").use {
                 it.setObject(1, study); it.executeUpdate()
             }
-            connection.prepareStatement("INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, 'usage-erasure-replay', ?, 'ENROLLED')").use {
+            connection.prepareStatement(
+                "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, " +
+                "'usage-erasure-replay', ?, 'ENROLLED')").use {
                 it.setObject(1, study); it.setObject(2, UUID.randomUUID()); it.executeUpdate()
             }
         }
@@ -246,7 +259,9 @@ class AndroidUsageErasureReplayTest {
 
     private fun enqueueLegacy(fixture: Fixture) {
         postgres.createConnection("").use { connection ->
-            connection.prepareStatement("INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id) VALUES (?, ?, ?::jsonb, now(), 'Android', ?)").use {
+            connection.prepareStatement(
+                "INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id) VALUES (?, ?, ?::jsonb, " +
+                "now(), 'Android', ?)").use {
                 it.setObject(1, fixture.studyId); it.setString(2, fixture.participantId)
                 it.setString(3, fixture.raw); it.setObject(4, fixture.deviceId); it.executeUpdate()
             }
