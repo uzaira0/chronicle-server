@@ -84,6 +84,24 @@ class DataQualityPinnedTransactionTest {
     }
 
     @Test
+    fun stoppedParticipantPersistsZeroScoreAlertAndIsCountedBelowThreshold() {
+        val studyId = seedStatistics()
+        postgres.createConnection("").use { connection ->
+            connection.prepareStatement("UPDATE participant_stats SET android_unique_dates = ? WHERE study_id = ?").use { statement ->
+                statement.setArray(1, connection.createArrayOf("date", arrayOf(LocalDate.now(ZoneOffset.UTC).minusDays(30))))
+                statement.setObject(2, studyId)
+                statement.executeUpdate()
+            }
+        }
+        val service = service { }
+        assertEquals(1, service.generateAlerts(studyId))
+        assertEquals(1, alertCount(studyId))
+        val dashboard = service.getDataQualityDashboard(studyId)
+        assertEquals(1, dashboard.belowThreshold)
+        assertEquals(0.0, dashboard.recentAlerts.single().score, 0.0)
+    }
+
+    @Test
     fun `insert failure after a real statistics read rolls back the executed alert batch`() {
         val studyId = seedStatistics()
         var inserted = false
@@ -124,6 +142,10 @@ class DataQualityPinnedTransactionTest {
                 studyId = studyId, title = "quality pin", contact = "test@example.org",
                 settings = Study.initialSettings("quality pin"),
             )
+            override fun getStudyParticipants(studyId: UUID, limit: Int, offset: Int): Iterable<com.openlattice.chronicle.participants.Participant> =
+                listOf(com.openlattice.chronicle.util.tests.TestDataFactory.participant(
+                    com.openlattice.chronicle.data.ParticipationStatus.ENROLLED,
+                ).copy(participantId = "p1"))
         }
         return DataQualityService(resolver, studyService)
     }

@@ -2,6 +2,7 @@ package com.openlattice.chronicle.services.quality
 
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.studies.StudyManager
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
@@ -17,7 +18,7 @@ public open class DataQualityScheduler(
 
     @Scheduled(cron = "0 30 2 * * *", zone = "UTC")
     @Suppress("TooGenericExceptionCaught")
-    public open fun evaluateAllStudies() {
+    public open fun evaluateAllStudies(): Unit = RLSRequestContext.withSystemContext {
         var successfulStudies = 0
         var failedStudies = 0
         var newAlerts = 0

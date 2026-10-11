@@ -53,7 +53,7 @@ public open class DataQualityService(
     public fun getDataQualityDashboard(studyId: UUID): DataQualityDashboard {
         try {
             val config = getQualityConfig(studyId)
-            val allStats = studyService.getStudyParticipantStats(studyId)
+            val allStats = eligibleStatistics(studyId)
             val (windowStart, windowEnd) = evaluationWindow(config)
 
             val participantScores = allStats.values.map { stats ->
@@ -62,7 +62,7 @@ public open class DataQualityService(
 
             val activeParticipants = participantScores.count { it.overallScore > 0 }
             val belowThreshold = participantScores.count {
-                it.overallScore > 0 && it.overallScore < config.alertThresholdPercent
+                it.overallScore < config.alertThresholdPercent
             }
             val overallCompleteness = if (participantScores.isNotEmpty()) {
                 participantScores.map { it.overallScore }.average()
@@ -103,7 +103,7 @@ public open class DataQualityService(
                 }
                 // Nested statistics reads must share the transaction holding the erasure lock.
                 val inserted = PinnedPlatformConnection.pinning(storage, connection) {
-                    val allStats = studyService.getStudyParticipantStats(studyId)
+                    val allStats = eligibleStatistics(studyId)
                     val (windowStart, windowEnd) = evaluationWindow(config)
                     val evaluationStart = windowStart.atStartOfDay().atOffset(ZoneOffset.UTC)
                     val evaluationEnd = windowEnd.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC)
@@ -150,7 +150,7 @@ public open class DataQualityService(
         evaluationStart: OffsetDateTime,
         evaluationEnd: OffsetDateTime,
     ) {
-        if (score.overallScore > 0 && score.overallScore < config.alertThresholdPercent) {
+        if (score.overallScore < config.alertThresholdPercent) {
             val formattedScore = String.format(Locale.US, "%.1f", score.overallScore)
             ps.setObject(1, UUID.randomUUID())
             ps.setObject(2, studyId)
@@ -174,6 +174,16 @@ public open class DataQualityService(
         val settings = study.settings
         val config = settings[StudySettingType.DataQuality] as? DataQualityConfig
         return config ?: DataQualityConfig()
+    }
+
+    private fun eligibleStatistics(studyId: UUID): Map<String, ParticipantStats> {
+        val enrolled = studyService.getStudyParticipants(studyId)
+            .filter { it.participationStatus == com.openlattice.chronicle.data.ParticipationStatus.ENROLLED }
+            .map { it.participantId }.toSet()
+        val today = LocalDate.now(clock)
+        return studyService.getStudyParticipantStats(studyId).filter { (participant, stats) ->
+            participant in enrolled && (stats.androidUniqueDates + stats.iosUniqueDates + stats.tudUniqueDates).any { it <= today }
+        }
     }
 
     private fun computeParticipantScore(

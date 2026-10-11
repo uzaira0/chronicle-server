@@ -57,6 +57,16 @@ class DataQualityServiceTest {
         service = DataQualityService(storageResolver, studyService)
     }
 
+    // Stubs the stats and enrolls the same participants; an answer that calls back into the mock would corrupt stubbing.
+    private fun stubStats(studyId: UUID, stats: Map<String, ParticipantStats>) {
+        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(stats)
+        `when`(studyService.getStudyParticipants(studyId)).thenReturn(stats.keys.map { participantId ->
+            com.openlattice.chronicle.util.tests.TestDataFactory.participant(
+                com.openlattice.chronicle.data.ParticipationStatus.ENROLLED,
+            ).copy(participantId = participantId)
+        })
+    }
+
     @Test
     fun testColdStudySettingsLoadBeforeTheAlertTransactionOccupiesThePool() {
         val studyId = UUID.randomUUID()
@@ -76,7 +86,7 @@ class DataQualityServiceTest {
                 loader.shutdownNow()
             }
         }
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(emptyMap())
+        stubStats(studyId, emptyMap())
 
         assertEquals(0, service.generateAlerts(studyId))
         verify(mockConnection).commit()
@@ -95,7 +105,7 @@ class DataQualityServiceTest {
         val study = createStudy(studyId)
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(emptyMap())
+        stubStats(studyId, emptyMap())
         `when`(mockRs.next()).thenReturn(false) // no alerts
 
         val dashboard = service.getDataQualityDashboard(studyId)
@@ -121,7 +131,7 @@ class DataQualityServiceTest {
         )
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(mapOf("p1" to stats))
+        stubStats(studyId, mapOf("p1" to stats))
         `when`(mockRs.next()).thenReturn(false)
 
         val dashboard = service.getDataQualityDashboard(studyId)
@@ -149,15 +159,40 @@ class DataQualityServiceTest {
         )
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(
+        stubStats(studyId, 
             mapOf("p1" to activeStats, "p2" to inactiveStats)
         )
         `when`(mockRs.next()).thenReturn(false)
 
         val dashboard = service.getDataQualityDashboard(studyId)
 
-        assertEquals(2, dashboard.totalParticipants)
-        assertEquals(2, dashboard.participantScores.size)
+        assertEquals(1, dashboard.totalParticipants)
+        assertEquals(1, dashboard.participantScores.size)
+    }
+
+    @Test
+    fun stoppedParticipantGetsZeroScoreAlertButWithdrawnAndUnstartedParticipantsDoNot() {
+        val studyId = UUID.randomUUID()
+        val old = LocalDate.now().minusDays(30)
+        val stopped = ParticipantStats(studyId, "stopped", androidUniqueDates = setOf(old))
+        `when`(studyService.getStudy(studyId)).thenReturn(createStudy(studyId))
+        stubStats(studyId, mapOf(
+            "stopped" to stopped,
+            "withdrawn" to stopped.copy(participantId = "withdrawn"),
+            "unstarted" to ParticipantStats(studyId, "unstarted"),
+        ))
+        `when`(studyService.getStudyParticipants(studyId)).thenReturn(listOf(
+            com.openlattice.chronicle.util.tests.TestDataFactory.participant(com.openlattice.chronicle.data.ParticipationStatus.ENROLLED).copy(
+                participantId = "stopped"),
+            com.openlattice.chronicle.util.tests.TestDataFactory.participant(com.openlattice.chronicle.data.ParticipationStatus.ENROLLED).copy(
+                participantId = "unstarted"),
+        ))
+        `when`(mockPs.executeBatch()).thenReturn(intArrayOf(1))
+        assertEquals(1, service.generateAlerts(studyId))
+        verify(mockPs).setString(3, "stopped")
+        verify(mockPs).setDouble(6, 0.0)
+        verify(mockPs).addBatch()
+        assertEquals(1, service.getDataQualityDashboard(studyId).belowThreshold)
     }
 
     @Test
@@ -174,7 +209,7 @@ class DataQualityServiceTest {
         )
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(mapOf("p1" to stats))
+        stubStats(studyId, mapOf("p1" to stats))
         `when`(mockRs.next()).thenReturn(false)
 
         val dashboard = service.getDataQualityDashboard(studyId)
@@ -188,7 +223,7 @@ class DataQualityServiceTest {
         val study = createStudy(studyId, settings = null)
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(emptyMap())
+        stubStats(studyId, emptyMap())
         `when`(mockRs.next()).thenReturn(false)
 
         val dashboard = service.getDataQualityDashboard(studyId)
@@ -207,7 +242,7 @@ class DataQualityServiceTest {
         val study = createStudy(studyId)
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(emptyMap())
+        stubStats(studyId, emptyMap())
 
         service.generateAlerts(studyId)
 
@@ -228,7 +263,7 @@ class DataQualityServiceTest {
         )
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(mapOf("p1" to stats))
+        stubStats(studyId, mapOf("p1" to stats))
         `when`(mockPs.executeBatch()).thenReturn(intArrayOf(1))
 
         service.generateAlerts(studyId)
@@ -241,7 +276,7 @@ class DataQualityServiceTest {
     fun testGenerateAlertsLocksBeforeReadingAndCommitsAfterInsert() {
         val studyId = UUID.randomUUID()
         `when`(studyService.getStudy(studyId)).thenReturn(createStudy(studyId))
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(mapOf(
+        stubStats(studyId, mapOf(
             "p1" to ParticipantStats(studyId, "p1", androidUniqueDates = setOf(LocalDate.now())),
         ))
         `when`(mockPs.executeBatch()).thenReturn(intArrayOf(1))
@@ -286,7 +321,7 @@ class DataQualityServiceTest {
         )
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(mapOf("p1" to stats))
+        stubStats(studyId, mapOf("p1" to stats))
         `when`(mockRs.next()).thenReturn(false)
 
         val dashboard = service.getDataQualityDashboard(studyId)
@@ -309,7 +344,7 @@ class DataQualityServiceTest {
         )
 
         `when`(studyService.getStudy(studyId)).thenReturn(study)
-        `when`(studyService.getStudyParticipantStats(studyId)).thenReturn(mapOf("p1" to stats))
+        stubStats(studyId, mapOf("p1" to stats))
         `when`(mockRs.next()).thenReturn(false)
 
         val dashboard = service.getDataQualityDashboard(studyId)
