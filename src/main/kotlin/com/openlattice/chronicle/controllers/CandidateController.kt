@@ -2,15 +2,12 @@
 package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
-import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.audit.logWithContext
-import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
@@ -19,10 +16,10 @@ import com.openlattice.chronicle.candidates.Candidate
 import com.openlattice.chronicle.candidates.CandidateApi
 import com.openlattice.chronicle.candidates.CandidateApi.Companion.CONTROLLER
 import com.openlattice.chronicle.services.candidates.CandidateService
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.StorageResolver
 import jakarta.validation.Valid
 import org.springframework.http.MediaType
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
@@ -33,8 +30,6 @@ import jakarta.inject.Inject
 @Deprecated("Candidate endpoints are deprecated. Candidate data is no longer stored.")
 @RestController
 @RequestMapping(CONTROLLER)
-@Validated
-@RateLimit(type = RateLimitType.DEFAULT)
 public open class CandidateController @Inject constructor(
     public val storageResolver: StorageResolver,
     override val auditingManager: AuditingManager,
@@ -56,7 +51,8 @@ public open class CandidateController @Inject constructor(
         ensureAuthenticated()
         ensureUninitializedId(candidate.id) { "cannot register candidate with the given id" }
         return try {
-            val candidateId = storageResolver.getPlatformStorage().connection.use { conn ->
+            val platform = storageResolver.getPlatformStorage()
+            val candidateId = platform.connection.use { conn ->
                 AuditedTransactionBuilder<UUID>(conn, auditingManager)
                     .transaction { connection -> candidateService.registerCandidate(connection, candidate) }
                     .audit { candidateId ->
@@ -69,9 +65,12 @@ public open class CandidateController @Inject constructor(
                     }
                     .buildAndRun()
             }
-            authorizationManager.ensureAceIsLoaded(AclKey(candidateId), Principals.getCurrentUser())
+            val creator = Principals.getCurrentUser()
+            PinnedPlatformConnection.afterCommitOrNow(platform, AclKey(candidateId)) {
+                authorizationManager.ensureAceIsLoaded(AclKey(candidateId), creator)
+            }
             auditService.logWithContext {
-                action(AuditAction.CREATE)
+                action(AuditEventType.CREATE)
                 resourceType("Candidate")
                 resourceId(candidateId)
                 success(true)
@@ -79,9 +78,9 @@ public open class CandidateController @Inject constructor(
             candidateId
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.CREATE)
+                action(AuditEventType.CREATE)
                 resourceType("Candidate")
-                failed(ex.message ?: "Candidate registration failed")
+                success(false)
             }
             throw ex
         }

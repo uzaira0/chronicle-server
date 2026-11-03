@@ -19,7 +19,6 @@ import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudySettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -75,7 +74,7 @@ class EnrollmentManifestServiceTest {
         expiresAt = expiresAt,
     )
     private val attemptId = UUID.fromString("00000000-0000-0000-0000-000000000789").toString()
-    private val sourceDeviceId = "android-installation-1"
+    private val sourceRandomDeviceId = "android-installation-1"
     private val sourceDevice = AndroidDevice(
         device = "pixel",
         model = "Pixel 9",
@@ -84,7 +83,7 @@ class EnrollmentManifestServiceTest {
         osVersion = "16",
         sdkVersion = "36",
         product = "tokay",
-        deviceId = sourceDeviceId,
+        randomDeviceId = sourceRandomDeviceId,
     )
     private val proposedKey = "ck_01234567_0123456789ABCDEFGHIJKLMNOPQRSTUV" // gitleaks:allow -- deterministic test credential
 
@@ -111,12 +110,11 @@ class EnrollmentManifestServiceTest {
         assertEquals(studyId, preview.manifest.studyId)
         assertEquals(participantId, preview.manifest.participantId)
         assertEquals(policy, preview.manifest.participantPolicy)
-        assertSame(collectionSettings, preview.manifest.collectionSettings)
+        assertEquals(CollectionModuleId.activeModules, preview.manifest.collectionSettings.modules.keys)
         assertEquals(collectionSettings.settingsVersion, preview.manifest.settingsVersion)
         assertEquals(issuedAt, preview.manifest.issuedAt)
         assertEquals(expiresAt, preview.manifest.expiresAt)
         assertTrue(preview.manifestDigest.matches(Regex("^[0-9a-f]{64}$")))
-        verify(accessService, never()).consumeEnrollmentAccessCode(accessCode, studyId, participantId)
     }
 
     @Test
@@ -126,7 +124,7 @@ class EnrollmentManifestServiceTest {
 
         assertEquals(setOf(CollectionModuleId.UPLOAD_TELEMETRY), preview.manifest.collectionSettings.effectiveEnabledModuleIds())
         assertEquals(collectionSettings.settingsVersion, preview.manifest.settingsVersion)
-        assertTrue(authorize(service, preview.manifestDigest))
+        assertEquals(EnrollmentAuthorization.AUTHORIZED, authorize(service, preview.manifestDigest))
     }
 
     @Test
@@ -146,7 +144,6 @@ class EnrollmentManifestServiceTest {
         }
 
         assertTrue(error.message.orEmpty().contains("usage_events.collectionCadence is not supported"))
-        verify(accessService, never()).consumeEnrollmentAccessCode(accessCode, studyId, participantId)
     }
 
     @Test
@@ -173,22 +170,19 @@ class EnrollmentManifestServiceTest {
     }
 
     @Test
-    fun `public preview rejects legacy-only AndroidSensor settings without a versioned revision`() {
-        val legacyStudy = Study(
+    fun `public preview rejects settings without a versioned collection revision`() {
+        val studyWithRawAudioField = Study(
             studyId = studyId,
             title = "Legacy sensor study",
             contact = "research@example.org",
             settings = StudySettings(
                 mapOf(
                     StudySettingType.ParticipantPolicy to policy,
-                    StudySettingType.AndroidSensor to AndroidSensorSetting(
-                        sensors = setOf(AndroidSensorType.accelerometer),
-                    ),
                 ),
             ),
         )
         Mockito.`when`(accessService.resolveEnrollmentAccessCode(accessCode, studyId, participantId)).thenReturn(scope)
-        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(legacyStudy)
+        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(studyWithRawAudioField)
         val service = EnrollmentManifestService(studyService, accessService, "https://research.example.org")
 
         val exception = assertThrows(ResponseStatusException::class.java) {
@@ -281,9 +275,20 @@ class EnrollmentManifestServiceTest {
             "maxDailyCaptureMinutes",
             "gateOnForegroundMedia",
             "excludedAppPackages",
-        ).forEach { legacyRawAudioField ->
-            assertFalse(publishedManifest.contains(legacyRawAudioField))
+        ).forEach { removedRawAudioField ->
+            assertFalse(publishedManifest.contains(removedRawAudioField))
         }
+    }
+
+    /** A QR code that was cancelled, expired or never issued shows the participant an invalid-credential error. */
+    @Test
+    fun `preview of an unknown or spent enrollment code is unauthorized`() {
+        val service = serviceWithStudy(collectionSettings)
+        val error = assertThrows(ResponseStatusException::class.java) {
+            service.getPreview(studyId, participantId, "b".repeat(64))
+        }
+        assertEquals(401, error.statusCode.value())
+        assertEquals("Invalid enrollment credential", error.reason)
     }
 
     @Test
@@ -299,7 +304,7 @@ class EnrollmentManifestServiceTest {
     fun `final enrollment rejects a stale digest without binding the invitation`() {
         val service = serviceWithStudy(collectionSettings)
 
-        assertFalse(authorize(service, "0".repeat(64)))
+        assertEquals(EnrollmentAuthorization.STUDY_CHANGED, authorize(service, "0".repeat(64)))
 
         verify(accessService, never()).authorizeEnrollmentAttempt(
             eq(accessCode),
@@ -315,7 +320,7 @@ class EnrollmentManifestServiceTest {
         val service = serviceWithStudy(collectionSettings)
         val digest = service.getPreview(studyId, participantId, accessCode).manifestDigest
 
-        assertTrue(authorize(service, digest))
+        assertEquals(EnrollmentAuthorization.AUTHORIZED, authorize(service, digest))
 
         verify(accessService).authorizeEnrollmentAttempt(
             eq(accessCode),
@@ -344,14 +349,15 @@ class EnrollmentManifestServiceTest {
             predicate(Mockito.mock(Connection::class.java), scope)
         }
 
-        assertTrue(
+        assertEquals(
+            EnrollmentAuthorization.AUTHORIZED,
             service.authorizeEnrollmentAttempt(
                 studyId,
                 participantId,
                 accessCode,
                 digest,
                 attemptId,
-                sourceDeviceId,
+                sourceRandomDeviceId,
                 sourceDevice,
                 proposedKey,
             ),
@@ -379,7 +385,8 @@ class EnrollmentManifestServiceTest {
         val service = serviceWithStudy(collectionSettings)
         val sourceDevice = Mockito.mock(com.openlattice.chronicle.sources.SourceDevice::class.java)
 
-        assertFalse(
+        assertEquals(
+            EnrollmentAuthorization.REFUSED,
             service.authorizeEnrollmentAttempt(
                 studyId, participantId, accessCode, "b".repeat(64), "not-a-uuid",
                 "source", sourceDevice, "ck_short",
@@ -416,14 +423,14 @@ class EnrollmentManifestServiceTest {
         ) { _, _ -> currentStudy }
     }
 
-    private fun authorize(service: EnrollmentManifestService, digest: String): Boolean =
+    private fun authorize(service: EnrollmentManifestService, digest: String): EnrollmentAuthorization =
         service.authorizeEnrollmentAttempt(
             studyId,
             participantId,
             accessCode,
             digest,
             attemptId,
-            sourceDeviceId,
+            sourceRandomDeviceId,
             sourceDevice,
             proposedKey,
         )

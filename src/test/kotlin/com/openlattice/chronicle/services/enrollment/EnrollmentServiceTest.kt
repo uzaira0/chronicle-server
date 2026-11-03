@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.services.enrollment
 
+import com.geekbeast.controllers.exceptions.ResourceNotFoundException
+
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.services.candidates.CandidateManager
@@ -7,10 +9,13 @@ import com.openlattice.chronicle.sources.AndroidDevice
 import com.openlattice.chronicle.sources.IOSDevice
 import com.openlattice.chronicle.sources.SourceDevice
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.util.ChronicleStorageException
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -62,6 +67,7 @@ class EnrollmentServiceTest {
         `when`(rows.next()).thenReturn(true)
         `when`(fence.executeQuery()).thenReturn(rows)
         `when`(rows.getString("lifecycle_status")).thenReturn("ACTIVE")
+        com.openlattice.chronicle.services.upload.stubNoClosedCaptureWindows(rows)
         `when`(connection.prepareStatement(Mockito.argThat { sql: String? -> sql != null && (sql.contains("AS erased") || sql.contains(
             "pg_advisory_xact_lock") || sql.contains("SELECT lifecycle_status")) })).thenReturn(fence)
     }
@@ -133,7 +139,10 @@ class EnrollmentServiceTest {
         }
 
         assertEquals("Participant is already registered for this study", thrown.message)
-        assertEquals(duplicate, thrown.cause)
+        val safeCause = thrown.cause as ChronicleStorageException
+        assertEquals(duplicate.sqlState, safeCause.sqlState)
+        assertNull(safeCause.cause)
+        assertFalse(safeCause.toString().contains("duplicate database detail"))
     }
 
     @Test
@@ -141,7 +150,7 @@ class EnrollmentServiceTest {
         val databaseFailure = SQLException("database unavailable", "08006")
         `when`(mockPs.executeUpdate()).thenThrow(databaseFailure)
 
-        val thrown = org.junit.Assert.assertThrows(SQLException::class.java) {
+        val thrown = assertThrows(ChronicleStorageException::class.java) {
             service.registerParticipant(
                 mockConnection,
                 UUID.randomUUID(),
@@ -151,7 +160,9 @@ class EnrollmentServiceTest {
             )
         }
 
-        assertEquals(databaseFailure, thrown)
+        assertEquals(databaseFailure.sqlState, thrown.sqlState)
+        assertNull(thrown.cause)
+        assertFalse(thrown.toString().contains("database unavailable"))
     }
 
     // --- isKnownParticipant tests ---
@@ -176,11 +187,13 @@ class EnrollmentServiceTest {
         assertFalse(result)
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testIsKnownParticipantThrowsWhenNoCountReturned() {
         `when`(mockRs.next()).thenReturn(false)
 
-        service.isKnownParticipant(UUID.randomUUID(), "p1")
+        assertThrows(IllegalStateException::class.java) {
+            service.isKnownParticipant(UUID.randomUUID(), "p1")
+        }
     }
 
     // --- isKnownDatasource tests ---
@@ -205,11 +218,13 @@ class EnrollmentServiceTest {
         assertFalse(result)
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testIsKnownDatasourceThrowsWhenNoCountReturned() {
         `when`(mockRs.next()).thenReturn(false)
 
-        service.isKnownDatasource(UUID.randomUUID(), "p1", UUID.randomUUID())
+        assertThrows(IllegalStateException::class.java) {
+            service.isKnownDatasource(UUID.randomUUID(), "p1", UUID.randomUUID())
+        }
     }
 
     // --- studyExists tests ---
@@ -230,11 +245,13 @@ class EnrollmentServiceTest {
         assertFalse(service.studyExists(UUID.randomUUID()))
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testStudyExistsThrowsWhenNoCountReturned() {
         `when`(mockRs.next()).thenReturn(false)
 
-        service.studyExists(UUID.randomUUID())
+        assertThrows(IllegalStateException::class.java) {
+            service.studyExists(UUID.randomUUID())
+        }
     }
 
     // --- getOrganizationIdForStudy tests ---
@@ -250,38 +267,44 @@ class EnrollmentServiceTest {
         assertEquals(orgId, result)
     }
 
-    @Test(expected = com.geekbeast.controllers.exceptions.ResourceNotFoundException::class)
+    @Test
     fun testGetOrganizationIdForStudyThrowsWhenNotFound() {
         `when`(mockRs.next()).thenReturn(false)
 
-        service.getOrganizationIdForStudy(UUID.randomUUID())
+        assertThrows(ResourceNotFoundException::class.java) {
+            service.getOrganizationIdForStudy(UUID.randomUUID())
+        }
     }
 
     // --- registerDevice tests ---
 
-    @Test(expected = AccessDeniedException::class)
+    @Test
     fun testRegisterDeviceThrowsForUnknownParticipant() {
         // isKnownParticipant returns false
         `when`(mockRs.next()).thenReturn(true)
         `when`(mockRs.getLong("count")).thenReturn(0L)
 
         val device = AndroidDevice("dev", "model", "code", "brand", "11", "30", "product", "did-1", fcmRegistrationToken = "tok")
-        service.registerDevice(UUID.randomUUID(), "unknown-p", UUID.randomUUID(), device)
+        assertThrows(AccessDeniedException::class.java) {
+            service.registerDevice(UUID.randomUUID(), "unknown-p", UUID.randomUUID(), device)
+        }
     }
 
-    @Test(expected = UnsupportedOperationException::class)
+    @Test
     fun testRegisterDeviceThrowsForUnsupportedDeviceType() {
         // isKnownParticipant returns true
         `when`(mockRs.next()).thenReturn(true)
         `when`(mockRs.getLong("count")).thenReturn(1L)
 
         val unsupportedDevice = Mockito.mock(SourceDevice::class.java)
-        service.registerDevice(UUID.randomUUID(), "p1", UUID.randomUUID(), unsupportedDevice)
+        assertThrows(UnsupportedOperationException::class.java) {
+            service.registerDevice(UUID.randomUUID(), "p1", UUID.randomUUID(), unsupportedDevice)
+        }
     }
 
     @Test
     fun testRegisterDeviceWithAndroidDeviceReturnsNewId() {
-        val newDeviceId: UUID = UUID.randomUUID()
+        val newRandomDeviceId: UUID = UUID.randomUUID()
 
         // isKnownParticipant check — returns count > 0
         val countRs = Mockito.mock(ResultSet::class.java)
@@ -289,10 +312,10 @@ class EnrollmentServiceTest {
         `when`(countRs.next()).thenReturn(true)
         `when`(countRs.getLong("count")).thenReturn(1L)
 
-        // INSERT ... RETURNING device_id
+        // INSERT ... RETURNING random_device_id
         val insertRs = Mockito.mock(ResultSet::class.java)
         `when`(insertRs.next()).thenReturn(true)
-        `when`(insertRs.getObject(kAnyString(), kEq(UUID::class.java))).thenReturn(newDeviceId)
+        `when`(insertRs.getObject(kAnyString(), kEq(UUID::class.java))).thenReturn(newRandomDeviceId)
 
         val insertPs = Mockito.mock(PreparedStatement::class.java)
         `when`(insertPs.executeQuery()).thenReturn(insertRs)
@@ -310,22 +333,22 @@ class EnrollmentServiceTest {
 
         val result = service.registerDevice(UUID.randomUUID(), "p1", UUID.randomUUID(), device)
 
-        assertEquals(newDeviceId, result)
+        assertEquals(newRandomDeviceId, result)
     }
 
     @Test
     fun testRegisterDeviceWithIosDeviceReturnsNewId() {
-        val newDeviceId: UUID = UUID.randomUUID()
+        val newRandomDeviceId: UUID = UUID.randomUUID()
 
         val countRs = Mockito.mock(ResultSet::class.java)
         allowReuse(mockConnection)
         `when`(countRs.next()).thenReturn(true)
         `when`(countRs.getLong("count")).thenReturn(1L)
 
-        // INSERT ... RETURNING device_id
+        // INSERT ... RETURNING random_device_id
         val insertRs = Mockito.mock(ResultSet::class.java)
         `when`(insertRs.next()).thenReturn(true)
-        `when`(insertRs.getObject(kAnyString(), kEq(UUID::class.java))).thenReturn(newDeviceId)
+        `when`(insertRs.getObject(kAnyString(), kEq(UUID::class.java))).thenReturn(newRandomDeviceId)
 
         val insertPs = Mockito.mock(PreparedStatement::class.java)
         `when`(insertPs.executeQuery()).thenReturn(insertRs)
@@ -342,7 +365,7 @@ class EnrollmentServiceTest {
 
         val result = service.registerDevice(UUID.randomUUID(), "p1", UUID.randomUUID(), device)
 
-        assertEquals(newDeviceId, result)
+        assertEquals(newRandomDeviceId, result)
     }
 
     // --- getParticipationStatus tests ---
@@ -357,20 +380,24 @@ class EnrollmentServiceTest {
         assertEquals(ParticipationStatus.ENROLLED, result)
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testGetParticipationStatusThrowsWhenNotFound() {
         `when`(mockRs.next()).thenReturn(false)
 
-        service.getParticipationStatus(UUID.randomUUID(), "p1")
+        assertThrows(IllegalStateException::class.java) {
+            service.getParticipationStatus(UUID.randomUUID(), "p1")
+        }
     }
 
     // --- getParticipant tests ---
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testGetParticipantThrowsWhenNotFound() {
         `when`(mockRs.next()).thenReturn(false)
 
-        service.getParticipant(UUID.randomUUID(), "nonexistent")
+        assertThrows(IllegalStateException::class.java) {
+            service.getParticipant(UUID.randomUUID(), "nonexistent")
+        }
     }
 
     // --- Multiple UUID tests ---
@@ -403,15 +430,15 @@ class EnrollmentServiceTest {
     fun testIsKnownDatasourceSetsCorrectParameters() {
         val studyId = UUID.randomUUID()
         val participantId = "test-p"
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         `when`(mockRs.next()).thenReturn(true)
         `when`(mockRs.getLong("count")).thenReturn(0L)
 
-        service.isKnownDatasource(studyId, participantId, deviceId)
+        service.isKnownDatasource(studyId, participantId, randomDeviceId)
 
         verify(mockPs).setObject(1, studyId)
         verify(mockPs).setString(2, participantId)
-        verify(mockPs).setObject(3, deviceId)
+        verify(mockPs).setObject(3, randomDeviceId)
     }
 
     @Test
@@ -455,7 +482,13 @@ class EnrollmentServiceTest {
         `when`(mockConnection.prepareStatement(Mockito.contains("chronicle_has_participant_erasure"))).thenReturn(mockPs)
         `when`(mockRs.next()).thenReturn(true)
         `when`(mockRs.getBoolean("erased")).thenReturn(true)
+        val serverTime = java.time.OffsetDateTime.parse("2026-10-28T12:00:00.123Z")
+        `when`(mockRs.getObject("server_time", java.time.OffsetDateTime::class.java)).thenReturn(serverTime)
         assertEquals(ParticipationStatus.ERASED, service.getDeviceParticipationStatus(UUID.randomUUID(), "erased-subject"))
+        val collection = service.getDeviceCollectionStatus(UUID.randomUUID(), "erased-subject")
+        assertEquals(ParticipationStatus.ERASED, collection.participationStatus)
+        assertEquals("the phone measures its clock against the database's", serverTime, collection.serverTime)
+        assertEquals("an erased subject has no windows to apply", emptyList<Any>(), collection.captureWindows)
     }
 
 }

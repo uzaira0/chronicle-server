@@ -89,7 +89,9 @@ public open class CandidateService(
     }
 
     private fun selectCandidates(candidateIds: Collection<UUID>): Iterable<Candidate> {
-        val (flavor, hds) = storageResolver.getDefaultPlatformStorage()
+        val storage = storageResolver.getDefaultPlatformStorage()
+        val flavor = storage.flavor
+        val hds = storage.dataSource
         ensureVanilla(flavor)
         return BasePostgresIterable(
             PreparedStatementHolderSupplier(hds, SELECT_CANDIDATES_SQL) { ps ->

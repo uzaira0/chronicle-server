@@ -1,11 +1,15 @@
 package com.openlattice.chronicle.controllers
 
+
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageEnvelope
 import com.codahale.metrics.annotation.Timed
+import com.openlattice.chronicle.base.OK
+import com.openlattice.chronicle.study.EnrollmentPreviewResponse
+import com.openlattice.chronicle.study.EnrollmentResponse
 import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
 import com.openlattice.chronicle.android.AndroidSensorSample
-import com.openlattice.chronicle.android.SensorUploadReceipt
+import com.openlattice.chronicle.android.UploadReceipt
 import com.openlattice.chronicle.android.ChronicleData
-import com.openlattice.chronicle.collection.AmbientAudioClassificationEvent
 import com.openlattice.chronicle.collection.AndroidAudioActivityEvent
 import com.openlattice.chronicle.collection.AndroidAudioContentEvent
 import com.openlattice.chronicle.collection.AndroidInteractionEvent
@@ -21,12 +25,26 @@ import com.openlattice.chronicle.collection.BatterySample
 import com.openlattice.chronicle.collection.IosBatterySample
 import com.openlattice.chronicle.collection.CollectionAcknowledgment
 import com.openlattice.chronicle.collection.CollectionUploadEvidence
-import com.openlattice.chronicle.crypto.EncryptedEnvelope
+import com.openlattice.chronicle.configuration.MobileApiSignatureFilter.Companion.RANDOM_DEVICE_ID_HEADER
+import com.openlattice.chronicle.configuration.MobileApiSignatureFilter.Companion.HEADER_ENROLLMENT_CODE
+import com.openlattice.chronicle.configuration.MobileApiSignatureFilter.Companion.HEADER_MANIFEST_DIGEST
+import com.openlattice.chronicle.configuration.MobileApiSignatureFilter.Companion.HEADER_ENROLLMENT_ATTEMPT_ID
+import com.openlattice.chronicle.configuration.MobileApiSignatureFilter.Companion.HEADER_PROPOSED_API_KEY
 import com.openlattice.chronicle.configuration.RateLimit
 import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
 import com.openlattice.chronicle.configuration.RateLimitType
-import com.openlattice.chronicle.sensorkit.SensorDataSample
 import com.openlattice.chronicle.sources.SourceDevice
+import com.openlattice.chronicle.study.StudyApi.Companion.AUDIO_ACTIVITY_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.AUDIO_CONTENT_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.NOTIFICATION_ACTIVITY_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.SLEEP_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.ACTIVITY_RECOGNITION_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.HEALTH_CONNECT_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.CONNECTIVITY_STATE_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.APP_NETWORK_USAGE_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.DEVICE_SETTINGS_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.UPLOAD_DIAGNOSTICS_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.SCREEN_TIME_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.ANDROID_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.ENROLL_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.ENROLLMENT_PREVIEW_PATH
@@ -38,18 +56,18 @@ import com.openlattice.chronicle.study.StudyApi.Companion.AVAILABILITY_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.BATTERY_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.INTERACTION_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.COLLECTION_ACK_PATH
-import com.openlattice.chronicle.study.StudyApi.Companion.ENCRYPTED_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.SENSORS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.RECEIPT_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.V4_CONTROLLER
 import com.openlattice.chronicle.util.ValidParticipantId
+import com.openlattice.chronicle.services.upload.MAX_UPLOAD_ROWS
+import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
 import jakarta.inject.Inject
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Size
 import org.springframework.http.MediaType
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
@@ -63,30 +81,8 @@ import java.util.*
 @Suppress("DEPRECATION", "TooManyFunctions")
 @RestController
 @RequestMapping(V4_CONTROLLER)
-@Validated
 public open class StudyV4Controller @Inject constructor() {
 
-    public companion object {
-        // V4 sub-paths for the three new Android collection modules. Declared here (rather
-        // than in the shared StudyApi contract) so the server-side endpoints are self-contained;
-        // each is appended to ANDROID_PATH, mirroring INTERACTION_PATH / BATTERY_PATH.
-        public const val AUDIO_ACTIVITY_PATH: String = "/audio-activity"
-        public const val AUDIO_CONTENT_PATH: String = "/audio-content"
-        public const val NOTIFICATION_ACTIVITY_PATH: String = "/notification-activity"
-
-        // V4 sub-paths for the six newest Android collection modules (each appended to
-        // ANDROID_PATH, mirroring INTERACTION_PATH / NOTIFICATION_ACTIVITY_PATH).
-        public const val SLEEP_PATH: String = "/sleep"
-        public const val ACTIVITY_RECOGNITION_PATH: String = "/activity-recognition"
-        public const val HEALTH_CONNECT_PATH: String = "/health-connect"
-        public const val CONNECTIVITY_STATE_PATH: String = "/connectivity-state"
-        public const val APP_NETWORK_USAGE_PATH: String = "/app-network-usage"
-        public const val DEVICE_SETTINGS_PATH: String = "/device-settings"
-        public const val UPLOAD_DIAGNOSTICS_PATH: String = "/upload-diagnostics"
-
-        // V4 sub-path for the ambient_audio module (iOS SoundAnalysis; appended to IOS_PATH).
-        public const val AMBIENT_AUDIO_PATH: String = "/ambient-audio"
-    }
 
     @Inject
     private lateinit var studyController: StudyController
@@ -100,8 +96,8 @@ public open class StudyV4Controller @Inject constructor() {
     public fun getEnrollmentPreviewV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Enrollment-Code") enrollmentCode: String,
-    ): com.openlattice.chronicle.study.EnrollmentPreviewResponse =
+        @RequestHeader(HEADER_ENROLLMENT_CODE) enrollmentCode: String,
+    ): EnrollmentPreviewResponse =
         studyController.getEnrollmentPreviewV4(studyId, participantId, enrollmentCode)
 
     @Timed
@@ -116,17 +112,17 @@ public open class StudyV4Controller @Inject constructor() {
     public fun enrollV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
         @Valid @RequestBody sourceDevice: SourceDevice,
-        @RequestHeader("X-Chronicle-Enrollment-Code", required = false) enrollmentCode: String?,
-        @RequestHeader("X-Chronicle-Manifest-Digest", required = false) manifestDigest: String?,
-        @RequestHeader("X-Chronicle-Enrollment-Attempt-Id", required = false) enrollmentAttemptId: String?,
-        @RequestHeader("X-Chronicle-Proposed-Api-Key", required = false) proposedApiKey: String?,
-    ): com.openlattice.chronicle.study.EnrollmentResponse {
+        @RequestHeader(HEADER_ENROLLMENT_CODE, required = false) enrollmentCode: String?,
+        @RequestHeader(HEADER_MANIFEST_DIGEST, required = false) manifestDigest: String?,
+        @RequestHeader(HEADER_ENROLLMENT_ATTEMPT_ID, required = false) enrollmentAttemptId: String?,
+        @RequestHeader(HEADER_PROPOSED_API_KEY, required = false) proposedApiKey: String?,
+    ): EnrollmentResponse {
         return studyController.enrollV4(
             studyId,
             participantId,
-            sourceDeviceId,
+            sourceRandomDeviceId,
             sourceDevice,
             enrollmentCode,
             manifestDigest,
@@ -136,7 +132,6 @@ public open class StudyV4Controller @Inject constructor() {
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -145,14 +140,14 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadAndroidUsageEventDataV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
         @Valid @RequestBody data: ChronicleData,
-    ): Int {
-        return studyController.uploadAndroidUsageEventData(studyId, participantId, sourceDeviceId, data)
-    }
+        @RequestHeader(CollectionUploadEvidence.SETTINGS_VERSION_HEADER, required = false) settingsVersion: Int?,
+        @RequestHeader(CollectionUploadEvidence.DECISION_SEQ_HEADER, required = false) decisionSeq: Long?,
+    ): UploadReceipt =
+        studyController.uploadAndroidUsageEventDataV4(studyId, participantId, sourceRandomDeviceId, data, settingsVersion, decisionSeq)
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SENSORS_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -161,14 +156,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadAndroidSensorDataV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidSensorSample>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidSensorSample>,
     ): Int {
-        return studyController.uploadAndroidSensorData(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadAndroidSensorDataV4(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SENSORS_PATH + RECEIPT_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -177,14 +171,14 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadAndroidSensorDataReceiptV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidSensorSample>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidSensorSample>,
         @RequestHeader(CollectionUploadEvidence.SETTINGS_VERSION_HEADER, required = false) settingsVersion: Int?,
-    ): SensorUploadReceipt =
-        studyController.uploadAndroidSensorDataReceiptV4(studyId, participantId, sourceDeviceId, data, settingsVersion)
+        @RequestHeader(CollectionUploadEvidence.DECISION_SEQ_HEADER, required = false) decisionSeq: Long?,
+    ): UploadReceipt =
+        studyController.uploadAndroidSensorDataReceiptV4(studyId, participantId, sourceRandomDeviceId, data, settingsVersion, decisionSeq)
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + BATTERY_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -193,14 +187,14 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadBatteryTelemetryV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<BatterySample>,
-    ): Int {
-        return studyController.uploadBatteryTelemetry(studyId, participantId, sourceDeviceId, data)
-    }
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<BatterySample>,
+        @RequestHeader(CollectionUploadEvidence.SETTINGS_VERSION_HEADER, required = false) settingsVersion: Int?,
+        @RequestHeader(CollectionUploadEvidence.DECISION_SEQ_HEADER, required = false) decisionSeq: Long?,
+    ): UploadReceipt =
+        studyController.uploadBatteryTelemetryV4(studyId, participantId, sourceRandomDeviceId, data, settingsVersion, decisionSeq)
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + INTERACTION_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -209,14 +203,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadInteractionEventsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidInteractionEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidInteractionEvent>,
     ): Int {
-        return studyController.uploadInteractionEvents(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadInteractionEventsV4(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + AUDIO_ACTIVITY_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -225,14 +218,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadAudioActivityV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidAudioActivityEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidAudioActivityEvent>,
     ): Int {
-        return studyController.uploadAudioActivity(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadAudioActivity(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + AUDIO_CONTENT_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -241,14 +233,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadAudioContentV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidAudioContentEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidAudioContentEvent>,
     ): Int {
-        return studyController.uploadAudioContent(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadAudioContent(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + NOTIFICATION_ACTIVITY_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -257,14 +248,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadNotificationActivityV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidNotificationActivityEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidNotificationActivityEvent>,
     ): Int {
-        return studyController.uploadNotificationActivity(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadNotificationActivity(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SLEEP_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -273,14 +263,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadSleepEventsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidSleepEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidSleepEvent>,
     ): Int {
-        return studyController.uploadSleepEvents(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadSleepEvents(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + ACTIVITY_RECOGNITION_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -289,14 +278,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadActivityRecognitionEventsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidActivityRecognitionEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidActivityRecognitionEvent>,
     ): Int {
-        return studyController.uploadActivityRecognitionEvents(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadActivityRecognitionEvents(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + HEALTH_CONNECT_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -305,14 +293,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadHealthMetricsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidHealthMetricEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidHealthMetricEvent>,
     ): Int {
-        return studyController.uploadHealthMetrics(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadHealthMetrics(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + CONNECTIVITY_STATE_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -321,14 +308,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadConnectivityStateEventsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidConnectivityStateEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidConnectivityStateEvent>,
     ): Int {
-        return studyController.uploadConnectivityStateEvents(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadConnectivityStateEvents(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + APP_NETWORK_USAGE_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -337,14 +323,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadAppNetworkUsageV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidAppNetworkUsageEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidAppNetworkUsageEvent>,
     ): Int {
-        return studyController.uploadAppNetworkUsage(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadAppNetworkUsage(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + DEVICE_SETTINGS_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -353,14 +338,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadDeviceSettingsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidDeviceSettingsEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidDeviceSettingsEvent>,
     ): Int {
-        return studyController.uploadDeviceSettings(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadDeviceSettings(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + UPLOAD_DIAGNOSTICS_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -369,12 +353,11 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadDiagnosticsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 500) data: List<AndroidUploadDiagnosticEvent>,
-    ): List<String> = studyController.uploadDiagnostics(studyId, participantId, sourceDeviceId, data)
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = UploadDiagnosticsUploadService.MAX_EVENTS) data: List<AndroidUploadDiagnosticEvent>,
+    ): UploadReceipt = studyController.uploadDiagnostics(studyId, participantId, sourceRandomDeviceId, data)
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SENSORS_PATH + AVAILABILITY_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -383,64 +366,44 @@ public open class StudyV4Controller @Inject constructor() {
     public fun reportAndroidSensorAvailabilityV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
         @Valid @RequestBody availability: AndroidDeviceSensorAvailability,
     ): Int {
-        return studyController.reportAndroidSensorAvailability(studyId, participantId, sourceDeviceId, availability)
+        return studyController.reportAndroidSensorAvailability(studyId, participantId, sourceRandomDeviceId, availability)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH],
+        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + SCREEN_TIME_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
         produces = [MediaType.APPLICATION_JSON_VALUE],
     )
-    public fun uploadSensorDataV4(
+    public fun uploadScreenTimeDataV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<SensorDataSample>,
-    ): Int {
-        return studyController.uploadSensorData(studyId, participantId, sourceDeviceId, data)
-    }
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody envelope: ScreenTimeUsageEnvelope,
+    ): Int = studyController.uploadScreenTimeData(studyId, participantId, sourceRandomDeviceId, envelope)
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + COLLECTION_ACK_PATH],
+        path = [
+            STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + COLLECTION_ACK_PATH,
+            STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + COLLECTION_ACK_PATH,
+        ],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
         produces = [MediaType.APPLICATION_JSON_VALUE],
     )
     public fun reportCollectionAcknowledgmentV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
         @Valid @RequestBody acknowledgment: CollectionAcknowledgment,
-    ): com.openlattice.chronicle.base.OK {
-        return studyController.reportCollectionAcknowledgmentV4(studyId, participantId, sourceDeviceId, acknowledgment)
+    ): OK {
+        return studyController.reportCollectionAcknowledgmentV4(studyId, participantId, sourceRandomDeviceId, acknowledgment)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + COLLECTION_ACK_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE],
-    )
-    public fun reportCollectionAcknowledgmentIosV4(
-        @PathVariable(STUDY_ID) studyId: UUID,
-        @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody acknowledgment: CollectionAcknowledgment,
-    ): com.openlattice.chronicle.base.OK {
-        // Same append-only trail and semantics as the android route; the acknowledgment
-        // logic is platform-agnostic and the device row already records the platform.
-        return studyController.reportCollectionAcknowledgmentV4(studyId, participantId, sourceDeviceId, acknowledgment)
-    }
-
-    @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + BATTERY_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -449,14 +412,13 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadIosBatteryTelemetry(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<IosBatterySample>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<IosBatterySample>,
     ): Int {
-        return studyController.uploadIosBatteryTelemetry(studyId, participantId, sourceDeviceId, data)
+        return studyController.uploadIosBatteryTelemetry(studyId, participantId, sourceRandomDeviceId, data)
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + CONNECTIVITY_STATE_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -465,15 +427,14 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadIosConnectivityStateEvents(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidConnectivityStateEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidConnectivityStateEvent>,
     ): Int {
         // The sample schema is platform-neutral despite its historical Android name.
-        return studyController.uploadConnectivityStateEvents(studyId, participantId, sourceDeviceId, data, platform = "ios")
+        return studyController.uploadConnectivityStateEvents(studyId, participantId, sourceRandomDeviceId, data, platform = "ios")
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     @PostMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + HEALTH_CONNECT_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE],
@@ -482,43 +443,12 @@ public open class StudyV4Controller @Inject constructor() {
     public fun uploadIosHealthMetrics(
         @PathVariable(STUDY_ID) studyId: UUID,
         @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidHealthMetricEvent>,
+        @RequestHeader(RANDOM_DEVICE_ID_HEADER) sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidHealthMetricEvent>,
     ): Int {
         // HealthKit realization of the health_connect module; the record schema is
         // platform-neutral despite its historical Android name.
-        return studyController.uploadHealthMetrics(studyId, participantId, sourceDeviceId, data, platform = "ios")
+        return studyController.uploadHealthMetrics(studyId, participantId, sourceRandomDeviceId, data, platform = "ios")
     }
 
-    @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + AMBIENT_AUDIO_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE],
-    )
-    public fun uploadIosAmbientAudio(
-        @PathVariable(STUDY_ID) studyId: UUID,
-        @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AmbientAudioClassificationEvent>,
-    ): Int {
-        return studyController.uploadAmbientAudio(studyId, participantId, sourceDeviceId, data, platform = "ios")
-    }
-
-    @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + ENCRYPTED_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE],
-    )
-    public fun uploadAndroidEncryptedDataV4(
-        @PathVariable(STUDY_ID) studyId: UUID,
-        @ValidParticipantId @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestHeader("X-Chronicle-Device-Id") sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<EncryptedEnvelope>,
-    ): Int {
-        return studyController.uploadAndroidEncryptedDataV4(studyId, participantId, sourceDeviceId, data)
-    }
 }

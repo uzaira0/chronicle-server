@@ -53,7 +53,7 @@ class EnrollmentServiceMutationTest {
     private val participantId = "participant-1"
 
     private fun androidDevice(
-        deviceId: String = "android-device-1",
+        randomDeviceId: String = "android-device-1",
         fcm: String = "fcm-token"
     ) = AndroidDevice(
         device = "Pixel",
@@ -63,7 +63,7 @@ class EnrollmentServiceMutationTest {
         osVersion = "14",
         sdkVersion = "34",
         product = "shiba",
-        deviceId = deviceId,
+        randomDeviceId = randomDeviceId,
         additionalInfo = emptyMap(),
         fcmRegistrationToken = fcm
     )
@@ -76,6 +76,7 @@ class EnrollmentServiceMutationTest {
         val rows: ResultSet = mock()
         whenever(rows.next()).doReturn(true)
         whenever(rows.getString("lifecycle_status")).doReturn(com.openlattice.chronicle.study.StudyLifecycleStatus.ACTIVE.name)
+        com.openlattice.chronicle.services.upload.stubNoClosedCaptureWindows(rows)
         whenever(fence.executeQuery()).doReturn(rows)
         whenever(connection.prepareStatement(org.mockito.kotlin.argThat { contains("AS erased") || contains("pg_advisory_xact_lock") || contains(
             "SELECT lifecycle_status") })).doReturn(fence)
@@ -131,16 +132,16 @@ class EnrollmentServiceMutationTest {
 
     @Test
     fun `isKnownDatasource true when count positive and binds study participant device`() {
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val w = wirePlatformStorage()
         whenever(w.rs.next()).doReturn(true)
         whenever(w.rs.getLong("count")).doReturn(2L)
 
-        assertTrue(service.isKnownDatasource(studyId, participantId, deviceId))
+        assertTrue(service.isKnownDatasource(studyId, participantId, randomDeviceId))
 
         verify(w.ps).setObject(1, studyId)
         verify(w.ps).setString(2, participantId)
-        verify(w.ps).setObject(3, deviceId)
+        verify(w.ps).setObject(3, randomDeviceId)
     }
 
     @Test
@@ -221,8 +222,12 @@ class EnrollmentServiceMutationTest {
         val candidateId = UUID.randomUUID()
         val w = wirePlatformStorage()
         whenever(w.rs.next()).doReturn(true)
+        whenever(w.rs.getString("participant_id")).doReturn(participantId)
         whenever(w.rs.getString("participation_status")).doReturn(ParticipationStatus.ENROLLED.name)
         whenever(w.rs.getObject("candidate_id", UUID::class.java)).doReturn(candidateId)
+        val tags = mock<java.sql.Array>()
+        whenever(tags.array).doReturn(emptyArray<String>())
+        whenever(w.rs.getArray("participant_tags")).doReturn(tags)
         val candidate = Candidate(id = candidateId)
         whenever(candidateManager.getCandidate(candidateId)).doReturn(candidate)
 
@@ -305,8 +310,8 @@ class EnrollmentServiceMutationTest {
 
     @Test
     fun `registerDevice for known participant discards push token and returns the returned id`() {
-        val deviceId = UUID.randomUUID()
-        val returnedDeviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
+        val returnedRandomDeviceId = UUID.randomUUID()
 
         // First lookup: isKnownParticipant count query -> count = 1
         val knownRs: ResultSet = mock()
@@ -320,10 +325,10 @@ class EnrollmentServiceMutationTest {
         val knownHds: HikariDataSource = mock()
         whenever(knownHds.connection).doReturn(knownConn)
 
-        // Second lookup: INSERT_DEVICE RETURNING device_id
+        // Second lookup: INSERT_DEVICE RETURNING random_device_id
         val insertRs: ResultSet = mock()
         whenever(insertRs.next()).doReturn(true)
-        whenever(insertRs.getObject("device_id", UUID::class.java)).doReturn(returnedDeviceId)
+        whenever(insertRs.getObject("random_device_id", UUID::class.java)).doReturn(returnedRandomDeviceId)
         val insertPs: PreparedStatement = mock()
         whenever(insertPs.executeQuery()).doReturn(insertRs)
         val insertConn: Connection = mock()
@@ -334,12 +339,12 @@ class EnrollmentServiceMutationTest {
 
         whenever(storageResolver.getPlatformStorage()).doReturn(knownHds, insertHds)
 
-        val result = service.registerDevice(studyId, participantId, deviceId, androidDevice(fcm = "fcm-xyz"))
+        val result = service.registerDevice(studyId, participantId, randomDeviceId, androidDevice(fcm = "fcm-xyz"))
 
-        assertEquals(returnedDeviceId, result)
-        // device insert bound study, deviceId, participant, type=Android, jsonb, disabled push token
+        assertEquals(returnedRandomDeviceId, result)
+        // device insert bound study, randomDeviceId, participant, type=Android, jsonb, disabled push token
         verify(insertPs).setObject(1, studyId)
-        verify(insertPs).setObject(2, deviceId)
+        verify(insertPs).setObject(2, randomDeviceId)
         verify(insertPs).setString(3, participantId)
         verify(insertPs).setString(eq(4), eq("Android"))
         verify(insertPs).setString(eq(6), eq(""))

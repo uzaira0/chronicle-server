@@ -2,23 +2,29 @@ package com.openlattice.chronicle.controllers
 
 import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
 import com.openlattice.chronicle.android.AndroidSensorSample
-import com.openlattice.chronicle.android.SensorUploadReceipt
+import com.openlattice.chronicle.android.UploadReceipt
 import com.openlattice.chronicle.android.ChronicleData
-import com.openlattice.chronicle.collection.AmbientAudioClassificationEvent
 import com.openlattice.chronicle.collection.BatterySample
 import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
-import com.openlattice.chronicle.sensorkit.SensorDataSample
 import com.openlattice.chronicle.sources.SourceDevice
 import com.openlattice.chronicle.study.EnrollmentPreviewResponse
 import com.openlattice.chronicle.study.EnrollmentResponse
+import com.openlattice.chronicle.study.StudyApi.Companion.ANDROID_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.COLLECTION_ACK_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.IOS_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.PARTICIPANT_ID_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.PARTICIPANT_PATH
+import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID_PATH
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
+import org.springframework.context.annotation.AnnotationConfigApplicationContext
+import org.springframework.web.bind.annotation.PostMapping
 import java.util.UUID
 
 /**
@@ -29,7 +35,7 @@ import java.util.UUID
  * Before this test the v4 surface had ZERO coverage, and 5 of its 6 endpoints are
  * absent from chronicle.yaml — so the GET-only contract fuzzer cannot reach them
  * either. The risk for a pass-through layer is mis-delegation: a copy-paste that
- * routes /battery to uploadAndroidSensorData, or that drops the X-Chronicle-Device-Id
+ * routes /battery to uploadAndroidSensorData, or that drops the X-Chronicle-Random-Device-Id
  * header. These tests pin, per endpoint, that the request is forwarded verbatim to
  * the correct StudyController method (and to no other), and that its result is
  * returned unchanged. StudyController is mocked; the delegate's own behavior is
@@ -38,52 +44,63 @@ import java.util.UUID
 class StudyV4ControllerTest {
 
     private val studyController = Mockito.mock(StudyController::class.java)
+    private val applicationContext = AnnotationConfigApplicationContext()
     private lateinit var controller: StudyV4Controller
 
     private val studyId = UUID.randomUUID()
     private val participantId = "participant-1"
-    private val deviceId = "device-abc"
+    private val randomDeviceId = "device-abc"
 
     @Before
     fun setUp() {
-        controller = StudyV4Controller()
-        // studyController is a private lateinit field populated by Spring @Inject; set it directly.
-        StudyV4Controller::class.java.getDeclaredField("studyController").apply {
-            isAccessible = true
-            set(controller, studyController)
-        }
+        applicationContext.beanFactory.registerSingleton("studyController", studyController)
+        applicationContext.register(StudyV4Controller::class.java)
+        applicationContext.refresh()
+        controller = applicationContext.getBean(StudyV4Controller::class.java)
     }
 
+    @After
+    fun tearDown() {
+        applicationContext.close()
+    }
+
+    
+
     @Test
-    fun controllerConstructsSuccessfully() {
-        assertNotNull(controller)
+    fun collectionAcknowledgmentHasOneHandlerForBothPlatforms() {
+        val handler = StudyV4Controller::class.java.methods.single { it.name == "reportCollectionAcknowledgmentV4" }
+        val participantPath = STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH
+        assertEquals(
+            setOf(ANDROID_PATH, IOS_PATH).map { participantPath + it + COLLECTION_ACK_PATH }.toSet(),
+            handler.getAnnotation(PostMapping::class.java).path.toSet(),
+        )
     }
 
     @Test
     fun sensorReceiptForwardsSettingsEvidenceAndReturnsTheReceipt() {
         val samples = listOf(Mockito.mock(AndroidSensorSample::class.java))
-        val receipt = SensorUploadReceipt(setOf(UUID.randomUUID()), emptySet(), emptySet(), 4)
-        Mockito.`when`(studyController.uploadAndroidSensorDataReceiptV4(studyId, participantId, deviceId, samples, 4))
+        val receipt = UploadReceipt(setOf(UUID.randomUUID()), emptySet(), 4)
+        Mockito.`when`(studyController.uploadAndroidSensorDataReceiptV4(studyId, participantId, randomDeviceId, samples, 4, 7L))
             .thenReturn(receipt)
 
-        assertSame(receipt, controller.uploadAndroidSensorDataReceiptV4(studyId, participantId, deviceId, samples, 4))
-        verify(studyController).uploadAndroidSensorDataReceiptV4(studyId, participantId, deviceId, samples, 4)
+        assertSame(receipt, controller.uploadAndroidSensorDataReceiptV4(studyId, participantId, randomDeviceId, samples, 4, 7L))
+        verify(studyController).uploadAndroidSensorDataReceiptV4(studyId, participantId, randomDeviceId, samples, 4, 7L)
         verifyNoMoreInteractions(studyController)
     }
 
     @Test
     fun uploadDiagnosticsForwardsAuthenticatedPathIdentityAndBody() {
         val diagnostics = listOf(Mockito.mock(AndroidUploadDiagnosticEvent::class.java))
-        val acknowledged = listOf(UUID.randomUUID().toString())
+        val acknowledged = UploadReceipt(setOf(UUID.randomUUID()), emptySet(), 0)
         Mockito.`when`(
-            studyController.uploadDiagnostics(studyId, participantId, deviceId, diagnostics),
+            studyController.uploadDiagnostics(studyId, participantId, randomDeviceId, diagnostics),
         ).thenReturn(acknowledged)
 
         assertSame(
             acknowledged,
-            controller.uploadDiagnosticsV4(studyId, participantId, deviceId, diagnostics),
+            controller.uploadDiagnosticsV4(studyId, participantId, randomDeviceId, diagnostics),
         )
-        verify(studyController).uploadDiagnostics(studyId, participantId, deviceId, diagnostics)
+        verify(studyController).uploadDiagnostics(studyId, participantId, randomDeviceId, diagnostics)
         verifyNoMoreInteractions(studyController)
     }
 
@@ -99,7 +116,7 @@ class StudyV4ControllerTest {
             studyController.enrollV4(
                 studyId,
                 participantId,
-                deviceId,
+                randomDeviceId,
                 device,
                 enrollmentCode,
                 manifestDigest,
@@ -111,7 +128,7 @@ class StudyV4ControllerTest {
         val result = controller.enrollV4(
             studyId,
             participantId,
-            deviceId,
+            randomDeviceId,
             device,
             enrollmentCode,
             manifestDigest,
@@ -123,7 +140,7 @@ class StudyV4ControllerTest {
         verify(studyController).enrollV4(
             studyId,
             participantId,
-            deviceId,
+            randomDeviceId,
             device,
             enrollmentCode,
             manifestDigest,
@@ -150,26 +167,27 @@ class StudyV4ControllerTest {
     @Test
     fun uploadAndroidUsageEventDataV4DelegatesToUsageUpload() {
         val data = Mockito.mock(ChronicleData::class.java)
-        Mockito.`when`(studyController.uploadAndroidUsageEventData(studyId, participantId, deviceId, data))
-            .thenReturn(11)
+        val receipt = UploadReceipt(setOf(UUID.randomUUID()), emptySet(), 1)
+        Mockito.`when`(studyController.uploadAndroidUsageEventDataV4(studyId, participantId, randomDeviceId, data, 2, 7L))
+            .thenReturn(receipt)
 
-        val result = controller.uploadAndroidUsageEventDataV4(studyId, participantId, deviceId, data)
+        val result = controller.uploadAndroidUsageEventDataV4(studyId, participantId, randomDeviceId, data, 2, 7L)
 
-        assertEquals(11, result)
-        verify(studyController).uploadAndroidUsageEventData(studyId, participantId, deviceId, data)
+        assertEquals(receipt, result)
+        verify(studyController).uploadAndroidUsageEventDataV4(studyId, participantId, randomDeviceId, data, 2, 7L)
         verifyNoMoreInteractions(studyController)
     }
 
     @Test
     fun uploadAndroidSensorDataV4DelegatesToAndroidSensorUpload() {
         val data = listOf(Mockito.mock(AndroidSensorSample::class.java))
-        Mockito.`when`(studyController.uploadAndroidSensorData(studyId, participantId, deviceId, data))
+        Mockito.`when`(studyController.uploadAndroidSensorDataV4(studyId, participantId, randomDeviceId, data))
             .thenReturn(22)
 
-        val result = controller.uploadAndroidSensorDataV4(studyId, participantId, deviceId, data)
+        val result = controller.uploadAndroidSensorDataV4(studyId, participantId, randomDeviceId, data)
 
         assertEquals(22, result)
-        verify(studyController).uploadAndroidSensorData(studyId, participantId, deviceId, data)
+        verify(studyController).uploadAndroidSensorDataV4(studyId, participantId, randomDeviceId, data)
         verifyNoMoreInteractions(studyController)
     }
 
@@ -179,52 +197,28 @@ class StudyV4ControllerTest {
         // nothing else — a mis-paste to the sensor path would be caught by
         // verifyNoMoreInteractions below.
         val data = listOf(Mockito.mock(BatterySample::class.java))
-        Mockito.`when`(studyController.uploadBatteryTelemetry(studyId, participantId, deviceId, data))
-            .thenReturn(33)
+        val receipt = UploadReceipt(setOf(UUID.randomUUID()), emptySet(), 3)
+        Mockito.`when`(studyController.uploadBatteryTelemetryV4(studyId, participantId, randomDeviceId, data, 3, 7L))
+            .thenReturn(receipt)
 
-        val result = controller.uploadBatteryTelemetryV4(studyId, participantId, deviceId, data)
+        val result = controller.uploadBatteryTelemetryV4(studyId, participantId, randomDeviceId, data, 3, 7L)
 
-        assertEquals(33, result)
-        verify(studyController).uploadBatteryTelemetry(studyId, participantId, deviceId, data)
+        assertSame(receipt, result)
+        verify(studyController).uploadBatteryTelemetryV4(studyId, participantId, randomDeviceId, data, 3, 7L)
         verifyNoMoreInteractions(studyController)
     }
 
     @Test
     fun reportAndroidSensorAvailabilityV4DelegatesToAvailability() {
         val availability = Mockito.mock(AndroidDeviceSensorAvailability::class.java)
-        Mockito.`when`(studyController.reportAndroidSensorAvailability(studyId, participantId, deviceId, availability))
+        Mockito.`when`(studyController.reportAndroidSensorAvailability(studyId, participantId, randomDeviceId, availability))
             .thenReturn(44)
 
-        val result = controller.reportAndroidSensorAvailabilityV4(studyId, participantId, deviceId, availability)
+        val result = controller.reportAndroidSensorAvailabilityV4(studyId, participantId, randomDeviceId, availability)
 
         assertEquals(44, result)
-        verify(studyController).reportAndroidSensorAvailability(studyId, participantId, deviceId, availability)
+        verify(studyController).reportAndroidSensorAvailability(studyId, participantId, randomDeviceId, availability)
         verifyNoMoreInteractions(studyController)
     }
 
-    @Test
-    fun uploadIosAmbientAudioDelegatesToAmbientAudioUpload() {
-        val data = listOf(Mockito.mock(AmbientAudioClassificationEvent::class.java))
-        Mockito.`when`(studyController.uploadAmbientAudio(studyId, participantId, deviceId, data, "ios"))
-            .thenReturn(66)
-
-        val result = controller.uploadIosAmbientAudio(studyId, participantId, deviceId, data)
-
-        assertEquals(66, result)
-        verify(studyController).uploadAmbientAudio(studyId, participantId, deviceId, data, "ios")
-        verifyNoMoreInteractions(studyController)
-    }
-
-    @Test
-    fun uploadSensorDataV4DelegatesToIosSensorUpload() {
-        val data = listOf(Mockito.mock(SensorDataSample::class.java))
-        Mockito.`when`(studyController.uploadSensorData(studyId, participantId, deviceId, data))
-            .thenReturn(55)
-
-        val result = controller.uploadSensorDataV4(studyId, participantId, deviceId, data)
-
-        assertEquals(55, result)
-        verify(studyController).uploadSensorData(studyId, participantId, deviceId, data)
-        verifyNoMoreInteractions(studyController)
-    }
 }

@@ -1,17 +1,20 @@
 package com.openlattice.chronicle.services.enrollment
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.fasterxml.jackson.annotation.JsonIgnore
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.geekbeast.controllers.exceptions.ResourceNotFoundException
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
+import com.openlattice.chronicle.data.HardStop
+import com.openlattice.chronicle.data.MobileParticipationStatus
 import com.openlattice.chronicle.data.ParticipationStatus
-import com.openlattice.chronicle.study.StudyLifecycleStatus
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.postgres.ResultSetAdapters
 import com.openlattice.chronicle.services.candidates.CandidateManager
-import com.fasterxml.jackson.annotation.JsonIgnore
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.openlattice.chronicle.sources.AndroidDevice
 import com.openlattice.chronicle.sources.IOSDevice
 import com.openlattice.chronicle.sources.SourceDevice
@@ -21,22 +24,27 @@ import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ORGAN
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS_WITH_WITHDRAWALS
+import com.openlattice.chronicle.storage.DeletionStudyFence
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+import com.openlattice.chronicle.storage.ParticipantErasureFence
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CANDIDATE_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.RANDOM_DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_TOKEN
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ORGANIZATION_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPATION_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
+import com.openlattice.chronicle.study.StudyLifecycleStatus
 import com.openlattice.chronicle.util.LogSanitizer
-import com.openlattice.chronicle.observability.ChronicleMetrics
+import com.openlattice.chronicle.util.SqlFailures
 import org.slf4j.LoggerFactory
 import org.springframework.security.access.AccessDeniedException
 import org.springframework.stereotype.Service
 import java.sql.Connection
 import java.sql.SQLException
+import java.time.OffsetDateTime
 import java.util.*
 
 /**
@@ -58,15 +66,15 @@ public open class EnrollmentService(
         private const val UNIQUE_VIOLATION_SQL_STATE = "23505"
         private val DEVICES_COLS = DEVICES.columns.joinToString(",") { it.name }
         private const val DISABLED_PUSH_DEVICE_TOKEN = ""
-        // Jackson MixIns that exclude device-identifying fields from storage serialization.
+        // Jackson MixIns that exclude random-device-identifying fields from storage serialization.
         // Maintained here (not in shared GPL models) since the Android app needs these fields.
         public abstract class AndroidDeviceStorageMixIn {
-            @get:JsonIgnore public abstract val deviceId: String
+            @get:JsonIgnore public abstract val randomDeviceId: String
             @get:JsonIgnore public abstract val fcmRegistrationToken: String
         }
 
         public abstract class IOSDeviceStorageMixIn {
-            @get:JsonIgnore public abstract val deviceId: String
+            @get:JsonIgnore public abstract val randomDeviceId: String
             // User-assigned ("Alex's iPhone"); identifies the participant.
             @get:JsonIgnore public abstract val name: String
             @get:JsonIgnore public abstract val apnDeviceToken: String
@@ -83,7 +91,7 @@ public open class EnrollmentService(
 
         /**
          * 1. study id
-         * 2. device id
+         * 2. random device id
          * 3. participant id
          * 4. device type
          * 5. source device (jsonb)
@@ -92,18 +100,18 @@ public open class EnrollmentService(
          */
         private val INSERT_DEVICE = """
             INSERT INTO ${DEVICES.name} ($DEVICES_COLS) VALUES (?,?,?,?,?::jsonb,?)
-            ON CONFLICT (${STUDY_ID.name}, ${DEVICE_ID.name}) DO UPDATE SET ${DEVICE_TOKEN.name} = EXCLUDED.${DEVICE_TOKEN.name}
-            RETURNING ${DEVICE_ID.name}
+            ON CONFLICT (${STUDY_ID.name}, ${RANDOM_DEVICE_ID.name}) DO UPDATE SET ${DEVICE_TOKEN.name} = EXCLUDED.${DEVICE_TOKEN.name}
+            RETURNING ${RANDOM_DEVICE_ID.name}
         """
 
         /**
          * 1. study id
          * 2. participant id
-         * 3. device id
+         * 3. random device id
          */
-        private val COUNT_DEVICE_ID = """
+        private val COUNT_RANDOM_DEVICE_ID = """
             SELECT count(*) FROM ${DEVICES.name}
-                WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ? AND ${DEVICE_ID.name} = ?
+                WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ? AND ${RANDOM_DEVICE_ID.name} = ?
         """.trimIndent()
 
         private val COUNT_STUDY_PARTICIPANTS = """
@@ -125,7 +133,7 @@ public open class EnrollmentService(
          * 2. participant id
          */
         private val GET_PARTICIPANT = """
-            SELECT * FROM ${STUDY_PARTICIPANTS.name} WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ?
+            SELECT * FROM $STUDY_PARTICIPANTS_WITH_WITHDRAWALS WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ?
         """.trimIndent()
 
         /**
@@ -139,25 +147,26 @@ public open class EnrollmentService(
         /**
          * 1. study id, 2. participant id, 3. study id, 4. participant id.
          * A participant or study erasure that is quarantined, held, failed, erasing or completed
-         * reads as erased; a collected-data purge does not.
+         * reads as erased; a collected-data purge does not. The hard stop columns come from the same row.
          */
         private val GET_DEVICE_PARTICIPATION_STATUS = """
-            SELECT chronicle_has_participant_erasure(?::uuid, ?::text) AS erased,
-            (
-                SELECT CASE WHEN study.lifecycle_status <> '${StudyLifecycleStatus.ACTIVE.name}'
+            SELECT chronicle_has_participant_erasure(?::uuid, ?::text) AS erased, clock_timestamp() AS server_time,
+                   participant.${PARTICIPATION_STATUS.name}, participant.hard_stop_generation, participant.hard_stopped_at
+            FROM (SELECT 1) one LEFT JOIN LATERAL (
+                SELECT CASE WHEN participant.processing_blocked_at IS NOT NULL
+                                  AND participant.${PARTICIPATION_STATUS.name} IN (
+                                      '${ParticipationStatus.ENROLLED.name}', '${ParticipationStatus.PAUSED.name}',
+                                      '${ParticipationStatus.COLLECTION_COMPLETED.name}')
+                            THEN '${ParticipationStatus.PAUSED.name}'
+                            WHEN study.lifecycle_status <> '${StudyLifecycleStatus.ACTIVE.name}'
                                   AND participant.${PARTICIPATION_STATUS.name} = '${ParticipationStatus.ENROLLED.name}'
-                            THEN '${ParticipationStatus.PAUSED.name}' ELSE participant.${PARTICIPATION_STATUS.name} END
+                            THEN '${ParticipationStatus.PAUSED.name}' ELSE participant.${PARTICIPATION_STATUS.name}
+                       END AS ${PARTICIPATION_STATUS.name},
+                       participant.hard_stop_generation, participant.hard_stopped_at
                 FROM ${STUDY_PARTICIPANTS.name} participant
                 JOIN ${STUDIES.name} study USING (${STUDY_ID.name})
                 WHERE participant.${STUDY_ID.name} = ? AND participant.${PARTICIPANT_ID.name} = ?
-            ) AS ${PARTICIPATION_STATUS.name}
-        """.trimIndent()
-
-        /**
-         * 1. study id
-         */
-        private val GET_STUDY_PARTICIPANT_IDS = """
-            SELECT ${PARTICIPANT_ID.name} FROM ${STUDY_PARTICIPANTS.name} WHERE ${STUDY_ID.name} = ?
+            ) participant ON true
         """.trimIndent()
 
         /**
@@ -186,7 +195,7 @@ public open class EnrollmentService(
     override fun registerDevice(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         sourceDevice: SourceDevice,
     ): UUID {
         val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
@@ -194,11 +203,11 @@ public open class EnrollmentService(
             "attempting to register data source - studyId = {}, participantRef = {}, dataSourceId = {}",
             studyId,
             participantRef,
-            deviceId
+            randomDeviceId
         )
 
         val knownParticipant = storageResolver.getPlatformStorage().connection.use { connection ->
-            com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(connection, studyId, participantId)
+            ParticipantErasureFence.requireReusable(connection, studyId, participantId)
             isKnownParticipant(connection, studyId, participantId)
         }
 
@@ -207,18 +216,18 @@ public open class EnrollmentService(
                 "unknown participant, unable to register datasource - studyId = {}, participantRef = {}, dataSourceId = {}",
                 studyId,
                 participantRef,
-                deviceId
+                randomDeviceId
             )
             throw AccessDeniedException("unknown participant, unable to register datasource")
         }
 
 
-        val resolvedDeviceId = when (sourceDevice) {
+        val resolvedRandomDeviceId = when (sourceDevice) {
             is AndroidDevice -> registerDeviceOrGetId(
                 studyId,
                 participantId,
                 SourceDeviceType.Android,
-                deviceId,
+                randomDeviceId,
                 sourceDevice,
             )
 
@@ -226,7 +235,7 @@ public open class EnrollmentService(
                 studyId,
                 participantId,
                 SourceDeviceType.Ios,
-                deviceId,
+                randomDeviceId,
                 sourceDevice,
             )
 
@@ -236,44 +245,37 @@ public open class EnrollmentService(
         // Shared self-host monitoring needs the aggregate rate, never a study identifier.
         ChronicleMetrics.enrollmentTotal.inc()
 
-        return resolvedDeviceId
+        return resolvedRandomDeviceId
     }
 
     private fun registerDeviceOrGetId(
         studyId: UUID,
         participantId: String,
         deviceType: SourceDeviceType,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         sourceDevice: SourceDevice,
     ): UUID {
         val hds = storageResolver.getPlatformStorage()
         val strippedDeviceJson = serializeForStorage(sourceDevice)
         return hds.connection.use { connection ->
-            val previousAutoCommit = connection.autoCommit
-            connection.autoCommit = false
-            try {
-                com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
-                com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(connection, studyId, participantId)
-                com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId)
+            connection.withTransaction {
+                DeletionStudyFence.shared(connection, studyId)
+                ParticipantErasureFence.requireReusable(connection, studyId, participantId)
+                ParticipantCollectionGate(connection).requireActive(studyId)
                 val result = connection.prepareStatement(INSERT_DEVICE).use { ps ->
                 ps.setObject(1, studyId)
-                ps.setObject(2, deviceId)
+                ps.setObject(2, randomDeviceId)
                 ps.setString(3, participantId)
                 ps.setString(4, deviceType.name)
                 ps.setString(5, strippedDeviceJson)
                 ps.setString(6, DISABLED_PUSH_DEVICE_TOKEN)
                 ps.executeQuery().use { rs ->
                     check(rs.next()) { "INSERT RETURNING produced no result" }
-                    rs.getObject(DEVICE_ID.name, UUID::class.java)
+                    rs.getObject(RANDOM_DEVICE_ID.name, UUID::class.java)
                 }
                 }
                 connection.commit()
                 result
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
-            } finally {
-                connection.autoCommit = previousAutoCommit
             }
         }
     }
@@ -285,9 +287,9 @@ public open class EnrollmentService(
         candidateId: UUID,
         participationStatus: ParticipationStatus,
     ) {
-        com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
-        com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(connection, studyId, participantId)
-        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId)
+        DeletionStudyFence.shared(connection, studyId)
+        ParticipantErasureFence.requireReusable(connection, studyId, participantId)
+        ParticipantCollectionGate(connection).requireActive(studyId)
         connection.prepareStatement(INSERT_PARTICIPANT).use { ps ->
             ps.setObject(1, studyId)
             ps.setString(2, participantId)
@@ -297,9 +299,9 @@ public open class EnrollmentService(
                 ps.executeUpdate()
             } catch (exception: SQLException) {
                 if (exception.sqlState == UNIQUE_VIOLATION_SQL_STATE) {
-                    throw IllegalStateException("Participant is already registered for this study", exception)
+                    throw IllegalStateException("Participant is already registered for this study", SqlFailures.sanitize(exception))
                 }
-                throw exception
+                throw SqlFailures.sanitize(exception)
             }
         }
     }
@@ -307,17 +309,17 @@ public open class EnrollmentService(
     override fun isKnownDatasource(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
     ): Boolean {
         val hds = storageResolver.getPlatformStorage()
 
         return hds.connection.use { connection ->
-            connection.prepareStatement(COUNT_DEVICE_ID).use { ps ->
+            connection.prepareStatement(COUNT_RANDOM_DEVICE_ID).use { ps ->
                 ps.setObject(1, studyId)
                 ps.setString(2, participantId)
-                ps.setObject(3, deviceId)
+                ps.setObject(3, randomDeviceId)
                 ps.executeQuery().use { rs ->
-                    check(rs.next()) { "No count returned for study=$studyId, participant=$participantId, deviceId=$deviceId" }
+                    check(rs.next()) { "No count returned for study=$studyId, participant=$participantId, randomDeviceId=$randomDeviceId" }
                     ResultSetAdapters.count(rs) > 0 //could also check equal to one, but unique index exists in db
                 }
             }
@@ -346,17 +348,17 @@ public open class EnrollmentService(
     override fun getParticipant(studyId: UUID, participantId: String): Participant {
         val hds = storageResolver.getPlatformStorage()
 
-        val (participationStatus, candidateId) = hds.connection.use { connection ->
+        val participant = hds.connection.use { connection ->
             connection.prepareStatement(GET_PARTICIPANT).use { ps ->
                 ps.setObject(1, studyId)
                 ps.setString(2, participantId)
                 ps.executeQuery().use { rs ->
                     check(rs.next()) { "No row returned for study=$studyId, participant=$participantId" }
-                    ResultSetAdapters.participantStatus(rs) to ResultSetAdapters.candidateId(rs)
+                    ResultSetAdapters.participant(rs)
                 }
             }
         }
-        return Participant(participantId, candidateManager.getCandidate(candidateId), participationStatus)
+        return participant.copy(candidate = candidateManager.getCandidate(requireNotNull(participant.candidate.id)))
     }
 
     override fun getParticipationStatus(
@@ -388,10 +390,21 @@ public open class EnrollmentService(
      * collected-data purge hides the row but keeps the enrollment, so the phone must keep collecting.
      */
     override fun getDeviceParticipationStatus(studyId: UUID, participantId: String): ParticipationStatus =
+        readDeviceStatus(studyId, participantId, withWindows = false).participationStatus
+
+    /** The same status, with the closed capture windows and the database clock that stamped them. */
+    override fun getDeviceCollectionStatus(studyId: UUID, participantId: String): MobileParticipationStatus =
+        readDeviceStatus(studyId, participantId, withWindows = true)
+
+    private fun readDeviceStatus(studyId: UUID, participantId: String, withWindows: Boolean): MobileParticipationStatus =
         storageResolver.getPlatformStorage().connection.use { connection ->
-            val autoCommit = connection.autoCommit
-            connection.autoCommit = false
-            try {
+            val ownsTransaction = connection.autoCommit
+            connection.withTransaction(ownsTransaction = ownsTransaction, rollbackOnSuccess = true) {
+                // One snapshot for the status and its capture windows: a pause or resume committing between the two
+                // reads must not publish a status with the other state's windows.
+                if (ownsTransaction) connection.createStatement().use {
+                    it.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                }
                 RLSConnectionCustomizer.withWithdrawalEnrollmentContext(connection) {
                     connection.prepareStatement(GET_DEVICE_PARTICIPATION_STATUS).use { ps ->
                         ps.setObject(1, studyId)
@@ -400,29 +413,23 @@ public open class EnrollmentService(
                         ps.setString(4, participantId)
                         ps.executeQuery().use {
                             check(it.next()) { "Device participation status returned no result" }
-                            when {
+                            val status = when {
                                 it.getBoolean("erased") -> ParticipationStatus.ERASED
                                 it.getString(PARTICIPATION_STATUS.name) == null ->
                                     error("No row returned for study=$studyId, participant=$participantId")
                                 else -> ResultSetAdapters.participantStatus(it)
                             }
+                            val published = withWindows && status != ParticipationStatus.ERASED
+                            MobileParticipationStatus(status, it.getObject("server_time", OffsetDateTime::class.java),
+                                if (published) ParticipantCollectionGate(connection).captureWindows(studyId, participantId)
+                                else emptyList(),
+                                it.getObject("hard_stopped_at", OffsetDateTime::class.java)?.takeIf { published }
+                                    ?.let { at -> HardStop(it.getLong("hard_stop_generation"), at) })
                         }
                     }
                 }
-            } finally {
-                connection.rollback()
-                connection.autoCommit = autoCommit
             }
         }
-
-    override fun getStudyParticipantIds(studyId: UUID): Set<String> {
-        val hds = storageResolver.getPlatformStorage()
-        return BasePostgresIterable(
-            PreparedStatementHolderSupplier(hds, GET_STUDY_PARTICIPANT_IDS) { ps ->
-                ps.setObject(1, studyId)
-            }
-        ) { it.getString(PARTICIPANT_ID.name) }.toSet()
-    }
 
     override fun getStudyParticipants(studyId: UUID): Set<Participant> {
         val hds = storageResolver.getPlatformStorage()

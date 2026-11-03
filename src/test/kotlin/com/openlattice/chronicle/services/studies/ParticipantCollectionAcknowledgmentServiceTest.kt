@@ -1,17 +1,12 @@
 package com.openlattice.chronicle.services.studies
 
+import com.openlattice.chronicle.ScopedLogCapture
 import com.openlattice.chronicle.collection.CollectionAcknowledgment
 import com.openlattice.chronicle.collection.CollectionAcknowledgmentEntry
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.collection.ConsentTrigger
 import com.openlattice.chronicle.storage.StorageResolver
 import com.zaxxer.hikari.HikariDataSource
-import org.apache.logging.log4j.LogManager
-import org.apache.logging.log4j.core.Appender
-import org.apache.logging.log4j.core.LogEvent
-import org.apache.logging.log4j.core.Logger
-import org.apache.logging.log4j.core.appender.AbstractAppender
-import org.apache.logging.log4j.core.config.Property
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -22,19 +17,19 @@ import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 import java.sql.Connection
 import java.sql.PreparedStatement
+import java.sql.ResultSet
 import java.sql.Statement
 import java.time.OffsetDateTime
 import java.util.UUID
-import java.util.concurrent.CopyOnWriteArrayList
 
 class ParticipantCollectionAcknowledgmentServiceTest {
     private val studyId = UUID.randomUUID()
     private val participantId = "participant-1"
-    private val sourceDeviceId = "device-1"
-    private val deviceId = com.openlattice.chronicle.util.DeviceIdUtils.deriveDeviceId(
+    private val sourceRandomDeviceId = "device-1"
+    private val randomDeviceId = com.openlattice.chronicle.util.RandomDeviceIdUtils.deriveRandomDeviceId(
         studyId,
         participantId,
-        sourceDeviceId,
+        sourceRandomDeviceId,
     )
     private val accessCodeId = UUID.randomUUID()
     private val apiKeyId = UUID.randomUUID()
@@ -49,7 +44,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         val entry = fixture.service.recordAcknowledgment(
             studyId,
             participantId,
-            sourceDeviceId,
+            sourceRandomDeviceId,
             apiKeyId,
             acknowledgment,
         )
@@ -60,8 +55,10 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         verify(fixture.statement).setInt(9, 7)
         verify(fixture.statement).setString(13, policyVersion)
         verify(fixture.statement).setString(14, digest)
-        verify(fixture.statement).setObject(15, accessCodeId)
-        verify(fixture.statement).setObject(16, apiKeyId)
+        verify(fixture.statement).setLong(15, 1L)
+        verify(fixture.statement).setObject(16, accessCodeId)
+        verify(fixture.statement).setObject(17, apiKeyId)
+        assertEquals(listOf(7), fixture.loadedSettingsVersions)
         assertEquals(acknowledgment.unavailableModules, entry.unavailableModules)
         assertEquals(7, entry.settingsVersion)
         assertEquals(policyVersion, entry.disclosureVersion)
@@ -70,32 +67,19 @@ class ParticipantCollectionAcknowledgmentServiceTest {
 
     @Test
     fun `recording log fingerprints acknowledgment and study identifiers`() {
-        val captured = CopyOnWriteArrayList<String>()
-        val appender: Appender = object : AbstractAppender(
-            "collection-acknowledgment-id-redaction-capture",
-            null,
-            null,
-            true,
-            Property.EMPTY_ARRAY,
-        ) {
-            override fun append(event: LogEvent) {
-                captured.add(event.message.formattedMessage)
-            }
-        }.also { it.start() }
-        val coreLogger = LogManager.getLogger(ParticipantCollectionAcknowledgmentService::class.java) as Logger
-        coreLogger.addAppender(appender)
+        val capture = ScopedLogCapture(ParticipantCollectionAcknowledgmentService::class.java, pattern = "%m")
+        val captured = capture.messages
 
         val entry = try {
             fixture(authority()).service.recordAcknowledgment(
                 studyId,
                 participantId,
-                sourceDeviceId,
+                sourceRandomDeviceId,
                 apiKeyId,
                 enrollmentAcknowledgment(),
             )
         } finally {
-            coreLogger.removeAppender(appender)
-            appender.stop()
+            capture.close()
         }
 
         val log = captured.joinToString("\n")
@@ -112,6 +96,10 @@ class ParticipantCollectionAcknowledgmentServiceTest {
             enrollmentAcknowledgment().copy(disclosureVersion = "other"),
             enrollmentAcknowledgment().copy(manifestDigest = "b".repeat(64)),
             enrollmentAcknowledgment().copy(
+                acknowledgedModules = setOf(CollectionModuleId.USAGE_EVENTS),
+                declinedModules = setOf(CollectionModuleId.BATTERY_TELEMETRY),
+            ),
+            enrollmentAcknowledgment().copy(
                 acknowledgedModules = setOf(CollectionModuleId.BATTERY_TELEMETRY),
                 declinedModules = emptySet(),
                 unavailableModules = emptySet(),
@@ -120,11 +108,34 @@ class ParticipantCollectionAcknowledgmentServiceTest {
 
         mismatches.forEach { acknowledgment ->
             val fixture = fixture(authority())
-            assertThrows(IllegalArgumentException::class.java) {
-                fixture.service.recordAcknowledgment(studyId, participantId, sourceDeviceId, apiKeyId, acknowledgment)
+            assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
+                fixture.service.recordAcknowledgment(studyId, participantId, sourceRandomDeviceId, apiKeyId, acknowledgment)
             }
             verify(fixture.statement, never()).executeUpdate()
         }
+    }
+
+    @Test
+    fun `acknowledgment without authoritative evidence can never be accepted`() {
+        listOf(
+            enrollmentAcknowledgment().copy(settingsVersion = null),
+            enrollmentAcknowledgment().copy(disclosureVersion = null, manifestDigest = null),
+        ).forEach { acknowledgment ->
+            val fixture = fixture(authority())
+            assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
+                fixture.service.recordAcknowledgment(studyId, participantId, sourceRandomDeviceId, apiKeyId, acknowledgment)
+            }
+            verify(fixture.statement, never()).executeUpdate()
+        }
+    }
+
+    @Test
+    fun `study or enrollment state failures stay request level so the phone keeps the acknowledgment`() {
+        val fixture = fixture(authority(), loadFailure = IllegalArgumentException("Study participant policy is unavailable"))
+        val failure = assertThrows(IllegalArgumentException::class.java) {
+            fixture.service.recordAcknowledgment(studyId, participantId, sourceRandomDeviceId, apiKeyId, enrollmentAcknowledgment())
+        }
+        assertFalse(failure is CollectionAcknowledgmentRejectedException)
     }
 
     @Test
@@ -134,7 +145,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
             id = UUID.randomUUID(),
             studyId = studyId,
             participantId = participantId,
-            sourceDeviceId = sourceDeviceId,
+            sourceRandomDeviceId = sourceRandomDeviceId,
             acknowledgedModules = acknowledgment.acknowledgedModules,
             acknowledgedAt = acknowledgment.acknowledgedAt,
             declinedModules = acknowledgment.declinedModules,
@@ -149,7 +160,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         val fixture = fixture(authority(), existing)
 
         val replay = fixture.service.recordAcknowledgment(
-            studyId, participantId, sourceDeviceId, apiKeyId, acknowledgment,
+            studyId, participantId, sourceRandomDeviceId, apiKeyId, acknowledgment,
         )
 
         assertEquals(existing, replay)
@@ -162,7 +173,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         val existing = CollectionAcknowledgmentEntry(
             studyId = studyId,
             participantId = participantId,
-            sourceDeviceId = sourceDeviceId,
+            sourceRandomDeviceId = sourceRandomDeviceId,
             acknowledgedModules = acknowledgment.acknowledgedModules,
             acknowledgedAt = acknowledgment.acknowledgedAt,
             declinedModules = acknowledgment.declinedModules,
@@ -179,8 +190,8 @@ class ParticipantCollectionAcknowledgmentServiceTest {
             declinedModules = setOf(CollectionModuleId.BATTERY_TELEMETRY),
         )
 
-        assertThrows(IllegalArgumentException::class.java) {
-            fixture.service.recordAcknowledgment(studyId, participantId, sourceDeviceId, apiKeyId, changed)
+        assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
+            fixture.service.recordAcknowledgment(studyId, participantId, sourceRandomDeviceId, apiKeyId, changed)
         }
         verify(fixture.statement, never()).executeUpdate()
     }
@@ -202,14 +213,14 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         val fixture = fixture(historicalAuthority)
 
         val entry = fixture.service.recordAcknowledgment(
-            studyId, participantId, sourceDeviceId, apiKeyId, delayed,
+            studyId, participantId, sourceRandomDeviceId, apiKeyId, delayed,
         )
 
         assertEquals(7, entry.settingsVersion)
     }
 
     @Test
-    fun `later decision cannot cite a revision newer than the latest locked study revision`() {
+    fun `later decision ahead of server state stays queued and succeeds when the server catches up`() {
         val futureAuthority = authority().copy(
             latestSettingsVersion = 9,
             decisionSettingsVersion = 10,
@@ -225,12 +236,19 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         )
         val fixture = fixture(futureAuthority)
 
-        assertThrows(IllegalArgumentException::class.java) {
+        val failure = assertThrows(IllegalArgumentException::class.java) {
             fixture.service.recordAcknowledgment(
-                studyId, participantId, sourceDeviceId, apiKeyId, acknowledgment,
+                studyId, participantId, sourceRandomDeviceId, apiKeyId, acknowledgment,
             )
         }
+        assertFalse(failure is CollectionAcknowledgmentRejectedException)
         verify(fixture.statement, never()).executeUpdate()
+
+        val recovered = fixture(futureAuthority.copy(latestSettingsVersion = 10))
+        val entry = recovered.service.recordAcknowledgment(
+            studyId, participantId, sourceRandomDeviceId, apiKeyId, acknowledgment,
+        )
+        assertEquals(acknowledgment.settingsVersion, entry.settingsVersion)
     }
 
     @Test
@@ -241,9 +259,9 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         )
         val fixture = fixture(authority())
 
-        assertThrows(IllegalArgumentException::class.java) {
+        assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
             fixture.service.recordAcknowledgment(
-                studyId, participantId, sourceDeviceId, apiKeyId, acknowledgment,
+                studyId, participantId, sourceRandomDeviceId, apiKeyId, acknowledgment,
             )
         }
         verify(fixture.statement, never()).executeUpdate()
@@ -266,9 +284,9 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         )
         val fixture = fixture(preEnrollmentAuthority)
 
-        assertThrows(IllegalArgumentException::class.java) {
+        assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
             fixture.service.recordAcknowledgment(
-                studyId, participantId, sourceDeviceId, apiKeyId, acknowledgment,
+                studyId, participantId, sourceRandomDeviceId, apiKeyId, acknowledgment,
             )
         }
         verify(fixture.statement, never()).executeUpdate()
@@ -292,7 +310,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
 
         val settingsFixture = fixture(requiredAuthority)
         val halted = settingsFixture.service.recordAcknowledgment(
-            studyId, participantId, sourceDeviceId, apiKeyId, declined,
+            studyId, participantId, sourceRandomDeviceId, apiKeyId, declined,
         )
         assertEquals(ConsentTrigger.SETTINGS_CHANGE, halted.trigger)
 
@@ -300,7 +318,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         val entry = withdrawalFixture.service.recordAcknowledgment(
             studyId,
             participantId,
-            sourceDeviceId,
+            sourceRandomDeviceId,
             apiKeyId,
             declined.copy(trigger = ConsentTrigger.WITHDRAWAL),
         )
@@ -324,11 +342,38 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         )
         val fixture = fixture(requiredAuthority)
 
-        assertThrows(IllegalArgumentException::class.java) {
+        assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
             fixture.service.recordAcknowledgment(
-                studyId, participantId, sourceDeviceId, apiKeyId, inconsistent,
+                studyId, participantId, sourceRandomDeviceId, apiKeyId, inconsistent,
             )
         }
+        verify(fixture.statement, never()).executeUpdate()
+    }
+
+    /**
+     * A re-consent must cite the settings revision the server issued for that decision. Citing a later revision that
+     * did not change collection (here 9, while the decision was issued at 8) is permanently refused, never stored.
+     */
+    @Test
+    fun `re-consent citing a revision other than the issued decision revision is refused`() {
+        val fixture = fixture(authority().copy(
+            latestSettingsVersion = 9,
+            decisionSettingsVersion = 8,
+            decisionRequiredModules = emptySet(),
+        ))
+        val reconsent = enrollmentAcknowledgment().copy(
+            acknowledgedModules = setOf(CollectionModuleId.BATTERY_TELEMETRY),
+            declinedModules = emptySet(),
+            unavailableModules = emptySet(),
+            trigger = ConsentTrigger.SETTINGS_CHANGE,
+            settingsVersion = 9,
+        )
+
+        val refused = assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
+            fixture.service.recordAcknowledgment(studyId, participantId, sourceRandomDeviceId, apiKeyId, reconsent)
+        }
+
+        assertEquals("settingsVersion does not match the server-issued decision revision", refused.message)
         verify(fixture.statement, never()).executeUpdate()
     }
 
@@ -341,6 +386,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         )
         val fixture = fixture(requiredAuthority)
 
+        // The shared model refuses it while decoding: on the wire a body-parse 400 the phone keeps (contract drift).
         assertThrows(IllegalArgumentException::class.java) {
             val bypass = enrollmentAcknowledgment().copy(
                 acknowledgedModules = emptySet(),
@@ -355,12 +401,55 @@ class ParticipantCollectionAcknowledgmentServiceTest {
             fixture.service.recordAcknowledgment(
                 studyId,
                 participantId,
-                sourceDeviceId,
+                sourceRandomDeviceId,
                 apiKeyId,
                 bypass,
             )
         }
         verify(fixture.statement, never()).executeUpdate()
+    }
+
+    // The model's init is not the service's check: Jackson writes a repeated JSON key into the field after the
+    // constructor ran, so a decoded acknowledgment can carry a non-sensor "unavailable" module. The service must
+    // refuse it as a rejected acknowledgment (COLLECTION_ACK_REJECTED) before any write, on both paths.
+    @Test
+    fun `a non sensor module smuggled into unavailable is a rejected acknowledgment on both paths`() {
+        val postEnrollmentAuthority = authority().copy(
+            latestSettingsVersion = 9,
+            decisionSettingsVersion = 9,
+        )
+        val cases = listOf(
+            authority() to enrollmentAcknowledgment().copy(acknowledgedModules = emptySet()),
+            postEnrollmentAuthority to enrollmentAcknowledgment().copy(
+                acknowledgedModules = emptySet(),
+                trigger = ConsentTrigger.SETTINGS_CHANGE,
+                settingsVersion = 9,
+            ),
+        )
+        for ((caseAuthority, acknowledgment) in cases) {
+            val fixture = fixture(caseAuthority)
+            val smuggled = decodeWithRepeatedUnavailableKey(acknowledgment)
+            assertEquals(
+                setOf(CollectionModuleId.BATTERY_TELEMETRY, CollectionModuleId.SENSOR_ACCELEROMETER),
+                smuggled.unavailableModules,
+            )
+
+            val refused = assertThrows(CollectionAcknowledgmentRejectedException::class.java) {
+                fixture.service.recordAcknowledgment(studyId, participantId, sourceRandomDeviceId, apiKeyId, smuggled)
+            }
+
+            assertEquals("Only per-sensor modules may be unavailable", refused.message)
+            verify(fixture.statement, never()).executeUpdate()
+        }
+    }
+
+    private fun decodeWithRepeatedUnavailableKey(acknowledgment: CollectionAcknowledgment): CollectionAcknowledgment {
+        // Any mapper that tolerates repeated keys; the production mapper refuses them (JacksonSecurityConfigTest).
+        val mapper = com.openlattice.chronicle.configuration.JacksonSecurityConfig().secureObjectMapper().copy()
+            .configure(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION, false)
+        val body = mapper.writeValueAsString(acknowledgment).removeSuffix("}") +
+            ",\"unavailableModules\":[\"battery_telemetry\",\"sensor_accelerometer\"]}"
+        return mapper.readValue(body, CollectionAcknowledgment::class.java)
     }
 
     private fun enrollmentAcknowledgment() = CollectionAcknowledgment(
@@ -401,6 +490,7 @@ class ParticipantCollectionAcknowledgmentServiceTest {
     private fun fixture(
         authority: CollectionAcknowledgmentAuthority,
         existingEnrollment: CollectionAcknowledgmentEntry? = null,
+        loadFailure: Exception? = null,
     ): Fixture {
         val storageResolver = Mockito.mock(StorageResolver::class.java)
         val dataSource = Mockito.mock(HikariDataSource::class.java)
@@ -409,22 +499,28 @@ class ParticipantCollectionAcknowledgmentServiceTest {
         val contextStatement = Mockito.mock(Statement::class.java)
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
         Mockito.`when`(dataSource.connection).thenReturn(connection)
-        Mockito.`when`(connection.autoCommit).thenReturn(true)
+        var autoCommit = true
+        Mockito.doAnswer { autoCommit = it.getArgument(0); null }.`when`(connection).autoCommit = Mockito.anyBoolean()
+        Mockito.`when`(connection.autoCommit).thenAnswer { autoCommit }
         Mockito.`when`(connection.createStatement()).thenReturn(contextStatement)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
         Mockito.`when`(statement.executeUpdate()).thenReturn(1)
+        // An iOS-style decision without a sequence takes the next one from the database.
+        val loadedSettingsVersions = mutableListOf<Int>()
+        val nextSeq = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(nextSeq.next()).thenReturn(true)
+        Mockito.`when`(nextSeq.getLong(1)).thenReturn(1L)
+        Mockito.`when`(statement.executeQuery()).thenReturn(nextSeq)
         val service = ParticipantCollectionAcknowledgmentService(
             storageResolver = storageResolver,
             authorityLoader = {
                     _, loadedStudy, loadedParticipant, loadedDevice, loadedApiKey, loadedSettingsVersion ->
+                loadFailure?.let { throw it }
                 require(loadedStudy == studyId)
                 require(loadedParticipant == participantId)
-                require(loadedDevice == deviceId)
+                require(loadedDevice == randomDeviceId)
                 require(loadedApiKey == apiKeyId)
-                require(
-                    loadedSettingsVersion == authority.decisionSettingsVersion ||
-                        loadedSettingsVersion == authority.enrollmentSettingsVersion,
-                )
+                loadedSettingsVersions += loadedSettingsVersion
                 authority
             },
             enrollmentReplayLoader = { _, loadedAccessCodeId, loadedApiKeyId ->
@@ -433,11 +529,12 @@ class ParticipantCollectionAcknowledgmentServiceTest {
                 existingEnrollment
             },
         )
-        return Fixture(service, statement)
+        return Fixture(service, statement, loadedSettingsVersions)
     }
 
     private data class Fixture(
         val service: ParticipantCollectionAcknowledgmentService,
         val statement: PreparedStatement,
+        val loadedSettingsVersions: List<Int>,
     )
 }

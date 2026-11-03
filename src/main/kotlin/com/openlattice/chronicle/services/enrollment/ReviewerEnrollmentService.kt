@@ -1,7 +1,9 @@
 package com.openlattice.chronicle.services.enrollment
 
-import com.openlattice.chronicle.audit.AuditAction
-import com.openlattice.chronicle.audit.AuditLogEntryBuilder
+import com.openlattice.chronicle.storage.rls.RLSConnectionContext
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.audit.AuditEntryBuilder
 import com.openlattice.chronicle.audit.AuditRequestContext
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.data.ParticipationStatus
@@ -61,8 +63,10 @@ public open class ReviewerEnrollmentService(
     public fun validateConfiguredScope() {
         scope?.let { configuredScope ->
             val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
-            requireAvailableStudy(configuredScope, now)
-            requireAvailableParticipant(configuredScope)
+            RLSRequestContext.withContext(RLSConnectionContext(ISSUED_BY, setOf(configuredScope.studyId), isAdmin = false)) {
+                requireAvailableStudy(configuredScope, now)
+                requireAvailableParticipant(configuredScope)
+            }
         }
     }
 
@@ -140,18 +144,14 @@ public open class ReviewerEnrollmentService(
 
     private fun audit(studyId: UUID, success: Boolean, status: HttpStatus, outcome: String) {
         auditService.log(
-            AuditLogEntryBuilder()
-                .ipAddress(ClientIpRecord.WITHHELD)
-                .userAgent(AuditRequestContext.getUserAgent())
-                .requestPath(AuditRequestContext.getRequestPath())
-                .requestMethod(AuditRequestContext.getRequestMethod())
-                .action(if (success) AuditAction.CREATE else AuditAction.INVALID_REQUEST)
+            AuditEntryBuilder()
+                .request(AuditRequestContext.getCurrentRequest(), ClientIpRecord.WITHHELD)
+                .action(if (success) AuditEventType.CREATE else AuditEventType.INVALID_REQUEST)
                 .resourceType("PlayReviewerEnrollmentInvitation")
                 .studyId(studyId)
                 .success(success)
                 .responseCode(status.value())
-                .additionalData(mapOf("outcome" to outcome))
-                .build(),
+                .additionalData(mapOf("outcome" to outcome)),
         )
     }
 }

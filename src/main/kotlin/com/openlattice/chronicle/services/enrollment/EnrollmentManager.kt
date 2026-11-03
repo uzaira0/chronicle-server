@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.services.enrollment
 
+import com.openlattice.chronicle.data.MobileParticipationStatus
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.sources.SourceDevice
@@ -17,11 +18,11 @@ public interface EnrollmentManager {
     public fun registerDevice(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         sourceDevice: SourceDevice
     ): UUID
 
-    public fun isKnownDatasource(studyId: UUID, participantId: String, deviceId: UUID): Boolean
+    public fun isKnownDatasource(studyId: UUID, participantId: String, randomDeviceId: UUID): Boolean
     public fun isKnownParticipant(studyId: UUID, participantId: String): Boolean
 
     public fun getParticipant(studyId: UUID, participantId: String): Participant
@@ -33,7 +34,9 @@ public interface EnrollmentManager {
      * NOT_ENROLLED for installed clients without the erasure-status capability.
      */
     public fun getDeviceParticipationStatus(studyId: UUID, participantId: String): ParticipationStatus
-    public fun getStudyParticipantIds(studyId: UUID): Set<String>
+
+    /** [getDeviceParticipationStatus] for the phone's status poll: also the capture windows and the server's clock. */
+    public fun getDeviceCollectionStatus(studyId: UUID, participantId: String): MobileParticipationStatus
     public fun getStudyParticipants(studyId: UUID): Set<Participant>
     public fun studyExists(studyId: UUID): Boolean
     public fun getOrganizationIdForStudy(studyId: UUID): UUID

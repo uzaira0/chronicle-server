@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionModuleId
-import com.openlattice.chronicle.controllers.validatePlayCollectionPolicy
+import com.openlattice.chronicle.services.studies.validateClientSupportedCollectionPolicy
 import com.openlattice.chronicle.services.studies.collectionSettingsForFeatures
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.services.participantaccess.EnrollmentAccessCodeScope
@@ -20,7 +20,7 @@ import com.openlattice.chronicle.study.StudyParticipantPolicy
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.sources.SourceDevice
-import com.openlattice.chronicle.util.DeviceIdUtils
+import com.openlattice.chronicle.util.RandomDeviceIdUtils
 import org.springframework.http.HttpStatus
 import org.springframework.web.server.ResponseStatusException
 import java.net.URI
@@ -63,57 +63,75 @@ public open class EnrollmentManifestService(
         enrollmentCode: String,
         acceptedManifestDigest: String,
         enrollmentAttemptId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         sourceDevice: SourceDevice,
         proposedApiKey: String,
-    ): Boolean {
+    ): EnrollmentAuthorization {
         val parsedAttempt = parseEnrollmentAttempt(
             acceptedManifestDigest,
             enrollmentAttemptId,
-            sourceDeviceId,
+            sourceRandomDeviceId,
             proposedApiKey,
-        ) ?: return false
+        ) ?: return EnrollmentAuthorization.REFUSED
         val scope = participantFormAccessService.resolveEnrollmentAccessCodeForRequest(
             enrollmentCode,
             studyId,
             participantId,
-        ) ?: return false
-        val acceptedPreview = previewFor(scope)
-        if (!secureDigestEquals(acceptedPreview.manifestDigest, acceptedManifestDigest)) return false
-        val acceptedEvidence = consentEvidence(acceptedPreview)
+        ) ?: return refusedOrCancelled(parsedAttempt.attemptId)
+        val committedBinding = scope.committedBinding
+        val acceptedEvidence = if (committedBinding == null) {
+            val acceptedPreview = previewFor(scope)
+            if (!secureDigestEquals(acceptedPreview.manifestDigest, acceptedManifestDigest)) {
+                return EnrollmentAuthorization.STUDY_CHANGED
+            }
+            consentEvidence(acceptedPreview)
+        } else null
         val binding = EnrollmentAttemptBinding(
             attemptId = parsedAttempt.attemptId,
             studyId = studyId,
             participantId = participantId,
-            sourceDeviceHash = EnrollmentAttemptDigest.sha256Text(sourceDeviceId),
-            deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId),
+            sourceDeviceHash = EnrollmentAttemptDigest.sha256Text(sourceRandomDeviceId),
+            randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(studyId, participantId, sourceRandomDeviceId),
             manifestDigest = acceptedManifestDigest,
             requestHash = EnrollmentAttemptDigest.canonicalSourceDeviceHash(sourceDevice),
             proposedApiKeyHash = parsedAttempt.proposedKeyHash,
-            enrollmentSettingsVersion = acceptedEvidence.settingsVersion,
-            enrollmentDisclosureVersion = acceptedEvidence.disclosureVersion,
-            enrollmentEnabledModules = acceptedEvidence.enabledModules,
-            enrollmentRequiredModules = acceptedEvidence.requiredModules,
+            enrollmentSettingsVersion = committedBinding?.enrollmentSettingsVersion ?: acceptedEvidence?.settingsVersion,
+            enrollmentDisclosureVersion = committedBinding?.enrollmentDisclosureVersion ?: acceptedEvidence?.disclosureVersion,
+            enrollmentEnabledModules = committedBinding?.enrollmentEnabledModules ?: acceptedEvidence?.enabledModules,
+            enrollmentRequiredModules = committedBinding?.enrollmentRequiredModules ?: acceptedEvidence?.requiredModules,
         )
-        return participantFormAccessService.authorizeEnrollmentAttempt(
+        var studyChanged = false
+        val authorized = participantFormAccessService.authorizeEnrollmentAttempt(
             enrollmentCode,
             studyId,
             participantId,
             binding,
         ) { connection, scope ->
-            val lockedPreview = previewFor(scope, lockedStudyLoader(connection, scope.studyId))
-            secureDigestEquals(lockedPreview.manifestDigest, acceptedManifestDigest) &&
-                consentEvidence(lockedPreview) == acceptedEvidence
+            if (acceptedEvidence == null) false else {
+                val lockedPreview = previewFor(scope, lockedStudyLoader(connection, scope.studyId))
+                (secureDigestEquals(lockedPreview.manifestDigest, acceptedManifestDigest) &&
+                    consentEvidence(lockedPreview) == acceptedEvidence).also { studyChanged = !it }
+            }
+        }
+        return when {
+            authorized -> EnrollmentAuthorization.AUTHORIZED
+            studyChanged -> EnrollmentAuthorization.STUDY_CHANGED
+            else -> refusedOrCancelled(parsedAttempt.attemptId)
         }
     }
+
+    /** A refusal of an attempt a cancel ended is answered as cancelled, so the phone shows that state. */
+    private fun refusedOrCancelled(attemptId: UUID): EnrollmentAuthorization =
+        if (participantFormAccessService.isCancelledEnrollmentAttempt(attemptId)) EnrollmentAuthorization.CANCELLED
+        else EnrollmentAuthorization.REFUSED
 
     private fun parseEnrollmentAttempt(
         acceptedManifestDigest: String,
         enrollmentAttemptId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         proposedApiKey: String,
     ): ParsedEnrollmentAttempt? {
-        if (!EnrollmentManifestDigest.isDigest(acceptedManifestDigest) || sourceDeviceId.isBlank()) return null
+        if (!EnrollmentManifestDigest.isDigest(acceptedManifestDigest) || sourceRandomDeviceId.isBlank()) return null
         val attemptId = EnrollmentAttemptDigest.parseCanonicalUuid(enrollmentAttemptId) ?: return null
         val proposedKeyHash = ApiKeyService.proposedMobileApiKeyHash(proposedApiKey) ?: return null
         return ParsedEnrollmentAttempt(attemptId, proposedKeyHash)
@@ -129,7 +147,7 @@ public open class EnrollmentManifestService(
         val collectionSettings = collectionSettingsForFeatures(study.settings, study.modules.keys.map { it.name }.toSet(
             ))[StudySettingType.DataCollection] as? AndroidDataCollectionSetting
             ?: throw incompleteEnrollmentConfiguration("versioned DataCollection settings")
-        validatePlayCollectionPolicy(collectionSettings)
+        validateClientSupportedCollectionPolicy(collectionSettings)
         val manifest = EnrollmentManifest(
             serverOrigin = publicOrigin,
             studyId = scope.studyId,
@@ -141,20 +159,18 @@ public open class EnrollmentManifestService(
             settingsVersion = collectionSettings.settingsVersion,
             issuedAt = scope.issuedAt,
             expiresAt = scope.expiresAt,
-            withdrawalMode = (study.settings[StudySettingType.Withdrawal] as? com.openlattice.chronicle.study.StudyWithdrawalSetting)
-                ?.mode ?: com.openlattice.chronicle.study.WithdrawalMode.ERASE,
+            withdrawalMode = study.settings.withdrawal().mode,
         )
         return EnrollmentPreviewResponse(manifest, EnrollmentManifestDigest.compute(manifest))
     }
 
     private fun consentEvidence(preview: EnrollmentPreviewResponse): EnrollmentConsentEvidence {
         val collectionSettings = preview.manifest.collectionSettings
-        val modules = collectionSettings.effectiveModules()
         return EnrollmentConsentEvidence(
             settingsVersion = preview.manifest.settingsVersion,
             disclosureVersion = preview.manifest.participantPolicy.version,
             enabledModules = collectionSettings.effectiveEnabledModuleIds(),
-            requiredModules = modules.filterValues { it.enabled && it.required }.keys,
+            requiredModules = collectionSettings.effectiveRequiredModuleIds(),
         )
     }
 
@@ -296,3 +312,14 @@ internal object EnrollmentManifestDigest {
         )
     }
 }
+
+/**
+ * An enroll request's verdict. STUDY_CHANGED: the study the participant reviewed is no longer the study (the digest
+ * differs); the invitation stays live, so opening it again shows the current study. CANCELLED: a cancel (dashboard or
+ * phone) ended this attempt; the participant stays as they were.
+ */
+public enum class EnrollmentAuthorization { AUTHORIZED, REFUSED, STUDY_CHANGED, CANCELLED }
+
+/** An enroll answered with an `EnrollmentAttemptContracts` code the phone acts on. */
+public class EnrollmentAttemptEndedException(status: HttpStatus, reason: String, public val code: String) :
+    ResponseStatusException(status, reason)

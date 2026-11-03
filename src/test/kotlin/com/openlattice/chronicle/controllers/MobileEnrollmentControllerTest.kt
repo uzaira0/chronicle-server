@@ -1,7 +1,13 @@
 package com.openlattice.chronicle.controllers
 
+import org.junit.Assert.assertThrows
+
 import com.openlattice.chronicle.apikey.ApiKeyScope
 import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
+import com.openlattice.chronicle.services.apikeys.ApiKeyService
+import com.openlattice.chronicle.i18n.Messages
+import com.openlattice.chronicle.services.apikeys.InvalidWithdrawalRequestException
+import com.openlattice.chronicle.services.apikeys.PendingAttemptCancellation
 import com.openlattice.chronicle.services.delete.MobileSelfWithdrawalResult
 import com.openlattice.chronicle.services.delete.ParticipantPurgeService
 import org.junit.Assert.assertEquals
@@ -10,27 +16,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
+import org.springframework.http.HttpStatus
 import org.springframework.security.core.authority.SimpleGrantedAuthority
+import org.springframework.web.server.ResponseStatusException
 import java.util.UUID
 
 class MobileEnrollmentControllerTest {
     private val participantPurgeService = Mockito.mock(ParticipantPurgeService::class.java)
     private val studyId = UUID.randomUUID()
     private val keyId = UUID.randomUUID()
-    private val deviceId = UUID.randomUUID()
+    private val randomDeviceId = UUID.randomUUID()
     private val participantId = "participant-1"
     private lateinit var controller: MobileEnrollmentController
     private lateinit var token: ApiKeyAuthenticationToken
 
     @Before
     fun setUp() {
-        controller = MobileEnrollmentController(participantPurgeService)
+        controller = MobileEnrollmentController(participantPurgeService, Mockito.mock(ApiKeyService::class.java))
         token = ApiKeyAuthenticationToken(
             principal = "apikey:$keyId",
             keyId = keyId,
             studyId = studyId,
             participantId = participantId,
-            deviceId = deviceId,
+            randomDeviceId = randomDeviceId,
             scope = ApiKeyScope.WRITE,
             authorities = listOf(SimpleGrantedAuthority("ROLE_API_KEY")),
         )
@@ -44,7 +52,7 @@ class MobileEnrollmentControllerTest {
             participantPurgeService.executeSelfWithdrawal(
                 studyId,
                 participantId,
-                deviceId,
+                randomDeviceId,
                 keyId,
                 requestId,
             ),
@@ -63,7 +71,7 @@ class MobileEnrollmentControllerTest {
         Mockito.verify(participantPurgeService).executeSelfWithdrawal(
             studyId,
             participantId,
-            deviceId,
+            randomDeviceId,
             keyId,
             requestId,
         )
@@ -76,7 +84,7 @@ class MobileEnrollmentControllerTest {
             participantPurgeService.executeSelfWithdrawal(
                 studyId,
                 participantId,
-                deviceId,
+                randomDeviceId,
                 keyId,
                 requestId,
             ),
@@ -99,7 +107,7 @@ class MobileEnrollmentControllerTest {
         Mockito.verify(participantPurgeService, Mockito.times(2)).executeSelfWithdrawal(
             studyId,
             participantId,
-            deviceId,
+            randomDeviceId,
             keyId,
             requestId,
         )
@@ -113,7 +121,7 @@ class MobileEnrollmentControllerTest {
             participantPurgeService.executeSelfWithdrawal(
                 studyId,
                 participantId,
-                deviceId,
+                randomDeviceId,
                 keyId,
                 requestId,
             ),
@@ -144,8 +152,61 @@ class MobileEnrollmentControllerTest {
         Mockito.verifyNoInteractions(participantPurgeService)
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    /** 410 tells the phone this withdrawal can never succeed with its credential; 401 stays retryable. */
+    @Test
+    fun permanentlyRefusedWithdrawalIsGoneSoThePhoneRoutesToSupport() {
+        val requestId = UUID.randomUUID()
+        Mockito.`when`(participantPurgeService.executeSelfWithdrawal(studyId, participantId, randomDeviceId, keyId, requestId))
+            .thenThrow(InvalidWithdrawalRequestException())
+
+        val refusal = assertThrows(ResponseStatusException::class.java) {
+            controller.withdrawCurrentEnrollment(requestId.toString(), token)
+        }
+        assertEquals(HttpStatus.GONE, refusal.statusCode)
+    }
+
+    /**
+     * A phone whose enrollment attempt bound but whose key never installed cancels that attempt: cancelled answers
+     * 202 with the attempt id as receipt, a finished enrollment is a conflict telling it to withdraw instead, and an
+     * attempt the server does not know is gone. None of these withdraws or deletes anything.
+     */
+    @Test
+    fun cancellingABoundAttemptAnswersByOutcomeAndNeverWithdraws() {
+        val apiKeys = Mockito.mock(ApiKeyService::class.java)
+        val cancelling = MobileEnrollmentController(participantPurgeService, apiKeys)
+        val attemptId = UUID.randomUUID()
+        val pending = ApiKeyAuthenticationToken(
+            principal = "apikey:$keyId", keyId = keyId, studyId = studyId, participantId = participantId,
+            randomDeviceId = randomDeviceId, scope = ApiKeyScope.WRITE,
+            authorities = listOf(SimpleGrantedAuthority("ROLE_API_KEY")),
+            restriction = ApiKeyAuthenticationToken.Restriction.PendingAttempt("proposed-key-hash"),
+        )
+        fun cancel(outcome: PendingAttemptCancellation): Any {
+            Mockito.`when`(apiKeys.cancelPendingEnrollmentAttempt(studyId, participantId, randomDeviceId, attemptId,
+                "proposed-key-hash")).thenReturn(outcome)
+            return try {
+                cancelling.withdrawCurrentEnrollment(attemptId.toString(), pending)
+            } catch (refused: ResponseStatusException) {
+                refused.statusCode to refused.reason
+            }
+        }
+        for (outcome in listOf(PendingAttemptCancellation.CANCELLED, PendingAttemptCancellation.ALREADY_CANCELLED)) {
+            val receipt = cancel(outcome) as com.openlattice.chronicle.study.EnrollmentWithdrawalResponse
+            assertEquals(attemptId, receipt.requestId)
+            assertFalse(receipt.alreadyWithdrawn)
+            assertTrue(receipt.deletionJobIds.isEmpty())
+        }
+        assertEquals(HttpStatus.CONFLICT to Messages.get("error.enrollment.cancelAfterEnrollment"),
+            cancel(PendingAttemptCancellation.NOT_CANCELLABLE))
+        assertEquals(HttpStatus.GONE to Messages.get("error.enrollment.apiKeyInvalid"),
+            cancel(PendingAttemptCancellation.UNKNOWN))
+        Mockito.verifyNoInteractions(participantPurgeService)
+    }
+
+    @Test
     fun nonCanonicalWithdrawalRequestIdIsRejectedBeforeAnyDestructiveWork() {
-        controller.withdrawCurrentEnrollment(UUID.randomUUID().toString().uppercase(), token)
+        assertThrows(IllegalArgumentException::class.java) {
+            controller.withdrawCurrentEnrollment(UUID.randomUUID().toString().uppercase(), token)
+        }
     }
 }

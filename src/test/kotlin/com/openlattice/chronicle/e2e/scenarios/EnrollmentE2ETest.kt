@@ -86,8 +86,7 @@ class EnrollmentE2ETest : ChronicleServerTests() {
                 participants.forEach { client.studyApi.registerParticipant(studyId, it) }
                 val operations = client.studyApi.deleteStudyParticipants(studyId, participants.map { it.participantId }.toSet()).toList()
                 assertEquals(participants.size, operations.size)
-                val storage = testServer.context.getBean(com.openlattice.chronicle.storage.StorageResolver::class.java)
-                storage.getAuditStorage().second.connection.use { connection ->
+                hds.connection.use { connection ->
                     connection.prepareStatement(
                         "SELECT jsonb_array_length(data::jsonb -> 'operationIds') FROM audit WHERE study_id = ? AND audit_event_type = ?",
                     ).use { statement ->

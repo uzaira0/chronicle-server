@@ -1,6 +1,6 @@
 package com.openlattice.chronicle.services.enrollment
 
-import com.openlattice.chronicle.audit.AuditLogEntry
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.participantaccess.ParticipantFormAccessCodeResponse
@@ -20,7 +20,6 @@ import org.mockito.Mockito
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 import org.mockito.kotlin.any
-import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.whenever
 import org.springframework.web.server.ResponseStatusException
@@ -39,7 +38,24 @@ class ReviewerEnrollmentServiceTest {
     private val enrollmentManager = Mockito.mock(EnrollmentManager::class.java)
     private val studyService = Mockito.mock(StudyService::class.java)
     private val studyLifecycleService = Mockito.mock(com.openlattice.chronicle.services.studies.StudyLifecycleService::class.java)
-    private val auditService = Mockito.mock(AuditService::class.java)
+    private val audit = com.openlattice.chronicle.audit.RecordingAuditingManager()
+    private val auditService = AuditService(audit)
+
+    @Test
+    fun `startup validation scopes only the configured study and restores its caller`() {
+        val caller = RLSRequestContext.current()
+        whenever(studyService.getStudy(studyId)).thenAnswer {
+            val scope = requireNotNull(RLSRequestContext.current())
+            assertEquals(setOf(studyId), scope.authorizedStudyIds)
+            assertFalse(scope.isAdmin)
+            activeStudy()
+        }
+        whenever(enrollmentManager.isKnownParticipant(studyId, participantId)).thenReturn(true)
+        whenever(enrollmentManager.getParticipationStatus(studyId, participantId)).thenReturn(ParticipationStatus.ENROLLED)
+        whenever(studyLifecycleService.getLifecycleStatus(studyId)).thenReturn(StudyLifecycleStatus.ACTIVE)
+        service().validateConfiguredScope()
+        assertEquals(caller, RLSRequestContext.current())
+    }
 
     @Test
     fun `each bootstrap replaces the prior reviewer invite and returns a fresh one-time code manifest pair`() {
@@ -88,11 +104,10 @@ class ReviewerEnrollmentServiceTest {
             ParticipantAccessCodeIssuerType.RESEARCHER,
             ReviewerEnrollmentService.ISSUED_BY,
         )
-        val auditCaptor = argumentCaptor<AuditLogEntry>()
-        verify(auditService, Mockito.times(2)).log(auditCaptor.capture())
-        auditCaptor.allValues.forEach { entry ->
-            assertEquals(studyId, entry.studyId)
-            assertEquals(true, entry.success)
+        assertEquals(2, audit.events.size)
+        audit.events.forEach { entry ->
+            assertEquals(studyId, entry.study)
+            assertEquals(true, entry.data["success"])
             assertFalse(entry.toString().contains(participantId))
             assertFalse(entry.toString().contains(firstCode))
             assertFalse(entry.toString().contains(secondCode))
@@ -199,7 +214,6 @@ class ReviewerEnrollmentServiceTest {
         title = "Play review study",
         contact = "review@example.org",
         startedAt = now.minusDays(1),
-        endedAt = now.plusDays(30),
     )
 
     private fun accessCode(value: String): ParticipantFormAccessCodeResponse =
