@@ -1,100 +1,59 @@
 package com.openlattice.chronicle.storage.rls
 
+import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import java.sql.Connection
+import java.sql.ResultSet
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
 
-/**
- * Regression guard: every participant-data collection table MUST be study-isolated by a
- * Row-Level Security policy defined in the migration corpus.
- *
- * This is the automated form of the gap that shipped silently for `android_sensor_data`
- * (and `android_device_sensor_availability`): they were created by the PostgresTables
- * framework but never got an RLS policy, so they were the only collection tables without
- * DB-level study isolation. This test reads the actual `db/migration` SQL corpus and
- * asserts each required table has BOTH `ALTER TABLE <t> ENABLE ROW LEVEL SECURITY` and a
- * `CREATE POLICY study_isolation_* ON <t>`. If a new collection table is added, add it to
- * [REQUIRED_PARTICIPANT_DATA_TABLES] — and the test then forces a matching RLS migration.
- *
- * Complements [RLSStudyIsolationTest] (which proves the policy MECHANISM isolates at
- * runtime); this proves COVERAGE — that no participant-data table is left out.
- */
+/** New public tables must explicitly declare their row isolation or explain their global role. */
 class RlsCoverageTest {
-
-    private companion object {
-        // Tables that hold participant / study-scoped data and therefore MUST be RLS-isolated.
-        val REQUIRED_PARTICIPANT_DATA_TABLES = listOf(
-            "chronicle_usage_events",
-            "chronicle_usage_stats",
-            "sensor_data",                          // iOS
-            "android_sensor_data",
-            "android_device_sensor_availability",
-            "battery_telemetry",
-            "interaction_events",
-            "app_audio_activity",
-            "app_audio_content",
-            "ambient_audio_events",
-            "notification_activity",
-            "sleep_events",
-            "activity_recognition_events",
-            "health_metrics",
-            "connectivity_state_events",
-            "app_network_usage",
-            "device_settings",
-            "encrypted_payloads",
-            "app_usage_survey",
-            "questionnaire_submissions",
-            "time_use_diary_submissions",
-            "time_use_diary_summarized",
-            "upload_buffer",
-            "study_participants",
-        )
-
-        fun migrationCorpus(): String {
-            val dir = sequenceOf(
-                File("src/main/resources/db/migration"),
-                File("chronicle-server/src/main/resources/db/migration"),
-            ).firstOrNull { it.isDirectory }
-                ?: error("Could not locate db/migration directory from cwd=${File(".").absolutePath}")
-            return dir.listFiles { f -> f.extension == "sql" }
-                ?.joinToString("\n") { it.readText() }
-                ?: error("No migration .sql files found in ${dir.absolutePath}")
-        }
-    }
+    private val globalTables = mapOf(
+        "permissions" to "The shared ACL graph resolves study/organization authorization before request context exists.",
+        "principals" to "Global identity and role definitions participate in the shared ACL graph.",
+        "principal_trees" to "Global role membership resolves the principals used to build request context.",
+        "securable_objects" to "Global ACL object types and reserved names are shared by every authorization lookup.",
+        "id_gen" to "The global UUID allocator stores ranges, not tenant records.",
+        "base_long_ids" to "The global sequence allocator stores named ranges, not tenant records.",
+        "default_filtered_apps" to "The built-in application catalog is shared configuration, not collected data.",
+        "flyway_schema_history" to "Flyway owns the global migration ledger; runtime does not migrate schemas.",
+        "chronicle_participant_token_key" to "Only SECURITY DEFINER token hashing reads this key; runtime DML is revoked.",
+        "restore_continuity_reconciliations" to "Bootstrap-owned restore receipts; runtime DML is revoked.",
+    )
 
     @Test
-    fun everyParticipantDataTableHasRlsEnabledAndAStudyIsolationPolicy() {
-        val corpus = migrationCorpus()
-        val missing = mutableListOf<String>()
-
-        for (table in REQUIRED_PARTICIPANT_DATA_TABLES) {
-            val enabled = corpus.contains("ALTER TABLE $table ENABLE ROW LEVEL SECURITY")
-            // Policy line form: "CREATE POLICY study_isolation_<anything> ON <table>"
-            val policy = Regex("CREATE POLICY study_isolation_\\w+ ON $table\\b").containsMatchIn(corpus)
-            if (!enabled || !policy) {
-                missing += "$table (ENABLE RLS=${enabled}, study_isolation policy=${policy})"
+    fun everyPublicTableEnforcesRlsOrHasAnExplicitGlobalReason() {
+        ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
+            val protection = tableProtection(connection)
+            val unprotected = protection.filter { (table, secured) -> table !in globalTables && !secured }.keys
+            assertTrue("Missing ENABLE/FORCE RLS or policy: $unprotected", unprotected.isEmpty())
+            assertEquals("Remove stale global exceptions", globalTables.keys, protection.keys.intersect(globalTables.keys))
+            for (table in listOf("chronicle_participant_token_key", "restore_continuity_reconciliations", "flyway_schema_history")) {
+                assertTrue("Runtime must not access $table", !hasRuntimeDml(connection, table))
             }
         }
-
-        assertTrue(
-            "Participant-data tables missing DB-level study isolation (add the RLS migration, " +
-                "mirroring V24/V37): \n  " + missing.joinToString("\n  "),
-            missing.isEmpty(),
-        )
     }
 
-    @Test
-    fun everyRlsEnabledCollectionTableAlsoForcesRls() {
-        // FORCE ROW LEVEL SECURITY is required so the table owner (and the superuser bootstrap
-        // path) cannot silently bypass the policy. Assert the participant-data tables force it.
-        val corpus = migrationCorpus()
-        val notForced = REQUIRED_PARTICIPANT_DATA_TABLES.filterNot { table ->
-            corpus.contains("ALTER TABLE $table FORCE ROW LEVEL SECURITY")
+    private fun tableProtection(connection: Connection): Map<String, Boolean> = connection.createStatement().use { statement ->
+        statement.executeQuery("""
+            SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity,
+                EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid) AS has_policy
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+        """.trimIndent()).use(::readTableProtection)
+    }
+
+    private fun readTableProtection(rows: ResultSet): Map<String, Boolean> = buildMap {
+        while (rows.next()) {
+            put(rows.getString(1), rows.getBoolean(2) && rows.getBoolean(3) && rows.getBoolean(4))
         }
-        assertTrue(
-            "Participant-data tables that enable RLS but do not FORCE it (owner can bypass): \n  " +
-                notForced.joinToString("\n  "),
-            notForced.isEmpty(),
-        )
+    }
+
+    private fun hasRuntimeDml(connection: Connection, table: String): Boolean = connection.prepareStatement("""
+        SELECT has_table_privilege('chronicle_app', ?, 'SELECT,INSERT,UPDATE,DELETE')
+    """.trimIndent()).use { statement ->
+        statement.setString(1, "public.$table")
+        statement.executeQuery().use { rows -> check(rows.next()); rows.getBoolean(1) }
     }
 }

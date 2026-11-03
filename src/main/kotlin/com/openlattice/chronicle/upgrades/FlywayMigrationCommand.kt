@@ -2,7 +2,24 @@ package com.openlattice.chronicle.upgrades
 
 import java.nio.file.Files
 import java.nio.file.Path
-import java.sql.DriverManager
+import java.util.Properties
+import com.codahale.metrics.MetricRegistry
+import com.codahale.metrics.health.HealthCheckRegistry
+import com.fasterxml.jackson.module.kotlin.readValue
+import com.geekbeast.configuration.postgres.PostgresConfiguration
+import com.geekbeast.jdbc.DataSourceManager
+import com.geekbeast.mappers.mappers.ObjectMappers
+import com.openlattice.chronicle.auditing.PostgresAuditingManager
+import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
+import com.openlattice.chronicle.mapstores.stats.TransactionOnlyParticipantStatsCache
+import com.openlattice.chronicle.pods.tables.PostgresTablesPod
+import com.openlattice.chronicle.pods.tables.PostgresDataTablesPod
+import com.openlattice.chronicle.pods.tables.PostgresEventTablesPod
+import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
+import com.openlattice.chronicle.services.delete.RestoreContinuityReconciler
+import com.openlattice.chronicle.storage.ChronicleStorage
+import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
 
 /**
  * Owner-credential, one-shot Flyway entry point for hardened deployments.
@@ -30,17 +47,37 @@ public object FlywayMigrationCommand {
         val password = Files.readString(passwordPath).trimEnd('\r', '\n')
         require(password.isNotEmpty()) { "PostgreSQL migration password file is empty" }
 
-        DriverManager.getConnection(jdbcUrl, user, password).use { connection ->
-            FlywayMigrationService.prepareMigrationConnection(connection)
+        val properties = poolProperties().apply {
+            setProperty("jdbcUrl", jdbcUrl)
+            setProperty("username", user)
+            setProperty("password", password)
         }
-        val result = FlywayMigrationService.baseConfiguration()
-            .dataSource(jdbcUrl, user, password)
-            .load()
-            .migrate()
-        println(
-            "Flyway owner migration complete: ${result.migrationsExecuted} applied, " +
-                "schema version ${result.targetSchemaVersion ?: "unchanged"}"
-        )
+        migrate(properties)
+    }
+
+    private fun poolProperties(): Properties {
+        val resource = checkNotNull(javaClass.getResourceAsStream("/bootstrap-pools.json"))
+        val profiles = resource.use { ObjectMappers.newJsonMapper().readValue<Map<String, Properties>>(it) }
+        val profile = System.getenv("POSTGRES_MIGRATION_PROFILE") ?: "default"
+        return requireNotNull(profiles[profile]) { "POSTGRES_MIGRATION_PROFILE is not a configured deployment profile" }
+    }
+
+    private fun migrate(properties: Properties) {
+        val owner = PostgresConfiguration(properties, initializeTables = true, initializeIndices = true)
+        val runtime = owner.copy(initializeTables = false, initializeIndices = false)
+        DataSourceManager(mapOf(
+            DataSourceManager.DEFAULT_DATASOURCE to runtime,
+            ChronicleStorage.CHRONICLE.id to runtime,
+            ChronicleStorageConfiguration.DEFAULT_BOOTSTRAP_STORAGE to owner,
+        ), HealthCheckRegistry(), MetricRegistry()).use { manager ->
+            val storage = StorageResolver(manager, ChronicleStorageConfiguration())
+            val tables = listOf(PostgresTablesPod().postgresTables(), PostgresDataTablesPod().postgresDataTables(),
+                PostgresEventTablesPod().postgresEventTables())
+            FlywayMigrationService(storage, tables).migrate()
+            val erasure = DataDeletionOrchestrator(storage, PostgresAuditingManager(storage), TransactionOnlyParticipantStatsCache)
+            RLSRequestContext.withSystemContext { RestoreContinuityReconciler(storage, erasure).reconcile() }
+        }
+        println("Owner migration and restore continuity complete")
     }
 
     private fun requiredEnvironment(name: String): String {

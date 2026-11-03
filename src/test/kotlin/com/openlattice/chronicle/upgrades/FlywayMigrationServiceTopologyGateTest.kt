@@ -21,7 +21,7 @@ class FlywayMigrationServiceTopologyGateTest {
             .requireDefaultDeletionStorageColocated()
 
         val failure = assertThrows(IllegalStateException::class.java) {
-            FlywayMigrationService(storageResolver).runUpgrade()
+            FlywayMigrationService(storageResolver, emptyList()).runUpgrade()
         }
 
         assertSame(topologyFailure, failure)

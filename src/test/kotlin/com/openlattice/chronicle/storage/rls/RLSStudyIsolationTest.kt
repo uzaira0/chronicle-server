@@ -1,10 +1,14 @@
 package com.openlattice.chronicle.storage.rls
 
+import com.openlattice.chronicle.data.ParticipationStatus
+
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.ClassRule
 import org.junit.Test
@@ -13,21 +17,7 @@ import java.sql.Connection
 import java.sql.SQLException
 import java.util.UUID
 
-/**
- * End-to-end Row-Level Security STUDY-ISOLATION test (#3).
- *
- * Where [RLSRequestContextTest] verifies the session-variable plumbing, this verifies
- * the actual security guarantee: data from one study is invisible from another study's
- * RLS context, the database enforces it (not the app), and admin context bypasses while
- * an empty context denies everything.
- *
- * Fidelity: it pre-creates the real `study_participants` table shell, then runs the
- * ACTUAL `V1__enable_row_level_security.sql` migration verbatim off the classpath — so
- * the `chronicle_has_study_access()` function and the `study_isolation_study_participants`
- * policy under test are the production objects, not a copy (no drift). Because PostgreSQL
- * superusers bypass RLS, every assertion runs under `SET LOCAL ROLE` to a plain,
- * non-BYPASSRLS role; `FORCE ROW LEVEL SECURITY` (set by V1) makes the policy apply.
- */
+/** Study isolation under non-bypass connections against the complete fresh schema. */
 class RLSStudyIsolationTest {
 
     companion object {
@@ -36,6 +26,17 @@ class RLSStudyIsolationTest {
         val postgres = ChronicleContractTestSchema.prodPostgresContainer("chronicle_test")
 
         private val STUDY_A = UUID.randomUUID()
+        private val CANDIDATE = UUID.randomUUID()
+        private const val RLS_DENIED = "42501"
+
+        /** The audit trail records events, refusals included, against any study; rows are append-only. */
+        private const val AUDIT_APPEND_POLICY = "audit.audit_insert"
+
+        /** Study-scoped tables whose INSERT policy must check the study, not `true`. */
+        private val STUDY_SCOPED_INSERT_TABLES = listOf(
+            "participant_collection_acknowledgment", "filtered_apps", "organization_studies",
+            "study_limits", "study_settings_audit",
+        )
         private val STUDY_B = UUID.randomUUID()
     }
 
@@ -51,30 +52,38 @@ class RLSStudyIsolationTest {
             minimumIdle = 1
         })
 
-        val v1 = requireNotNull(javaClass.getResourceAsStream("/db/migration/V1__enable_row_level_security.sql")) {
-            "V1 migration not found on the classpath"
-        }.bufferedReader().use { it.readText() }
+        ChronicleContractTestSchema.resetSchemaAndMigrations(postgres)
 
         hds.connection.use { c ->
             c.createStatement().use { st ->
-                // Minimal shell of the real study-scoped table; the policy only needs study_id.
-                st.execute(
-                    """
-                    CREATE TABLE study_participants (
-                        study_id UUID NOT NULL,
-                        participant_id TEXT NOT NULL,
-                        PRIMARY KEY (study_id, participant_id)
-                    )
-                    """.trimIndent(),
-                )
-                // Run the production RLS migration verbatim: creates chronicle_has_study_access()
-                // and, because study_participants now exists, enables FORCE RLS + the isolation policy.
-                st.execute(v1)
                 // A plain, non-superuser, non-BYPASSRLS role so the policy is actually enforced.
                 st.execute("CREATE ROLE $RLS_TEST_APP_ROLE NOSUPERUSER NOBYPASSRLS")
+                st.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO $RLS_TEST_APP_ROLE")
                 st.execute("GRANT SELECT, INSERT ON study_participants TO $RLS_TEST_APP_ROLE")
-                // Seed one participant per study as the superuser (bypasses WITH CHECK).
-                st.execute("INSERT INTO study_participants VALUES ('$STUDY_A', 'p-a'), ('$STUDY_B', 'p-b')")
+                st.execute("GRANT SELECT ON mobile_withdrawal_requests TO $RLS_TEST_APP_ROLE")
+                st.execute("GRANT INSERT ON ${STUDY_SCOPED_INSERT_TABLES.joinToString()} TO $RLS_TEST_APP_ROLE")
+            }
+            c.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, 'study A'), (?, 'study B')").use { statement ->
+                statement.setObject(1, STUDY_A)
+                statement.setObject(2, STUDY_B)
+                statement.executeUpdate()
+            }
+            c.prepareStatement("INSERT INTO candidates (candidate_id) VALUES (?)").use { statement ->
+                statement.setObject(1, CANDIDATE)
+                statement.executeUpdate()
+            }
+            // Seed one participant per study as the superuser (bypasses WITH CHECK).
+            c.prepareStatement(
+                "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) " +
+                    "VALUES (?, ?, ?, ?)",
+            ).use { insert ->
+                listOf(STUDY_A to "p-a", STUDY_B to "p-b").forEach { (study, participant) ->
+                    insert.setObject(1, study)
+                    insert.setString(2, participant)
+                    insert.setObject(3, CANDIDATE)
+                    insert.setString(4, ParticipationStatus.ENROLLED.name)
+                    insert.executeUpdate()
+                }
             }
         }
     }
@@ -82,9 +91,9 @@ class RLSStudyIsolationTest {
     @After
     fun tearDown() {
         if (::hds.isInitialized) {
+            ChronicleContractTestSchema.clearSchema(postgres)
             hds.connection.use { c ->
                 c.createStatement().use { st ->
-                    st.execute("DROP TABLE IF EXISTS study_participants")
                     st.execute("DROP ROLE IF EXISTS $RLS_TEST_APP_ROLE")
                 }
             }
@@ -152,17 +161,91 @@ class RLSStudyIsolationTest {
             inContext(STUDY_A.toString(), isAdmin = false) { c ->
                 c.createStatement().use { st ->
                     // study A context may not write a study B row
-                    st.executeUpdate("INSERT INTO study_participants VALUES ('$STUDY_B', 'intruder')")
+                    st.executeUpdate(
+                        """
+                        INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES
+                        ('$STUDY_B', 'intruder', '$CANDIDATE', '${ParticipationStatus.ENROLLED.name}')
+                        """.trimIndent(),
+                    )
                 }
             }
         }
+    }
+
+    /**
+     * PostgreSQL applies the RLS WITH CHECK before NOT NULL/CHECK constraints, so a study_id-only
+     * row isolates the policy: foreign studies get 42501, the authorized study gets past it.
+     */
+    @Test
+    fun `study-scoped INSERT policies refuse rows for an unauthorized study`() {
+        for (table in STUDY_SCOPED_INSERT_TABLES) {
+            assertEquals(table, RLS_DENIED, insertStudyIdOnly(table, STUDY_B))
+            assertNotEquals(table, RLS_DENIED, insertStudyIdOnly(table, STUDY_A))
+        }
+    }
+
+    /**
+     * Every table, not a list: with every privilege granted, each table carrying a study_id forces RLS and
+     * no permissive INSERT or UPDATE policy on one checks `true`, so a new table or policy cannot slip past.
+     */
+    @Test
+    fun `every study-scoped table refuses foreign-study writes despite blanket grants`() {
+        val forced = hds.connection.use { c ->
+            c.createStatement().use { st ->
+                st.execute("GRANT ALL ON ALL TABLES IN SCHEMA public TO $RLS_TEST_APP_ROLE")
+                st.executeQuery("""
+                    SELECT relation.relname, relation.relrowsecurity AND relation.relforcerowsecurity
+                    FROM pg_class relation
+                    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+                    JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+                    WHERE namespace.nspname = 'public' AND relation.relkind IN ('r', 'p')
+                      AND attribute.attname = 'study_id' AND NOT attribute.attisdropped
+                    ORDER BY 1
+                """.trimIndent()).use { rows -> buildMap { while (rows.next()) put(rows.getString(1), rows.getBoolean(2)) } }
+            }
+        }
+        assertTrue("the catalog query must find the study tables", forced.keys.containsAll(STUDY_SCOPED_INSERT_TABLES))
+        assertEquals(
+            "study tables without forced RLS",
+            emptySet<String>(),
+            forced.filterValues { !it }.keys,
+        )
+        val unscopedWrites = hds.connection.use { c ->
+            c.prepareStatement("""
+                SELECT tablename || '.' || policyname FROM pg_policies
+                WHERE schemaname = 'public' AND tablename = ANY (?) AND permissive = 'PERMISSIVE'
+                  AND cmd IN ('INSERT', 'UPDATE', 'ALL') AND btrim(COALESCE(with_check, qual), '() ') = 'true'
+                ORDER BY 1
+            """.trimIndent()).use { statement ->
+                statement.setArray(1, c.createArrayOf("text", forced.keys.toTypedArray()))
+                statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+            }
+        }
+        assertEquals("permissive write policies that check true", listOf(AUDIT_APPEND_POLICY, "audit_buffer.audit_buffer_insert"), unscopedWrites)
+        for (table in STUDY_SCOPED_INSERT_TABLES) {
+            assertEquals(table, RLS_DENIED, insertStudyIdOnly(table, STUDY_B))
+        }
+    }
+
+    private fun insertStudyIdOnly(table: String, study: UUID): String? = try {
+        inContext(STUDY_A.toString(), isAdmin = false) { c ->
+            c.createStatement().use { it.executeUpdate("INSERT INTO $table (study_id) VALUES ('$study')") }
+        }
+        null
+    } catch (failure: SQLException) {
+        failure.sqlState
     }
 
     @Test
     fun `WITH CHECK allows inserting a row for an authorized study`() {
         val inserted = inContext(STUDY_A.toString(), isAdmin = false) { c ->
             c.createStatement().use { st ->
-                st.executeUpdate("INSERT INTO study_participants VALUES ('$STUDY_A', 'p-a2')")
+                st.executeUpdate(
+                    """
+                    INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES
+                    ('$STUDY_A', 'p-a2', '$CANDIDATE', '${ParticipationStatus.ENROLLED.name}')
+                    """.trimIndent(),
+                )
             }
         }
         assertEquals(1, inserted)

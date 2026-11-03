@@ -1,76 +1,69 @@
 package com.openlattice.chronicle.upgrades
 
+import com.openlattice.chronicle.contract.seedCandidate
+
+import com.openlattice.chronicle.authorization.JwtBlocklist
+import org.apache.logging.log4j.core.config.Configurator
+import org.apache.logging.log4j.Level
+import org.apache.logging.log4j.LogManager
+import com.zaxxer.hikari.HikariDataSource
+import com.openlattice.chronicle.ScopedLogCapture
+import com.openlattice.chronicle.util.SqlFailures
+import com.openlattice.chronicle.survey.SurveySettings
 import com.codahale.metrics.MetricRegistry
 import com.codahale.metrics.health.HealthCheckRegistry
-import com.geekbeast.rhizome.jobs.JobStatus
-import com.geekbeast.configuration.postgres.PostgresConfiguration
-import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.jdbc.DataSourceManager
 import com.geekbeast.mappers.mappers.ObjectMappers
+import com.geekbeast.rhizome.jobs.JobStatus
+import com.openlattice.chronicle.android.AndroidSensorSample
+import com.openlattice.chronicle.android.AndroidSensorType
+import com.openlattice.chronicle.android.UploadReceipt
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditingManager
+import com.openlattice.chronicle.auditing.AuditObservation
 import com.openlattice.chronicle.auditing.PostgresAuditingManager
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.Principal
 import com.openlattice.chronicle.authorization.PrincipalType
-import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
-import com.openlattice.chronicle.android.AndroidSensorSample
-import com.openlattice.chronicle.services.upload.AndroidSensorDataUploadService
-import com.openlattice.chronicle.android.AndroidSensorSetting
-import com.openlattice.chronicle.android.AndroidSensorType
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.collection.CollectionModuleSetting
-import com.openlattice.chronicle.controllers.TestSecurityUtils
-import com.openlattice.chronicle.controllers.loadLockedStudySettings
-import com.openlattice.chronicle.controllers.mergeStudySetting
-import com.openlattice.chronicle.controllers.stampDataCollectionSettingsVersion
-import com.openlattice.chronicle.controllers.stampDataCollectionSettingsVersionLocked
+import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
+import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import com.openlattice.chronicle.controllers.TestSecurityUtils
+import com.openlattice.chronicle.services.studies.loadLockedStudySettings
+import com.openlattice.chronicle.services.studies.mergeStudySetting
+import com.openlattice.chronicle.services.studies.stampDataCollectionSettingsVersion
+import com.openlattice.chronicle.services.studies.mergeAndStampDataCollectionSettingsVersionLocked
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.mapstores.stats.ParticipantKey
-import com.openlattice.chronicle.mapstores.stats.ParticipantStatsDeletionGuard
 import com.openlattice.chronicle.mapstores.stats.ParticipantStatsMapstore
 import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.participantaccess.ParticipantFormKind
-import com.openlattice.chronicle.export.ExportFormat
-import com.openlattice.chronicle.export.ExportRequest
-import com.openlattice.chronicle.pipeline.PipelineConfig
-import com.openlattice.chronicle.pipeline.PipelineJobDefinition
+import com.openlattice.chronicle.services.apikeys.ApiKeyService
 import com.openlattice.chronicle.services.delete.DataDeletionMode
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
+import com.openlattice.chronicle.services.delete.quarantineStudy
 import com.openlattice.chronicle.services.delete.MobileSelfWithdrawalResult
-import com.openlattice.chronicle.services.delete.bindErasureStudyId
 import com.openlattice.chronicle.services.delete.ParticipantPurgeService
-import com.openlattice.chronicle.services.apikeys.ApiKeyService
-import com.openlattice.chronicle.services.download.DataDownloadManager
-import com.openlattice.chronicle.services.export.ExportFileWriter
-import com.openlattice.chronicle.services.export.ExportResourceLimitException
-import com.openlattice.chronicle.services.export.ExportService
-import com.openlattice.chronicle.services.export.ExportStorageCapacity
+import com.openlattice.chronicle.services.delete.bindErasureStudyId
+import com.openlattice.chronicle.services.download.DataDownloadService
+import com.openlattice.chronicle.services.enrollment.loadLockedStudy
 import com.openlattice.chronicle.services.jobs.ChronicleJob
 import com.openlattice.chronicle.services.jobs.ChronicleJobRunner
 import com.openlattice.chronicle.services.jobs.EmptyJobDefinition
 import com.openlattice.chronicle.services.jobs.JobService
-import com.openlattice.chronicle.services.enrollment.loadLockedStudy
+import com.openlattice.chronicle.services.studies.StudySnapshotRepository
 import com.openlattice.chronicle.services.studies.StudyLifecycleService
 import com.openlattice.chronicle.services.studies.StudyService
-import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeCommand
-import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType
-import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessScope
-import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
-import com.openlattice.chronicle.services.participantaccess.EnrollmentAttemptBinding
-import com.openlattice.chronicle.services.participantaccess.ParticipantFormSubmissionReceiptService
-import com.openlattice.chronicle.services.participantaccess.ParticipantSubmissionConflictException
-import com.openlattice.chronicle.services.webhooks.WebhookService
-import com.openlattice.chronicle.services.upload.UploadType
-import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
+import com.openlattice.chronicle.services.upload.AndroidSensorDataUploadService
 import com.openlattice.chronicle.services.upload.UploadDiagnosticsQueryService
-import com.openlattice.chronicle.services.download.DataDownloadService
-import com.openlattice.chronicle.services.quality.DataQualityService
+import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
+import com.openlattice.chronicle.services.upload.UploadType
+import com.openlattice.chronicle.services.webhooks.WebhookService
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ANDROID_DEVICE_SENSOR_AVAILABILITY
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ANDROID_SENSOR_DATA
@@ -85,13 +78,12 @@ import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.QUEST
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_SETTINGS_AUDIT
-import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.UPGRADES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.UPLOAD_BUFFER
 import com.openlattice.chronicle.storage.PostgresEventTables
+import com.openlattice.chronicle.storage.ScreenTimeUsageCaptures
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.rls.RLSConnectionContext
 import com.openlattice.chronicle.storage.rls.RLSConnectionSql
-import com.openlattice.chronicle.storage.rls.RLSDataSources
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.study.Study
@@ -100,7 +92,24 @@ import com.openlattice.chronicle.study.StudySetting
 import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.study.StudyUpdate
+import com.openlattice.chronicle.study.WithdrawalMode
+import com.openlattice.chronicle.services.webhooks.ParticipantRef
+import com.openlattice.chronicle.services.webhooks.WebhookPayload
 import com.openlattice.chronicle.webhooks.WebhookEventType
+import java.security.MessageDigest
+import java.sql.Connection
+import java.sql.SQLException
+import java.time.Duration
+import java.time.Instant
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
@@ -111,33 +120,18 @@ import org.flywaydb.core.api.output.MigrateResult
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.After
 import org.junit.BeforeClass
+import org.postgresql.core.BaseConnection
 import org.junit.Test
 import org.mockito.Mockito
 import org.testcontainers.containers.PostgreSQLContainer
-import java.sql.Connection
-import java.sql.PreparedStatement
-import java.sql.SQLException
-import java.io.ByteArrayOutputStream
-import java.nio.file.Files
-import java.time.Clock
-import java.time.Duration
-import java.time.Instant
-import java.time.LocalDate
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-import java.util.Properties
-import java.util.UUID
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Fresh-install migration gate: framework bootstrap + the FULL production Flyway corpus,
@@ -152,170 +146,26 @@ import java.util.concurrent.atomic.AtomicInteger
  * (see docs/db/MIGRATION-LEDGER-AUDIT.md).
  */
 class FlywayMigrationCorpusTest {
-    @Test
-    fun testV109MigrationDoesNotLockOrBackfillTheBusySensorDataTable() {
-        ChronicleContractTestSchema.prodPostgresContainer("busy_sensor_upgrade").use { legacy ->
-            legacy.start()
-            ChronicleContractTestSchema.waitForQueryReady(legacy)
-            legacy.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
-            assertTrue(FlywayMigrationService.baseConfiguration()
-                .dataSource(legacy.jdbcUrl, legacy.username, legacy.password).target("108").load().migrate().success)
-            val executor = Executors.newSingleThreadExecutor()
-            legacy.createConnection("").use { writer ->
-                writer.autoCommit = false
-                writer.createStatement().use { it.execute("LOCK TABLE sensor_data IN ROW EXCLUSIVE MODE") }
-                val migration = executor.submit<MigrateResult> {
-                    FlywayMigrationService.baseConfiguration()
-                        .dataSource(legacy.jdbcUrl, legacy.username, legacy.password)
-                        // This lock race must use the test server's bounded waits, including Flyway.
-                        .initSql("RESET lock_timeout; RESET statement_timeout")
-                        .load().migrate()
-                }
-                try {
-                    assertTrue("Migration must finish while sensor writes hold their ordinary table lock",
-                        migration.get(5, TimeUnit.SECONDS).success)
-                } finally {
-                    writer.rollback()
-                    migration.get(20, TimeUnit.SECONDS)
-                    executor.shutdownNow()
-                    assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
-                }
-            }
-        }
+    private var previousFixtureContext: RLSConnectionContext? = null
+
+    @Before
+    fun installFixtureContext() {
+        previousFixtureContext = RLSRequestContext.current()
+        RLSRequestContext.set(RLSConnectionContext("migration-fixture", emptySet(), isAdmin = true))
     }
 
-    @Test
-    fun testV109SupplementalCleanupOfCompletedWithdrawalsAndStudyErasures() {
-        ChronicleContractTestSchema.prodPostgresContainer("completed_erasure_upgrade").use { legacy ->
-            legacy.start()
-            ChronicleContractTestSchema.waitForQueryReady(legacy)
-            legacy.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
-            assertTrue(FlywayMigrationService.baseConfiguration()
-                .dataSource(legacy.jdbcUrl, legacy.username, legacy.password).target("108").load().migrate().success)
-            val scopes = listOf("WITHDRAW_AND_ERASE", "STUDY_ERASURE", "COLLECTED_DATA_PURGE").associateWith { UUID.randomUUID() }
-            legacy.createConnection("").use { connection ->
-                scopes.forEach { (mode, study) ->
-                    val webhook = UUID.randomUUID()
-                    connection.createStatement().use { statement ->
-                        statement.execute("INSERT INTO studies (study_id, title) VALUES ('$study', 'terminal cleanup')")
-                        statement.execute("""INSERT INTO devices (study_id, device_id, participant_id, device_type, source_device)
-                            VALUES ('$study', '${UUID.randomUUID()}', 'erased-subject', 'Android', '{}'::jsonb),
-                            ('$study', '${UUID.randomUUID()}', 'control-subject', 'Android', '{}'::jsonb)""")
-                        statement.execute("""INSERT INTO webhook_registrations (webhook_id, study_id, url, created_by)
-                            VALUES ('$webhook', '$study', 'https://example.org/webhook', 'migration-test')""")
-                        statement.execute("""INSERT INTO webhook_deliveries (webhook_id, event_type, payload)
-                            VALUES ('$webhook', 'DATA_SUBMITTED', '{"data":{"participantId":"erased-subject"}}'::jsonb),
-                            ('$webhook', 'DATA_SUBMITTED', '{"data":{"participantId":"control-subject"}}'::jsonb)""")
-                        statement.execute("""INSERT INTO data_deletion_operations
-                            (operation_id, study_id, participant_ref, participant_block_token, mode, status,
-                             requested_by, idempotency_key, registry_version, started_at, completed_at)
-                            VALUES ('${UUID.randomUUID()}', '$study', 'opaque-ref', md5('$study:erased-subject'),
-                             '$mode', 'COMPLETED', 'migration-test', '${UUID.randomUUID()}', 1,
-                             now() - interval '1 day', now())""")
-                    }
-                }
-            }
-            assertTrue(ChronicleContractTestSchema.migrate(legacy).success)
-            legacy.createConnection("").use { connection ->
-                scopes.forEach { (mode, study) ->
-                    val expected = when (mode) { "STUDY_ERASURE" -> 0L; "WITHDRAW_AND_ERASE" -> 1L; else -> 2L }
-                    connection.prepareStatement("""
-                        SELECT (SELECT count(*) FROM devices WHERE study_id = ?),
-                            (SELECT count(*) FROM webhook_deliveries WHERE study_id = ?)
-                    """.trimIndent()).use { statement ->
-                        statement.setObject(1, study); statement.setObject(2, study)
-                        statement.executeQuery().use { rows ->
-                            assertTrue(rows.next()); assertEquals(expected, rows.getLong(1)); assertEquals(expected, rows.getLong(2))
-                        }
-                    }
-                }
-            }
-            assertEquals(0, ChronicleContractTestSchema.migrate(legacy).migrationsExecuted)
-        }
+    @After
+    fun restoreFixtureContext() {
+        previousFixtureContext?.let(RLSRequestContext::set) ?: RLSRequestContext.clear()
     }
 
+    private val studyFixture get() = MigrationStudyFixture(storageResolver)
     @Test
-    fun testV115TombstonesAndDeletesKeysRetainedByErasuresCompletedBeforeV114() {
-        ChronicleContractTestSchema.prodPostgresContainer("completed_erasure_keys_upgrade").use { legacy ->
-            legacy.start()
-            ChronicleContractTestSchema.waitForQueryReady(legacy)
-            legacy.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
-            assertTrue(FlywayMigrationService.baseConfiguration()
-                .dataSource(legacy.jdbcUrl, legacy.username, legacy.password).target("114").load().migrate().success)
-            val scopes = listOf("WITHDRAW_AND_ERASE", "STUDY_ERASURE", "COLLECTED_DATA_PURGE").associateWith { UUID.randomUUID() }
-            // Per study: the erased subject's revoked and expired device key, a live control device key, a researcher key.
-            fun keyHash(study: UUID, owner: String) = "$study:$owner"
-            val reuseStudy = UUID.randomUUID()
-            legacy.createConnection("").use { connection ->
-                scopes.forEach { (mode, study) ->
-                    connection.createStatement().use { statement ->
-                        statement.execute("INSERT INTO studies (study_id, title) VALUES ('$study', 'retained keys')")
-                        statement.execute("""INSERT INTO api_keys (key_id, study_id, key_hash, key_prefix, name, scope,
-                                created_by, expires_at, revoked, participant_id, device_id) VALUES
-                            ('${UUID.randomUUID()}', '$study', '${keyHash(study, "erased")}', 'erased00', 'd', 'WRITE',
-                             'device', now() - interval '1 day', true, 'erased-subject', '${UUID.randomUUID()}'),
-                            ('${UUID.randomUUID()}', '$study', '${keyHash(study, "control")}', 'control0', 'd', 'WRITE',
-                             'device', now() + interval '1 day', false, 'control-subject', '${UUID.randomUUID()}'),
-                            ('${UUID.randomUUID()}', '$study', '${keyHash(study, "researcher")}', 'research', 'r', 'READ_ONLY',
-                             'researcher', now() + interval '1 day', false, NULL, NULL)""")
-                        statement.execute("""INSERT INTO data_deletion_operations
-                            (operation_id, study_id, participant_ref, participant_block_token, mode, status,
-                             requested_by, idempotency_key, registry_version, started_at, completed_at)
-                            VALUES ('${UUID.randomUUID()}', '$study', 'opaque-ref', md5('$study:erased-subject'),
-                             '$mode', 'COMPLETED', 'migration-test', '${UUID.randomUUID()}', 1,
-                             now() - interval '1 day', now())""")
-                    }
-                }
-                // Legacy collision: the erased subject's revoked key material was later installed for a
-                // live subject of another study. That retained row still owns the hash.
-                connection.createStatement().use { statement ->
-                    statement.execute("INSERT INTO studies (study_id, title) VALUES ('$reuseStudy', 'reused key')")
-                    statement.execute("""INSERT INTO api_keys (key_id, study_id, key_hash, key_prefix, name, scope,
-                            created_by, expires_at, revoked, participant_id, device_id) VALUES
-                        ('${UUID.randomUUID()}', '$reuseStudy', '${keyHash(scopes.getValue("STUDY_ERASURE"), "erased")}',
-                         'reused00', 'd', 'WRITE', 'device', now() + interval '1 day', false, 'live-subject',
-                         '${UUID.randomUUID()}')""")
-                }
-            }
-            assertTrue(ChronicleContractTestSchema.migrate(legacy).success)
-            legacy.createConnection("").use { connection ->
-                fun remaining(study: UUID) = connection.prepareStatement(
-                    "SELECT key_prefix FROM api_keys WHERE study_id = ? ORDER BY key_prefix",
-                ).use { statement ->
-                    statement.setObject(1, study)
-                    statement.executeQuery().use { buildList { while (it.next()) add(it.getString(1)) } }
-                }
-                fun tombstone(hash: String) = connection.prepareStatement(
-                    "SELECT kind, expires_at > now() + interval '364 days' FROM erased_device_key_tombstones WHERE key_hash = ?",
-                ).use { statement ->
-                    statement.setString(1, hash)
-                    statement.executeQuery().use { if (it.next()) it.getString(1) to it.getBoolean(2) else null }
-                }
-                val withdrawal = scopes.getValue("WITHDRAW_AND_ERASE")
-                assertEquals(listOf("control0", "research"), remaining(withdrawal))
-                assertEquals("WITHDRAW_AND_ERASE" to true, tombstone(keyHash(withdrawal, "erased")))
-                assertNull(tombstone(keyHash(withdrawal, "control")))
-                val studyErasure = scopes.getValue("STUDY_ERASURE")
-                assertEquals(emptyList<String>(), remaining(studyErasure))
-                assertNull("a hash a retained row still owns gets no tombstone", tombstone(keyHash(studyErasure, "erased")))
-                assertEquals("the live subject keeps its credential", listOf("reused00"), remaining(reuseStudy))
-                assertEquals("STUDY_ERASURE" to true, tombstone(keyHash(studyErasure, "control")))
-                assertNull("researcher keys get no device tombstone", tombstone(keyHash(studyErasure, "researcher")))
-                val purge = scopes.getValue("COLLECTED_DATA_PURGE")
-                assertEquals(listOf("control0", "erased00", "research"), remaining(purge))
-                assertNull(tombstone(keyHash(purge, "erased")))
-            }
-            assertEquals(0, ChronicleContractTestSchema.migrate(legacy).migrationsExecuted)
-        }
-    }
-
-    @Test
-    // Real JDBC resources are deliberately nested so each one closes before the next assertion.
-    @Suppress("NestedBlockDepth")
     fun testUploadDiagnosticsAreIdempotentIdentityScopedAndStudyRetained() {
         val studyId = UUID.randomUUID()
         val participantId = "diagnostic-participant-${UUID.randomUUID()}"
-        val deviceId = UUID.randomUUID()
+        studyFixture.ensureStudyParticipant(studyId, participantId)
+        val randomDeviceId = UUID.randomUUID()
         val service = UploadDiagnosticsUploadService(storageResolver)
         val eventId = UUID.randomUUID().toString()
         val now = OffsetDateTime.now(ZoneOffset.UTC)
@@ -340,21 +190,12 @@ class FlywayMigrationCorpusTest {
             ),
         )
         try {
-            assertEquals(listOf(eventId), service.upload(studyId, participantId, deviceId, listOf(diagnostic(1, now))))
-            assertEquals(listOf(eventId), service.upload(studyId, participantId, deviceId, listOf(diagnostic(4, now))))
+            assertEquals(setOf(UUID.fromString(eventId)),
+                service.upload(studyId, participantId, randomDeviceId, listOf(diagnostic(1, now))).acceptedIds)
+            assertEquals(setOf(UUID.fromString(eventId)),
+                service.upload(studyId, participantId, randomDeviceId, listOf(diagnostic(4, now))).acceptedIds)
 
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT occurrence_count, device_id FROM upload_diagnostics WHERE event_id = ?",
-                ).use { statement ->
-                    statement.setString(1, eventId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(4, resultSet.getInt("occurrence_count"))
-                        assertEquals(deviceId, resultSet.getObject("device_id", UUID::class.java))
-                    }
-                }
-            }
+            assertDiagnosticIdentityAndCount(eventId, randomDeviceId, expectedCount = 4)
 
             val oldDiagnostic = diagnostic(1, now.minusDays(365))
                 .copy(id = UUID.randomUUID().toString())
@@ -367,40 +208,63 @@ class FlywayMigrationCorpusTest {
                     assertEquals(1, statement.executeUpdate())
                 }
             }
-            service.upload(studyId, participantId, deviceId, listOf(oldDiagnostic))
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT count(*) FROM upload_diagnostics WHERE event_id IN (?, ?)",
-                ).use { statement ->
-                    statement.setString(1, eventId)
-                    statement.setString(2, oldDiagnostic.id)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(2, resultSet.getInt(1))
-                    }
-                }
-            }
+            service.upload(studyId, participantId, randomDeviceId, listOf(oldDiagnostic))
+            assertDiagnosticsRetained(eventId, oldDiagnostic.id)
         } finally {
             RLSRequestContext.clear()
         }
     }
 
+    private fun assertDiagnosticIdentityAndCount(eventId: String, randomDeviceId: UUID, expectedCount: Int) {
+        getConnection().use { connection ->
+            connection.prepareStatement(
+                "SELECT occurrence_count, random_device_id FROM upload_diagnostics WHERE event_id = ?",
+            ).use { statement ->
+                statement.setString(1, eventId)
+                statement.executeQuery().use { resultSet ->
+                    assertTrue(resultSet.next())
+                    assertEquals(expectedCount, resultSet.getInt("occurrence_count"))
+                    assertEquals(randomDeviceId, resultSet.getObject("random_device_id", UUID::class.java))
+                }
+            }
+        }
+    }
+
+    private fun assertDiagnosticsRetained(eventId: String, oldEventId: String) {
+        getConnection().use { connection ->
+            connection.prepareStatement(
+                "SELECT count(*) FROM upload_diagnostics WHERE event_id IN (?, ?)",
+            ).use { statement ->
+                statement.setString(1, eventId)
+                statement.setString(2, oldEventId)
+                statement.executeQuery().use { resultSet ->
+                    assertTrue(resultSet.next())
+                    assertEquals(2, resultSet.getInt(1))
+                }
+            }
+        }
+    }
+
     @Test
     fun testV107AcceptsEveryDiagnosticFamilyAndIssueCodePair() {
-        val migration = requireNotNull(
-            javaClass.getResourceAsStream("/db/migration/V107__retain_and_extend_upload_diagnostics.sql"),
-        ).bufferedReader().use { it.readText() }
-        val families = Regex("'([A-Z_]+)'")
-            .findAll(migration.substringAfter("CHECK (module_family IN (").substringBefore("));"))
-            .map { it.groupValues[1] }
-            .toList()
-        val codes = Regex("'([A-Z_]+)'")
-            .findAll(migration.substringAfter("CHECK (issue_code IN (").substringBefore("));"))
-            .map { it.groupValues[1] }
-            .toList()
+        val definitions = getConnection().use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("""
+                    SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+                    WHERE conrelid = 'upload_diagnostics'::regclass AND contype = 'c'
+                """.trimIndent()).use { rows ->
+                    buildMap { while (rows.next()) put(rows.getString(1), rows.getString(2)) }
+                }
+            }
+        }
+        fun allowedValues(name: String): List<String> = Regex("'([A-Z_]+)'")
+            .findAll(definitions.getValue(name)).map { it.groupValues[1] }.toList().also { assertTrue(it.isNotEmpty()) }
+        val families = allowedValues("upload_diagnostics_module_family_check")
+        val codes = allowedValues("upload_diagnostics_issue_code_check")
         val studyId = UUID.randomUUID()
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val participantId = "catalog-${UUID.randomUUID()}"
+        studyFixture.ensureStudyParticipant(studyId, participantId)
         val day = LocalDate.parse("2026-09-25")
         val occurredAt = day.atStartOfDay().atOffset(ZoneOffset.UTC)
         val events = families.flatMap { family ->
@@ -426,7 +290,7 @@ class FlywayMigrationCorpusTest {
         try {
             val service = UploadDiagnosticsUploadService(storageResolver)
             events.chunked(500).forEach { batch ->
-                assertEquals(batch.size, service.upload(studyId, participantId, deviceId, batch).size)
+                assertEquals(batch.size, service.upload(studyId, participantId, randomDeviceId, batch).acceptedIds.size)
             }
             getConnection().use { connection ->
                 connection.prepareStatement("SELECT count(*) FROM upload_diagnostics WHERE study_id = ?").use { statement ->
@@ -446,7 +310,8 @@ class FlywayMigrationCorpusTest {
     fun testDiagnosticsFromBeforeACompletedPurgeAreAcknowledgedButNotStoredAgain() {
         val studyId = UUID.randomUUID()
         val participantId = "purged-${UUID.randomUUID()}"
-        val deviceId = UUID.randomUUID()
+        studyFixture.ensureStudyParticipant(studyId, participantId)
+        val randomDeviceId = UUID.randomUUID()
         val purgeStarted = OffsetDateTime.parse("2026-09-20T12:00:00Z")
         getConnection().use { connection ->
             // A completed purge as the orchestrator leaves it: participant_id cleared, block token kept.
@@ -455,7 +320,7 @@ class FlywayMigrationCorpusTest {
                 INSERT INTO data_deletion_operations (
                     operation_id, study_id, participant_id, participant_block_token, mode, status,
                     requested_by, idempotency_key, registry_version, started_at, completed_at
-                ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                ) VALUES (?, ?, NULL, chronicle_participant_block_token(?::uuid, ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
                           'migration-test', ?, 1, ?, ?)
                 """.trimIndent(),
             ).use { statement ->
@@ -476,7 +341,7 @@ class FlywayMigrationCorpusTest {
             issueCode = "LOCAL_WRITE_FAILED",
             count = 1,
             firstOccurredAt = firstOccurredAt,
-            lastOccurredAt = firstOccurredAt.plusMinutes(1),
+            lastOccurredAt = firstOccurredAt,
         )
         val erased = event(purgeStarted.minusHours(3))
         val later = event(purgeStarted.plusHours(3))
@@ -485,10 +350,9 @@ class FlywayMigrationCorpusTest {
             RLSConnectionContext(principalId = "purge-replay", authorizedStudyIds = setOf(studyId), isAdmin = false),
         )
         try {
-            assertEquals(
-                listOf(erased.id, later.id),
-                UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, deviceId, listOf(erased, later)),
-            )
+            val receipt = UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, randomDeviceId, listOf(erased, later))
+            assertEquals(setOf(UUID.fromString(later.id)), receipt.acceptedIds)
+            assertEquals(setOf(UUID.fromString(erased.id)), receipt.discardedIds)
         } finally {
             RLSRequestContext.clear()
         }
@@ -511,7 +375,9 @@ class FlywayMigrationCorpusTest {
     fun testErasedDiagnosticReplayWithAheadClockCannotResurrectAfterPurge() {
         val studyId = UUID.randomUUID()
         val participantId = "ahead-clock-${UUID.randomUUID()}"
-        val deviceId = UUID.randomUUID()
+        studyFixture.ensureStudyParticipant(studyId, participantId)
+        studyFixture.ensureStudyParticipant(studyId, "$participantId-other")
+        val randomDeviceId = UUID.randomUUID()
         val cutoff = OffsetDateTime.parse("2026-09-20T12:00:00Z")
         val erased = AndroidUploadDiagnosticEvent(
             id = UUID.randomUUID().toString(),
@@ -526,7 +392,7 @@ class FlywayMigrationCorpusTest {
         RLSRequestContext.set(RLSConnectionContext("ahead-clock-replay", setOf(studyId), isAdmin = false))
         try {
             val service = UploadDiagnosticsUploadService(storageResolver)
-            service.upload(studyId, participantId, deviceId, listOf(erased))
+            service.upload(studyId, participantId, randomDeviceId, listOf(erased))
         } finally {
             RLSRequestContext.clear()
         }
@@ -549,7 +415,7 @@ class FlywayMigrationCorpusTest {
                 """INSERT INTO data_deletion_operations (
                     operation_id, study_id, participant_id, participant_block_token, mode, status,
                     requested_by, idempotency_key, registry_version, started_at, completed_at
-                ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                ) VALUES (?, ?, NULL, chronicle_participant_block_token(?::uuid, ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
                           'migration-test', ?, 1, ?, ?)""".trimIndent(),
             ).use { statement ->
                 statement.setObject(1, UUID.randomUUID())
@@ -567,11 +433,14 @@ class FlywayMigrationCorpusTest {
         try {
             val service = UploadDiagnosticsUploadService(storageResolver)
             val replay = erased.copy(firstOccurredAt = cutoff.plusHours(2), lastOccurredAt = cutoff.plusHours(2))
-            assertEquals(listOf(erased.id, later.id), service.upload(studyId, participantId, deviceId, listOf(replay, later)))
+            val receipt = service.upload(studyId, participantId, randomDeviceId, listOf(replay, later))
+            assertEquals(setOf(UUID.fromString(later.id)), receipt.acceptedIds)
+            assertEquals(setOf(UUID.fromString(erased.id)), receipt.discardedIds)
             // Re-enrollment on another device must not bypass the participant's erasure fence.
-            assertEquals(listOf(erased.id), service.upload(studyId, participantId, UUID.randomUUID(), listOf(replay)))
+            assertEquals(setOf(UUID.fromString(erased.id)),
+                service.upload(studyId, participantId, UUID.randomUUID(), listOf(replay)).discardedIds)
             // The same opaque ID in another participant's scope remains independent.
-            service.upload(studyId, "$participantId-other", deviceId, listOf(replay))
+            service.upload(studyId, "$participantId-other", randomDeviceId, listOf(replay))
             getConnection().use { connection ->
                 connection.prepareStatement(
                     "SELECT event_id FROM upload_diagnostics WHERE study_id = ? AND participant_id = ?",
@@ -599,6 +468,7 @@ class FlywayMigrationCorpusTest {
     fun testDiagnosticErasureTombstonesSupportNonBypassOwnerAndTransactionalRollback() {
         val studyId = UUID.randomUUID()
         val participantId = "erasure-owner-${UUID.randomUUID()}"
+        studyFixture.ensureStudyParticipant(studyId, participantId)
         val owner = "diagnostic_owner_${UUID.randomUUID().toString().replace("-", "")}"
         val occurredAt = OffsetDateTime.now(ZoneOffset.UTC)
         val event = AndroidUploadDiagnosticEvent(
@@ -618,6 +488,7 @@ class FlywayMigrationCorpusTest {
                 connection.createStatement().use { statement ->
                     statement.execute("CREATE ROLE $owner NOLOGIN NOSUPERUSER NOBYPASSRLS")
                     statement.execute("GRANT USAGE ON SCHEMA public TO $owner")
+                    statement.execute("GRANT EXECUTE ON FUNCTION chronicle_participant_block_token(uuid, text) TO $owner")
                     statement.execute("ALTER TABLE upload_diagnostic_erasures OWNER TO $owner")
                     statement.execute("ALTER FUNCTION chronicle_record_erased_diagnostic_ids() OWNER TO $owner")
                 }
@@ -661,6 +532,7 @@ class FlywayMigrationCorpusTest {
     private fun assertStudyDiagnosticErasure(resumeVerifiedDiagnostics: Boolean) {
         val studyId = UUID.randomUUID()
         val participantId = "study-diagnostics-${UUID.randomUUID()}"
+        studyFixture.ensureStudyParticipant(studyId, participantId)
         val owner = "study_diagnostic_owner_${UUID.randomUUID().toString().replace("-", "")}"
         val now = OffsetDateTime.now(ZoneOffset.UTC)
         val events = (1..2).map {
@@ -673,10 +545,6 @@ class FlywayMigrationCorpusTest {
         val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
         var operationId: UUID? = null
         getConnection().use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, 'diagnostic erasure')").use {
-                it.setObject(1, studyId)
-                assertEquals(1, it.executeUpdate())
-            }
             connection.createStatement().use { statement ->
                 statement.execute("CREATE ROLE $owner NOLOGIN NOSUPERUSER NOBYPASSRLS")
                 statement.execute("GRANT USAGE ON SCHEMA public TO $owner")
@@ -692,7 +560,7 @@ class FlywayMigrationCorpusTest {
             RLSRequestContext.set(RLSConnectionContext("diagnostic-erasure-seed", setOf(studyId), isAdmin = false))
             try {
                 UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, UUID.randomUUID(), events)
-                getConnection().use { connection ->
+                storageResolver.getPlatformStorage().connection.use { connection ->
                     connection.prepareStatement("DELETE FROM upload_diagnostics WHERE study_id = ? AND event_id = ?").use {
                         it.setObject(1, studyId)
                         it.setString(2, events.first().id)
@@ -705,17 +573,24 @@ class FlywayMigrationCorpusTest {
                             assertEquals("Participant deletion still creates a tombstone", 1, rows.getInt(1))
                         }
                     }
-                    connection.createStatement().use { it.execute("SET ROLE $owner") }
-                    connection.prepareStatement("DELETE FROM upload_diagnostic_erasures WHERE study_id = ?").use {
-                        it.setObject(1, studyId)
-                        assertEquals("Study access alone must not authorize tombstone deletion", 0, it.executeUpdate())
+                }
+                getConnection().use { connection ->
+                    try {
+                        RLSConnectionSql.applyContext(connection, requireNotNull(RLSRequestContext.current()))
+                        connection.createStatement().use { it.execute("SET ROLE $owner") }
+                        connection.prepareStatement("DELETE FROM upload_diagnostic_erasures WHERE study_id = ?").use {
+                            it.setObject(1, studyId)
+                            assertEquals("Study access alone must not authorize tombstone deletion", 0, it.executeUpdate())
+                        }
+                    } finally {
+                        RLSConnectionSql.clear(connection)
                     }
                 }
             } finally {
                 RLSRequestContext.clear()
             }
             RLSRequestContext.withDeletionWorkerContext {
-                getConnection().use { connection ->
+                storageResolver.getPlatformStorage().connection.use { connection ->
                     connection.createStatement().use { statement ->
                         statement.executeQuery(
                             "SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -766,6 +641,7 @@ class FlywayMigrationCorpusTest {
                 }
                 operationId?.let { id ->
                     deleteById(connection, "data_deletion_tombstones", "operation_id", id)
+                    deleteById(connection, "data_deletion_audit_outbox", "operation_id", id)
                     deleteById(connection, "data_deletion_operations", "operation_id", id)
                 }
                 listOf("upload_diagnostics", "upload_diagnostic_erasures", "studies").forEach { table ->
@@ -775,122 +651,14 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-    @Test
-    fun testDataQualityEvaluationWaitsForPurgeBeforeReadingStatistics() {
-        val studyId = UUID.randomUUID()
-        val participantId = "quality-purge-${UUID.randomUUID()}"
-        val today = LocalDate.now(ZoneOffset.UTC)
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "INSERT INTO participant_stats (study_id, participant_id, android_unique_dates) VALUES (?, ?, ?)",
-            ).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participantId)
-                statement.setArray(3, connection.createArrayOf("date", arrayOf(today)))
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-        val studyService = Mockito.mock(StudyService::class.java)
-        Mockito.`when`(studyService.getStudy(studyId)).thenReturn(
-            Study(studyId = studyId, title = "quality purge", contact = "test@example.org",
-                settings = Study.initialSettings("quality purge")),
-        )
-        Mockito.`when`(studyService.getStudyParticipantStats(studyId)).thenAnswer {
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT participant_id FROM participant_stats WHERE study_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeQuery().use { rows ->
-                        if (rows.next()) mapOf(participantId to ParticipantStats(
-                            studyId, participantId, androidUniqueDates = setOf(today),
-                        )) else emptyMap<String, ParticipantStats>()
-                    }
-                }
-            }
-        }
-        val executor = Executors.newSingleThreadExecutor()
-        getConnection().use { deletion ->
-            deletion.autoCommit = false
-            try {
-                deletion.prepareStatement(
-                    "SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:' || ?::text, 0))",
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeQuery().close()
-                }
-                val evaluation = executor.submit<Int> {
-                    RLSRequestContext.set(RLSConnectionContext("quality-purge", setOf(studyId), isAdmin = false))
-                    try {
-                        DataQualityService(storageResolver, studyService).generateAlerts(studyId)
-                    } finally {
-                        RLSRequestContext.clear()
-                    }
-                }
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-                var waiting = false
-                while (!waiting && System.nanoTime() < deadline) {
-                    getConnection().use { monitor ->
-                        monitor.prepareStatement(
-                            """SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-                                WHERE pid <> pg_backend_pid()
-                                  AND wait_event_type = 'Lock' AND wait_event = 'advisory')""".trimIndent(),
-                        ).use { statement ->
-                            statement.executeQuery().use { rows ->
-                                assertTrue(rows.next())
-                                waiting = rows.getBoolean(1)
-                            }
-                        }
-                    }
-                    if (!waiting) TimeUnit.MILLISECONDS.sleep(25)
-                }
-                assertTrue("Quality evaluation must overlap the purge", waiting)
-                assertFalse(evaluation.isDone)
-                listOf("participant_stats", "data_quality_alerts").forEach { table ->
-                    deletion.prepareStatement("DELETE FROM $table WHERE study_id = ? AND participant_id = ?").use { statement ->
-                        statement.setObject(1, studyId)
-                        statement.setString(2, participantId)
-                        statement.executeUpdate()
-                    }
-                }
-                deletion.prepareStatement(
-                    """INSERT INTO data_deletion_operations (
-                        operation_id, study_id, participant_id, participant_block_token, mode, status,
-                        requested_by, idempotency_key, registry_version, started_at, completed_at
-                    ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
-                              'migration-test', ?, 1, now(), now())""".trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, UUID.randomUUID())
-                    statement.setObject(2, studyId)
-                    statement.setString(3, studyId.toString())
-                    statement.setString(4, participantId)
-                    statement.setObject(5, UUID.randomUUID())
-                    assertEquals(1, statement.executeUpdate())
-                }
-                deletion.commit()
-                val inserted = evaluation.get(10, TimeUnit.SECONDS)
-                getConnection().use { connection ->
-                    connection.prepareStatement("SELECT count(*) FROM data_quality_alerts WHERE study_id = ?").use { statement ->
-                        statement.setObject(1, studyId)
-                        statement.executeQuery().use { rows ->
-                            assertTrue(rows.next())
-                            assertEquals("Erased statistics must not recreate an alert", 0, rows.getInt(1))
-                        }
-                    }
-                }
-                assertEquals(0, inserted)
-            } finally {
-                deletion.rollback()
-                executor.shutdownNow()
-            }
-        }
-    }
+    
 
     @Test
     fun testDiagnosticUploadWaitsForDeletionBeforeReadingErasureCutoff() {
         val studyId = UUID.randomUUID()
         val participantId = "concurrent-purge-${UUID.randomUUID()}"
-        val deviceId = UUID.randomUUID()
+        studyFixture.ensureStudyParticipant(studyId, participantId)
+        val randomDeviceId = UUID.randomUUID()
         val purgeStarted = OffsetDateTime.parse("2026-09-20T12:00:00Z")
         fun event(at: OffsetDateTime) = AndroidUploadDiagnosticEvent(
             id = UUID.randomUUID().toString(),
@@ -906,7 +674,7 @@ class FlywayMigrationCorpusTest {
         val later = event(purgeStarted.plusHours(1))
         RLSRequestContext.set(RLSConnectionContext("diagnostic-seed", setOf(studyId), isAdmin = false))
         try {
-            UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, deviceId, listOf(existing))
+            UploadDiagnosticsUploadService(storageResolver).upload(studyId, participantId, randomDeviceId, listOf(existing))
         } finally {
             RLSRequestContext.clear()
         }
@@ -920,13 +688,13 @@ class FlywayMigrationCorpusTest {
                     statement.setObject(1, studyId)
                     statement.executeQuery().close()
                 }
-                val upload = executor.submit<List<String>> {
+                val upload = executor.submit<UploadReceipt> {
                     RLSRequestContext.set(
                         RLSConnectionContext("diagnostic-race", setOf(studyId), isAdmin = false),
                     )
                     try {
                         UploadDiagnosticsUploadService(storageResolver).upload(
-                            studyId, participantId, deviceId, listOf(erased, later),
+                            studyId, participantId, randomDeviceId, listOf(erased, later),
                         )
                     } finally {
                         RLSRequestContext.clear()
@@ -968,7 +736,7 @@ class FlywayMigrationCorpusTest {
                     """INSERT INTO data_deletion_operations (
                         operation_id, study_id, participant_id, participant_block_token, mode, status,
                         requested_by, idempotency_key, registry_version, started_at, completed_at
-                    ) VALUES (?, ?, NULL, md5(?::text || ':' || ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
+                    ) VALUES (?, ?, NULL, chronicle_participant_block_token(?::uuid, ?), 'COLLECTED_DATA_PURGE', 'COMPLETED',
                               'migration-test', ?, 1, ?, ?)""".trimIndent(),
                 ).use { statement ->
                     statement.setObject(1, UUID.randomUUID())
@@ -982,7 +750,9 @@ class FlywayMigrationCorpusTest {
                 }
                 deletion.commit()
 
-                assertEquals(listOf(erased.id, later.id), upload.get(10, TimeUnit.SECONDS))
+                val receipt = upload.get(10, TimeUnit.SECONDS)
+                assertEquals(setOf(UUID.fromString(later.id)), receipt.acceptedIds)
+                assertEquals(setOf(UUID.fromString(erased.id)), receipt.discardedIds)
                 getConnection().use { connection ->
                     connection.prepareStatement(
                         "SELECT event_id FROM upload_diagnostics WHERE study_id = ? AND participant_id = ?",
@@ -1007,23 +777,25 @@ class FlywayMigrationCorpusTest {
     fun testAndroidDiagnosticsHistoryPaginatesAndRespectsStudyRls() {
         val visibleStudyId = UUID.randomUUID()
         val hiddenStudyId = UUID.randomUUID()
-        val deviceIds = listOf(
+        val randomDeviceIds = listOf(
             UUID.fromString("00000000-0000-4000-8000-000000000001"),
             UUID.fromString("00000000-0000-4000-8000-000000000002"),
         )
         val participantId = "history-${UUID.randomUUID()}"
+        studyFixture.ensureStudyParticipant(visibleStudyId, participantId)
+        studyFixture.ensureStudyParticipant(hiddenStudyId, participantId)
         val service = UploadDiagnosticsUploadService(storageResolver)
         val baseDay = LocalDate.parse("2026-09-20")
 
         fun event(day: LocalDate, deviceIndex: Int, issueCode: String) =
-            Triple(deviceIds[deviceIndex], day, AndroidUploadDiagnosticEvent(
+            Triple(randomDeviceIds[deviceIndex], day, AndroidUploadDiagnosticEvent(
                 id = UUID.randomUUID().toString(),
                 day = day,
                 moduleFamily = "LOCAL_STORE",
                 issueCode = issueCode,
                 count = 2,
                 firstOccurredAt = day.atStartOfDay().atOffset(ZoneOffset.UTC),
-                lastOccurredAt = day.atTime(1, 0).atOffset(ZoneOffset.UTC),
+                lastOccurredAt = day.atStartOfDay().atOffset(ZoneOffset.UTC),
             ))
 
         RLSRequestContext.set(
@@ -1035,16 +807,16 @@ class FlywayMigrationCorpusTest {
         )
         try {
             listOf(
-                event(baseDay, 0, "SENSOR_AGE_EXPIRED"),
+                event(baseDay, 0, "LOCAL_BUFFER_OVERFLOW"),
                 event(baseDay.plusDays(1), 0, "COLLECTION_PAUSED_STORAGE"),
                 event(baseDay.plusDays(1), 1, "SAMPLE_QUARANTINED"),
-            ).forEach { (deviceId, _, diagnostic) ->
-                service.upload(visibleStudyId, participantId, deviceId, listOf(diagnostic))
+            ).forEach { (randomDeviceId, _, diagnostic) ->
+                service.upload(visibleStudyId, participantId, randomDeviceId, listOf(diagnostic))
             }
             service.upload(
                 hiddenStudyId,
                 participantId,
-                deviceIds[0],
+                randomDeviceIds[0],
                 listOf(event(baseDay, 0, "UPLOAD_FAILURE").third),
             )
 
@@ -1083,7 +855,7 @@ class FlywayMigrationCorpusTest {
             )
             assertEquals(1, second.items.size)
             assertEquals(baseDay.plusDays(1), second.items.single().day)
-            assertNotEquals(first.items.single().deviceId, second.items.single().deviceId)
+            assertNotEquals(first.items.single().randomDeviceId, second.items.single().randomDeviceId)
             val third = queryService.getPage(
                 visibleStudyId,
                 participantId = participantId,
@@ -1098,80 +870,158 @@ class FlywayMigrationCorpusTest {
         }
     }
 
+    /**
+     * Walking every page of the diagnostics history, for each filter and several combinations, returns
+     * exactly the groups an unpaged filter of the seeded rows selects, once each and in the documented order (newest day,
+     * then participant, then device; codes by family, code and event). A row written between pages lands only if it sorts
+     * after the cursor.
+     */
     @Test
-    fun testDataQualityServiceRetainsYearOldAlerts() {
-        val studyId = UUID.randomUUID()
-        val participantId = "quality-${UUID.randomUUID()}"
-        val alertId = UUID.randomUUID()
-        val oldTime = OffsetDateTime.now(ZoneOffset.UTC).minusDays(365).truncatedTo(java.time.temporal.ChronoUnit.MICROS)
-        val evaluationStart = oldTime.minusHours(1)
-        val evaluationEnd = oldTime
-        RLSRequestContext.set(
-            RLSConnectionContext(
-                principalId = "quality-retention-test",
-                authorizedStudyIds = setOf(studyId),
-                isAdmin = false,
-            ),
-        )
+    fun testDiagnosticFilteredPagesEqualUnpagedOracle() {
+        val history = DiagnosticHistory(UUID.randomUUID().toString().take(8))
+        val participants = history.participants
+        val baseDay = history.baseDay
         try {
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """INSERT INTO data_quality_alerts
-                        (alert_id, study_id, participant_id, alert_type, message, score, created_at,
-                         evaluation_start, evaluation_end, threshold)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, alertId)
-                    statement.setObject(2, studyId)
-                    statement.setString(3, participantId)
-                    statement.setString(4, "LOW_QUALITY")
-                    statement.setString(5, "private test detail")
-                    statement.setDouble(6, 12.5)
-                    statement.setObject(7, oldTime)
-                    statement.setObject(8, evaluationStart)
-                    statement.setObject(9, evaluationEnd)
-                    statement.setDouble(10, 25.0)
-                    assertEquals(1, statement.executeUpdate())
-                }
-            }
-            val studyService = Mockito.mock(StudyService::class.java)
-            Mockito.`when`(studyService.getStudy(studyId)).thenReturn(
-                Study(
-                    studyId = studyId,
-                    title = "retention test",
-                    contact = "test@example.org",
-                    settings = Study.initialSettings("retention test"),
-                ),
+            history.seed()
+            assertTrue("more than one full page of groups", history.seeded.size > 200)
+            val filters = listOf(
+                DiagnosticFilter(),
+                DiagnosticFilter(participantId = participants[2]),
+                DiagnosticFilter(deviceId = history.device(3, 1)),
+                DiagnosticFilter(fromDay = baseDay.plusDays(3)),
+                DiagnosticFilter(toDay = baseDay.plusDays(9)),
+                DiagnosticFilter(fromDay = baseDay.plusDays(4), toDay = baseDay.plusDays(4)),
+                DiagnosticFilter(family = "LOCAL_STORE"),
+                DiagnosticFilter(issue = "CONNECTION_FAILURE"),
+                DiagnosticFilter(family = "LOCAL_STORE", issue = "SAMPLE_QUARANTINED"),
+                DiagnosticFilter(participantId = participants[4], family = "BATTERY"),
+                DiagnosticFilter(deviceId = history.device(1, 2), fromDay = baseDay.plusDays(2), toDay = baseDay.plusDays(11),
+                    issue = "LOCAL_BUFFER_OVERFLOW"),
+                DiagnosticFilter(participantId = "dq-nobody-${history.run}"),
             )
-            Mockito.`when`(studyService.getStudyParticipantStats(studyId)).thenReturn(emptyMap())
-            DataQualityService(storageResolver, studyService).generateAlerts(studyId)
-            val history = UploadDiagnosticsQueryService(storageResolver).getPage(
-                studyId = studyId,
-                participantId = participantId,
-                fromDay = oldTime.toLocalDate(),
-                toDay = oldTime.toLocalDate(),
-                limit = 10,
-            )
-            assertEquals(alertId, history.items.single().dataQualityAlert?.alertId)
-            val exported = DataDownloadService(storageResolver).getParticipantsDataQualityAlertsData(
-                studyId, setOf(participantId), oldTime.minusDays(1), oldTime.plusDays(1),
-            ).single()
-            assertEquals(evaluationStart.toInstant(), (exported["evaluation_start"] as OffsetDateTime).toInstant())
-            assertEquals(evaluationEnd.toInstant(), (exported["evaluation_end"] as OffsetDateTime).toInstant())
-            assertEquals(25.0, exported["threshold"])
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT count(*) FROM data_quality_alerts WHERE alert_id = ? AND created_at < now() - interval '30 days'",
-                ).use { statement ->
-                    statement.setObject(1, alertId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(1, resultSet.getInt(1))
-                    }
-                }
+            for (filter in filters) for (limit in listOf(1, 13, 200)) {
+                assertEquals("$filter at limit $limit", filter.expected(history.seeded), history.walk(filter, limit))
             }
+            assertKeysetPagingAcrossInserts(history)
+            assertMalformedPagesRejected(history)
         } finally {
             RLSRequestContext.clear()
+        }
+    }
+
+    /** Keyset paging: after the first page, a group newer than the cursor is not shown; an older one is. */
+    private fun assertKeysetPagingAcrossInserts(history: DiagnosticHistory) {
+        val newer = DiagnosticGroup(history.participants[5], history.device(5, 0), history.baseDay.plusDays(20), emptyList())
+        val older = DiagnosticGroup(history.participants[0], history.device(0, 1), history.baseDay.minusDays(1), emptyList())
+        val afterInserts = mutableListOf<DiagnosticGroup>()
+        val walked = history.walk(DiagnosticFilter(), 50) { pages ->
+            if (pages == 1) {
+                history.asSeeder(setOf(history.studyId))
+                afterInserts += history.upload(history.studyId, newer.participantId, newer.deviceId, newer.day, DIAGNOSTIC_CODES.take(1))
+                afterInserts += history.upload(history.studyId, older.participantId, older.deviceId, older.day, DIAGNOSTIC_CODES.take(1))
+                history.asReader()
+            }
+        }
+        assertEquals(DiagnosticFilter().expected(history.seeded + afterInserts.last()), walked)
+        assertEquals(DiagnosticFilter().expected(history.seeded + afterInserts), history.walk(DiagnosticFilter(), 200))
+    }
+
+    private fun assertMalformedPagesRejected(history: DiagnosticHistory) {
+        for (limit in listOf(0, 201, -1)) {
+            assertThrows("limit $limit", IllegalArgumentException::class.java) { history.page(DiagnosticFilter(), null, limit) }
+        }
+        for (cursor in listOf("garbage", "2026-08-01~ZHEw~x~2~_", "not-a-day~ZHEw~x~0~_", "2026-08-01~!!~x~0~_",
+                "2026-08-01~ZHEw~x~zero~_", "x".repeat(1025))) {
+            assertThrows(cursor, IllegalArgumentException::class.java) { history.page(DiagnosticFilter(), cursor, 10) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            history.page(DiagnosticFilter(fromDay = history.baseDay.plusDays(2), toDay = history.baseDay.plusDays(1)), null, 10)
+        }
+    }
+
+    private data class DiagnosticCode(val family: String, val issue: String, val eventId: String)
+
+    private data class DiagnosticGroup(val participantId: String, val deviceId: UUID, val day: LocalDate, val codes: List<DiagnosticCode>)
+
+    private data class DiagnosticFilter(
+        val participantId: String? = null, val deviceId: UUID? = null, val fromDay: LocalDate? = null,
+        val toDay: LocalDate? = null, val family: String? = null, val issue: String? = null,
+    ) {
+        private fun selects(group: DiagnosticGroup) = (participantId == null || group.participantId == participantId) &&
+            (deviceId == null || group.deviceId == deviceId) &&
+            (fromDay == null || group.day >= fromDay) &&
+            (toDay == null || group.day <= toDay)
+
+        private fun keeps(code: DiagnosticCode) = (family == null || code.family == family) && (issue == null || code.issue == issue)
+
+        /** The unpaged oracle: the groups of [groups] this filter selects, in the documented order. */
+        fun expected(groups: List<DiagnosticGroup>): List<DiagnosticGroup> = groups.filter(::selects)
+            .map { group -> group.copy(codes = group.codes.filter(::keeps).sortedWith(compareBy({ it.family }, { it.issue }, { it.eventId }))) }
+            .filter { it.codes.isNotEmpty() }
+            .sortedWith(compareByDescending<DiagnosticGroup> { it.day }.thenBy { it.participantId }.thenBy { it.deviceId.toString() })
+    }
+
+    /** Six participants with three devices each over fifteen days, plus one row of another study. */
+    private inner class DiagnosticHistory(val run: String) {
+        val studyId: UUID = UUID.randomUUID()
+        private val otherStudyId = UUID.randomUUID()
+        val participants = (0 until 6).map { "dq$it-$run" }
+        val baseDay: LocalDate = LocalDate.parse("2026-08-01")
+        val seeded = mutableListOf<DiagnosticGroup>()
+        private val service = UploadDiagnosticsUploadService(storageResolver)
+        private val history = UploadDiagnosticsQueryService(storageResolver)
+
+        fun device(participant: Int, index: Int): UUID = UUID.fromString("00000000-0000-4000-8000-0000000%02d%03d".format(participant, index))
+
+        fun asSeeder(studies: Set<UUID>) =
+            RLSRequestContext.set(RLSConnectionContext("diagnostic-oracle-seed", studies, isAdmin = false))
+
+        fun asReader() = RLSRequestContext.set(RLSConnectionContext("diagnostic-oracle-reader", setOf(studyId), isAdmin = false))
+
+        fun upload(study: UUID, participant: String, deviceId: UUID, day: LocalDate, chosen: List<Pair<String, String>>): DiagnosticGroup {
+            val events = chosen.map { (family, issue) ->
+                val noon = day.atTime(12, 0).atOffset(ZoneOffset.UTC)
+                AndroidUploadDiagnosticEvent(UUID.randomUUID().toString(), day, family, issue, 2, noon, noon)
+            }
+            service.upload(study, participant, deviceId, events)
+            return DiagnosticGroup(participant, deviceId, day, events.map { DiagnosticCode(it.moduleFamily, it.issueCode, it.id) })
+        }
+
+        /** Seeds the groups and leaves the request context reading this study only. */
+        fun seed() {
+            participants.forEach { studyFixture.ensureStudyParticipant(studyId, it) }
+            studyFixture.ensureStudyParticipant(otherStudyId, participants.first())
+            asSeeder(setOf(studyId, otherStudyId))
+            participants.forEachIndexed { p, participant ->
+                for (d in 0 until 3) for (offset in 0 until 15) {
+                    // About one group in five is absent; the rest carry two or three of the four codes.
+                    if ((p + d + offset) % 5 == 0) continue
+                    val chosen = DIAGNOSTIC_CODES.filterIndexed { k, _ -> (k + p * 7 + d * 3 + offset) % 3 != 0 }
+                    seeded += upload(studyId, participant, device(p, d), baseDay.plusDays(offset.toLong()), chosen)
+                }
+            }
+            upload(otherStudyId, participants.first(), device(0, 0), baseDay, DIAGNOSTIC_CODES)
+            asReader()
+        }
+
+        fun page(filter: DiagnosticFilter, cursor: String?, limit: Int) = history.getPage(studyId, filter.participantId,
+            filter.deviceId, filter.fromDay, filter.toDay, filter.family, filter.issue, cursor, limit)
+
+        fun walk(filter: DiagnosticFilter, limit: Int, between: (Int) -> Unit = {}): List<DiagnosticGroup> {
+            val walked = mutableListOf<DiagnosticGroup>()
+            var cursor: String? = null
+            var pages = 0
+            do {
+                val current = page(filter, cursor, limit)
+                assertTrue("a page never exceeds its limit", current.items.size <= limit)
+                walked += current.items.map { row ->
+                    DiagnosticGroup(row.participantId, checkNotNull(row.randomDeviceId), row.day,
+                        row.codes.map { DiagnosticCode(it.moduleFamily, it.issueCode, it.eventId) })
+                }
+                cursor = current.nextCursor
+                between(++pages)
+            } while (cursor != null)
+            return walked
         }
     }
 
@@ -1199,8 +1049,6 @@ class FlywayMigrationCorpusTest {
             assertEquals("", loadLockedStudy(connection, studyId).description)
         }
     }
-
-
 
     @Test
     fun testSweepPreviewUnderstandsArrayScopedJobs() {
@@ -1254,7 +1102,7 @@ class FlywayMigrationCorpusTest {
             }
             val device = fixture.devices.first()
             val result = createParticipantPurgeService(Mockito.mock(AuditingManager::class.java)).executeSelfWithdrawal(
-                fixture.studyId, fixture.participantId, device.deviceId, device.keyId, device.requestId,
+                fixture.studyId, fixture.participantId, device.randomDeviceId, device.keyId, device.requestId,
             )
             assertFalse(result.alreadyWithdrawn)
             assertNotNull(result.deletionOperationId)
@@ -1275,7 +1123,7 @@ class FlywayMigrationCorpusTest {
                 val first = fixture.devices.first()
                 val secondKey = installRawDeviceKey(fixture.devices.last().keyId)
                 val owner = service.executeSelfWithdrawal(fixture.studyId, fixture.participantId,
-                    first.deviceId, first.keyId, first.requestId)
+                    first.randomDeviceId, first.keyId, first.requestId)
                 if (complete) {
                     processDeletion(DataDeletionOrchestrator(storageResolver,
                         Mockito.mock(AuditingManager::class.java)), requireNotNull(owner.deletionOperationId))
@@ -1285,31 +1133,16 @@ class FlywayMigrationCorpusTest {
                     assertTrue(apiKeys().isErasedDeviceKey(secondKey))
                     continue
                 }
-                getConnection().use { connection ->
-                    connection.createStatement().use { it.execute("SET ROLE chronicle_app") }
-                    try {
-                    val resolver = Mockito.mock(StorageResolver::class.java)
-                    val borrowed = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
-                    val nonclosing = java.lang.reflect.Proxy.newProxyInstance(Connection::class.java.classLoader,
-                        arrayOf(Connection::class.java)) { _, method, args ->
-                        if (method.name == "close") null else try {
-                            method.invoke(connection, *(args ?: emptyArray()))
-                        } catch (error: java.lang.reflect.InvocationTargetException) { throw error.targetException }
-                    } as Connection
-                    Mockito.`when`(borrowed.connection).thenReturn(nonclosing)
-                    Mockito.`when`(resolver.getPlatformStorage()).thenReturn(borrowed)
+                val second = fixture.devices.last()
+                asDeviceApplication(fixture, second.keyId) { resolver ->
                     val audit = Mockito.mock(AuditingManager::class.java)
                     val scoped = ParticipantPurgeService(resolver, DataDeletionOrchestrator(resolver, audit),
                         ApiKeyService(resolver, Mockito.mock(HazelcastIdGenerationService::class.java), audit), audit)
-                    val second = fixture.devices.last()
                     val result = scoped.executeSelfWithdrawal(fixture.studyId, fixture.participantId,
-                        second.deviceId, second.keyId, second.requestId)
+                        second.randomDeviceId, second.keyId, second.requestId)
                     assertTrue(result.alreadyWithdrawn)
                     assertEquals(result, scoped.executeSelfWithdrawal(fixture.studyId, fixture.participantId,
-                        second.deviceId, second.keyId, second.requestId))
-                    } finally {
-                        connection.createStatement().use { it.execute("RESET ROLE") }
-                    }
+                        second.randomDeviceId, second.keyId, second.requestId))
                 }
             } finally {
                 deleteTombstones(fixture)
@@ -1599,7 +1432,7 @@ class FlywayMigrationCorpusTest {
     fun testTombstonedOrRevokedDeviceKeyMaterialIsNeverInstalledAgain() {
         val erased = ConcurrentWithdrawalFixture()
         val live = ConcurrentWithdrawalFixture()
-        val liveDevice = live.devices.first().deviceId
+        val liveDevice = live.devices.first().randomDeviceId
         val ids = Mockito.mock(HazelcastIdGenerationService::class.java)
         Mockito.`when`(ids.getNextId()).thenAnswer { UUID.randomUUID() }
         val installer = ApiKeyService(storageResolver, ids, Mockito.mock(AuditingManager::class.java))
@@ -1669,7 +1502,7 @@ class FlywayMigrationCorpusTest {
     fun testInstallingKeyMaterialWaitsForAnotherDeviceThatOwnsTheSameHash() {
         val other = ConcurrentWithdrawalFixture()
         val live = ConcurrentWithdrawalFixture()
-        val liveDevice = live.devices.first().deviceId
+        val liveDevice = live.devices.first().randomDeviceId
         val ids = Mockito.mock(HazelcastIdGenerationService::class.java)
         Mockito.`when`(ids.getNextId()).thenAnswer { UUID.randomUUID() }
         val installer = ApiKeyService(storageResolver, ids, Mockito.mock(AuditingManager::class.java))
@@ -1724,14 +1557,15 @@ class FlywayMigrationCorpusTest {
             seedConcurrentWithdrawalFixture(fixture)
             val rawKey = installRawDeviceKey(fixture.devices.first().keyId)
             val (orchestrator, operationId) = deleteParticipantForDevices(fixture)
-            makeDeletionDue(operationId)
             getConnection().use { installer ->
                 installer.autoCommit = false
                 installer.prepareStatement(ApiKeyService.LOCK_KEY_MATERIAL_SQL).use {
                     it.setString(1, sha256Hex(rawKey))
                     it.execute()
                 }
-                val erasure = java.util.concurrent.CompletableFuture.supplyAsync { orchestrator.processDueOperations(limit = 1) }
+                val erasure = java.util.concurrent.CompletableFuture.supplyAsync {
+                    orchestrator.eraseNow(operationId, fixture.studyId, "migration-test"); 1
+                }
                 val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20)
                 while (!erasure.isDone && waitingAdvisoryLocks() == 0 && System.nanoTime() < deadline) Thread.onSpinWait()
                 assertFalse("tombstoning waits for the installation holding the hash", erasure.isDone)
@@ -1780,7 +1614,7 @@ class FlywayMigrationCorpusTest {
     }
 
     /** A bound enrollment invitation that authorizes installing [keyHash] for this device and attempt. */
-    private fun bindEnrollmentAttempt(fixture: ConcurrentWithdrawalFixture, deviceId: UUID, attemptId: UUID, keyHash: String) =
+    private fun bindEnrollmentAttempt(fixture: ConcurrentWithdrawalFixture, randomDeviceId: UUID, attemptId: UUID, keyHash: String) =
         getConnection().use { connection ->
             executeSingleUpdate(
                 connection,
@@ -1788,7 +1622,7 @@ class FlywayMigrationCorpusTest {
                 INSERT INTO participant_form_access_codes (
                     access_code_id, token_hash, study_id, participant_id, form_kind, issuer_type, issued_by,
                     expires_at, exchanged_at, enrollment_attempt_id, enrollment_source_device_hash,
-                    enrollment_device_id, enrollment_manifest_digest, enrollment_request_hash,
+                    enrollment_random_device_id, enrollment_manifest_digest, enrollment_request_hash,
                     enrollment_proposed_key_hash, enrollment_replay_expires_at, enrollment_settings_version,
                     enrollment_disclosure_version, enrollment_enabled_modules, enrollment_required_modules
                 ) VALUES (?, decode(md5(?::text), 'hex'), ?, ?, 'ENROLLMENT', 'RESEARCHER', 'migration-test',
@@ -1801,7 +1635,7 @@ class FlywayMigrationCorpusTest {
                 it.setObject(3, fixture.studyId)
                 it.setString(4, fixture.participantId)
                 it.setObject(5, attemptId)
-                it.setObject(6, deviceId)
+                it.setObject(6, randomDeviceId)
                 it.setString(7, keyHash)
             }
         }
@@ -1884,6 +1718,31 @@ class FlywayMigrationCorpusTest {
         }
     }
 
+    private fun <T> withDeviceRequestContext(
+        fixture: ConcurrentWithdrawalFixture,
+        device: ConcurrentWithdrawalDevice,
+        action: () -> T,
+    ): T {
+        val previous = org.springframework.security.core.context.SecurityContextHolder.getContext()
+        val authentication = com.openlattice.chronicle.filters.ApiKeyAuthenticationToken(
+            principal = "apikey:${device.keyId}", keyId = device.keyId, studyId = fixture.studyId,
+            participantId = fixture.participantId, randomDeviceId = device.randomDeviceId,
+            scope = com.openlattice.chronicle.apikey.ApiKeyScope.WRITE,
+            authorities = listOf(org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_API_KEY")),
+        )
+        val security = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext()
+        security.authentication = authentication
+        org.springframework.security.core.context.SecurityContextHolder.setContext(security)
+        return try {
+            val context = com.openlattice.chronicle.storage.rls.RLSContextManager(Mockito.mock(AuthorizationManager::class.java))
+                .getCurrentUserContext()
+            assertEquals(setOf(fixture.studyId), context.authorizedStudyIds)
+            assertFalse(context.isAdmin)
+            assertFalse(context.isDeletionWorker)
+            RLSRequestContext.withContext(context, action)
+        } finally { org.springframework.security.core.context.SecurityContextHolder.setContext(previous) }
+    }
+
     /** Runs as the application role with the mobile RLS context RLSContextManager gives a device key. */
     private fun <T> asDeviceApplication(
         fixture: ConcurrentWithdrawalFixture,
@@ -1900,19 +1759,13 @@ class FlywayMigrationCorpusTest {
             } as Connection
             val borrowed = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
             Mockito.`when`(borrowed.connection).thenAnswer {
-                connection.prepareStatement(
-                    "SELECT set_config('app.current_user_id', ?, false), set_config('app.authorized_studies', ?, false), " +
-                        "set_config('app.is_admin', 'false', false)",
-                ).use { statement ->
-                    statement.setString(1, "apikey:$keyId")
-                    statement.setString(2, fixture.studyId.toString())
-                    statement.execute()
-                }
+                RLSConnectionSql.applyContext(connection, requireNotNull(RLSRequestContext.current()))
                 nonclosing
             }
             val resolver = Mockito.mock(StorageResolver::class.java)
             Mockito.`when`(resolver.getPlatformStorage()).thenReturn(borrowed)
-            block(resolver)
+            val device = fixture.devices.single { it.keyId == keyId }
+            withDeviceRequestContext(fixture, device) { block(resolver) }
         } finally {
             connection.createStatement().use { statement ->
                 statement.execute("RESET ROLE")
@@ -1922,7 +1775,7 @@ class FlywayMigrationCorpusTest {
     }
 
     @Test
-    fun testSweepParticipantErasureReconcilesLegacySteps() = sweepParticipantAssetErasure("legacy")
+    fun testSweepParticipantErasureReconcilesPersistedSteps() = sweepParticipantAssetErasure("legacy")
 
     @Test
     fun testSweepWithdrawalErasesDeviceMetadata() = sweepParticipantAssetErasure("devices")
@@ -1936,8 +1789,8 @@ class FlywayMigrationCorpusTest {
                 seedConcurrentWithdrawalFixture(fixture)
                 getConnection().use { connection ->
                     connection.createStatement().use { it.execute("""INSERT INTO devices
-                        (study_id, device_id, participant_id, device_type, source_device)
-                        VALUES ('${fixture.studyId}', '${fixture.devices.first().deviceId}', '${fixture.participantId}', 'Android', '{}'::jsonb)""") }
+                        (study_id, random_device_id, participant_id, device_type, source_device)
+                        VALUES ('${fixture.studyId}', '${fixture.devices.first().randomDeviceId}', '${fixture.participantId}', 'Android', '{}'::jsonb)""") }
                 }
                 val operation = orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId, mode,
                     "sweep", UUID.randomUUID())
@@ -2023,13 +1876,9 @@ class FlywayMigrationCorpusTest {
     @Test
     fun testSweepParticipantErasureDeletesWebhookPayloads() = sweepParticipantAssetErasure("webhook")
 
-    @Test
-    fun testSweepParticipantErasureScrubsRevokedExportRequest() = sweepParticipantAssetErasure("export")
-
     private fun sweepParticipantAssetErasure(finding: String) {
         val fixture = ConcurrentWithdrawalFixture()
         val webhookId = UUID.randomUUID()
-        val exportId = UUID.randomUUID()
         val audit = Mockito.mock(AuditingManager::class.java)
         val orchestrator = DataDeletionOrchestrator(storageResolver, audit)
         TestSecurityUtils.setupSecurityContext()
@@ -2037,23 +1886,20 @@ class FlywayMigrationCorpusTest {
             seedConcurrentWithdrawalFixture(fixture)
             getConnection().use { connection ->
                 connection.createStatement().use { statement ->
-                    statement.execute("""INSERT INTO devices (study_id, device_id, participant_id, device_type, source_device)
-                        VALUES ('${fixture.studyId}', '${fixture.devices.first().deviceId}', '${fixture.participantId}', 'Android', '{}'::jsonb)""")
+                    statement.execute("""INSERT INTO devices (study_id, random_device_id, participant_id, device_type, source_device)
+                        VALUES ('${fixture.studyId}', '${fixture.devices.first().randomDeviceId}', '${fixture.participantId}', 'Android', '{}'::jsonb)""")
                     statement.execute("""INSERT INTO webhook_registrations (webhook_id, study_id, url, secret_hash, event_types, created_by)
                         VALUES ('$webhookId', '${fixture.studyId}', 'https://example.org/hook', 'hash', ARRAY['PARTICIPANT_ENROLLED'], 'sweep')""")
-                    statement.execute("""INSERT INTO webhook_deliveries (delivery_id, webhook_id, event_type, payload)
-                        VALUES ('${UUID.randomUUID()}', '$webhookId', 'PARTICIPANT_ENROLLED',
-                        '{"studyId":"${fixture.studyId}","data":{"participantId":"${fixture.participantId}"}}'::jsonb)""")
-                    statement.execute("""INSERT INTO export_jobs (export_id, study_id, status, format, request, created_by)
-                        VALUES ('$exportId', '${fixture.studyId}', 'PENDING', 'CSV',
-                        '{"participantIds":["${fixture.participantId}"],"dataTypes":["UsageEvents"],"format":"CSV"}'::jsonb, 'sweep')""")
+                    statement.execute("""INSERT INTO webhook_deliveries (delivery_id, webhook_id, event_type, participant_id, payload, delivery_state)
+                        VALUES ('${UUID.randomUUID()}', '$webhookId', 'PARTICIPANT_ENROLLED', '${fixture.participantId}',
+                        '{"studyId":"${fixture.studyId}","data":{"participantId":"${fixture.participantId}"}}'::jsonb, 'PENDING')""")
                 }
             }
             val operationId = orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId,
                 DataDeletionMode.WITHDRAW_AND_ERASE, "sweep", UUID.randomUUID())
             if (finding == "legacy") getConnection().use { connection ->
                 connection.createStatement().use { it.execute(
-                    "DELETE FROM data_deletion_steps WHERE operation_id = '$operationId' AND asset_id IN ('usage-event-annotations', " +
+                    "DELETE FROM data_deletion_steps WHERE operation_id = '$operationId' AND asset_id IN ('notifications', " +
                     "'participant-pseudonyms')") }
             }
             processDeletion(orchestrator, operationId)
@@ -2063,20 +1909,12 @@ class FlywayMigrationCorpusTest {
                     statement.executeQuery("SELECT count(*) FROM webhook_deliveries WHERE webhook_id = '$webhookId'").use {
                         assertTrue(it.next()); if (finding == "webhook") assertEquals(0L, it.getLong(1))
                     }
-                    statement.executeQuery("SELECT request::text FROM export_jobs WHERE export_id = '$exportId'").use {
-                        assertTrue(it.next())
-                        if (finding == "export") {
-                            assertFalse(it.getString(1).contains(fixture.participantId))
-                            assertEquals("{}", it.getString(1))
-                        }
-                    }
                 }
             }
         } finally {
             getConnection().use { connection ->
                 connection.createStatement().use {
                     it.execute("DELETE FROM webhook_registrations WHERE webhook_id = '$webhookId'")
-                    it.execute("DELETE FROM export_jobs WHERE export_id = '$exportId'")
                 }
             }
             sweepCleanupRows(fixture, listOf("devices"))
@@ -2094,7 +1932,7 @@ class FlywayMigrationCorpusTest {
             val upload = AndroidSensorDataUploadService(storageResolver)
             val old = AndroidSensorSample(UUID.randomUUID(), AndroidSensorType.accelerometer,
                 OffsetDateTime.now().minusDays(1), "UTC", values = listOf(1f, 2f, 3f))
-            val device = fixture.devices.first().deviceId
+            val device = fixture.devices.first().randomDeviceId
             assertEquals(1, upload.upload(fixture.studyId, fixture.participantId, device, listOf(old)))
             val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
             val operation = orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId,
@@ -2111,7 +1949,6 @@ class FlywayMigrationCorpusTest {
             TestSecurityUtils.clearSecurityContext()
         }
     }
-
 
     @Test
     fun testSweepFinalVerificationDoesNotInvertStudyRevisionWriters() {
@@ -2136,7 +1973,6 @@ class FlywayMigrationCorpusTest {
                 }
             }
             operationId = orchestrator.quarantineStudy(targetStudy, "sweep", UUID.randomUUID())
-            makeDeletionDue(operationId)
             getConnection().use { writer ->
                 writer.autoCommit = false
                 writer.createStatement().use {
@@ -2144,7 +1980,7 @@ class FlywayMigrationCorpusTest {
                     it.execute("SET LOCAL deadlock_timeout = '10s'")
                     it.execute("UPDATE studies SET title = title WHERE study_id = '$controlStudy'")
                 }
-                val deletion = executor.submit<Int> { orchestrator.processDueOperations(limit = 1) }
+                val deletion = executor.submit<Int> { orchestrator.eraseNow(checkNotNull(operationId), targetStudy, "sweep"); 1 }
                 try {
                     assertEquals("Other studies' writers must not delay final verification", 1, deletion.get(15, TimeUnit.SECONDS))
                     writer.prepareStatement("UPDATE studies SET settings = ?::jsonb WHERE study_id = ?").use {
@@ -2163,13 +1999,13 @@ class FlywayMigrationCorpusTest {
             assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
             getConnection().use { connection ->
                 connection.createStatement().use {
+                    it.execute("DELETE FROM data_deletion_audit_outbox WHERE study_id = '$targetStudy'")
                     it.execute("DELETE FROM data_deletion_operations WHERE study_id = '$targetStudy'")
                     it.execute("DELETE FROM studies WHERE study_id IN ('$targetStudy', '$controlStudy')")
                 }
             }
         }
     }
-
 
     @Test
     fun testSweepSelfWithdrawalSurvivesCancellationOfStudyQuarantine() {
@@ -2182,7 +2018,7 @@ class FlywayMigrationCorpusTest {
             orchestrator.quarantineStudy(fixture.studyId, "sweep", UUID.randomUUID())
             val device = fixture.devices.first()
             val result = createParticipantPurgeService(audit).executeSelfWithdrawal(fixture.studyId, fixture.participantId,
-                device.deviceId, device.keyId, device.requestId)
+                device.randomDeviceId, device.keyId, device.requestId)
             assertFalse(result.alreadyWithdrawn)
             val withdrawal = requireNotNull(result.deletionOperationId)
             assertEquals(1, orchestrator.cancelStudyErasure(fixture.studyId, "sweep"))
@@ -2196,78 +2032,22 @@ class FlywayMigrationCorpusTest {
     }
 
     @Test
-    fun testSweepOrdinaryDrainAndSensorRecalculationDoNotBlockReinsertion() {
+    fun testSweepOrdinaryDrainAndScreenTimeRewriteDoNotBlockReinsertion() {
         val fixture = ConcurrentWithdrawalFixture()
         try {
             seedConcurrentWithdrawalFixture(fixture)
-            getConnection().use { connection ->
-                val buffer = """INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id)
-                    VALUES ('${fixture.studyId}', '${fixture.participantId}', '[]'::jsonb, now(), 'Android', '${fixture.devices.first().deviceId}')"""
-                connection.createStatement().use { assertEquals(1, it.executeUpdate(buffer)) }
-                connection.prepareStatement(ChroniclePostgresTables.getScopedMoveSql(128, UploadType.Android)).use {
-                    it.setObject(1, fixture.studyId); it.setString(2, fixture.participantId)
-                    it.executeQuery().use { rows -> assertTrue(rows.next()); assertFalse(rows.next()) }
-                }
-                connection.createStatement().use { assertEquals(1, it.executeUpdate(buffer)) }
-                val sensor = sweepReplayFixtures(fixture).getValue("sensor_data")
-                connection.createStatement().use {
-                    assertEquals(1, it.executeUpdate(sensor))
-                    assertEquals(1, it.executeUpdate("DELETE FROM sensor_data WHERE study_id = '${fixture.studyId}'"))
-                    assertEquals(1, it.executeUpdate(sensor))
-                }
-            }
+            val buffer = """INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, random_device_id)
+                VALUES ('${fixture.studyId}', '${fixture.participantId}', '[]'::jsonb, now(), 'Android', '${fixture.devices.first().randomDeviceId}')"""
+            assertEquals(1, update(buffer))
+            queryRow(ChroniclePostgresTables.getMoveSql(128, UploadType.Android, listOf(fixture.studyId))) { assertFalse(it.next()) }
+            assertEquals(1, update(buffer))
+            val screenTime = screenTimeRow(fixture)
+            assertEquals(1, update(screenTime))
+            assertEquals(1, update("DELETE FROM ios_screen_time_usage WHERE study_id = ?", fixture.studyId))
+            assertEquals(1, update(screenTime))
         } finally {
-            sweepCleanupRows(fixture, listOf("upload_buffer", "sensor_data"))
+            sweepCleanupRows(fixture, listOf("upload_buffer", "ios_screen_time_usage"))
             cleanupConcurrentWithdrawalFixture(fixture)
-        }
-    }
-
-    @Test
-    fun testCancelledIosNameBackfillDoesNotUpdateTheDeletionLedger() {
-        val fixture = ConcurrentWithdrawalFixture()
-        val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
-        TestSecurityUtils.setupSecurityContext()
-        try {
-            seedConcurrentWithdrawalFixture(fixture)
-            orchestrator.quarantineStudy(fixture.studyId, "name-scrub-test", UUID.randomUUID())
-            assertEquals(1, orchestrator.cancelStudyErasure(fixture.studyId, "name-scrub-test"))
-            getConnection().use { connection ->
-                connection.autoCommit = false
-                try {
-                    connection.createStatement().use { statement ->
-                        statement.executeUpdate(sweepReplayFixtures(fixture).getValue("sensor_data"))
-                        statement.executeUpdate("""INSERT INTO devices
-                            (study_id, device_id, participant_id, device_type, source_device)
-                            VALUES ('${fixture.studyId}', '${fixture.devices.first().deviceId}',
-                                '${fixture.participantId}', 'Ios', '{"name":"fixture"}'::jsonb)""")
-                        statement.execute("""CREATE FUNCTION reject_scrub_ledger_update() RETURNS TRIGGER
-                            LANGUAGE plpgsql AS ${'$'}${'$'} BEGIN RAISE EXCEPTION 'backfill updated the deletion ledger'; END ${'$'}${'$'};
-                            CREATE TRIGGER reject_scrub_ledger_update BEFORE UPDATE ON data_deletion_operations
-                            FOR EACH ROW EXECUTE FUNCTION reject_scrub_ledger_update();
-                            DROP TRIGGER scrub_cancelled_ios_device_names ON data_deletion_operations;
-                            DROP FUNCTION scrub_cancelled_ios_device_names();
-                            DROP FUNCTION IF EXISTS scrub_cancelled_ios_device_names(TEXT, TEXT);""")
-                        statement.execute(checkNotNull(javaClass.getResource(
-                            "/db/migration/V121__scrub_deferred_ios_names_on_deletion_cancellation.sql")).readText())
-                    }
-                    connection.prepareStatement("""SELECT s.device_name, d.source_device ?? 'name' AS retains_name
-                        FROM sensor_data s JOIN devices d ON d.study_id::text = s.study_id
-                            AND d.participant_id = s.participant_id AND d.device_id = ?
-                        WHERE s.study_id = ? AND s.participant_id = ?""").use { statement ->
-                        statement.setObject(1, fixture.devices.first().deviceId)
-                        statement.setString(2, fixture.studyId.toString())
-                        statement.setString(3, fixture.participantId)
-                        statement.executeQuery().use { rows ->
-                            assertTrue(rows.next())
-                            assertEquals(fixture.devices.first().deviceId.toString(), rows.getString("device_name"))
-                            assertFalse(rows.getBoolean("retains_name"))
-                        }
-                    }
-                } finally { connection.rollback() }
-            }
-        } finally {
-            cleanupConcurrentWithdrawalFixture(fixture)
-            TestSecurityUtils.clearSecurityContext()
         }
     }
 
@@ -2311,54 +2091,12 @@ class FlywayMigrationCorpusTest {
         } finally { cleanupConcurrentWithdrawalFixture(fixture) }
     }
 
-    private fun sweepReplayFixtures(fixture: ConcurrentWithdrawalFixture): Map<String, String> = mapOf(
-        "chronicle_usage_events" to """INSERT INTO chronicle_usage_events
-            (study_id, participant_id, app_package_name, event_type, event_timestamp, timezone)
-            VALUES ('${fixture.studyId}', '${fixture.participantId}', 'com.example.sweep', 1, '2026-01-01T01:00:00Z', 'UTC')""",
-        "sensor_data" to """INSERT INTO sensor_data (study_id, participant_id, sample_id, sensor_type, sample_duration,
-            device_version, device_name, device_model, device_system_name)
-            VALUES ('${fixture.studyId}', '${fixture.participantId}', '${UUID.randomUUID()}', 'phoneUsage', 60, '26', 'fixture', 'phone', 'iOS')""",
-        "upload_buffer" to """INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id)
-            VALUES ('${fixture.studyId}', '${fixture.participantId}', '[{"erased":true}]'::jsonb, now(), 'Android', '${fixture.devices.first().deviceId}')""",
-        "notification_activity" to """INSERT INTO notification_activity
-            (study_id, participant_id, event_id, sample_timestamp, timezone, event_type, package_name)
-            VALUES ('${fixture.studyId}', '${fixture.participantId}', '${UUID.randomUUID()}', '2026-01-01T01:00:00Z', 'UTC', 'POSTED', 'com.example.sweep')""",
-    )
-
-    @Test
-    fun testSweepPurgedUndatedLegacyPayloadIsDiscardedOnDrain() {
-        val fixture = ConcurrentWithdrawalFixture()
-        val payload = """[{"id":"${UUID.randomUUID()}","data":"erased malformed payload"}]"""
-        fun insert(uploadType: String) = getConnection().use { connection ->
-            connection.prepareStatement("""INSERT INTO upload_buffer
-                (study_id, participant_id, data, uploaded_at, upload_type, device_id)
-                VALUES (?, ?, ?::jsonb, now(), ?, ?)""").use {
-                it.setObject(1, fixture.studyId); it.setString(2, fixture.participantId); it.setString(3, payload)
-                it.setString(4, uploadType); it.setObject(5, fixture.devices.first().deviceId); it.executeUpdate()
-            }
-        }
-        try {
-            seedConcurrentWithdrawalFixture(fixture)
-            assertEquals(1, insert("IosSensorRejected"))
-            val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
-            val operation = orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId,
-                DataDeletionMode.COLLECTED_DATA_PURGE, "sweep", UUID.randomUUID())
-            processDeletion(orchestrator, operation)
-            assertEquals(1, insert("Ios"))
-            val dependencies = com.openlattice.chronicle.storage.tasks.MoveToEventStorageTaskDependencies(
-                storageResolver, Mockito.mock(com.openlattice.chronicle.services.studies.StudyManager::class.java))
-            val drain = object : com.openlattice.chronicle.storage.tasks.MoveToIosEventStorageTask() {
-                override fun getDependency() = dependencies
-            }
-            val method = com.openlattice.chronicle.storage.tasks.MoveToIosEventStorageTask::class.java
-                .getDeclaredMethod("moveToEventStorage").apply { isAccessible = true }
-            RLSRequestContext.withSystemContext { method.invoke(drain) }
-            assertEquals(0L, sweepCount(fixture, "upload_buffer"))
-        } finally {
-            sweepCleanupRows(fixture, listOf("upload_buffer"))
-            cleanupConcurrentWithdrawalFixture(fixture)
-        }
-    }
+    private fun screenTimeRow(fixture: ConcurrentWithdrawalFixture): String = """INSERT INTO ios_screen_time_usage
+        (study_id, participant_id, random_device_id, record_id, row_kind, captured_at,
+            observation_start, observation_end, timezone, app_name, duration_seconds)
+        VALUES ('${fixture.studyId}', '${fixture.participantId}', '${fixture.devices.first().randomDeviceId}', '${UUID.randomUUID()}',
+            'application', '2026-01-01T02:05:00Z',
+            '2026-01-01T01:00:00Z', '2026-01-01T02:00:00Z', 'UTC', 'Fixture', 60)"""
 
     @Test
     fun testSweepQueuedWebhookIsNotSentDuringParticipantQuarantine() = sweepWebhookErasure(inFlight = false)
@@ -2395,17 +2133,19 @@ class FlywayMigrationCorpusTest {
                     (webhook_id, study_id, url, secret_hash, event_types, created_by)
                     VALUES ('$webhookId', '${fixture.studyId}', 'https://example.org/hook', 'hash', ARRAY['DATA_SUBMITTED'], 'sweep')""") }
                 assertEquals(1, service.enqueueEvent(connection, fixture.studyId, WebhookEventType.DATA_SUBMITTED,
-                    mapOf("participantId" to fixture.participantId)))
+                    WebhookPayload.DataSubmitted(ParticipantRef.fromParticipantId(fixture.participantId), ParticipantDataType.UsageEvents, 1)))
                 if (inFlight) assertEquals(1, service.enqueueEvent(connection, fixture.studyId, WebhookEventType.DATA_SUBMITTED,
-                    mapOf("participantId" to fixture.participantId, "next" to true)))
+                    WebhookPayload.DataSubmitted(ParticipantRef.fromParticipantId(fixture.participantId), ParticipantDataType.UsageEvents, 2)))
             }
             service.dispatchPendingDeliveries()
             if (inFlight) {
                 val delivery = workers.submit { tasks.removeAt(0).run() }
                 assertTrue(sending.await(5, TimeUnit.SECONDS))
                 val quarantine = workers.submit<UUID> {
-                    orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId,
-                        DataDeletionMode.WITHDRAW_AND_ERASE, "sweep", UUID.randomUUID())
+                    RLSRequestContext.withSystemContext {
+                        orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId,
+                            DataDeletionMode.WITHDRAW_AND_ERASE, "sweep", UUID.randomUUID())
+                    }
                 }
                 assertThrows(java.util.concurrent.TimeoutException::class.java) { quarantine.get(300, TimeUnit.MILLISECONDS) }
                 release.countDown()
@@ -2437,6 +2177,14 @@ class FlywayMigrationCorpusTest {
             }
         }
 
+    private fun studyRowCount(studyId: UUID, table: String): Long =
+        getConnection().use { connection ->
+            connection.prepareStatement("SELECT count(*) FROM $table WHERE study_id::text = ?").use {
+                it.setString(1, studyId.toString())
+                it.executeQuery().use { result -> check(result.next()); result.getLong(1) }
+            }
+        }
+
     private fun sweepCleanupRows(fixture: ConcurrentWithdrawalFixture, tables: List<String>) {
         getConnection().use { connection ->
             tables.forEach { table ->
@@ -2447,15 +2195,180 @@ class FlywayMigrationCorpusTest {
         }
     }
 
+    @Test
+    fun testStatsSqlFailuresDoNotRenderBoundParticipantLabels() {
+        val key = ParticipantKey(UUID.randomUUID(), STATS_SENTINEL)
+        val logger = LogManager.getLogger(ParticipantStatsMapstore::class.java)
+        val priorLevel = logger.level
+        Configurator.setLevel(logger.name, Level.DEBUG)
+        try {
+            getConnection().use { connection ->
+                assertFalse("JDBC must omit server error details", connection.unwrap(BaseConnection::class.java).logServerErrorDetail)
+                connection.autoCommit = false
+                connection.createStatement().use { statement ->
+                    statement.execute("CREATE TEMP TABLE participant_stats (LIKE public.participant_stats INCLUDING ALL) ON COMMIT DROP")
+                    statement.execute("ALTER TABLE pg_temp.participant_stats ADD CHECK (participant_id <> '$STATS_SENTINEL')")
+                }
+                val datasource = Mockito.mock(HikariDataSource::class.java)
+                Mockito.`when`(datasource.connection).thenReturn(connection)
+                ScopedLogCapture(ParticipantStatsMapstore::class.java).use { logs ->
+                    val failure = assertThrows(IllegalStateException::class.java) {
+                        ParticipantStatsMapstore(datasource).storeAll(mapOf(key to ParticipantStats(key.studyId, key.participantId)))
+                    }
+                    logger.error("Hazelcast write-behind retry", failure)
+                    assertTrue("The real failure must be captured", logs.messages.isNotEmpty())
+                    assertTrue("Rendered logs include the throwable", logs.messages.any { it.contains("Hazelcast write-behind retry") })
+                    assertFalse("Rendered SQL failure must not include the label", logs.messages.joinToString("\n").contains(STATS_SENTINEL))
+                    assertNull("No database cause may escape to Hazelcast", failure.cause)
+                }
+            }
+        } finally {
+            Configurator.setLevel(logger.name, priorLevel)
+        }
+    }
+
+    @Test
+    fun testParticipantTokenFunctionUsesAnUnprivilegedOwnerWithExplicitReadPermission() {
+        val ownerPostgres = ChronicleContractTestSchema.prodPostgresContainer("chronicle_token_owner")
+        try {
+            ownerPostgres.start()
+            ChronicleContractTestSchema.waitForQueryReady(ownerPostgres)
+            createSecondaryTokenOwner(ownerPostgres)
+            ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(ownerPostgres)
+            roundTripParticipantTokenKey(ownerPostgres)
+            ownerPostgres.createConnection("").use(::assertParticipantTokenOwnerPrivileges)
+        } finally {
+            ownerPostgres.stop()
+        }
+    }
+
+    private fun createSecondaryTokenOwner(container: PostgreSQLContainer<*>) {
+        // PostgreSQL's OID-10 bootstrap superuser cannot be demoted; test the actual function owner.
+        container.createConnection("").use { connection ->
+            connection.createStatement().use {
+                it.execute("CREATE ROLE chronicle LOGIN SUPERUSER PASSWORD '${ChronicleContractTestSchema.TEST_PASSWORD}'")
+            }
+        }
+        container.withUsername("chronicle")
+    }
+
+    private fun assertParticipantTokenOwnerPrivileges(connection: Connection) {
+        connection.createStatement().use { statement ->
+            // Membership permits the test to enter the request role; it grants no key-table rights.
+            statement.execute("GRANT chronicle_app TO chronicle")
+            statement.execute("ALTER ROLE chronicle NOSUPERUSER")
+            statement.executeQuery("SELECT current_user = 'chronicle' AND NOT rolsuper FROM pg_roles WHERE rolname = current_user").use {
+                assertTrue(it.next()); assertTrue(it.getBoolean(1))
+            }
+            // The full migration ran as chronicle, including its REVOKE from this actual owner.
+            statement.executeQuery("SELECT length(chronicle_participant_block_token(gen_random_uuid(), 'P1')) = 64").use {
+                assertTrue(it.next()); assertTrue(it.getBoolean(1))
+            }
+            statement.execute("SET ROLE chronicle_app")
+            statement.executeQuery("SELECT length(chronicle_participant_block_token(gen_random_uuid(), 'P1')) = 64").use {
+                assertTrue(it.next()); assertTrue(it.getBoolean(1))
+            }
+            assertThrows(SQLException::class.java) {
+                statement.execute("CREATE TABLE public.token_authority_probe (value text)")
+            }
+            assertThrows(SQLException::class.java) {
+                statement.executeQuery("SELECT key_bytes FROM public.chronicle_participant_token_key")
+            }
+        }
+    }
+
+    @Test
+    fun testParticipantBlockTokensRejectUnkeyedDictionaries() {
+        val studyId = UUID.randomUUID()
+        val tokens = getConnection().use { connection ->
+            connection.prepareStatement("SELECT chronicle_participant_block_token(?::uuid, ?::text)").use { statement ->
+                (1..50).map { number ->
+                    statement.setObject(1, studyId)
+                    statement.setString(2, "P$number")
+                    statement.executeQuery().use { result -> assertTrue(result.next()); result.getString(1) }
+                }
+            }
+        }
+        val dictionary = (1..500).flatMap { number ->
+            listOf("MD5", "SHA-256").map { algorithm ->
+                MessageDigest.getInstance(algorithm).digest("$studyId:P$number".toByteArray())
+                    .joinToString("") { "%02x".format(it) }
+            }
+        }.toSet()
+        assertTrue("Persisted tokens must resist unkeyed label dictionaries", tokens.none(dictionary::contains))
+        assertEquals(50, tokens.toSet().size)
+        roundTripParticipantTokenKey(postgres)
+        getConnection().use { connection ->
+            connection.prepareStatement("SELECT chronicle_participant_block_token(?::uuid, 'P1')").use { statement ->
+                statement.setObject(1, studyId)
+                statement.executeQuery().use { result -> assertTrue(result.next()); assertEquals(tokens.first(), result.getString(1)) }
+            }
+            connection.createStatement().use { statement ->
+                statement.execute("SET ROLE chronicle_app")
+                assertThrows(SQLException::class.java) { statement.executeQuery("SELECT key_bytes FROM chronicle_participant_token_key") }
+                statement.execute("RESET ROLE")
+            }
+        }
+    }
+
+    private fun roundTripParticipantTokenKey(container: PostgreSQLContainer<*>) {
+        val dump = container.execInContainer("pg_dump", "-U", container.username, "-d", container.databaseName,
+            "--no-owner", "--inserts", "--encoding=UTF8", "--table=public.chronicle_participant_token_key")
+        assertEquals("The database backup must include the protected token key", 0, dump.exitCode)
+        container.createConnection("").use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.createStatement().use { it.execute("SET search_path TO ''") }
+                val privileges = databaseObjectPrivileges(connection)
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TABLE public.chronicle_participant_token_key")
+                    statement.execute(dump.stdout.lineSequence().filterNot { it.startsWith("\\") }.joinToString("\n"))
+                }
+                connection.commit()
+                connection.autoCommit = true
+                connection.createStatement().use { it.execute("SET search_path TO ''") }
+                ChronicleContractTestSchema.bootstrapApplicationRoles(connection)
+                assertEquals("Role bootstrap must preserve every migrated object and column ACL",
+                    privileges, databaseObjectPrivileges(connection))
+            } catch (failure: SQLException) {
+                if (!connection.isClosed && !connection.autoCommit) connection.rollback()
+                throw SqlFailures.sanitize(failure)
+            }
+        }
+    }
+
+    private fun databaseObjectPrivileges(connection: Connection): List<String> =
+        connection.createStatement().use { statement ->
+            statement.executeQuery(
+                checkNotNull(javaClass.getResourceAsStream("/database-object-privileges.sql"))
+                    .bufferedReader().use { it.readText() },
+            ).use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+        }
+
+    @Test
+    fun testParticipantTokensFailClosedWithoutTheirKeyAuthority() {
+        postgres.createConnection("").use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.createStatement().use { statement ->
+                    statement.executeUpdate("DELETE FROM public.chronicle_participant_token_key")
+                    assertThrows(SQLException::class.java) {
+                        statement.executeQuery("SELECT chronicle_participant_block_token(gen_random_uuid(), 'P1')")
+                    }
+                }
+            } finally {
+                connection.rollback()
+            }
+        }
+    }
+
     companion object {
+        private val DIAGNOSTIC_CODES = listOf("LOCAL_STORE" to "LOCAL_BUFFER_OVERFLOW", "LOCAL_STORE" to "SAMPLE_QUARANTINED",
+            "USAGE_LIFECYCLE" to "CONNECTION_FAILURE", "BATTERY" to "UPLOAD_FAILURE")
+        private const val STATS_SENTINEL = "SENTINEL-STATS-7f3a"
         private lateinit var postgres: PostgreSQLContainer<*>
         private lateinit var storageResolver: StorageResolver
         private lateinit var migrateResult: MigrateResult
-        private lateinit var legacyAuditDescription: String
-        private lateinit var legacyFinishedJobId: UUID
-        private lateinit var legacyInterruptedJobId: UUID
-        private lateinit var legacyInterruptedRunId: UUID
-        private lateinit var legacyOrphanRunId: UUID
 
         @BeforeClass
         @JvmStatic
@@ -2464,89 +2377,12 @@ class FlywayMigrationCorpusTest {
             postgres.start()
             ChronicleContractTestSchema.waitForQueryReady(postgres)
 
-            val hikariProps = Properties().apply {
-                setProperty("jdbcUrl", postgres.jdbcUrl)
-                setProperty("username", postgres.username)
-                setProperty("password", postgres.password)
-                setProperty("maximumPoolSize", "5")
-            }
-            val pgConfig = PostgresConfiguration(
-                hikariConfiguration = hikariProps,
-                usingCitus = false,
-                flavor = PostgresFlavor.VANILLA,
-                initializeIndices = false,
-                initializeTables = false, // schema comes from the shared harness below
-            )
+            postgres.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
             val dsm = DataSourceManager(
-                mapOf("default" to pgConfig, "chronicle" to pgConfig, "platform_read" to pgConfig),
-                HealthCheckRegistry(),
-                MetricRegistry(),
+                ChronicleContractTestSchema.storageConfigurations(postgres, maximumPoolSize = 5),
+                HealthCheckRegistry(), MetricRegistry(),
             )
             storageResolver = StorageResolver(dsm, ChronicleStorageConfiguration())
-
-            postgres.createConnection("").use { conn ->
-                // Framework schema only — no stub tables. The corpus (V10 etc.) creates its own
-                // tables and V50 covers every registered participant asset on top; pre-created
-                // stubs would shadow the real definitions under CREATE TABLE IF NOT EXISTS.
-                ChronicleContractTestSchema.applyFrameworkSchema(conn)
-                // Legacy state seeded BEFORE the corpus runs: V54 must drain audit_buffer
-                // into audit. This is the one data-migration behavior still exercised.
-                legacyAuditDescription = "legacy-audit-${UUID.randomUUID()}"
-                conn.prepareStatement(
-                    """
-                    INSERT INTO audit_buffer (
-                        acl_key, id, principal_type, principal_id, audit_event_type,
-                        study_id, organization_id, description, data, event_timestamp
-                    ) VALUES (?, ?, 'USER', 'migration-test', 'GET_STUDY', ?, ?, ?, '{}', now())
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setString(1, UUID.randomUUID().toString().replace("-", ""))
-                    statement.setString(2, UUID.randomUUID().toString())
-                    statement.setString(3, UUID.randomUUID().toString())
-                    statement.setString(4, UUID.randomUUID().toString())
-                    statement.setString(5, legacyAuditDescription)
-                    statement.executeUpdate()
-                }
-
-                legacyFinishedJobId = UUID.randomUUID()
-                legacyInterruptedJobId = UUID.randomUUID()
-                legacyInterruptedRunId = UUID.randomUUID()
-                legacyOrphanRunId = UUID.randomUUID()
-                val securablePrincipalId = UUID.randomUUID()
-                conn.prepareStatement(
-                    """
-                    INSERT INTO jobs (
-                        job_id, securable_principal_id, principal_type, principal_id,
-                        status, definition, message, deleted_rows
-                    ) VALUES
-                        (?, ?, 'USER', 'migration-test', 'FINISHED', '{}'::jsonb, '', 0),
-                        (?, ?, 'USER', 'migration-test', 'RUNNING', '{}'::jsonb, '', 0)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, legacyFinishedJobId)
-                    statement.setObject(2, securablePrincipalId)
-                    statement.setObject(3, legacyInterruptedJobId)
-                    statement.setObject(4, securablePrincipalId)
-                    assertTrue(statement.executeUpdate() == 2)
-                }
-                conn.prepareStatement(
-                    """
-                    INSERT INTO pipeline_runs (
-                        run_id, study_id, job_id, status, total_steps
-                    ) VALUES
-                        (?, ?, ?, 'PENDING', 2),
-                        (?, ?, ?, 'PENDING', 2)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, legacyInterruptedRunId)
-                    statement.setObject(2, UUID.randomUUID())
-                    statement.setObject(3, legacyInterruptedJobId)
-                    statement.setObject(4, legacyOrphanRunId)
-                    statement.setObject(5, UUID.randomUUID())
-                    statement.setObject(6, UUID.randomUUID())
-                    assertTrue(statement.executeUpdate() == 2)
-                }
-            }
 
             migrateResult = ChronicleContractTestSchema.migrate(postgres)
         }
@@ -2561,7 +2397,25 @@ class FlywayMigrationCorpusTest {
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
-    private fun getConnection(): Connection = storageResolver.getPlatformStorage().connection
+    private fun getConnection(): Connection = storageResolver.getBootstrapStorage().connection
+
+    /** Runs one bound statement on its own bootstrap connection; returns the update count. */
+    private fun update(sql: String, vararg params: Any): Int = getConnection().use { connection ->
+        connection.prepareStatement(sql).use { statement ->
+            params.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
+            statement.executeUpdate()
+        }
+    }
+
+    /** Asserts [sql] returns a row and runs [check] on the first one. */
+    private fun queryRow(sql: String, vararg params: Any, check: (java.sql.ResultSet) -> Unit) = getConnection().use { connection ->
+        connection.prepareStatement(sql).use { statement ->
+            params.forEachIndexed { index, value -> statement.setObject(index + 1, value) }
+            val resultSet = statement.executeQuery() // closed with its statement
+            assertTrue(resultSet.next())
+            check(resultSet)
+        }
+    }
 
     private fun tableExists(tableName: String): Boolean {
         getConnection().use { conn ->
@@ -2696,107 +2550,17 @@ class FlywayMigrationCorpusTest {
                         rs.getInt(1),
                     )
                 }
-                stmt.executeQuery(
-                    """
-                    SELECT COUNT(*)
-                    FROM flyway_schema_history
-                    WHERE version = '80'
-                      AND script = 'V80__hide_study_participants_during_deletion_quarantine.sql'
-                      AND success
-                    """.trimIndent(),
-                ).use { rs ->
-                    assertTrue(rs.next())
-                    assertEquals("The study-participant quarantine migration must be applied exactly once", 1, rs.getInt(1))
-                }
-                stmt.executeQuery(
-                    """
-                    SELECT COUNT(*)
-                    FROM flyway_schema_history
-                    WHERE version = '83'
-                      AND script = 'V83__own_secret_rotation_tracking.sql'
-                      AND success
-                    """.trimIndent(),
-                ).use { rs ->
-                    assertTrue(rs.next())
-                    assertEquals("Flyway must own secret-rotation tracking", 1, rs.getInt(1))
-                }
-                stmt.executeQuery(
-                    """
-                    SELECT COUNT(*)
-                    FROM flyway_schema_history
-                    WHERE version = '84'
-                      AND script = 'V84__own_notification_and_local_blob_tables.sql'
-                      AND success
-                    """.trimIndent(),
-                ).use { rs ->
-                    assertTrue(rs.next())
-                    assertEquals("Flyway must own notification and local-blob tables", 1, rs.getInt(1))
-                }
-                stmt.executeQuery(
-                    """
-                    SELECT COUNT(*)
-                    FROM flyway_schema_history
-                    WHERE version = '85'
-                      AND script = 'V85__link_study_deletion_schedule_to_erasure.sql'
-                      AND success
-                    """.trimIndent(),
-                ).use { rs ->
-                    assertTrue(rs.next())
-                    assertEquals("Flyway must own durable study-deletion schedule links", 1, rs.getInt(1))
-                }
-                stmt.executeQuery(
-                    """
-                    SELECT COUNT(*)
-                    FROM flyway_schema_history
-                    WHERE version = '96'
-                      AND script = 'V96__close_legacy_audit_truncate_gap.sql'
-                      AND success
-                    """.trimIndent(),
-                ).use { rs ->
-                    assertTrue(rs.next())
-                    assertEquals("Flyway must close the legacy audit TRUNCATE privilege gap", 1, rs.getInt(1))
-                }
             }
         }
-        assertTrue("Corpus must contain the re-issued orphans", migrateResult.migrationsExecuted >= 58)
+        assertEquals("Every shipped migration is applied once", shippedMigrationCount, migrateResult.migrationsExecuted)
     }
 
     @Test
     fun testFlywayCreatesServiceTablesWithResearcherRlsBoundaries() {
         assertTrue(roleHasPrivilege("chronicle_app", "studies", "SELECT"))
         assertFalse(roleHasPrivilege("chronicle_app", "audit", "SELECT"))
-        assertFalse(roleHasPrivilege("chronicle_app", "export_jobs", "UPDATE"))
-        assertTrue(tableExists("researcher_phone_numbers"))
-        assertTrue(tableExists("researcher_notification_settings"))
-        assertTrue(tableExists("local_blob_store"))
-
-        assertEquals(
-            setOf("principal_id", "phone_number", "verified", "created_at", "updated_at"),
-            getColumnNames("researcher_phone_numbers"),
-        )
-        assertEquals(
-            setOf("study_id", "principal_id", "settings", "created_at", "updated_at"),
-            getColumnNames("researcher_notification_settings"),
-        )
-        assertEquals(setOf("key", "object"), getColumnNames("local_blob_store"))
-
-        assertEquals(true to true, rlsState("researcher_phone_numbers"))
-        assertEquals(true to true, rlsState("researcher_notification_settings"))
-        assertEquals(1, policyCount("researcher_phone_numbers"))
-        assertEquals(1, policyCount("researcher_notification_settings"))
-
-        listOf(
-            "researcher_phone_numbers",
-            "researcher_notification_settings",
-            "local_blob_store",
-        ).forEach { tableName ->
-            listOf("SELECT", "INSERT", "UPDATE", "DELETE").forEach { privilege ->
-                assertTrue(
-                    "chronicle_app must have $privilege on $tableName",
-                    roleHasPrivilege("chronicle_app", tableName, privilege),
-                )
-            }
-        }
+        assertFalse(tableExists("researcher_phone_numbers"))
+        assertFalse(tableExists("researcher_notification_settings"))
     }
 
     @Test
@@ -2826,18 +2590,18 @@ class FlywayMigrationCorpusTest {
             ).use { statement ->
                 statement.setObject(1, blockedStudyId)
                 statement.setString(2, blockedParticipantId)
-                statement.setObject(3, UUID.randomUUID())
+                statement.setObject(3, seedCandidate(connection))
                 statement.setObject(4, visibleStudyId)
                 statement.setString(5, visibleParticipantId)
-                statement.setObject(6, UUID.randomUUID())
+                statement.setObject(6, seedCandidate(connection))
                 assertEquals(2, statement.executeUpdate())
             }
             connection.prepareStatement(
                 """
                 INSERT INTO data_deletion_operations (
                     operation_id, study_id, mode, status, requested_by,
-                    idempotency_key, registry_version, quarantine_until
-                ) VALUES (?, ?, 'STUDY_ERASURE', 'QUARANTINED', 'migration-test', ?, 1, now() + interval '7 days')
+                    idempotency_key, registry_version
+                ) VALUES (?, ?, 'STUDY_ERASURE', 'QUARANTINED', 'migration-test', ?, 1)
                 """.trimIndent(),
             ).use { statement ->
                 statement.setObject(1, operationId)
@@ -2931,7 +2695,7 @@ class FlywayMigrationCorpusTest {
                 connection.prepareStatement(
                     """
                     INSERT INTO upload_buffer
-                        (study_id, participant_id, data, uploaded_at, upload_type, device_id)
+                        (study_id, participant_id, data, uploaded_at, upload_type, random_device_id)
                     VALUES
                         (?, ?, '[]'::jsonb, now(), 'Android', ?),
                         (?, ?, '[]'::jsonb, now(), 'Android', ?),
@@ -2953,10 +2717,10 @@ class FlywayMigrationCorpusTest {
                     """
                     INSERT INTO data_deletion_operations (
                         operation_id, study_id, mode, status, requested_by,
-                        idempotency_key, registry_version, quarantine_until
+                        idempotency_key, registry_version
                     ) VALUES (
                         ?, ?, 'STUDY_ERASURE', 'QUARANTINED', 'migration-test',
-                        ?, 1, now() + interval '7 days'
+                        ?, 1
                     )
                     """.trimIndent(),
                 ).use { statement ->
@@ -2970,11 +2734,11 @@ class FlywayMigrationCorpusTest {
                     INSERT INTO data_deletion_operations (
                         operation_id, study_id, participant_ref, participant_id,
                         participant_block_token, mode, status, requested_by,
-                        idempotency_key, registry_version, quarantine_until
+                        idempotency_key, registry_version
                     ) VALUES (
-                        ?, ?, 'completed-participant-ref', NULL, md5(?::text || ':' || ?),
+                        ?, ?, 'completed-participant-ref', NULL, chronicle_participant_block_token(?::uuid, ?),
                         'WITHDRAW_AND_ERASE', 'COMPLETED', 'migration-test',
-                        ?, 1, now() - interval '1 day'
+                        ?, 1
                     )
                     """.trimIndent(),
                 ).use { statement ->
@@ -3033,327 +2797,6 @@ class FlywayMigrationCorpusTest {
                 }
             } finally {
                 connection.rollback()
-            }
-        }
-    }
-
-    @Test
-    fun testScopedUploadBufferDrainWaitsForConcurrentClaim() {
-        val studyId = UUID.randomUUID()
-        val participantId = "scoped-buffer-${UUID.randomUUID()}"
-        postgres.createConnection("").use { setupConnection ->
-            setupConnection.prepareStatement(
-                """
-                INSERT INTO upload_buffer
-                    (study_id, participant_id, data, uploaded_at, upload_type, device_id)
-                VALUES (?, ?, '[]'::jsonb, now(), 'Android', ?)
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participantId)
-                statement.setObject(3, UUID.randomUUID())
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-
-        try {
-            postgres.createConnection("").use { firstConnection ->
-                postgres.createConnection("").use { secondConnection ->
-                    firstConnection.autoCommit = false
-                    secondConnection.autoCommit = false
-                    val scopedSql = ChroniclePostgresTables.getScopedMoveSql(128, UploadType.Android)
-                    firstConnection.prepareStatement(scopedSql).use { statement ->
-                        statement.setObject(1, studyId)
-                        statement.setString(2, participantId)
-                        statement.executeQuery().use { resultSet ->
-                            assertTrue(resultSet.next())
-                            assertFalse(resultSet.next())
-                        }
-                    }
-
-                    secondConnection.createStatement().use { statement ->
-                        statement.execute("SET LOCAL lock_timeout = '100ms'")
-                    }
-                    val lockFailure = assertThrows(SQLException::class.java) {
-                        secondConnection.prepareStatement(scopedSql).use { statement ->
-                            statement.setObject(1, studyId)
-                            statement.setString(2, participantId)
-                            statement.executeQuery().use { resultSet ->
-                                while (resultSet.next()) {
-                                    // Consume the result if the lock contract regresses.
-                                }
-                            }
-                        }
-                    }
-                    assertEquals(
-                        "A scoped completion claim must wait, not skip another drainer's row",
-                        "55P03",
-                        lockFailure.sqlState,
-                    )
-                    secondConnection.rollback()
-                    firstConnection.rollback()
-
-                    secondConnection.prepareStatement(scopedSql).use { statement ->
-                        statement.setObject(1, studyId)
-                        statement.setString(2, participantId)
-                        statement.executeQuery().use { resultSet ->
-                            assertTrue("The row must be claimable after its prior owner rolls back", resultSet.next())
-                            assertFalse(resultSet.next())
-                        }
-                    }
-                    secondConnection.rollback()
-                }
-            }
-        } finally {
-            postgres.createConnection("").use { cleanupConnection ->
-                cleanupConnection.prepareStatement(
-                    "DELETE FROM upload_buffer WHERE study_id = ? AND participant_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setString(2, participantId)
-                    statement.executeUpdate()
-                }
-            }
-        }
-    }
-
-    @Test
-    fun testPipelineAndJobMigrationRepairsLegacyState() {
-        val finishedState = requireNotNull(readJobState(legacyFinishedJobId))
-        assertEquals("FINISHED", finishedState.status)
-        assertTrue("legacy terminal jobs must receive a finite completion time", finishedState.completedAtIsFinite)
-        assertNull(finishedState.leaseToken)
-
-        val interruptedState = requireNotNull(readJobState(legacyInterruptedJobId))
-        assertEquals("CANCELED", interruptedState.status)
-        assertTrue(interruptedState.completedAtIsFinite)
-        assertNull(interruptedState.leaseToken)
-        assertTrue(interruptedState.message.orEmpty().contains("restarted"))
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT run_id, status, isfinite(completed_at) AS completed_at_is_finite, error_message
-                FROM pipeline_runs
-                WHERE run_id IN (?, ?)
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, legacyInterruptedRunId)
-                statement.setObject(2, legacyOrphanRunId)
-                statement.executeQuery().use { resultSet ->
-                    val repaired = buildMap {
-                        while (resultSet.next()) {
-                            put(
-                                resultSet.getObject("run_id", UUID::class.java),
-                                Triple(
-                                    resultSet.getString("status"),
-                                    resultSet.getBoolean("completed_at_is_finite"),
-                                    resultSet.getString("error_message"),
-                                ),
-                            )
-                        }
-                    }
-                    assertEquals(setOf(legacyInterruptedRunId, legacyOrphanRunId), repaired.keys)
-                    repaired.values.forEach { (status, completedAtIsFinite, errorMessage) ->
-                        assertEquals("FAILED", status)
-                        assertTrue(completedAtIsFinite)
-                        assertTrue(errorMessage.isNotBlank())
-                    }
-                }
-            }
-        }
-    }
-
-    @Test
-    fun testJobWorkerPersistsLeasedTerminalStatesAndFailsCanceledPipeline() {
-        val principal = Principal(PrincipalType.USER, "job-worker-test")
-        val securablePrincipalId = UUID.randomUUID()
-        val successJobId = UUID.randomUUID()
-        val canceledPipelineJobId = UUID.randomUUID()
-        val canceledPipelineRunId = UUID.randomUUID()
-        val expiredPipelineJobId = UUID.randomUUID()
-        val expiredPipelineRunId = UUID.randomUUID()
-        val studyId = UUID.randomUUID()
-        val auditingManager = Mockito.mock(AuditingManager::class.java)
-        val jobService = JobService(
-            Mockito.mock(HazelcastIdGenerationService::class.java),
-            storageResolver,
-            auditingManager,
-        )
-        jobService.registerJobHandlers(
-            setOf(
-                object : ChronicleJobRunner<EmptyJobDefinition> {
-                    override fun run(connection: Connection, job: ChronicleJob): List<AuditableEvent> = emptyList()
-                    override fun accepts(): Class<EmptyJobDefinition> = EmptyJobDefinition::class.java
-                },
-            ),
-        )
-
-        try {
-            getConnection().use { connection ->
-                jobService.createJob(
-                    connection,
-                    ChronicleJob(
-                        id = successJobId,
-                        securablePrincipalId = securablePrincipalId,
-                        principal = principal,
-                        definition = EmptyJobDefinition(),
-                    ),
-                )
-            }
-            jobService.tryAndAcquireTaskForExecutor()
-            val successState = awaitJobStatus(successJobId, JobStatus.FINISHED.name)
-            assertTrue(successState.completedAtIsFinite)
-            assertNull(successState.leaseToken)
-
-            getConnection().use { connection ->
-                val previousAutoCommit = connection.autoCommit
-                try {
-                    connection.autoCommit = false
-                    jobService.createJob(
-                        connection,
-                        ChronicleJob(
-                            id = canceledPipelineJobId,
-                            securablePrincipalId = securablePrincipalId,
-                            principal = principal,
-                            definition = PipelineJobDefinition(studyId, PipelineConfig(enabled = true)),
-                        ),
-                    )
-                    connection.prepareStatement(
-                        """
-                        INSERT INTO pipeline_runs (
-                            run_id, study_id, job_id, status, total_steps
-                        ) VALUES (?, ?, ?, 'PENDING', 2)
-                        """.trimIndent(),
-                    ).use { statement ->
-                        statement.setObject(1, canceledPipelineRunId)
-                        statement.setObject(2, studyId)
-                        statement.setObject(3, canceledPipelineJobId)
-                        assertEquals(1, statement.executeUpdate())
-                    }
-                    connection.commit()
-                } catch (ex: Exception) {
-                    connection.rollback()
-                    throw ex
-                } finally {
-                    connection.autoCommit = previousAutoCommit
-                }
-            }
-
-            jobService.tryAndAcquireTaskForExecutor()
-            val canceledState = awaitJobStatus(canceledPipelineJobId, JobStatus.CANCELED.name)
-            assertTrue(canceledState.completedAtIsFinite)
-            assertNull(canceledState.leaseToken)
-            assertTrue(canceledState.message.orEmpty().contains("No job handler"))
-
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT status, isfinite(completed_at), error_message
-                    FROM pipeline_runs
-                    WHERE run_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, canceledPipelineRunId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("FAILED", resultSet.getString(1))
-                        assertTrue(resultSet.getBoolean(2))
-                        assertTrue(resultSet.getString(3).contains("No job handler"))
-                    }
-                }
-            }
-
-            getConnection().use { connection ->
-                val previousAutoCommit = connection.autoCommit
-                try {
-                    connection.autoCommit = false
-                    connection.prepareStatement(
-                        """
-                        INSERT INTO jobs (
-                            job_id, securable_principal_id, principal_type, principal_id,
-                            status, definition, message, deleted_rows, updated_at,
-                            completed_at, lease_token, lease_expires_at
-                        ) VALUES (
-                            ?, ?, 'USER', 'job-worker-test', 'RUNNING',
-                            '{"@type":"PipelineJobDefinition","studyId":"$studyId","config":{"enabled":true}}'::jsonb,
-                            '', 0, now() - interval '10 minutes', 'infinity', ?,
-                            now() - interval '5 minutes'
-                        )
-                        """.trimIndent(),
-                    ).use { statement ->
-                        statement.setObject(1, expiredPipelineJobId)
-                        statement.setObject(2, securablePrincipalId)
-                        statement.setObject(3, UUID.randomUUID())
-                        assertEquals(1, statement.executeUpdate())
-                    }
-                    connection.prepareStatement(
-                        """
-                        INSERT INTO pipeline_runs (
-                            run_id, study_id, job_id, status, total_steps
-                        ) VALUES (?, ?, ?, 'PENDING', 2)
-                        """.trimIndent(),
-                    ).use { statement ->
-                        statement.setObject(1, expiredPipelineRunId)
-                        statement.setObject(2, studyId)
-                        statement.setObject(3, expiredPipelineJobId)
-                        assertEquals(1, statement.executeUpdate())
-                    }
-                    connection.commit()
-                } catch (exception: Exception) {
-                    connection.rollback()
-                    throw exception
-                } finally {
-                    connection.autoCommit = previousAutoCommit
-                }
-            }
-
-            jobService.tryAndAcquireTaskForExecutor()
-            val expiredState = awaitJobStatus(expiredPipelineJobId, JobStatus.STOPPING.name)
-            assertFalse(expiredState.completedAtIsFinite)
-            assertNull(expiredState.leaseToken)
-            assertTrue(expiredState.message.orEmpty().contains("lease expired"))
-
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT status FROM pipeline_runs WHERE run_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, expiredPipelineRunId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("FAILED", resultSet.getString(1))
-                    }
-                }
-            }
-
-        } finally {
-            jobService.shutdown()
-            getConnection().use { connection ->
-                val previousAutoCommit = connection.autoCommit
-                try {
-                    connection.autoCommit = false
-                    connection.prepareStatement(
-                        "DELETE FROM pipeline_runs WHERE run_id IN (?, ?)",
-                    ).use { statement ->
-                        statement.setObject(1, canceledPipelineRunId)
-                        statement.setObject(2, expiredPipelineRunId)
-                        statement.executeUpdate()
-                    }
-                    connection.prepareStatement(
-                        "DELETE FROM jobs WHERE job_id IN (?, ?, ?)",
-                    ).use { statement ->
-                        statement.setObject(1, successJobId)
-                        statement.setObject(2, canceledPipelineJobId)
-                        statement.setObject(3, expiredPipelineJobId)
-                        statement.executeUpdate()
-                    }
-                    connection.commit()
-                } catch (exception: Exception) {
-                    connection.rollback()
-                    throw exception
-                } finally {
-                    connection.autoCommit = previousAutoCommit
-                }
             }
         }
     }
@@ -3604,325 +3047,9 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-    @Test
-    fun testPipelineAndJobStateMachineRejectsImpossibleTransitions() {
-        val jobId = UUID.randomUUID()
-        val runId = UUID.randomUUID()
-        val nonPipelineJobId = UUID.randomUUID()
-        val studyId = UUID.randomUUID()
-        val securablePrincipalId = UUID.randomUUID()
+    
 
-        getConnection().use { connection ->
-            val previousAutoCommit = connection.autoCommit
-            try {
-                connection.autoCommit = false
-                connection.prepareStatement(
-                    """
-                    INSERT INTO jobs (
-                        job_id, securable_principal_id, principal_type, principal_id,
-                        status, definition, message, deleted_rows
-                    ) VALUES (
-                        ?, ?, 'USER', 'pipeline-state-test', 'PENDING',
-                        '{"@type":"PipelineJobDefinition","studyId":"$studyId","config":{"enabled":true}}'::jsonb,
-                        '', 0
-                    )
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, jobId)
-                    statement.setObject(2, securablePrincipalId)
-                    assertEquals(1, statement.executeUpdate())
-                }
-                connection.prepareStatement(
-                    """
-                    INSERT INTO pipeline_runs (
-                        run_id, study_id, job_id, status, total_steps
-                    ) VALUES (?, ?, ?, 'PENDING', 2)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, runId)
-                    statement.setObject(2, studyId)
-                    statement.setObject(3, jobId)
-                    assertEquals(1, statement.executeUpdate())
-                }
-                connection.commit()
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = previousAutoCommit
-            }
-
-            val prematureFinish = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    "UPDATE jobs SET status = 'FINISHED', completed_at = now() WHERE job_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, jobId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23514", prematureFinish.sqlState)
-
-            val prematurePipelineCompletion = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    """
-                    UPDATE pipeline_runs
-                    SET status = 'COMPLETED', steps_completed = total_steps, completed_at = now()
-                    WHERE run_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, runId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23514", prematurePipelineCompletion.sqlState)
-
-            val duplicateMapping = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    """
-                    INSERT INTO pipeline_runs (
-                        run_id, study_id, job_id, status, total_steps
-                    ) VALUES (?, ?, ?, 'PENDING', 1)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, UUID.randomUUID())
-                    statement.setObject(2, studyId)
-                    statement.setObject(3, jobId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23505", duplicateMapping.sqlState)
-
-            val crossStudyMapping = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    """
-                    INSERT INTO pipeline_runs (
-                        run_id, study_id, job_id, status, total_steps
-                    ) VALUES (?, ?, ?, 'PENDING', 1)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, UUID.randomUUID())
-                    statement.setObject(2, UUID.randomUUID())
-                    statement.setObject(3, jobId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23514", crossStudyMapping.sqlState)
-
-            connection.prepareStatement(
-                """
-                INSERT INTO jobs (
-                    job_id, securable_principal_id, principal_type, principal_id,
-                    status, definition, message, deleted_rows
-                ) VALUES (
-                    ?, ?, 'USER', 'pipeline-state-test', 'PENDING',
-                    '{"@type":"EmptyJobDefinition","studyId":"00000000-0000-0000-0000-000000000000"}'::jsonb,
-                    '', 0
-                )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, nonPipelineJobId)
-                statement.setObject(2, securablePrincipalId)
-                assertEquals(1, statement.executeUpdate())
-            }
-            val nonPipelineMapping = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    """
-                    INSERT INTO pipeline_runs (
-                        run_id, study_id, job_id, status, total_steps
-                    ) VALUES (?, ?, ?, 'PENDING', 1)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, UUID.randomUUID())
-                    statement.setObject(2, studyId)
-                    statement.setObject(3, nonPipelineJobId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23503", nonPipelineMapping.sqlState)
-
-            val pipelineTypeChange = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    """
-                    UPDATE jobs
-                    SET definition =
-                        '{"@type":"EmptyJobDefinition","studyId":"00000000-0000-0000-0000-000000000000"}'::jsonb
-                    WHERE job_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, jobId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23503", pipelineTypeChange.sqlState)
-
-            val activeJobDelete = assertThrows(SQLException::class.java) {
-                connection.prepareStatement("DELETE FROM jobs WHERE job_id = ?").use { statement ->
-                    statement.setObject(1, jobId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23503", activeJobDelete.sqlState)
-
-            connection.prepareStatement(
-                """
-                UPDATE jobs
-                SET status = 'CANCELED', completed_at = now(), message = 'test cleanup'
-                WHERE job_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, jobId)
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement("DELETE FROM pipeline_runs WHERE run_id = ?").use { statement ->
-                statement.setObject(1, runId)
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement("DELETE FROM jobs WHERE job_id = ?").use { statement ->
-                statement.setObject(1, jobId)
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement("DELETE FROM jobs WHERE job_id = ?").use { statement ->
-                statement.setObject(1, nonPipelineJobId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-    }
-
-    @Test
-    fun testConcurrentPipelineMappingAndJobDeletionCannotCommitAnOrphan() {
-        val studyId = UUID.randomUUID()
-        val jobId = UUID.randomUUID()
-        val runId = UUID.randomUUID()
-        val start = CountDownLatch(1)
-        val executor = Executors.newFixedThreadPool(2)
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                INSERT INTO jobs (
-                    job_id, securable_principal_id, principal_type, principal_id,
-                    status, definition, message, deleted_rows, completed_at
-                ) VALUES (
-                    ?, ?, 'USER', 'pipeline-race-test', 'CANCELED',
-                    ?::jsonb, 'terminal fixture', 0, now()
-                )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, jobId)
-                statement.setObject(2, UUID.randomUUID())
-                statement.setString(
-                    3,
-                    """{"@type":"PipelineJobDefinition","studyId":"$studyId","config":{"enabled":true}}""",
-                )
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-
-        try {
-            val deleteResult = executor.submit<String> {
-                getConnection().use { connection ->
-                    connection.autoCommit = false
-                    try {
-                        assertTrue(start.await(10, TimeUnit.SECONDS))
-                        connection.prepareStatement("DELETE FROM jobs WHERE job_id = ?").use { statement ->
-                            statement.setObject(1, jobId)
-                            statement.executeUpdate()
-                        }
-                        connection.commit()
-                        "deleted"
-                    } catch (exception: SQLException) {
-                        connection.rollback()
-                        "rejected:${exception.sqlState}"
-                    }
-                }
-            }
-            val insertResult = executor.submit<String> {
-                getConnection().use { connection ->
-                    connection.autoCommit = false
-                    try {
-                        assertTrue(start.await(10, TimeUnit.SECONDS))
-                        connection.prepareStatement(
-                            """
-                            INSERT INTO pipeline_runs (
-                                run_id, study_id, job_id, status, total_steps,
-                                completed_at, error_message
-                            ) VALUES (?, ?, ?, 'FAILED', 1, now(), 'terminal fixture')
-                            """.trimIndent(),
-                        ).use { statement ->
-                            statement.setObject(1, runId)
-                            statement.setObject(2, studyId)
-                            statement.setObject(3, jobId)
-                            statement.executeUpdate()
-                        }
-                        connection.commit()
-                        "inserted"
-                    } catch (exception: SQLException) {
-                        connection.rollback()
-                        "rejected:${exception.sqlState}"
-                    }
-                }
-            }
-            start.countDown()
-            val outcomes = listOf(
-                deleteResult.get(10, TimeUnit.SECONDS),
-                insertResult.get(10, TimeUnit.SECONDS),
-            )
-            assertEquals(
-                "the common advisory lock must allow exactly one side of the race to commit",
-                1,
-                outcomes.count { it == "deleted" || it == "inserted" },
-            )
-            assertTrue(
-                "the losing transaction must fail closed",
-                outcomes.any { it == "rejected:23503" || it == "rejected:23514" },
-            )
-
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT
-                        EXISTS (SELECT 1 FROM jobs WHERE job_id = ?) AS job_exists,
-                        EXISTS (SELECT 1 FROM pipeline_runs WHERE run_id = ?) AS run_exists
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, jobId)
-                    statement.setObject(2, runId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(
-                            "a retained run must always have its backing job",
-                            resultSet.getBoolean("job_exists"),
-                            resultSet.getBoolean("run_exists"),
-                        )
-                    }
-                }
-            }
-        } finally {
-            start.countDown()
-            executor.shutdownNow()
-            executor.awaitTermination(10, TimeUnit.SECONDS)
-            getConnection().use { connection ->
-                val previousAutoCommit = connection.autoCommit
-                try {
-                    connection.autoCommit = false
-                    connection.prepareStatement("DELETE FROM pipeline_runs WHERE run_id = ?").use { statement ->
-                        statement.setObject(1, runId)
-                        statement.executeUpdate()
-                    }
-                    connection.prepareStatement("DELETE FROM jobs WHERE job_id = ?").use { statement ->
-                        statement.setObject(1, jobId)
-                        statement.executeUpdate()
-                    }
-                    connection.commit()
-                } catch (exception: Exception) {
-                    connection.rollback()
-                    throw exception
-                } finally {
-                    connection.autoCommit = previousAutoCommit
-                }
-            }
-        }
-    }
+    
 
     @Test
     fun testStudyQuarantineAndLifecycleMutationRollBackTogether() {
@@ -4067,10 +3194,9 @@ class FlywayMigrationCorpusTest {
     }
 
     @Test
-    fun testLifecycleServiceSchedulesAndCancelsOneAtomicArchivedStudyErasure() {
+    fun testLifecycleServiceRequestsAndCancelsOneAtomicArchivedStudyErasure() {
         val studyId = UUID.randomUUID()
         val auditingManager = Mockito.mock(AuditingManager::class.java)
-        val orchestrator = DataDeletionOrchestrator(storageResolver, auditingManager)
         val idGenerationService = Mockito.mock(HazelcastIdGenerationService::class.java)
         Mockito.`when`(idGenerationService.getNextId()).thenAnswer { UUID.randomUUID() }
         val lifecycleService = StudyLifecycleService(
@@ -4079,182 +3205,89 @@ class FlywayMigrationCorpusTest {
             authorizationService = Mockito.mock(AuthorizationManager::class.java),
             idGenerationService = idGenerationService,
             auditingManager = auditingManager,
-            dataDeletionOrchestrator = orchestrator,
+            dataDeletionOrchestrator = DataDeletionOrchestrator(storageResolver, auditingManager),
             webhookService = Mockito.mock(WebhookService::class.java),
             studyLimitsMgr = Mockito.mock(com.openlattice.chronicle.services.studies.StudyLimitsManager::class.java),
         )
-        val deleteAfter = OffsetDateTime.now(ZoneOffset.UTC).plusDays(14).withNano(0)
-
         TestSecurityUtils.setupSecurityContext("lifecycle-migration-test")
         try {
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "INSERT INTO studies (study_id, title, lifecycle_status) VALUES (?, ?, 'ARCHIVED')",
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setString(2, "atomic-lifecycle-$studyId")
-                    assertEquals(1, statement.executeUpdate())
-                }
+            assertEquals(1, update(
+                "INSERT INTO studies (study_id, title, lifecycle_status) VALUES (?, ?, 'ARCHIVED')", studyId, "atomic-lifecycle-$studyId"))
+            val operationId = lifecycleService.requestStudyDeletion(studyId, "lifecycle-migration-test")
+            queryRow(
+                """
+                SELECT study.lifecycle_status, schedule.delete_after, operation.status,
+                       schedule.operation_id, schedule.previous_status
+                FROM studies study
+                JOIN study_deletion_schedule schedule ON schedule.study_id = study.study_id
+                JOIN data_deletion_operations operation ON operation.study_id = study.study_id
+                WHERE study.study_id = ? AND operation.operation_id = ?
+                """.trimIndent(),
+                studyId, operationId,
+            ) { resultSet ->
+                assertEquals(StudyLifecycleStatus.SCHEDULED_FOR_DELETION.name, resultSet.getString(1))
+                // delete_after records the request time; erasure still waits for an owner.
+                assertFalse(resultSet.getObject(2, OffsetDateTime::class.java).isAfter(OffsetDateTime.now()))
+                assertEquals("QUARANTINED", resultSet.getString(3))
+                assertEquals(operationId, resultSet.getObject("operation_id", UUID::class.java))
+                assertEquals(StudyLifecycleStatus.ARCHIVED.name, resultSet.getString("previous_status"))
             }
-
-            val operationId = lifecycleService.scheduleStudyDeletion(
-                studyId,
-                "lifecycle-migration-test",
-                deleteAfter,
-            )
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT study.lifecycle_status, schedule.delete_after, operation.status,
-                           schedule.operation_id, schedule.previous_status
-                    FROM studies study
-                    JOIN study_deletion_schedule schedule ON schedule.study_id = study.study_id
-                    JOIN data_deletion_operations operation ON operation.study_id = study.study_id
-                    WHERE study.study_id = ? AND operation.operation_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setObject(2, operationId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(StudyLifecycleStatus.SCHEDULED_FOR_DELETION.name, resultSet.getString(1))
-                        assertTrue(deleteAfter.isEqual(resultSet.getObject(2, OffsetDateTime::class.java)))
-                        assertEquals("QUARANTINED", resultSet.getString(3))
-                        assertEquals(operationId, resultSet.getObject("operation_id", UUID::class.java))
-                        assertEquals(StudyLifecycleStatus.ARCHIVED.name, resultSet.getString("previous_status"))
-                    }
-                }
-            }
-
-            assertEquals(
-                "an exact schedule retry must resolve the original operation",
-                operationId,
-                lifecycleService.scheduleStudyDeletion(
-                    studyId,
-                    "lifecycle-migration-test",
-                    deleteAfter,
-                ),
-            )
-            assertThrows(IllegalStateException::class.java) {
-                lifecycleService.scheduleStudyDeletion(
-                    studyId,
-                    "lifecycle-migration-test",
-                    deleteAfter.plusDays(1),
-                )
-            }
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT COUNT(*) FROM data_deletion_operations WHERE study_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("a changed date must roll back its speculative operation", 1, resultSet.getInt(1))
-                    }
-                }
-            }
+            assertEquals("a retried request must resolve the original operation",
+                operationId, lifecycleService.requestStudyDeletion(studyId, "lifecycle-migration-test"))
             lifecycleService.cancelScheduledDeletion(studyId, "lifecycle-migration-test")
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT study.lifecycle_status, operation.status,
-                           (SELECT COUNT(*) FROM study_deletion_schedule WHERE study_id = ?) AS schedules
-                    FROM studies study
-                    JOIN data_deletion_operations operation ON operation.study_id = study.study_id
-                    WHERE study.study_id = ? AND operation.operation_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setObject(2, studyId)
-                    statement.setObject(3, operationId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(StudyLifecycleStatus.ARCHIVED.name, resultSet.getString(1))
-                        assertEquals("CANCELLED", resultSet.getString(2))
-                        assertEquals(0, resultSet.getInt("schedules"))
-                    }
-                }
-            }
-
-            val rescheduledOperationId = lifecycleService.scheduleStudyDeletion(
-                studyId,
-                "lifecycle-migration-test",
-                deleteAfter,
-            )
-            assertTrue(
-                "a new request after explicit cancellation must use a new operation",
-                rescheduledOperationId != operationId,
-            )
-            assertEquals(
-                "an uncertain retry after rescheduling must resolve the new operation",
-                rescheduledOperationId,
-                lifecycleService.scheduleStudyDeletion(
-                    studyId,
-                    "lifecycle-migration-test",
-                    deleteAfter,
-                ),
-            )
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT study.lifecycle_status, schedule.operation_id, schedule.previous_status,
-                           (SELECT COUNT(*) FROM study_deletion_schedule WHERE study_id = ?) AS schedules,
-                           (SELECT COUNT(*) FROM data_deletion_operations WHERE study_id = ?) AS operations,
-                           (SELECT COUNT(*) FROM data_deletion_operations
-                             WHERE study_id = ? AND status = 'CANCELLED') AS cancelled_operations,
-                           (SELECT COUNT(*) FROM data_deletion_operations
-                             WHERE study_id = ? AND status = 'QUARANTINED') AS quarantined_operations
-                    FROM studies AS study
-                    JOIN study_deletion_schedule AS schedule ON schedule.study_id = study.study_id
-                    WHERE study.study_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setObject(2, studyId)
-                    statement.setObject(3, studyId)
-                    statement.setObject(4, studyId)
-                    statement.setObject(5, studyId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(
-                            StudyLifecycleStatus.SCHEDULED_FOR_DELETION.name,
-                            resultSet.getString("lifecycle_status"),
-                        )
-                        assertEquals(rescheduledOperationId, resultSet.getObject("operation_id", UUID::class.java))
-                        assertEquals(StudyLifecycleStatus.ARCHIVED.name, resultSet.getString("previous_status"))
-                        assertEquals(
-                            "the replacement request must own exactly one schedule",
-                            1,
-                            resultSet.getInt("schedules"),
-                        )
-                        assertEquals(
-                            "cancellation history and the replacement request must both remain durable",
-                            2,
-                            resultSet.getInt("operations"),
-                        )
-                        assertEquals(1, resultSet.getInt("cancelled_operations"))
-                        assertEquals(1, resultSet.getInt("quarantined_operations"))
-                    }
-                }
-            }
+            assertCancelledBackToArchived(studyId, operationId)
+            val rescheduledOperationId = lifecycleService.requestStudyDeletion(studyId, "lifecycle-migration-test")
+            assertTrue("a new request after explicit cancellation must use a new operation", rescheduledOperationId != operationId)
+            assertEquals("an uncertain retry after rescheduling must resolve the new operation",
+                rescheduledOperationId, lifecycleService.requestStudyDeletion(studyId, "lifecycle-migration-test"))
+            assertRescheduledAfterCancellation(studyId, rescheduledOperationId)
             lifecycleService.cancelScheduledDeletion(studyId, "lifecycle-migration-test")
         } finally {
             TestSecurityUtils.clearSecurityContext()
-            getConnection().use { connection ->
-                connection.prepareStatement("DELETE FROM data_deletion_audit_outbox WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
-                connection.prepareStatement("DELETE FROM data_deletion_operations WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
-                connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
+            listOf("data_deletion_audit_outbox", "data_deletion_operations", "studies").forEach {
+                update("DELETE FROM $it WHERE study_id = ?", studyId)
             }
         }
+    }
+
+    private fun assertCancelledBackToArchived(studyId: UUID, operationId: UUID) = queryRow(
+        """
+        SELECT study.lifecycle_status, operation.status,
+               (SELECT COUNT(*) FROM study_deletion_schedule WHERE study_id = ?) AS schedules
+        FROM studies study
+        JOIN data_deletion_operations operation ON operation.study_id = study.study_id
+        WHERE study.study_id = ? AND operation.operation_id = ?
+        """.trimIndent(),
+        studyId, studyId, operationId,
+    ) { resultSet ->
+        assertEquals(StudyLifecycleStatus.ARCHIVED.name, resultSet.getString(1))
+        assertEquals("CANCELLED", resultSet.getString(2))
+        assertEquals(0, resultSet.getInt("schedules"))
+    }
+
+    private fun assertRescheduledAfterCancellation(studyId: UUID, rescheduledOperationId: UUID) = queryRow(
+        """
+        SELECT study.lifecycle_status, schedule.operation_id, schedule.previous_status,
+               (SELECT COUNT(*) FROM study_deletion_schedule WHERE study_id = ?) AS schedules,
+               (SELECT COUNT(*) FROM data_deletion_operations WHERE study_id = ?) AS operations,
+               (SELECT COUNT(*) FROM data_deletion_operations
+                 WHERE study_id = ? AND status = 'CANCELLED') AS cancelled_operations,
+               (SELECT COUNT(*) FROM data_deletion_operations
+                 WHERE study_id = ? AND status = 'QUARANTINED') AS quarantined_operations
+        FROM studies AS study
+        JOIN study_deletion_schedule AS schedule ON schedule.study_id = study.study_id
+        WHERE study.study_id = ?
+        """.trimIndent(),
+        studyId, studyId, studyId, studyId, studyId,
+    ) { resultSet ->
+        assertEquals(StudyLifecycleStatus.SCHEDULED_FOR_DELETION.name, resultSet.getString("lifecycle_status"))
+        assertEquals(rescheduledOperationId, resultSet.getObject("operation_id", UUID::class.java))
+        assertEquals(StudyLifecycleStatus.ARCHIVED.name, resultSet.getString("previous_status"))
+        assertEquals("the replacement request must own exactly one schedule", 1, resultSet.getInt("schedules"))
+        assertEquals("cancellation history and the replacement request must both remain durable",
+            2, resultSet.getInt("operations"))
+        assertEquals(1, resultSet.getInt("cancelled_operations"))
+        assertEquals(1, resultSet.getInt("quarantined_operations"))
     }
 
     @Test
@@ -4281,7 +3314,7 @@ class FlywayMigrationCorpusTest {
             ).use { statement ->
                 statement.setObject(1, studyId)
                 statement.setString(2, participantId)
-                statement.setObject(3, UUID.randomUUID())
+                statement.setObject(3, seedCandidate(connection))
                 assertEquals(1, statement.executeUpdate())
             }
             connection.prepareStatement(
@@ -4447,9 +3480,6 @@ class FlywayMigrationCorpusTest {
         val studyId = UUID.randomUUID()
         val operationId = UUID.randomUUID()
         val actor = "deletion-audit-${UUID.randomUUID()}"
-        val holdReason = "Preserve the study while the retention review is completed"
-        val releaseReason = "The documented retention review has now been completed"
-        val reviewAt = OffsetDateTime.now(ZoneOffset.UTC).plusDays(7).withNano(0)
 
         getConnection().use { connection ->
             connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
@@ -4461,8 +3491,8 @@ class FlywayMigrationCorpusTest {
                 """
                 INSERT INTO data_deletion_operations (
                     operation_id, study_id, mode, status, requested_by,
-                    idempotency_key, registry_version, quarantine_until
-                ) VALUES (?, ?, 'STUDY_ERASURE', 'QUARANTINED', ?, ?, 1, now() + interval '7 days')
+                    idempotency_key, registry_version
+                ) VALUES (?, ?, 'STUDY_ERASURE', 'QUARANTINED', ?, ?, 1)
                 """.trimIndent(),
             ).use { statement ->
                 statement.setObject(1, operationId)
@@ -4481,42 +3511,6 @@ class FlywayMigrationCorpusTest {
         val unavailableAuditOrchestrator = DataDeletionOrchestrator(
             storageResolver,
             unavailableAuditingManager,
-        )
-
-        val holdId = unavailableAuditOrchestrator.placeHold(
-            operationId,
-            studyId,
-            holdReason,
-            actor,
-            reviewAt,
-        )
-        assertEquals(
-            "an exact placement retry must resolve the original hold",
-            holdId,
-            unavailableAuditOrchestrator.placeHold(
-                operationId,
-                studyId,
-                holdReason,
-                actor,
-                reviewAt,
-            ),
-        )
-
-        unavailableAuditOrchestrator.releaseHold(
-            operationId,
-            holdId,
-            studyId,
-            actor,
-            releaseReason,
-        )
-        // A client retry after an uncertain response is a successful no-op, not
-        // "hold not found" and not a second audit event.
-        unavailableAuditOrchestrator.releaseHold(
-            operationId,
-            holdId,
-            studyId,
-            actor,
-            releaseReason,
         )
 
         assertEquals(1, unavailableAuditOrchestrator.cancelStudyErasure(studyId, actor))
@@ -4557,11 +3551,7 @@ class FlywayMigrationCorpusTest {
                         }
                     }
                     assertEquals(
-                        setOf(
-                            AuditEventType.CANCEL_DATA_DELETION.name,
-                            AuditEventType.PLACE_RETENTION_HOLD.name,
-                            AuditEventType.RELEASE_RETENTION_HOLD.name,
-                        ),
+                        setOf(AuditEventType.CANCEL_DATA_DELETION.name),
                         pendingEvents.keys,
                     )
                     pendingEvents.values.forEach { (count, allPending) ->
@@ -4576,13 +3566,13 @@ class FlywayMigrationCorpusTest {
                 "UPDATE data_deletion_audit_outbox SET available_at = now() WHERE operation_id = ?",
             ).use { statement ->
                 statement.setObject(1, operationId)
-                assertEquals(3, statement.executeUpdate())
+                assertEquals(1, statement.executeUpdate())
             }
             connection.prepareStatement(
                 """
                 UPDATE data_deletion_audit_outbox
                 SET lease_token = ?, lease_expires_at = now() - interval '1 minute'
-                WHERE operation_id = ? AND event_type = 'PLACE_RETENTION_HOLD'
+                WHERE operation_id = ? AND event_type = 'CANCEL_DATA_DELETION'
                 """.trimIndent(),
             ).use { statement ->
                 statement.setObject(1, UUID.randomUUID())
@@ -4595,7 +3585,7 @@ class FlywayMigrationCorpusTest {
             storageResolver,
             PostgresAuditingManager(storageResolver),
         )
-        assertEquals(3, recoveryOrchestrator.publishPendingDeletionAuditEvents())
+        assertEquals(1, recoveryOrchestrator.publishPendingDeletionAuditEvents())
         assertEquals(0, recoveryOrchestrator.publishPendingDeletionAuditEvents())
 
         getConnection().use { connection ->
@@ -4604,11 +3594,7 @@ class FlywayMigrationCorpusTest {
                 SELECT audit_event_type, principal_id, data::jsonb ->> 'actor' AS actor
                 FROM audit
                 WHERE study_id = ?
-                  AND audit_event_type IN (
-                      'CANCEL_DATA_DELETION',
-                      'PLACE_RETENTION_HOLD',
-                      'RELEASE_RETENTION_HOLD'
-                  )
+                  AND audit_event_type = 'CANCEL_DATA_DELETION'
                 """.trimIndent(),
             ).use { statement ->
                 statement.setString(1, studyId.toString())
@@ -4621,11 +3607,7 @@ class FlywayMigrationCorpusTest {
                         }
                     }
                     assertEquals(
-                        setOf(
-                            AuditEventType.CANCEL_DATA_DELETION.name,
-                            AuditEventType.PLACE_RETENTION_HOLD.name,
-                            AuditEventType.RELEASE_RETENTION_HOLD.name,
-                        ),
+                        setOf(AuditEventType.CANCEL_DATA_DELETION.name),
                         publishedEvents.keys,
                     )
                 }
@@ -4640,17 +3622,13 @@ class FlywayMigrationCorpusTest {
                 statement.setObject(1, operationId)
                 statement.executeQuery().use { resultSet ->
                     assertTrue(resultSet.next())
-                    assertEquals(3, resultSet.getInt(1))
+                    assertEquals(1, resultSet.getInt(1))
                 }
             }
 
             connection.prepareStatement(
                 "DELETE FROM data_deletion_audit_outbox WHERE operation_id = ?",
             ).use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(3, statement.executeUpdate())
-            }
-            connection.prepareStatement("DELETE FROM retention_holds WHERE operation_id = ?").use { statement ->
                 statement.setObject(1, operationId)
                 assertEquals(1, statement.executeUpdate())
             }
@@ -4666,68 +3644,35 @@ class FlywayMigrationCorpusTest {
     }
 
     @Test
-    fun testStartedStudyErasureCannotBeCancelledOrHeldAsIfReversible() {
+    fun testStartedStudyErasureCannotBeCancelledAsIfReversible() {
         val studyId = UUID.randomUUID()
         val participantId = "started-erasure-${UUID.randomUUID()}"
         val accessCodeId = UUID.randomUUID()
-
-        getConnection().use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, "started-erasure-$studyId")
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO study_participants (
-                    study_id, participant_id, candidate_id, participation_status
-                ) VALUES (?, ?, ?, 'ENROLLED')
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participantId)
-                statement.setObject(3, UUID.randomUUID())
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO participant_form_access_codes (
-                    access_code_id, token_hash, study_id, participant_id, form_kind,
-                    issuer_type, issued_by, expires_at
-                ) VALUES (?, ?, ?, ?, 'PORTAL', 'RESEARCHER', 'migration-test', now() + interval '1 day')
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, accessCodeId)
-                statement.setBytes(2, UUID.randomUUID().toString().toByteArray())
-                statement.setObject(3, studyId)
-                statement.setString(4, participantId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-
-        val orchestrator = DataDeletionOrchestrator(
-            storageResolver,
-            Mockito.mock(AuditingManager::class.java),
-        )
-        val operationId = orchestrator.quarantineStudy(
-            studyId,
-            "migration-test",
-            UUID.randomUUID(),
-        )
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                UPDATE data_deletion_operations
-                SET status = 'FAILED', started_at = now(), operation_attempt_count = 1,
-                    failure_code = 'InjectedPartialFailure', next_attempt_at = now()
-                WHERE operation_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
+        assertEquals(1, update("INSERT INTO studies (study_id, title) VALUES (?, ?)", studyId, "started-erasure-$studyId"))
+        assertEquals(1, update(
+            "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES (?, ?, ?, 'ENROLLED')",
+            studyId, participantId, getConnection().use { seedCandidate(it) },
+        ))
+        assertEquals(1, update(
+            """
+            INSERT INTO participant_form_access_codes (
+                access_code_id, token_hash, study_id, participant_id, form_kind,
+                issuer_type, issued_by, expires_at
+            ) VALUES (?, ?, ?, ?, 'PORTAL', 'RESEARCHER', 'migration-test', now() + interval '1 day')
+            """.trimIndent(),
+            accessCodeId, UUID.randomUUID().toString().toByteArray(), studyId, participantId,
+        ))
+        val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
+        val operationId = orchestrator.quarantineStudy(studyId, "migration-test", UUID.randomUUID())
+        assertEquals(1, update(
+            """
+            UPDATE data_deletion_operations
+            SET status = 'FAILED', started_at = now(), operation_attempt_count = 1,
+                failure_code = 'InjectedPartialFailure', next_attempt_at = now()
+            WHERE operation_id = ?
+            """.trimIndent(),
+            operationId,
+        ))
 
         assertEquals(0, orchestrator.cancelStudyErasure(studyId, "migration-test"))
         var lifecycleCallbackRan = false
@@ -4737,71 +3682,18 @@ class FlywayMigrationCorpusTest {
             }
         }
         assertFalse("started erasure must block lifecycle restoration", lifecycleCallbackRan)
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "SELECT revoked_at FROM participant_form_access_codes WHERE access_code_id = ?",
-            ).use { statement ->
-                statement.setObject(1, accessCodeId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertNotNull("started erasure must keep form access revoked", resultSet.getObject(1))
-                }
-            }
+        queryRow("SELECT revoked_at FROM participant_form_access_codes WHERE access_code_id = ?", accessCodeId) {
+            assertNotNull("started erasure must keep form access revoked", it.getObject(1))
         }
-
         assertEquals("FAILED", orchestrator.getOperation(operationId).status)
 
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                UPDATE data_deletion_operations
-                SET status = 'ERASING', updated_at = now(),
-                    worker_lease_token = ?, worker_lease_expires_at = now() + interval '30 minutes'
-                WHERE operation_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, UUID.randomUUID())
-                statement.setObject(2, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-        assertThrows(IllegalStateException::class.java) {
-            orchestrator.placeHold(
-                operationId,
-                studyId,
-                "An active worker cannot be relabeled as held",
-                "migration-test",
-                OffsetDateTime.now(ZoneOffset.UTC).plusDays(1),
-            )
-        }
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                UPDATE data_deletion_operations
-                SET status = 'FAILED', worker_lease_token = NULL, worker_lease_expires_at = NULL
-                WHERE operation_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement("DELETE FROM data_deletion_operations WHERE operation_id = ?").use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement("DELETE FROM participant_form_access_codes WHERE study_id = ?").use { statement ->
-                statement.setObject(1, studyId)
-                statement.executeUpdate()
-            }
-            connection.prepareStatement("DELETE FROM study_participants WHERE study_id = ?").use { statement ->
-                statement.setObject(1, studyId)
-                statement.executeUpdate()
-            }
-            connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use { statement ->
-                statement.setObject(1, studyId)
-                statement.executeUpdate()
-            }
+        assertEquals(1, update(
+            "UPDATE data_deletion_operations SET worker_lease_token = NULL, worker_lease_expires_at = NULL WHERE operation_id = ?",
+            operationId,
+        ))
+        assertEquals(1, update("DELETE FROM data_deletion_operations WHERE operation_id = ?", operationId))
+        listOf("participant_form_access_codes", "study_participants", "studies").forEach {
+            update("DELETE FROM $it WHERE study_id = ?", studyId)
         }
     }
 
@@ -4815,7 +3707,7 @@ class FlywayMigrationCorpusTest {
             assertTrue("RLS should be enabled on $table", enabled)
             assertTrue("RLS should be forced on $table", forced)
         }
-        assertTrue(functionExists("chronicle_has_study_access"))
+        assertTrue(functionExists("chronicle_authorized_study_ids"))
         assertTrue(functionExists("chronicle_has_candidate_access"))
         for (table in listOf(
             STUDY_PARTICIPANTS.name, NOTIFICATIONS.name, QUESTIONNAIRES.name,
@@ -4846,7 +3738,7 @@ class FlywayMigrationCorpusTest {
     }
 
     // =========================================================================
-    // V47 — participation-status check constraint (behavioral)
+    // Participation-status check constraint (behavioral)
     // =========================================================================
     @Test
     fun testParticipationStatusConstraint() {
@@ -4858,29 +3750,34 @@ class FlywayMigrationCorpusTest {
                     assertTrue("participation_status check constraint should exist", rs.next())
                 }
             }
+            val studyId = UUID.randomUUID()
+            conn.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, 'status fixture')").use { statement ->
+                statement.setObject(1, studyId)
+                statement.executeUpdate()
+            }
             conn.prepareStatement(
                 """
-                INSERT INTO ${STUDY_PARTICIPANTS.name}
+                INSERT INTO study_participants
                     (study_id, participant_id, candidate_id, participation_status)
                 VALUES (?, ?, ?, 'ENROLLED')
                 """.trimIndent()
             ).use { ps ->
-                ps.setObject(1, UUID.randomUUID())
+                ps.setObject(1, studyId)
                 ps.setString(2, "valid-status-${UUID.randomUUID()}")
-                ps.setObject(3, UUID.randomUUID())
+                ps.setObject(3, seedCandidate(conn))
                 ps.executeUpdate()
             }
             assertThrows(SQLException::class.java) {
                 conn.prepareStatement(
                     """
-                    INSERT INTO ${STUDY_PARTICIPANTS.name}
+                    INSERT INTO study_participants
                         (study_id, participant_id, candidate_id, participation_status)
                     VALUES (?, ?, ?, 'ACTIVE')
                     """.trimIndent()
                 ).use { ps ->
-                    ps.setObject(1, UUID.randomUUID())
+                    ps.setObject(1, studyId)
                     ps.setString(2, "invalid-status-${UUID.randomUUID()}")
-                    ps.setObject(3, UUID.randomUUID())
+                    ps.setObject(3, seedCandidate(conn))
                     ps.executeUpdate()
                 }
             }
@@ -4888,225 +3785,38 @@ class FlywayMigrationCorpusTest {
     }
 
     // =========================================================================
-    // V48 — iOS Screen Time metadata columns on the real event table
+    // iOS Screen Time: one row per app or domain capture, keyed by capture
     // =========================================================================
     @Test
-    fun testIosScreenTimeMetadataColumns() {
-        val sensorDataColumns = getColumnNames(PostgresEventTables.IOS_SENSOR_DATA.name)
-        for (column in listOf(
-            "ios_screen_time_source",
-            "ios_screen_time_confidence",
-            "ios_screen_time_row_kind",
-            "ios_screen_time_app_label",
-            "ios_screen_time_bundle_id",
-            "ios_screen_time_web_domain",
-            "ios_screen_time_raw_source_label",
-        )) {
-            assertTrue(
-                "${PostgresEventTables.IOS_SENSOR_DATA.name} should have $column",
-                sensorDataColumns.contains(column),
-            )
+    fun testIosScreenTimeUsageTableShape() {
+        assertEquals(ChroniclePostgresTables.IOS_SCREEN_TIME_USAGE.columns.map { it.name }.toSet() +
+            ScreenTimeUsageCaptures.LABELS_HASH_COLUMN,
+            getColumnNames(ChroniclePostgresTables.IOS_SCREEN_TIME_USAGE.name).toSet())
+        getConnection().use { connection ->
+            connection.prepareStatement("""
+                SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                WHERE conrelid = 'public.ios_screen_time_usage'::regclass AND conname = 'ios_screen_time_usage_capture_key'
+            """.trimIndent()).use { statement ->
+                statement.executeQuery().use { rows ->
+                    assertTrue(rows.next())
+                    assertTrue(rows.getString(1).startsWith("UNIQUE NULLS NOT DISTINCT"))
+                }
+            }
         }
     }
 
     // =========================================================================
-    // V81 — append-only Screen Time snapshots and UTC-safe delta projection
+    // Append-only Screen Time snapshots and UTC-safe delta projection
     // =========================================================================
     @Test
     fun testIosScreenTimeDeltaProjectionAcrossDstAndMidnight() {
-        val studyId = UUID.randomUUID().toString()
+        val studyId = UUID.randomUUID()
         val participantId = "screen-time-delta-${UUID.randomUUID()}"
-        val fallBackFirstHour = OffsetDateTime.parse("2026-11-01T06:00:00Z")
-        val fallBackSecondHour = OffsetDateTime.parse("2026-11-01T07:00:00Z")
-        val beforeMidnight = OffsetDateTime.parse("2026-07-20T04:00:00Z")
-        val afterMidnight = OffsetDateTime.parse("2026-07-20T05:00:00Z")
-
-        getConnection().use { connection ->
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, fallBackFirstHour,
-                fallBackFirstHour.plusHours(1), fallBackFirstHour.plusMinutes(15), 300.0, 1, 1,
-            )
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, fallBackFirstHour,
-                fallBackFirstHour.plusHours(1), fallBackFirstHour.plusMinutes(30), 480.0, 2, 1,
-            )
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, fallBackFirstHour,
-                fallBackFirstHour.plusHours(1), fallBackFirstHour.plusMinutes(65), 600.0, 3, 2,
-            )
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, fallBackSecondHour,
-                fallBackSecondHour.plusHours(1), fallBackSecondHour.plusMinutes(15), 120.0, 0, 0,
-            )
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, beforeMidnight,
-                beforeMidnight.plusHours(1), beforeMidnight.plusMinutes(65), 180.0, 1, 1,
-            )
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, afterMidnight,
-                afterMidnight.plusHours(1), afterMidnight.plusMinutes(15), 60.0, 1, 1,
-            )
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, afterMidnight,
-                afterMidnight.plusHours(1), afterMidnight.plusMinutes(30), 40.0, 1, 1,
-            )
-            insertDirectScreenTimeSnapshot(
-                connection, studyId, participantId, afterMidnight,
-                afterMidnight.plusHours(5), afterMidnight.plusMinutes(45), 999.0, 99, 99,
-            )
-
-            data class DeltaRow(
-                val bucketStart: OffsetDateTime,
-                val intervalStart: OffsetDateTime,
-                val intervalEnd: OffsetDateTime,
-                val usageDelta: Double?,
-                val status: String,
-            )
-
-            val projected = mutableListOf<DeltaRow>()
-            connection.prepareStatement(
-                """
-                SELECT bucket_start_utc, interval_start_utc, interval_end_utc,
-                       usage_delta_seconds, delta_status
-                FROM screen_time_usage_deltas
-                WHERE study_id = ? AND participant_id = ?
-                ORDER BY bucket_start_utc, interval_end_utc
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setString(1, studyId)
-                statement.setString(2, participantId)
-                statement.executeQuery().use { rows ->
-                    while (rows.next()) {
-                        projected += DeltaRow(
-                            bucketStart = rows.getObject("bucket_start_utc", OffsetDateTime::class.java),
-                            intervalStart = rows.getObject("interval_start_utc", OffsetDateTime::class.java),
-                            intervalEnd = rows.getObject("interval_end_utc", OffsetDateTime::class.java),
-                            usageDelta = (rows.getObject("usage_delta_seconds") as? Number)?.toDouble(),
-                            status = rows.getString("delta_status"),
-                        )
-                    }
-                }
-            }
-
-            assertEquals(7, projected.size)
-            assertEquals(
-                listOf(300.0, 180.0, 120.0),
-                projected.filter { it.bucketStart.toInstant() == fallBackFirstHour.toInstant() }.map { it.usageDelta },
-            )
-            assertEquals(
-                listOf(120.0),
-                projected.filter { it.bucketStart.toInstant() == fallBackSecondHour.toInstant() }.map { it.usageDelta },
-            )
-            assertEquals(
-                "the repeated local 01:00 hour must start a new absolute bucket",
-                fallBackSecondHour.toInstant(),
-                projected.single { it.bucketStart.toInstant() == fallBackSecondHour.toInstant() }
-                    .intervalStart.toInstant(),
-            )
-            assertEquals(
-                listOf(180.0),
-                projected.filter { it.bucketStart.toInstant() == beforeMidnight.toInstant() }.map { it.usageDelta },
-            )
-            val afterMidnightRows = projected.filter { it.bucketStart.toInstant() == afterMidnight.toInstant() }
-            assertEquals(60.0, requireNotNull(afterMidnightRows.first().usageDelta), 0.001)
-            assertEquals(afterMidnight.toInstant(), afterMidnightRows.first().intervalStart.toInstant())
-            assertEquals(null, afterMidnightRows.last().usageDelta)
-            assertEquals("counter_decreased", afterMidnightRows.last().status)
-
-            // Fresh-install role grants normally run after Flyway. Mirror the underlying-table
-            // SELECT grant here, then prove that the view executes as the invoker: no context
-            // sees no rows, and an explicit study context sees only that study.
-            connection.createStatement().use { statement ->
-                statement.execute("GRANT SELECT ON sensor_data TO chronicle_app")
-                statement.execute(
-                    "GRANT EXECUTE ON FUNCTION chronicle_participant_data_visible(TEXT, TEXT) TO chronicle_app"
-                )
-                statement.execute("SET ROLE chronicle_app")
-            }
-            try {
-                connection.prepareStatement(
-                    "SELECT count(*) FROM screen_time_usage_deltas WHERE participant_id = ?"
-                ).use { statement ->
-                    statement.setString(1, participantId)
-                    statement.executeQuery().use { rows ->
-                        rows.next()
-                        assertEquals(0, rows.getInt(1))
-                    }
-                }
-                connection.prepareStatement(
-                    "SELECT set_config('app.authorized_studies', ?, false)"
-                ).use { statement ->
-                    statement.setString(1, studyId)
-                    statement.execute()
-                }
-                connection.prepareStatement(
-                    "SELECT count(*) FROM screen_time_usage_deltas WHERE participant_id = ?"
-                ).use { statement ->
-                    statement.setString(1, participantId)
-                    statement.executeQuery().use { rows ->
-                        rows.next()
-                        assertEquals(7, rows.getInt(1))
-                    }
-                }
-            } finally {
-                connection.createStatement().use { it.execute("RESET ROLE") }
-            }
-        }
-
+        getConnection().use { connection -> ScreenTimeDeltaFixture(connection).verify(studyId, participantId) }
         assertTrue(
             "chronicle_app must be able to select the RLS-invoker view",
             roleHasPrivilege("chronicle_app", "screen_time_usage_deltas", "SELECT"),
         )
-    }
-
-    @Suppress("LongParameterList")
-    private fun insertDirectScreenTimeSnapshot(
-        connection: Connection,
-        studyId: String,
-        participantId: String,
-        bucketStart: OffsetDateTime,
-        bucketEnd: OffsetDateTime,
-        capturedAt: OffsetDateTime,
-        usageSeconds: Double,
-        notificationCount: Int,
-        pickupCount: Int,
-    ) {
-        connection.prepareStatement(
-            """
-            INSERT INTO sensor_data (
-                study_id, participant_id, sample_id, sensor_type, sample_duration,
-                recordeddate, datetimestart, datetimeend, exact_recordeddate, timezone,
-                device_version, device_name, device_model, device_system_name,
-                total_screen_wakes, total_unlock_duration, total_unlocks,
-                app_category, app_usage_time, bundle_identifier,
-                ios_screen_time_source, ios_screen_time_confidence, ios_screen_time_row_kind,
-                ios_screen_time_app_label, ios_screen_time_bundle_id,
-                ios_screen_time_notification_count, ios_screen_time_pickup_count
-            ) VALUES (
-                ?, ?, ?, 'deviceUsage', 3600.0,
-                ?, ?, ?, ?, 'America/Chicago',
-                '26.5', 'U15', 'iPhone16,1', 'iOS',
-                ?, 0.0, ?,
-                'Fixture App', ?, 'com.example.fixture',
-                'deviceActivityExport', 'appleDeviceActivity', 'application',
-                'Fixture App', 'com.example.fixture', ?, ?
-            )
-            """.trimIndent(),
-        ).use { statement ->
-            statement.setString(1, studyId)
-            statement.setString(2, participantId)
-            statement.setString(3, UUID.randomUUID().toString())
-            statement.setObject(4, capturedAt)
-            statement.setObject(5, bucketStart)
-            statement.setObject(6, bucketEnd)
-            statement.setObject(7, capturedAt)
-            statement.setInt(8, pickupCount)
-            statement.setInt(9, pickupCount)
-            statement.setDouble(10, usageSeconds)
-            statement.setInt(11, notificationCount)
-            statement.setInt(12, pickupCount)
-            statement.executeUpdate()
-        }
     }
 
     // =========================================================================
@@ -5126,7 +3836,7 @@ class FlywayMigrationCorpusTest {
     }
 
     // =========================================================================
-    // V53 — interaction position provenance columns
+    // Interaction position provenance columns
     // =========================================================================
     @Test
     fun testInteractionPositionProvenanceColumns() {
@@ -5142,7 +3852,7 @@ class FlywayMigrationCorpusTest {
     }
 
     // =========================================================================
-    // V52 — upload-buffer drain index
+    // Upload-buffer drain index
     // =========================================================================
     @Test
     fun testUploadBufferDrainIndex() {
@@ -5161,79 +3871,95 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-    // =========================================================================
-    // V55–V58 — re-issued orphan objects (webhooks, anonymization, orgs, refresh tokens)
-    // =========================================================================
     @Test
-    fun testReissuedOrphanObjects() {
-        val rlsTables = listOf(
-            "webhook_registrations", "webhook_deliveries",
-            "study_anonymization_config", "participant_pseudonyms",
-            "organization_members", "organization_quotas",
-            "refresh_tokens",
-        )
-        for (table in rlsTables) {
-            assertTrue("$table must exist", tableExists(table))
-            val (enabled, forced) = rlsState(table)
-            assertTrue("RLS should be enabled on $table", enabled)
-            assertTrue("RLS should be forced on $table", forced)
-        }
-        // Policy-bearing tables.
-        for (table in rlsTables - "refresh_tokens") {
-            assertTrue("RLS policy should exist on $table", policyCount(table) > 0)
-        }
-        // V60: exactly one policy, scoped to chronicle_app (the W1 request-path role).
-        // Every other non-BYPASSRLS role stays deny-all under FORCE RLS.
-        assertEquals(
-            "refresh_tokens must have exactly the V60 service-path policy",
-            1,
-            policyCount("refresh_tokens"),
-        )
+    fun retiredRetentionHoldsLeaveNoTableOrStatus() {
         getConnection().use { conn ->
-            conn.createStatement().use { stmt ->
-                stmt.executeQuery(
-                    "SELECT roles::text FROM pg_policies WHERE tablename = 'refresh_tokens'"
-                ).use { rs ->
+            conn.createStatement().use { st ->
+                st.executeQuery("SELECT to_regclass('public.retention_holds')").use { rs ->
                     assertTrue(rs.next())
-                    assertEquals(
-                        "the refresh_tokens policy must be scoped to chronicle_app only",
-                        "{chronicle_app}",
-                        rs.getString(1),
-                    )
+                    assertNull(rs.getString(1))
                 }
-            }
-        }
-
-        for (column in listOf(
-            "delivery_state",
-            "available_at",
-            "lease_expires_at",
-            "lease_token",
-            "outcome_code",
-            "completed_at",
-            "updated_at",
-        )) {
-            assertTrue("webhook_deliveries must have $column", columnExists("webhook_deliveries", column))
-        }
-        getConnection().use { conn ->
-            conn.prepareStatement(
-                """
-                SELECT COUNT(*)
-                FROM pg_indexes
-                WHERE tablename = 'webhook_deliveries'
-                  AND indexname IN (
-                      'idx_webhook_deliveries_pending',
-                      'idx_webhook_deliveries_expired_lease'
-                  )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals("durable webhook queue indexes must exist", 2, resultSet.getInt(1))
+                st.executeQuery(
+                    """
+                    SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                    WHERE conrelid = 'public.data_deletion_operations'::regclass AND contype = 'c'
+                    """.trimIndent(),
+                ).use { rs ->
+                    val checks = generateSequence { if (rs.next()) rs.getString(1) else null }.toList()
+                    assertTrue(checks.none { "'HELD'" in it || "'READY'" in it })
                 }
             }
         }
     }
+
+    @Test
+    fun tablesWithoutAReaderOrWriterAreNotCreated() {
+        val orphans = listOf(
+            "local_blob_store", "organization_members", "organization_quotas", "refresh_tokens",
+            "study_event_stream", "study_realtime_stats", "usage_event_annotations",
+        )
+        getConnection().use { conn ->
+            conn.prepareStatement(
+                "SELECT name FROM unnest(?::text[]) AS name WHERE to_regclass('public.' || name) IS NOT NULL",
+            ).use { ps ->
+                ps.setArray(1, conn.createArrayOf("text", orphans.toTypedArray()))
+                ps.executeQuery().use { rs ->
+                    assertEquals(emptyList<String>(), generateSequence { if (rs.next()) rs.getString(1) else null }.toList())
+                }
+            }
+            conn.createStatement().use { st ->
+                st.executeQuery("SELECT to_regprocedure('public.chronicle_classify_legacy_webhook_delivery()')").use { rs ->
+                    assertTrue(rs.next())
+                    assertNull(rs.getString(1))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun usageEventTimeWindowReadsHaveAnIndex() {
+        getConnection().use { conn ->
+            conn.createStatement().use { st ->
+                st.executeQuery(
+                    """
+                    SELECT COUNT(*) FROM pg_indexes WHERE tablename = 'chronicle_usage_events'
+                    AND indexdef LIKE '%(study_id, participant_id, event_timestamp)'
+                    """.trimIndent(),
+                ).use { rs ->
+                    assertTrue(rs.next())
+                    assertEquals(1, rs.getInt(1))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun eachIndexIsDefinedOnceAlongsideTheBootstrapIndexes() {
+        getConnection().use { conn ->
+            conn.createStatement().use { st ->
+                // Production bootstrap creates the Kotlin-declared indexes as well as V1's.
+                ChronicleContractTestSchema.allChronicleTableDefinitions()
+                    .flatMap { it.indexes }
+                    .forEach { st.execute(it.sql()) }
+                val duplicates = st.executeQuery(
+                    """
+                    SELECT string_agg(indexrelid::regclass::text, ' = ' ORDER BY indexrelid::regclass::text)
+                    FROM pg_index
+                    WHERE indrelid::regclass::text NOT LIKE 'pg_%'
+                    GROUP BY indrelid, indkey::text, indclass::text, COALESCE(pg_get_expr(indpred, indrelid), ''),
+                        COALESCE(pg_get_expr(indexprs, indrelid), '')
+                    HAVING COUNT(*) > 1
+                    """.trimIndent(),
+                ).use { rs -> generateSequence { if (rs.next()) rs.getString(1) else null }.toList() }
+                assertEquals(emptyList<String>(), duplicates)
+            }
+        }
+    }
+
+    // =========================================================================
+    // Re-issued orphan objects (webhooks, anonymization, orgs, refresh tokens)
+    // =========================================================================
+    
 
     @Test
     fun testDurableWebhookRetryUsesStableDeliveryIdentity() {
@@ -5311,7 +4037,7 @@ class FlywayMigrationCorpusTest {
                     connection,
                     studyId,
                     WebhookEventType.DATA_SUBMITTED,
-                    mapOf("rolledBack" to true),
+                    WebhookPayload.Test(),
                 ),
             )
             connection.rollback()
@@ -5335,7 +4061,7 @@ class FlywayMigrationCorpusTest {
                     connection,
                     studyId,
                     WebhookEventType.DATA_SUBMITTED,
-                    mapOf("records" to 2),
+                    WebhookPayload.Test(),
                 ),
             )
         }
@@ -5406,51 +4132,6 @@ class FlywayMigrationCorpusTest {
             requests[1].header("X-Chronicle-Signature"),
         )
 
-        // A pre-V66 binary records history only after sending and omits every
-        // outbox column. Those writes must remain terminal after the migration,
-        // otherwise a rollback/overlap replays an already-sent request.
-        val legacySuccessId = UUID.randomUUID()
-        val legacyFailureId = UUID.randomUUID()
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                INSERT INTO webhook_deliveries (
-                    delivery_id, webhook_id, event_type, payload,
-                    status, attempt_count, last_attempt_at
-                ) VALUES (?, ?, 'DATA_SUBMITTED', '{}'::jsonb, ?, 1, now())
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, legacySuccessId)
-                statement.setObject(2, webhookId)
-                statement.setInt(3, 204)
-                assertEquals(1, statement.executeUpdate())
-                statement.setObject(1, legacyFailureId)
-                statement.setInt(3, 503)
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                SELECT delivery_id, delivery_state, completed_at
-                FROM webhook_deliveries
-                WHERE delivery_id IN (?, ?)
-                ORDER BY delivery_id
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, legacySuccessId)
-                statement.setObject(2, legacyFailureId)
-                statement.executeQuery().use { resultSet ->
-                    val states = mutableMapOf<UUID, String>()
-                    while (resultSet.next()) {
-                        states[resultSet.getObject("delivery_id", UUID::class.java)] =
-                            resultSet.getString("delivery_state")
-                        assertTrue(resultSet.getObject("completed_at") != null)
-                    }
-                    assertEquals("SUCCEEDED", states[legacySuccessId])
-                    assertEquals("FAILED", states[legacyFailureId])
-                }
-            }
-        }
-
         getConnection().use { connection ->
             connection.prepareStatement(
                 "DELETE FROM webhook_registrations WHERE webhook_id = ?",
@@ -5465,675 +4146,8 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-    @Test
-    fun testExportQueueLeaseRecoveryAndActiveErasureRevocation() {
-        val studyId = UUID.randomUUID()
-        val dueExportId = UUID.randomUUID()
-        val activeExportId = UUID.randomUUID()
-        val revokedExportId = UUID.randomUUID()
-        val operationId = UUID.randomUUID()
-        val participantId = "export-revocation-${UUID.randomUUID()}"
-        val request = ExportRequest(
-            dataTypes = setOf(ParticipantDataType.UsageEvents),
-            format = ExportFormat.CSV,
-        )
-        val requestJson = ObjectMappers.newJsonMapper().writeValueAsString(request)
-
-        getConnection().use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, "export-lease-$studyId")
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by,
-                    available_at, lease_token, lease_expires_at
-                ) VALUES
-                    (?, ?, 'PENDING', 'CSV', ?::jsonb, 'migration-test', '-infinity', NULL, NULL),
-                    (?, ?, 'RUNNING', 'CSV', ?::jsonb, 'migration-test', now(), ?, now() + interval '1 hour')
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, dueExportId)
-                statement.setObject(2, studyId)
-                statement.setString(3, requestJson)
-                statement.setObject(4, activeExportId)
-                statement.setObject(5, studyId)
-                statement.setString(6, requestJson)
-                statement.setObject(7, UUID.randomUUID())
-                statement.executeUpdate()
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO data_deletion_operations (
-                    operation_id, study_id, participant_ref, participant_id,
-                    mode, status, requested_by, idempotency_key,
-                    registry_version, quarantine_until
-                ) VALUES (
-                    ?, ?, 'participant-ref', ?,
-                    'WITHDRAW_AND_ERASE', 'QUARANTINED', 'migration-test', ?,
-                    1, now() + interval '7 days'
-                )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                statement.setObject(2, studyId)
-                statement.setString(3, participantId)
-                statement.setObject(4, UUID.randomUUID())
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by
-                ) VALUES (?, ?, 'PENDING', 'CSV', '{"participantIds":"malformed"}'::jsonb, 'migration-test')
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, revokedExportId)
-                statement.setObject(2, studyId)
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                SELECT COUNT(*)
-                FROM export_job_revocations
-                WHERE export_id = ? AND operation_id = ? AND study_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, revokedExportId)
-                statement.setObject(2, operationId)
-                statement.setObject(3, studyId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals("late malformed export must be revoked without a JSONB error", 1, resultSet.getInt(1))
-                }
-            }
-        }
-
-        val exportService = ExportService(
-            storageResolver,
-            Mockito.mock(DataDownloadManager::class.java),
-            Mockito.mock(HazelcastIdGenerationService::class.java),
-            Mockito.mock(WebhookService::class.java),
-        )
-        try {
-            val firstClaim = requireNotNull(exportService.claimNextExport())
-            assertEquals(dueExportId, firstClaim.exportId)
-            assertEquals(0, firstClaim.attemptCount)
-            assertEquals(0, firstClaim.recoveryCount)
-
-            repeat(3) { recoveryIndex ->
-                getConnection().use { connection ->
-                    connection.prepareStatement(
-                        "UPDATE export_jobs SET lease_expires_at = now() - interval '1 second' WHERE export_id = ?",
-                    ).use { statement ->
-                        statement.setObject(1, dueExportId)
-                        assertEquals(1, statement.executeUpdate())
-                    }
-                }
-
-                val replayClaim = requireNotNull(exportService.claimNextExport())
-                assertEquals(dueExportId, replayClaim.exportId)
-                assertEquals("lease expiry must not consume an execution attempt", 0, replayClaim.attemptCount)
-                assertEquals(recoveryIndex + 1, replayClaim.recoveryCount)
-            }
-
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "UPDATE export_jobs SET lease_expires_at = now() - interval '1 second' WHERE export_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, dueExportId)
-                    assertEquals(1, statement.executeUpdate())
-                }
-            }
-            assertTrue(exportService.terminalizeOneExhaustedRecovery())
-
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT export_id, status, attempt_count, recovery_count,
-                           isfinite(completed_at) AS completed_at_is_finite,
-                           lease_token
-                    FROM export_jobs
-                    WHERE export_id IN (?, ?, ?)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, dueExportId)
-                    statement.setObject(2, activeExportId)
-                    statement.setObject(3, revokedExportId)
-                    statement.executeQuery().use { resultSet ->
-                        val states = buildMap {
-                            while (resultSet.next()) {
-                                put(
-                                    resultSet.getObject("export_id", UUID::class.java),
-                                    listOf(
-                                        resultSet.getString("status"),
-                                        resultSet.getInt("attempt_count"),
-                                        resultSet.getInt("recovery_count"),
-                                        resultSet.getBoolean("completed_at_is_finite"),
-                                        resultSet.getObject("lease_token"),
-                                    ),
-                                )
-                            }
-                        }
-                        assertEquals(setOf(dueExportId, activeExportId, revokedExportId), states.keys)
-                        assertEquals(listOf("FAILED", 0, 3, true, null), states[dueExportId])
-                        assertEquals("RUNNING", states.getValue(activeExportId)[0])
-                        assertEquals(0, states.getValue(activeExportId)[1])
-                        assertEquals(0, states.getValue(activeExportId)[2])
-                        assertEquals("PENDING", states.getValue(revokedExportId)[0])
-                        assertEquals(0, states.getValue(revokedExportId)[1])
-                        assertEquals(0, states.getValue(revokedExportId)[2])
-                    }
-                }
-            }
-        } finally {
-            exportService.shutdown()
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "DELETE FROM export_jobs WHERE export_id IN (?, ?, ?)",
-                ).use { statement ->
-                    statement.setObject(1, dueExportId)
-                    statement.setObject(2, activeExportId)
-                    statement.setObject(3, revokedExportId)
-                    statement.executeUpdate()
-                }
-                connection.prepareStatement(
-                    "DELETE FROM data_deletion_operations WHERE operation_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, operationId)
-                    statement.executeUpdate()
-                }
-                connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
-            }
-        }
-    }
-
-    @Test
-    fun testPoisonedRecoveryCleanupBacksOffWithoutStarvingPendingWork() {
-        val studyId = UUID.randomUUID()
-        val poisonedExportId = UUID.randomUUID()
-        val pendingExportId = UUID.randomUUID()
-        val poisonedRequest = ExportRequest(
-            dataTypes = setOf(ParticipantDataType.UsageEvents),
-            format = ExportFormat.CSV,
-        )
-        val mismatchedPendingRequest = ExportRequest(
-            dataTypes = setOf(ParticipantDataType.UsageEvents),
-            format = ExportFormat.JSON,
-        )
-        val mapper = ObjectMappers.newJsonMapper()
-        val downloadManager = Mockito.mock(DataDownloadManager::class.java)
-        val webhookService = Mockito.mock(WebhookService::class.java)
-
-        getConnection().use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, "poisoned-export-recovery-$studyId")
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by,
-                    file_path, lease_token, lease_expires_at, recovery_count, created_at
-                ) VALUES (
-                    ?, ?, 'RUNNING', 'CSV', ?::jsonb, 'poisoned-worker',
-                    ?, ?, now() - interval '1 minute', 3, now() - interval '2 days'
-                )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, poisonedExportId)
-                statement.setObject(2, studyId)
-                statement.setString(3, mapper.writeValueAsString(poisonedRequest))
-                statement.setString(4, "/outside-managed-export-storage/$poisonedExportId.csv")
-                statement.setObject(5, UUID.randomUUID())
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by, available_at
-                ) VALUES (?, ?, 'PENDING', 'CSV', ?::jsonb, 'pending-worker', '-infinity')
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, pendingExportId)
-                statement.setObject(2, studyId)
-                statement.setString(3, mapper.writeValueAsString(mismatchedPendingRequest))
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-
-        val exportService = ExportService(
-            storageResolver,
-            downloadManager,
-            Mockito.mock(HazelcastIdGenerationService::class.java),
-            webhookService,
-        )
-        try {
-            exportService.runNextExportTask()
-
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT export_id, status, attempt_count, recovery_count,
-                           recovery_cleanup_available_at > now() AS cleanup_deferred,
-                           error_message, lease_token
-                    FROM export_jobs
-                    WHERE export_id IN (?, ?)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, poisonedExportId)
-                    statement.setObject(2, pendingExportId)
-                    statement.executeQuery().use { resultSet ->
-                        val states = buildMap {
-                            while (resultSet.next()) {
-                                put(
-                                    resultSet.getObject("export_id", UUID::class.java),
-                                    listOf(
-                                        resultSet.getString("status"),
-                                        resultSet.getInt("attempt_count"),
-                                        resultSet.getInt("recovery_count"),
-                                        resultSet.getBoolean("cleanup_deferred"),
-                                        resultSet.getString("error_message"),
-                                        resultSet.getObject("lease_token"),
-                                    ),
-                                )
-                            }
-                        }
-                        assertEquals(setOf(poisonedExportId, pendingExportId), states.keys)
-                        val poisoned = states.getValue(poisonedExportId)
-                        assertEquals("RUNNING", poisoned[0])
-                        assertEquals(0, poisoned[1])
-                        assertEquals(3, poisoned[2])
-                        assertEquals(true, poisoned[3])
-                        assertTrue(poisoned[4].toString().contains("cleanup deferred"))
-                        assertNotNull(poisoned[5])
-
-                        val pending = states.getValue(pendingExportId)
-                        assertEquals("FAILED", pending[0])
-                        assertEquals(1, pending[1])
-                        assertEquals(0, pending[2])
-                        assertNull(pending[5])
-                    }
-                }
-            }
-            Mockito.verifyNoInteractions(downloadManager)
-            Mockito.verifyNoInteractions(webhookService)
-        } finally {
-            exportService.shutdown()
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "DELETE FROM export_jobs WHERE export_id IN (?, ?)",
-                ).use { statement ->
-                    statement.setObject(1, poisonedExportId)
-                    statement.setObject(2, pendingExportId)
-                    statement.executeUpdate()
-                }
-                connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
-            }
-        }
-    }
-
-    @Test
-    fun testExportQueueRejectsFormatCorruptionAndTerminalizesRequestMismatch() {
-        val studyId = UUID.randomUUID()
-        val exportId = UUID.randomUUID()
-        val downloadManager = Mockito.mock(DataDownloadManager::class.java)
-        val webhookService = Mockito.mock(WebhookService::class.java)
-        val mismatchedRequest = ExportRequest(
-            dataTypes = setOf(ParticipantDataType.UsageEvents),
-            format = ExportFormat.JSON,
-        )
-
-        getConnection().use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, "export-format-mismatch-$studyId")
-                assertEquals(1, statement.executeUpdate())
-            }
-            val invalidFormat = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    """
-                    INSERT INTO export_jobs (
-                        export_id, study_id, status, format, request, created_by
-                    ) VALUES (?, ?, 'PENDING', 'YAML', '{}'::jsonb, 'migration-test')
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, UUID.randomUUID())
-                    statement.setObject(2, studyId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23514", invalidFormat.sqlState)
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by, available_at
-                ) VALUES (?, ?, 'PENDING', 'CSV', ?::jsonb, 'migration-test', '-infinity')
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, exportId)
-                statement.setObject(2, studyId)
-                statement.setString(3, ObjectMappers.newJsonMapper().writeValueAsString(mismatchedRequest))
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-
-        val exportService = ExportService(
-            storageResolver,
-            downloadManager,
-            Mockito.mock(HazelcastIdGenerationService::class.java),
-            webhookService,
-        )
-        try {
-            exportService.runNextExportTask()
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT status, attempt_count, recovery_count,
-                           isfinite(completed_at), lease_token, file_path
-                    FROM export_jobs
-                    WHERE export_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, exportId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("FAILED", resultSet.getString("status"))
-                        assertEquals(1, resultSet.getInt("attempt_count"))
-                        assertEquals(0, resultSet.getInt("recovery_count"))
-                        assertTrue(resultSet.getBoolean(4))
-                        assertNull(resultSet.getObject("lease_token"))
-                        assertNull(resultSet.getString("file_path"))
-                    }
-                }
-            }
-            Mockito.verifyNoInteractions(downloadManager)
-            Mockito.verifyNoInteractions(webhookService)
-            Files.list(ExportFileWriter.EXPORT_DIR).use { paths ->
-                assertFalse(paths.anyMatch { it.fileName.toString().startsWith(exportId.toString()) })
-            }
-        } finally {
-            exportService.shutdown()
-            getConnection().use { connection ->
-                connection.prepareStatement("DELETE FROM export_jobs WHERE export_id = ?").use { statement ->
-                    statement.setObject(1, exportId)
-                    statement.executeUpdate()
-                }
-                connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
-            }
-        }
-    }
-
-    @Test
-    fun testExportCapacityReservationsFenceIndependentWorkersAndLeaseOwnership() {
-        val firstStudyId = UUID.randomUUID()
-        val secondStudyId = UUID.randomUUID()
-        val firstExportId = UUID.randomUUID()
-        val secondExportId = UUID.randomUUID()
-        val firstLease = UUID.randomUUID()
-        val secondLease = UUID.randomUUID()
-        val request = ExportRequest(
-            dataTypes = setOf(ParticipantDataType.UsageEvents),
-            format = ExportFormat.CSV,
-        )
-        val requestJson = ObjectMappers.newJsonMapper().writeValueAsString(request)
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "INSERT INTO studies (study_id, title) VALUES (?, ?), (?, ?)",
-            ).use { statement ->
-                statement.setObject(1, firstStudyId)
-                statement.setString(2, "capacity-first-$firstStudyId")
-                statement.setObject(3, secondStudyId)
-                statement.setString(4, "capacity-second-$secondStudyId")
-                assertEquals(2, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by,
-                    lease_token, lease_expires_at
-                ) VALUES
-                    (?, ?, 'RUNNING', 'CSV', ?::jsonb, 'capacity-worker', ?, now() + interval '5 minutes'),
-                    (?, ?, 'RUNNING', 'CSV', ?::jsonb, 'capacity-worker', ?, now() + interval '5 minutes')
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, firstExportId)
-                statement.setObject(2, firstStudyId)
-                statement.setString(3, requestJson)
-                statement.setObject(4, firstLease)
-                statement.setObject(5, secondExportId)
-                statement.setObject(6, secondStudyId)
-                statement.setString(7, requestJson)
-                statement.setObject(8, secondLease)
-                assertEquals(2, statement.executeUpdate())
-            }
-        }
-
-        fun newWorker() = object : ExportService(
-            storageResolver,
-            Mockito.mock(DataDownloadManager::class.java),
-            Mockito.mock(HazelcastIdGenerationService::class.java),
-            Mockito.mock(WebhookService::class.java),
-        ) {
-            // Leave room for one reservation under the configured artifact budget.
-            override fun freshStorageCapacityForExportAdmission(): ExportStorageCapacity = ExportStorageCapacity(
-                usableBytes = Long.MAX_VALUE,
-                managedArtifactBytesAtSample = ExportFileWriter.maximumManagedArtifactBytes -
-                    ExportFileWriter.reservationBytes(request.format, ExportFileWriter.defaultCapacityReservationBytes),
-            )
-        }
-        val exportService = newWorker()
-        val secondWorker = newWorker()
-        val firstClaim = ExportService.ClaimedExport(
-            firstExportId,
-            firstStudyId,
-            requestJson,
-            ExportFormat.CSV,
-            "capacity-worker",
-            0,
-            0,
-            firstLease,
-        )
-        val secondClaim = ExportService.ClaimedExport(
-            secondExportId,
-            secondStudyId,
-            requestJson,
-            ExportFormat.CSV,
-            "capacity-worker",
-            0,
-            0,
-            secondLease,
-        )
-
-        try {
-            assertTrue(exportService.reserveExportCapacity(firstClaim))
-            assertFalse(
-                "a different lease must not release another worker's reservation",
-                exportService.releaseExportCapacityReservation(
-                    firstClaim.copy(leaseToken = UUID.randomUUID()),
-                ),
-            )
-            val overCapacity = assertThrows(ExportResourceLimitException::class.java) {
-                secondWorker.reserveExportCapacity(secondClaim)
-            }
-            assertTrue(overCapacity.message.orEmpty().contains("managed artifact limit"))
-
-            assertTrue(exportService.releaseExportCapacityReservation(firstClaim))
-            assertTrue(secondWorker.reserveExportCapacity(secondClaim))
-            assertTrue(secondWorker.releaseExportCapacityReservation(secondClaim))
-
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT COUNT(*) FROM export_capacity_reservations WHERE export_id IN (?, ?)",
-                ).use { statement ->
-                    statement.setObject(1, firstExportId)
-                    statement.setObject(2, secondExportId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(0, resultSet.getInt(1))
-                    }
-                }
-            }
-        } finally {
-            exportService.releaseExportCapacityReservation(firstClaim)
-            secondWorker.releaseExportCapacityReservation(secondClaim)
-            exportService.shutdown()
-            secondWorker.shutdown()
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "DELETE FROM export_jobs WHERE export_id IN (?, ?)",
-                ).use { statement ->
-                    statement.setObject(1, firstExportId)
-                    statement.setObject(2, secondExportId)
-                    statement.executeUpdate()
-                }
-                connection.prepareStatement("DELETE FROM studies WHERE study_id IN (?, ?)").use { statement ->
-                    statement.setObject(1, firstStudyId)
-                    statement.setObject(2, secondStudyId)
-                    statement.executeUpdate()
-                }
-            }
-        }
-    }
-
-    @Test
-    fun testMissingCompletedExportIsPersistedAsFailed() {
-        val studyId = UUID.randomUUID()
-        val exportId = UUID.randomUUID()
-        val missingPath = ExportFileWriter.EXPORT_DIR.resolve("$exportId.csv")
-        Files.deleteIfExists(missingPath)
-
-        getConnection().use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, "missing-export-$studyId")
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by,
-                    completed_at, file_path
-                ) VALUES (?, ?, 'COMPLETED', 'CSV', '{}'::jsonb, 'migration-test', now(), ?)
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, exportId)
-                statement.setObject(2, studyId)
-                statement.setString(3, missingPath.toString())
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-
-        val exportService = ExportService(
-            storageResolver,
-            Mockito.mock(DataDownloadManager::class.java),
-            Mockito.mock(HazelcastIdGenerationService::class.java),
-            Mockito.mock(WebhookService::class.java),
-        )
-        try {
-            assertThrows(IllegalStateException::class.java) {
-                exportService.streamExportFile(
-                    studyId,
-                    exportId,
-                    "migration-test",
-                    ByteArrayOutputStream(),
-                )
-            }
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT status, file_path, error_message FROM export_jobs WHERE export_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, exportId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("FAILED", resultSet.getString("status"))
-                        assertNull(resultSet.getString("file_path"))
-                        assertTrue(resultSet.getString("error_message").contains("unavailable"))
-                    }
-                }
-            }
-        } finally {
-            exportService.shutdown()
-            getConnection().use { connection ->
-                connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
-            }
-        }
-    }
-
-    @Test
-    fun testConcurrentDownloadsOfTheSameExportFinishBeforeTheFirstReaderReleasesItsLock() {
-        val fixture = ConcurrentWithdrawalFixture()
-        val exportId = UUID.randomUUID()
-        val path = ExportFileWriter.EXPORT_DIR.resolve("$exportId.csv")
-        val payload = "participant_id\nexport-concurrency\n".toByteArray()
-        val entered = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        val workers = Executors.newFixedThreadPool(2)
-        val service = ExportService(storageResolver, Mockito.mock(DataDownloadManager::class.java),
-            Mockito.mock(HazelcastIdGenerationService::class.java), Mockito.mock(WebhookService::class.java))
-        try {
-            seedConcurrentWithdrawalFixture(fixture)
-            Files.createDirectories(path.parent)
-            Files.write(path, payload)
-            getConnection().use { connection ->
-                executeSingleUpdate(connection, """
-                    INSERT INTO export_jobs (export_id, study_id, status, format, request, created_by, completed_at, file_path)
-                    VALUES (?, ?, 'COMPLETED', 'CSV', '{}'::jsonb, 'migration-test', now(), ?)
-                """.trimIndent()) {
-                    it.setObject(1, exportId)
-                    it.setObject(2, fixture.studyId)
-                    it.setString(3, path.toString())
-                }
-            }
-            val firstOutput = object : ByteArrayOutputStream() {
-                override fun write(bytes: ByteArray, offset: Int, length: Int) {
-                    entered.countDown()
-                    check(release.await(10, TimeUnit.SECONDS)) { "First reader was not released" }
-                    super.write(bytes, offset, length)
-                }
-            }
-            val first = workers.submit<Any> {
-                service.streamExportFile(fixture.studyId, exportId, "migration-test", firstOutput)
-            }
-            assertTrue(entered.await(5, TimeUnit.SECONDS))
-            val secondOutput = ByteArrayOutputStream()
-            val second = workers.submit<Any> {
-                service.streamExportFile(fixture.studyId, exportId, "migration-test", secondOutput)
-            }
-            second.get(2, TimeUnit.SECONDS)
-            assertTrue(secondOutput.toByteArray().contentEquals(payload))
-            release.countDown()
-            first.get(5, TimeUnit.SECONDS)
-            assertTrue(firstOutput.toByteArray().contentEquals(payload))
-        } finally {
-            release.countDown()
-            workers.shutdownNow()
-            assertTrue(workers.awaitTermination(5, TimeUnit.SECONDS))
-            service.shutdown()
-            getConnection().use { deleteById(it, "export_jobs", "export_id", exportId) }
-            Files.deleteIfExists(path)
-            cleanupConcurrentWithdrawalFixture(fixture)
-        }
-    }
-
     // =========================================================================
-    // V67 — database-authoritative last-active-owner invariant
+    // Database-authoritative last-active-owner invariant
     // =========================================================================
     @Test
     fun testLastActiveAclOwnerConstraintSerializesCompetingDeletes() {
@@ -6308,697 +4322,9 @@ class FlywayMigrationCorpusTest {
     }
 
     // =========================================================================
-    // V50/V51 — deletion ledger, quarantine, and the services that ride on it
+    // Deletion ledger, quarantine, and the services that ride on it
     // =========================================================================
-    @Test
-    fun testDeletionLedgerAndParticipantAccess() {
-        for (table in listOf(
-            "participant_form_access_codes", "participant_form_sessions",
-            "participant_form_submission_receipts", "data_deletion_operations",
-            "data_deletion_steps", "retention_holds", "data_deletion_tombstones",
-            "data_deletion_audit_outbox",
-        )) {
-            assertTrue("$table must exist", tableExists(table))
-        }
-        assertTrue(getColumnNames("data_deletion_operations").contains("operation_attempt_count"))
-        assertTrue(getColumnNames("data_deletion_operations").contains("next_attempt_at"))
-        assertTrue(getColumnNames("data_deletion_operations").contains("cancelled_by"))
-        assertTrue(getColumnNames("data_deletion_operations").contains("cancelled_at"))
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT COUNT(*) FROM pg_policies
-                WHERE policyname LIKE 'deletion_quarantine_%' AND permissive = 'RESTRICTIVE'
-                """.trimIndent()
-            ).use { statement ->
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals(38, resultSet.getInt(1))
-                }
-            }
-            assertEquals(true to true, rlsState("jobs"))
-
-            val studyId = UUID.randomUUID()
-            val participantId = "participant-v50-${UUID.randomUUID()}"
-            connection.prepareStatement(
-                """
-                INSERT INTO data_deletion_operations
-                    (operation_id, study_id, participant_ref, participant_id, mode, status,
-                     requested_by, idempotency_key, registry_version, quarantine_until)
-                VALUES (?, ?, 'participant-ref', ?, 'COLLECTED_DATA_PURGE', 'QUARANTINED',
-                        'migration-test', ?, 1, now() + interval '7 days')
-                """.trimIndent()
-            ).use { statement ->
-                statement.setObject(1, UUID.randomUUID())
-                statement.setObject(2, studyId)
-                statement.setString(3, participantId)
-                statement.setObject(4, UUID.randomUUID())
-                statement.executeUpdate()
-            }
-            connection.prepareStatement("SELECT chronicle_participant_data_visible(?, ?)").use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participantId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertFalse("Quarantined participant data must be inaccessible", resultSet.getBoolean(1))
-                }
-                statement.setString(2, "different-participant")
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertTrue("Other participants must remain visible", resultSet.getBoolean(1))
-                }
-            }
-        }
-
-        val orchestrator = DataDeletionOrchestrator(
-            storageResolver,
-            Mockito.mock(AuditingManager::class.java),
-            Clock.fixed(Instant.now().minus(Duration.ofDays(8)), ZoneOffset.UTC),
-        )
-        val erasureStudyId = UUID.randomUUID()
-        val erasureParticipantId = "participant-erasure-${UUID.randomUUID()}"
-        val erasureExportId = UUID.randomUUID()
-        val erasureExport = ExportFileWriter.writeMultiDataTypeExport(
-            mapOf(
-                ParticipantDataType.UsageEvents.name to listOf(
-                    mapOf("participant_id" to erasureParticipantId, "value" to "derived"),
-                ),
-            ),
-            ExportFormat.CSV,
-            erasureExportId,
-        )
-        getConnection().use { connection ->
-            connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
-                statement.setObject(1, erasureStudyId)
-                statement.setString(2, "erasure-export-$erasureStudyId")
-                assertEquals(1, statement.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO export_jobs (
-                    export_id, study_id, status, format, request, created_by,
-                    completed_at, row_count, file_path
-                ) VALUES (
-                    ?, ?, 'COMPLETED', 'CSV', ?::jsonb, 'migration-request',
-                    now(), ?, ?
-                )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, erasureExportId)
-                statement.setObject(2, erasureStudyId)
-                statement.setString(
-                    3,
-                    ObjectMappers.newJsonMapper().writeValueAsString(
-                        ExportRequest(
-                            dataTypes = setOf(ParticipantDataType.UsageEvents),
-                            participantIds = setOf(erasureParticipantId),
-                            format = ExportFormat.CSV,
-                        ),
-                    ),
-                )
-                statement.setLong(4, erasureExport.rowCount)
-                statement.setString(5, erasureExport.path.toString())
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-        RLSRequestContext.set(
-            RLSConnectionContext(
-                principalId = "migration-request",
-                authorizedStudyIds = setOf(erasureStudyId),
-                isAdmin = false,
-            ),
-        )
-        val verifiedOperationId = try {
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    INSERT INTO data_quality_alerts (
-                        alert_id, study_id, participant_id, alert_type, message, score
-                    ) VALUES (?, ?, ?, 'MISSING_DATA', 'migration test', 1.0)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, UUID.randomUUID())
-                    statement.setObject(2, erasureStudyId)
-                    statement.setString(3, erasureParticipantId)
-                    assertEquals(1, statement.executeUpdate())
-                }
-            }
-            orchestrator.quarantineParticipant(
-                studyId = erasureStudyId,
-                participantId = erasureParticipantId,
-                mode = DataDeletionMode.COLLECTED_DATA_PURGE,
-                requestedBy = "migration-test",
-                idempotencyKey = UUID.randomUUID(),
-            )
-        } finally {
-            RLSRequestContext.clear()
-        }
-        RLSRequestContext.set(
-            RLSConnectionContext(
-                principalId = "migration-request",
-                authorizedStudyIds = setOf(erasureStudyId),
-                isAdmin = false,
-            ),
-        )
-        try {
-            val exportService = ExportService(
-                storageResolver,
-                Mockito.mock(DataDownloadManager::class.java),
-                Mockito.mock(HazelcastIdGenerationService::class.java),
-                Mockito.mock(WebhookService::class.java),
-            )
-            try {
-                assertThrows(IllegalStateException::class.java) {
-                    exportService.streamExportFile(
-                        erasureStudyId,
-                        erasureExportId,
-                        "migration-request",
-                        ByteArrayOutputStream(),
-                    )
-                }
-            } finally {
-                exportService.shutdown()
-            }
-        } finally {
-            RLSRequestContext.clear()
-        }
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT expected_rows
-                FROM data_deletion_steps
-                WHERE operation_id = ? AND asset_id = 'data-quality-alerts'
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, verifiedOperationId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals(
-                        "PREVIEW counts must observe rows before quarantine activates",
-                        1L,
-                        resultSet.getLong(1),
-                    )
-                }
-            }
-        }
-        RLSRequestContext.set(
-            RLSConnectionContext(
-                principalId = "migration-request",
-                authorizedStudyIds = setOf(erasureStudyId),
-                isAdmin = false,
-            ),
-        )
-        try {
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT COUNT(*) FROM data_quality_alerts WHERE study_id = ? AND participant_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, erasureStudyId)
-                    statement.setString(2, erasureParticipantId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("ordinary requests must not see quarantined rows", 0, resultSet.getInt(1))
-                    }
-                }
-            }
-        } finally {
-            RLSRequestContext.clear()
-        }
-        RLSRequestContext.withDeletionWorkerContext {
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    "SELECT COUNT(*) FROM data_quality_alerts WHERE study_id = ? AND participant_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, erasureStudyId)
-                    statement.setString(2, erasureParticipantId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("the deletion worker must observe quarantined rows", 1, resultSet.getInt(1))
-                    }
-                }
-            }
-        }
-        assertEquals(1, orchestrator.processDueOperations(limit = 1))
-        assertEquals("COMPLETED", orchestrator.getOperation(verifiedOperationId).status)
-        assertFalse(
-            "derived export artifact must be deleted before erasure completes",
-            java.nio.file.Files.exists(erasureExport.path),
-        )
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "SELECT status, file_path FROM export_jobs WHERE export_id = ?",
-            ).use { statement ->
-                statement.setObject(1, erasureExportId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals("FAILED", resultSet.getString("status"))
-                    assertNull(resultSet.getString("file_path"))
-                }
-            }
-        }
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "SELECT proof_hash FROM data_deletion_tombstones WHERE operation_id = ?"
-            ).use { statement ->
-                statement.setObject(1, verifiedOperationId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue("Verified erasure must produce a proof tombstone", resultSet.next())
-                    assertTrue(resultSet.getString("proof_hash").matches(Regex("^[0-9a-f]{64}$")))
-                }
-            }
-        }
-
-        val receiptStudyId = UUID.randomUUID()
-        val receiptParticipantId = "participant-receipt-${UUID.randomUUID()}"
-        val accessCodeId = UUID.randomUUID()
-        getConnection().use { connection ->
-            executeSingleUpdate(connection, "INSERT INTO studies (study_id, title) VALUES (?, ?)") {
-                it.setObject(1, receiptStudyId)
-                it.setString(2, "participant-receipt")
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO study_participants
-                    (study_id, participant_id, candidate_id, participation_status)
-                VALUES (?, ?, ?, 'ENROLLED')
-                """.trimIndent()
-            ).use { statement ->
-                statement.setObject(1, receiptStudyId)
-                statement.setString(2, receiptParticipantId)
-                statement.setObject(3, UUID.randomUUID())
-                statement.executeUpdate()
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO participant_form_access_codes
-                    (access_code_id, token_hash, study_id, participant_id, form_kind,
-                     issuer_type, issued_by, expires_at)
-                VALUES (?, ?, ?, ?, 'QUESTIONNAIRE', 'RESEARCHER', 'migration-test', now() + interval '1 day')
-                """.trimIndent()
-            ).use { statement ->
-                statement.setObject(1, accessCodeId)
-                statement.setBytes(2, UUID.randomUUID().toString().toByteArray())
-                statement.setObject(3, receiptStudyId)
-                statement.setString(4, receiptParticipantId)
-                statement.executeUpdate()
-            }
-            connection.createStatement().use { statement ->
-                statement.execute(
-                    "CREATE TABLE IF NOT EXISTS participant_submission_effects (submission_id UUID PRIMARY KEY)"
-                )
-            }
-        }
-        val receiptService = ParticipantFormSubmissionReceiptService(
-            storageResolver,
-            ObjectMappers.newJsonMapper(),
-        )
-        val receiptScope = ParticipantFormAccessScope(
-            accessCodeId = accessCodeId,
-            studyId = receiptStudyId,
-            participantId = receiptParticipantId,
-            formKind = ParticipantFormKind.QUESTIONNAIRE,
-            resourceId = UUID.randomUUID(),
-            logicalDate = null,
-            absoluteExpiresAt = OffsetDateTime.now().plusHours(1),
-        )
-        val receiptKey = UUID.randomUUID()
-        val submissionId = UUID.randomUUID()
-        val firstSubmission = receiptService.executeWithSubmissionId(
-            receiptScope,
-            ParticipantFormKind.QUESTIONNAIRE,
-            "questionnaire:${receiptScope.resourceId}",
-            receiptKey,
-            mapOf("answer" to "yes"),
-        ) { connection ->
-            connection.prepareStatement(
-                "INSERT INTO participant_submission_effects (submission_id) VALUES (?)"
-            ).use { statement ->
-                statement.setObject(1, submissionId)
-                statement.executeUpdate()
-            }
-            submissionId
-        }
-        val replayedSubmission = receiptService.executeWithSubmissionId(
-            receiptScope,
-            ParticipantFormKind.QUESTIONNAIRE,
-            "questionnaire:${receiptScope.resourceId}",
-            receiptKey,
-            mapOf("answer" to "yes"),
-        ) { error("Replay must not execute the submission action") }
-        assertFalse(firstSubmission.replayed)
-        assertTrue(replayedSubmission.replayed)
-        assertEquals(submissionId, replayedSubmission.value)
-        assertThrows(ParticipantSubmissionConflictException::class.java) {
-            receiptService.executeWithSubmissionId(
-                receiptScope,
-                ParticipantFormKind.QUESTIONNAIRE,
-                "questionnaire:${receiptScope.resourceId}",
-                receiptKey,
-                mapOf("answer" to "different"),
-            ) { error("Conflicting replay must not execute the submission action") }
-        }
-
-        // PostgreSQL stores TIMESTAMPTZ at microsecond precision. A fixed whole-second instant
-        // keeps the strict replay-deadline equality check deterministic across JDBC round trips.
-        val accessClock = Clock.fixed(Instant.parse("2100-01-01T00:00:00Z"), ZoneOffset.UTC)
-        val accessService = ParticipantFormAccessService(storageResolver, accessClock)
-        val reviewerReady = CountDownLatch(2)
-        val releaseReviewers = CountDownLatch(1)
-        val reviewerExecutor = Executors.newFixedThreadPool(2)
-        try {
-            val reviewerCalls = (1..2).map {
-                reviewerExecutor.submit {
-                    reviewerReady.countDown()
-                    check(releaseReviewers.await(10, TimeUnit.SECONDS))
-                    accessService.createReplacingAccessCode(
-                        studyId = receiptStudyId,
-                        participantId = receiptParticipantId,
-                        formKind = ParticipantFormKind.ENROLLMENT,
-                        resourceId = null,
-                        logicalDate = null,
-                        requestedExpiresAt = OffsetDateTime.ofInstant(accessClock.instant(), ZoneOffset.UTC)
-                            .plusMinutes(15),
-                        issuerType = ParticipantAccessCodeIssuerType.RESEARCHER,
-                        issuedBy = "play-reviewer-bootstrap",
-                    )
-                }
-            }
-            assertTrue(reviewerReady.await(10, TimeUnit.SECONDS))
-            releaseReviewers.countDown()
-            reviewerCalls.forEach { call -> call.get(10, TimeUnit.SECONDS) }
-        } finally {
-            releaseReviewers.countDown()
-            reviewerExecutor.shutdownNow()
-            assertTrue(reviewerExecutor.awaitTermination(10, TimeUnit.SECONDS))
-        }
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT COUNT(*) FROM participant_form_access_codes
-                WHERE study_id = ? AND participant_id = ? AND form_kind = 'ENROLLMENT'
-                  AND issuer_type = 'RESEARCHER' AND issued_by = 'play-reviewer-bootstrap'
-                  AND exchanged_at IS NULL AND revoked_at IS NULL
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, receiptStudyId)
-                statement.setString(2, receiptParticipantId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals("reviewer rotation must leave exactly one live invitation", 1, resultSet.getInt(1))
-                }
-            }
-            val duplicate = assertThrows(SQLException::class.java) {
-                connection.prepareStatement(
-                    """
-                    INSERT INTO participant_form_access_codes (
-                        access_code_id, token_hash, study_id, participant_id, form_kind,
-                        issuer_type, issued_by, expires_at
-                    ) VALUES (?, ?, ?, ?, 'ENROLLMENT', 'RESEARCHER',
-                              'play-reviewer-bootstrap', now() + interval '15 minutes')
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, UUID.randomUUID())
-                    statement.setBytes(2, UUID.randomUUID().toString().toByteArray())
-                    statement.setObject(3, receiptStudyId)
-                    statement.setString(4, receiptParticipantId)
-                    statement.executeUpdate()
-                }
-            }
-            assertEquals("23505", duplicate.sqlState)
-        }
-        accessService.createAccessCode(
-            studyId = receiptStudyId,
-            participantId = receiptParticipantId,
-            formKind = ParticipantFormKind.APP_USAGE,
-            resourceId = null,
-            logicalDate = null,
-            requestedExpiresAt = null,
-            issuerType = ParticipantAccessCodeIssuerType.DEVICE,
-            issuedBy = "device:migration-test",
-        )
-        val enrollmentCode = accessService.createAccessCode(
-            studyId = receiptStudyId,
-            participantId = receiptParticipantId,
-            formKind = ParticipantFormKind.ENROLLMENT,
-            resourceId = null,
-            logicalDate = null,
-            requestedExpiresAt = null,
-            issuerType = ParticipantAccessCodeIssuerType.RESEARCHER,
-            issuedBy = "researcher:migration-test",
-        )
-        assertFalse(
-            accessService.consumeEnrollmentAccessCode(
-                enrollmentCode.accessCode,
-                UUID.randomUUID(),
-                receiptParticipantId,
-            )
-        )
-        assertNull(accessService.exchangeAccessCode(enrollmentCode.accessCode))
-        assertNotNull(
-            accessService.resolveEnrollmentAccessCode(
-                enrollmentCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-            )
-        )
-        assertTrue(
-            accessService.consumeEnrollmentAccessCode(
-                enrollmentCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-            )
-        )
-        assertNull(
-            accessService.resolveEnrollmentAccessCode(
-                enrollmentCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-            )
-        )
-        assertFalse(
-            accessService.consumeEnrollmentAccessCode(
-                enrollmentCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-            )
-        )
-        assertThrows(IllegalArgumentException::class.java) {
-            accessService.createAccessCodes(
-                listOf(
-                    ParticipantAccessCodeCommand(
-                        studyId = receiptStudyId,
-                        participantId = receiptParticipantId,
-                        formKind = ParticipantFormKind.APP_USAGE,
-                        resourceId = null,
-                        logicalDate = null,
-                        requestedExpiresAt = null,
-                        issuerType = ParticipantAccessCodeIssuerType.DEVICE,
-                        issuedBy = "device:migration-test",
-                    ),
-                    ParticipantAccessCodeCommand(
-                        studyId = receiptStudyId,
-                        participantId = receiptParticipantId,
-                        formKind = ParticipantFormKind.QUESTIONNAIRE,
-                        resourceId = UUID.randomUUID(),
-                        logicalDate = null,
-                        requestedExpiresAt = OffsetDateTime.ofInstant(accessClock.instant(), ZoneOffset.UTC),
-                        issuerType = ParticipantAccessCodeIssuerType.DEVICE,
-                        issuedBy = "device:migration-test",
-                    ),
-                )
-            )
-        }
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT COUNT(*) FROM participant_form_access_codes
-                WHERE study_id = ? AND participant_id = ? AND form_kind = 'APP_USAGE'
-                  AND issuer_type = 'DEVICE' AND issued_by = 'device:migration-test'
-                  AND revoked_at IS NULL
-                """.trimIndent()
-            ).use { statement ->
-                statement.setObject(1, receiptStudyId)
-                statement.setString(2, receiptParticipantId)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals("Failed batches must preserve the prior code", 1, resultSet.getInt(1))
-                }
-            }
-        }
-
-        val proposedApiKey = "ck_01234567_0123456789ABCDEFGHIJKLMNOPQRSTUV" // gitleaks:allow -- deterministic test credential
-        val proposedApiKeyHash = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(proposedApiKey.toByteArray())
-            .joinToString("") { "%02x".format(it) }
-        fun enrollmentBinding(
-            attemptId: UUID,
-            requestMarker: Char = '3',
-            deviceId: UUID = UUID.fromString("00000000-0000-0000-0000-000000000003"),
-        ) = EnrollmentAttemptBinding(
-            attemptId = attemptId,
-            studyId = receiptStudyId,
-            participantId = receiptParticipantId,
-            sourceDeviceHash = "1".repeat(64),
-            deviceId = deviceId,
-            manifestDigest = "2".repeat(64),
-            requestHash = requestMarker.toString().repeat(64),
-            proposedApiKeyHash = proposedApiKeyHash,
-        )
-
-        val replayCode = accessService.createAccessCode(
-            studyId = receiptStudyId,
-            participantId = receiptParticipantId,
-            formKind = ParticipantFormKind.ENROLLMENT,
-            resourceId = null,
-            logicalDate = null,
-            requestedExpiresAt = null,
-            issuerType = ParticipantAccessCodeIssuerType.RESEARCHER,
-            issuedBy = "researcher:replay-migration-test",
-        )
-        val replayBinding = enrollmentBinding(UUID.randomUUID())
-        assertFalse(
-            accessService.authorizeEnrollmentAttempt(
-                replayCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-                replayBinding,
-            ) { _, _ -> false },
-        )
-        assertNotNull(
-            accessService.resolveEnrollmentAccessCode(
-                replayCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-            ),
-        )
-        assertTrue(
-            accessService.authorizeEnrollmentAttempt(
-                replayCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-                replayBinding,
-            ) { _, _ -> true },
-        )
-        assertTrue(
-            "lost-response retry must not re-run disclosure validation after the exact receipt is bound",
-            accessService.authorizeEnrollmentAttempt(
-                replayCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-                replayBinding.copy(),
-            ) { _, _ -> error("Exact replay must use the durable binding") },
-        )
-        assertFalse(
-            accessService.authorizeEnrollmentAttempt(
-                replayCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-                replayBinding.copy(requestHash = "4".repeat(64)),
-            ) { _, _ -> true },
-        )
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT enrollment_proposed_key_hash, row_to_json(code)::text
-                FROM participant_form_access_codes code
-                WHERE token_hash = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setBytes(
-                    1,
-                    java.security.MessageDigest.getInstance("SHA-256")
-                        .digest(replayCode.accessCode.toByteArray()),
-                )
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals(proposedApiKeyHash, resultSet.getString(1))
-                    assertFalse(resultSet.getString(2).contains(proposedApiKey))
-                }
-            }
-        }
-
-        val concurrentCode = accessService.createAccessCode(
-            studyId = receiptStudyId,
-            participantId = receiptParticipantId,
-            formKind = ParticipantFormKind.ENROLLMENT,
-            resourceId = null,
-            logicalDate = null,
-            requestedExpiresAt = null,
-            issuerType = ParticipantAccessCodeIssuerType.RESEARCHER,
-            issuedBy = "researcher:concurrent-migration-test",
-        )
-        val firstLocked = CountDownLatch(1)
-        val releaseFirst = CountDownLatch(1)
-        val enrollmentExecutor = Executors.newFixedThreadPool(2)
-        val concurrentDeviceId = UUID.fromString("00000000-0000-0000-0000-000000000004")
-        try {
-            val firstAttempt = enrollmentExecutor.submit<Boolean> {
-                accessService.authorizeEnrollmentAttempt(
-                    concurrentCode.accessCode,
-                    receiptStudyId,
-                    receiptParticipantId,
-                    enrollmentBinding(UUID.randomUUID(), '5', concurrentDeviceId),
-                ) { _, _ ->
-                    firstLocked.countDown()
-                    check(releaseFirst.await(10, TimeUnit.SECONDS))
-                    true
-                }
-            }
-            assertTrue(firstLocked.await(10, TimeUnit.SECONDS))
-            val competingAttempt = enrollmentExecutor.submit<Boolean> {
-                accessService.authorizeEnrollmentAttempt(
-                    concurrentCode.accessCode,
-                    receiptStudyId,
-                    receiptParticipantId,
-                    enrollmentBinding(UUID.randomUUID(), '6', concurrentDeviceId),
-                ) { _, _ -> true }
-            }
-            releaseFirst.countDown()
-            assertTrue(firstAttempt.get(10, TimeUnit.SECONDS))
-            assertFalse("a competing binding must lose after the row lock", competingAttempt.get(10, TimeUnit.SECONDS))
-        } finally {
-            releaseFirst.countDown()
-            enrollmentExecutor.shutdownNow()
-            assertTrue(enrollmentExecutor.awaitTermination(10, TimeUnit.SECONDS))
-        }
-
-        val expiredReplayService = ParticipantFormAccessService(
-            storageResolver,
-            Clock.offset(accessClock, Duration.ofHours(24)),
-        )
-        assertFalse(
-            "the replay deadline is strict; equality is expired",
-            expiredReplayService.authorizeEnrollmentAttempt(
-                replayCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-                replayBinding,
-            ) { _, _ -> true },
-        )
-        val recoveryCode = expiredReplayService.createAccessCode(
-            studyId = receiptStudyId,
-            participantId = receiptParticipantId,
-            formKind = ParticipantFormKind.ENROLLMENT,
-            resourceId = null,
-            logicalDate = null,
-            requestedExpiresAt = null,
-            issuerType = ParticipantAccessCodeIssuerType.RESEARCHER,
-            issuedBy = "researcher:fresh-recovery-migration-test",
-        )
-        assertTrue(
-            "a fresh invitation must recover the same participant after an old receipt expires",
-            expiredReplayService.authorizeEnrollmentAttempt(
-                recoveryCode.accessCode,
-                receiptStudyId,
-                receiptParticipantId,
-                replayBinding.copy(
-                    attemptId = UUID.randomUUID(),
-                    proposedApiKeyHash = "7".repeat(64),
-                ),
-            ) { _, _ -> true },
-        )
-    }
+    
 
     @Test
     fun testConcurrentDataCollectionUpdatesReceiveDistinctLockedRevisions() {
@@ -7009,13 +4335,13 @@ class FlywayMigrationCorpusTest {
         val competingSettings = listOf(
             AndroidDataCollectionSetting(
                 modules = mapOf(
-                    CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = true),
+                    CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = false),
                 ),
                 settingsVersion = 99,
             ),
             AndroidDataCollectionSetting(
                 modules = mapOf(
-                    CollectionModuleId.USAGE_EVENTS to CollectionModuleSetting(enabled = true),
+                    CollectionModuleId.USAGE_EVENTS to CollectionModuleSetting(enabled = false),
                 ),
                 settingsVersion = 99,
             ),
@@ -7025,7 +4351,7 @@ class FlywayMigrationCorpusTest {
         val executor = Executors.newFixedThreadPool(competingSettings.size)
 
         try {
-            insertStudySettings(studyId, "locked-revision-$studyId", initialSettings, collectionEnabled = true)
+            studyFixture.insertStudySettings(studyId, "locked-revision-$studyId", initialSettings, collectionEnabled = true)
             val updates = competingSettings.map { setting ->
                 executor.submit<Int> {
                     ready.countDown()
@@ -7058,18 +4384,18 @@ class FlywayMigrationCorpusTest {
         )
         val committedDataCollection = AndroidDataCollectionSetting(
             modules = mapOf(
-                CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = true),
+                CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = false),
             ),
             settingsVersion = 99,
         )
-        val sensorDelta = AndroidSensorSetting(sensors = setOf(AndroidSensorType.accelerometer))
+        val sensorDelta = SurveySettings(appUsageThresholdInSeconds = 42)
         val updateLocked = CountDownLatch(1)
         val releaseUpdate = CountDownLatch(1)
         val deltaStarted = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
 
         try {
-            insertStudySettings(studyId, "locked-delta-$studyId", initialSettings, collectionEnabled = true)
+            studyFixture.insertStudySettings(studyId, "locked-delta-$studyId", initialSettings, collectionEnabled = true)
 
             val dataCollectionUpdate = executor.submit<Int> {
                 persistLockedDataCollectionUpdate(studyId, committedDataCollection) {
@@ -7083,7 +4409,7 @@ class FlywayMigrationCorpusTest {
                 deltaStarted.countDown()
                 persistLockedStudySettingDelta(
                     studyId,
-                    StudySettingType.AndroidSensor,
+                    StudySettingType.Survey,
                     sensorDelta,
                 )
             }
@@ -7092,16 +4418,18 @@ class FlywayMigrationCorpusTest {
 
             assertEquals(2, dataCollectionUpdate.get(10, TimeUnit.SECONDS))
             val persistedSettings = unrelatedUpdate.get(10, TimeUnit.SECONDS)
-            assertEquals(sensorDelta, persistedSettings[StudySettingType.AndroidSensor])
+            assertEquals(sensorDelta, persistedSettings[StudySettingType.Survey])
             assertEquals(
-                committedDataCollection.copy(settingsVersion = 2),
+                committedDataCollection.copy(
+                    settingsVersion = 2,
+                ),
                 persistedSettings[StudySettingType.DataCollection],
             )
         } finally {
             releaseUpdate.countDown()
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
-            deleteStudyRow(studyId)
+            studyFixture.deleteStudyRow(studyId)
         }
     }
 
@@ -7123,7 +4451,7 @@ class FlywayMigrationCorpusTest {
         )
 
         try {
-            insertStudySettings(
+            studyFixture.insertStudySettings(
                 studyId,
                 "revision-rollback-$studyId",
                 StudySettings(mapOf(StudySettingType.DataCollection to initial)),
@@ -7163,29 +4491,7 @@ class FlywayMigrationCorpusTest {
 
             assertEquals(initial, loadPersistedDataCollectionSettings(studyId))
         } finally {
-            deleteStudyRow(studyId)
-        }
-    }
-
-    private fun insertStudySettings(studyId: UUID, title: String, settings: StudySettings, collectionEnabled: Boolean = false) {
-        getConnection().use { connection ->
-            executeSingleUpdate(
-                connection,
-                "INSERT INTO studies (study_id, title, settings, modules) VALUES (?, ?, ?::jsonb, ?::jsonb)",
-            ) { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, title)
-                statement.setString(3, ObjectMappers.getJsonMapper().writeValueAsString(settings))
-                statement.setString(4, if (collectionEnabled) """{"CHRONICLE_DATA_COLLECTION":{}}""" else "{}")
-            }
-        }
-    }
-
-    private fun deleteStudyRow(studyId: UUID) {
-        getConnection().use { connection ->
-            executeSingleUpdate(connection, "DELETE FROM studies WHERE study_id = ?", expected = null) {
-                it.setObject(1, studyId)
-            }
+            studyFixture.deleteStudyRow(studyId)
         }
     }
 
@@ -7196,7 +4502,7 @@ class FlywayMigrationCorpusTest {
     ): Int = getConnection().use { connection ->
         connection.autoCommit = false
         try {
-            val lockedUpdate = stampDataCollectionSettingsVersionLocked(
+            val lockedUpdate = mergeAndStampDataCollectionSettingsVersionLocked(
                 connection,
                 studyId,
                 StudyUpdate(
@@ -7229,9 +4535,12 @@ class FlywayMigrationCorpusTest {
         try {
             val priorSettings = loadLockedStudySettings(connection, studyId)
             val mergedSettings = mergeStudySetting(priorSettings, settingType, setting)
+            val features = StudySnapshotRepository(connection).loadLockedStudyFeatures(studyId)
             val stampedUpdate = stampDataCollectionSettingsVersion(
                 priorSettings,
                 StudyUpdate(settings = mergedSettings),
+                priorFeatures = features,
+                requestedFeatures = features,
             )
             executeSingleUpdate(connection, "UPDATE studies SET settings = ?::jsonb WHERE study_id = ?") { statement ->
                 statement.setString(1, ObjectMappers.getJsonMapper().writeValueAsString(stampedUpdate.settings))
@@ -7260,225 +4569,14 @@ class FlywayMigrationCorpusTest {
             }
         }
 
-    @Test
-    fun testDeletionMutationBarrierHonorsModeLifecycle() {
-        val guardedTables = 37 // prior guards plus annotations and pseudonyms
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                SELECT COUNT(*)
-                FROM pg_trigger
-                WHERE NOT tgisinternal
-                  AND tgname IN (
-                      'deletion_mutation_guard_insert',
-                      'deletion_mutation_guard_update'
-                  )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals(guardedTables * 2, resultSet.getInt(1))
-                }
-            }
-        }
-
-        val studyId = UUID.randomUUID()
-        val participantId = "mutation-barrier-${UUID.randomUUID()}"
-        val operationId = UUID.randomUUID()
-        val participantKey = ParticipantKey(studyId, participantId)
-        val statsDataSource = RLSDataSources.wrapWithSystemContext(storageResolver.getPlatformStorage())
-        val statsGuard = ParticipantStatsDeletionGuard(statsDataSource)
-        val statsMapstore = ParticipantStatsMapstore(statsDataSource)
-        val originalPing = OffsetDateTime.parse("2026-01-01T00:00:00Z")
-        val rejectedPing = originalPing.plusDays(1)
-        statsMapstore.store(
-            participantKey,
-            ParticipantStats(studyId, participantId, androidLastPing = originalPing),
-        )
-        assertFalse(statsGuard.isBlocked(participantKey))
-
-        fun assertStoredPing(expected: OffsetDateTime) {
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT android_last_ping
-                    FROM participant_stats
-                    WHERE study_id = ? AND participant_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setString(2, participantId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals(expected, resultSet.getObject(1, OffsetDateTime::class.java))
-                    }
-                }
-            }
-        }
-
-        fun insertAlert(): Int = getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                INSERT INTO data_quality_alerts (
-                    alert_id, study_id, participant_id, alert_type, message, score
-                ) VALUES (?, ?, ?, 'MISSING_DATA', 'mutation barrier test', 1.0)
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, UUID.randomUUID())
-                statement.setObject(2, studyId)
-                statement.setString(3, participantId)
-                statement.executeUpdate()
-            }
-        }
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                INSERT INTO data_deletion_operations (
-                    operation_id, study_id, participant_ref, participant_id,
-                    mode, status, requested_by, idempotency_key,
-                    registry_version, quarantine_until
-                ) VALUES (
-                    ?, ?, 'participant-ref', ?,
-                    'COLLECTED_DATA_PURGE', 'QUARANTINED', 'migration-test', ?,
-                    1, now() + interval '7 days'
-                )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                statement.setObject(2, studyId)
-                statement.setString(3, participantId)
-                statement.setObject(4, UUID.randomUUID())
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-
-        assertEquals(
-            "collection remains allowed during a collected-data-purge quarantine",
-            1,
-            insertAlert(),
-        )
-        assertTrue(
-            "participant-stats upserts must not bypass quarantine visibility through Hazelcast",
-            statsGuard.isBlocked(participantKey),
-        )
-        statsMapstore.store(
-            participantKey,
-            ParticipantStats(studyId, participantId, androidLastPing = rejectedPing),
-        )
-        assertStoredPing(originalPing)
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                UPDATE data_deletion_operations
-                SET status = 'ERASING', updated_at = now(),
-                    worker_lease_token = ?, worker_lease_expires_at = now() + interval '30 minutes'
-                WHERE operation_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, UUID.randomUUID())
-                statement.setObject(2, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-        val collectedBlocked = assertThrows(SQLException::class.java) { insertAlert() }
-        assertEquals("55000", collectedBlocked.sqlState)
-        assertTrue(statsGuard.isBlocked(participantKey))
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                UPDATE data_deletion_operations
-                SET mode = 'WITHDRAW_AND_ERASE', status = 'QUARANTINED',
-                    worker_lease_token = NULL, worker_lease_expires_at = NULL
-                WHERE operation_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-        val withdrawalBlocked = assertThrows(SQLException::class.java) { insertAlert() }
-        assertEquals("55000", withdrawalBlocked.sqlState)
-        assertTrue(statsGuard.isBlocked(participantKey))
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                UPDATE data_deletion_operations
-                SET status = 'COMPLETED', participant_id = NULL,
-                    worker_lease_token = NULL, worker_lease_expires_at = NULL
-                WHERE operation_id = ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-        val completedWithdrawalBlocked = assertThrows(SQLException::class.java) { insertAlert() }
-        assertEquals("55000", completedWithdrawalBlocked.sqlState)
-        assertTrue(statsGuard.isBlocked(participantKey))
-        statsMapstore.store(
-            participantKey,
-            ParticipantStats(studyId, participantId, androidLastPing = rejectedPing),
-        )
-        assertStoredPing(originalPing)
-
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "DELETE FROM data_quality_alerts WHERE study_id = ? AND participant_id = ?",
-            ).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participantId)
-                statement.executeUpdate()
-            }
-            connection.prepareStatement(
-                "DELETE FROM data_deletion_operations WHERE operation_id = ?",
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-        assertFalse(statsGuard.isBlocked(participantKey))
-        statsMapstore.store(
-            participantKey,
-            ParticipantStats(studyId, participantId, androidLastPing = rejectedPing),
-        )
-        assertStoredPing(rejectedPing)
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "DELETE FROM participant_stats WHERE study_id = ? AND participant_id = ?",
-            ).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participantId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
-    }
+    
 
     // =========================================================================
-    // V54/V59 — audit_buffer drained into audit; direct writes; deletion blocked;
+    // audit_buffer drained into audit; direct writes; deletion blocked;
     // legacy-path writes forwarded (rolling old replicas / emergency binary rollback)
     // =========================================================================
     @Test
     fun testDirectAppendOnlyAuditPreservesLongDescriptions() {
-        getConnection().use { connection ->
-            // The legacy row seeded before the corpus ran must have been drained into audit.
-            connection.prepareStatement("SELECT COUNT(*) FROM audit WHERE description = ?").use { statement ->
-                statement.setString(1, legacyAuditDescription)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals(1, resultSet.getInt(1))
-                }
-            }
-            connection.createStatement().use { statement ->
-                statement.executeQuery("SELECT COUNT(*) FROM audit_buffer").use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals(0, resultSet.getInt(1))
-                }
-            }
-        }
-
         val participantIds = (1..8).map { "bulk-${UUID.randomUUID()}" }.toSet()
         val directDescription = "Participant refs ${com.openlattice.chronicle.util.LogSanitizer.stableFingerprints(participantIds, "participant")} " +
             "entered inaccessible seven-day deletion quarantine"
@@ -7491,7 +4589,9 @@ class FlywayMigrationCorpusTest {
             study = UUID.randomUUID(),
             organization = UUID.randomUUID(),
         )
-        assertEquals(1, PostgresAuditingManager(storageResolver).recordEvents(listOf(directEvent)))
+        assertEquals(1, PostgresAuditingManager(storageResolver).recordObservations(
+            AuditObservation.CommittedEffect(listOf(directEvent)),
+        ))
 
         getConnection().use { connection ->
             connection.prepareStatement("SELECT COUNT(*) FROM audit WHERE description = ?").use { statement ->
@@ -7505,41 +4605,6 @@ class FlywayMigrationCorpusTest {
                 connection.prepareStatement("DELETE FROM audit WHERE description = ?").use { statement ->
                     statement.setString(1, directDescription)
                     statement.executeUpdate()
-                }
-            }
-        }
-
-        // V59: a legacy-path write AFTER the cutover (rolling old replica, or an emergency
-        // binary rollback to a pre-V54 build) must be forwarded into audit by the
-        // BEFORE INSERT trigger — never stranded in the staging table.
-        val rollbackDescription = "API key created: ${UUID.randomUUID().toString().padEnd(255, 'k')}"
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                """
-                INSERT INTO audit_buffer (
-                    acl_key, id, principal_type, principal_id, audit_event_type,
-                    study_id, organization_id, description, data, event_timestamp
-                ) VALUES (?, ?, 'USER', 'migration-test', 'GET_STUDY', ?, ?, ?, '{}', now())
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setString(1, UUID.randomUUID().toString().replace("-", ""))
-                statement.setString(2, UUID.randomUUID().toString())
-                statement.setString(3, UUID.randomUUID().toString())
-                statement.setString(4, UUID.randomUUID().toString())
-                statement.setString(5, rollbackDescription)
-                assertEquals("the forwarding trigger must suppress the staging row", 0, statement.executeUpdate())
-            }
-            connection.createStatement().use { statement ->
-                statement.executeQuery("SELECT COUNT(*) FROM audit_buffer").use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals("audit_buffer must stay empty after the handoff", 0, resultSet.getInt(1))
-                }
-            }
-            connection.prepareStatement("SELECT COUNT(*) FROM audit WHERE description = ?").use { statement ->
-                statement.setString(1, rollbackDescription)
-                statement.executeQuery().use { resultSet ->
-                    assertTrue(resultSet.next())
-                    assertEquals("the legacy-path write must be durable in audit", 1, resultSet.getInt(1))
                 }
             }
         }
@@ -7663,21 +4728,8 @@ class FlywayMigrationCorpusTest {
                     connection.createStatement().use { it.execute("RESET ROLE") }
                 }
             }
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    UPDATE data_deletion_operations
-                    SET quarantine_until = now() - interval '1 minute'
-                    WHERE operation_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, operationId)
-                    assertEquals(1, statement.executeUpdate())
-                }
-            }
 
-            assertEquals(1, orchestrator.processDueOperations(limit = 1))
-            assertEquals("COMPLETED", orchestrator.getOperation(operationId).status)
+            assertEquals("COMPLETED", orchestrator.eraseNow(operationId!!, studyId, "migration-test").status)
             getConnection().use { connection ->
                 connection.prepareStatement(
                     """
@@ -7730,9 +4782,11 @@ class FlywayMigrationCorpusTest {
                     statement.executeUpdate()
                 }
                 operationId?.let { id ->
-                    connection.prepareStatement("DELETE FROM data_deletion_tombstones WHERE operation_id = ?").use {
-                        it.setObject(1, id)
-                        it.executeUpdate()
+                    for (table in listOf("data_deletion_tombstones", "data_deletion_audit_outbox")) {
+                        connection.prepareStatement("DELETE FROM $table WHERE operation_id = ?").use {
+                            it.setObject(1, id)
+                            it.executeUpdate()
+                        }
                     }
                     connection.prepareStatement("DELETE FROM data_deletion_operations WHERE operation_id = ?").use {
                         it.setObject(1, id)
@@ -7745,201 +4799,6 @@ class FlywayMigrationCorpusTest {
                     statement.executeUpdate()
                 }
             }
-        }
-    }
-
-    @Test
-    fun testFinalDeletionSweepTerminalizesExportCreatedAfterInitialSweep() {
-        val suffix = UUID.randomUUID().toString().replace("-", "").take(12)
-        val seedTable = "test_late_export_seed_$suffix"
-        val triggerFunction = "test_late_export_insert_$suffix"
-        val triggerName = "test_late_export_trigger_$suffix"
-        val studyId = UUID.randomUUID()
-        val participantId = "late-export-$suffix"
-        val exportId = UUID.randomUUID()
-        val orchestrator = DataDeletionOrchestrator(
-            storageResolver,
-            Mockito.mock(AuditingManager::class.java),
-        )
-        var operationId: UUID? = null
-        var exportPath: java.nio.file.Path? = null
-
-        try {
-            getConnection().use { connection ->
-                connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.setString(2, "late-export-$suffix")
-                    assertEquals(1, statement.executeUpdate())
-                }
-            }
-            operationId = orchestrator.quarantineParticipant(
-                studyId,
-                participantId,
-                DataDeletionMode.COLLECTED_DATA_PURGE,
-                "migration-test",
-                UUID.randomUUID(),
-            )
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    UPDATE data_deletion_operations
-                    SET quarantine_until = now() - interval '1 minute'
-                    WHERE operation_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, operationId)
-                    assertEquals(1, statement.executeUpdate())
-                }
-            }
-
-            val artifact = ExportFileWriter.writeMultiDataTypeExport(
-                mapOf(
-                    ParticipantDataType.UsageEvents.name to listOf(
-                        mapOf("participant_id" to participantId, "value" to "late-derived"),
-                    ),
-                ),
-                ExportFormat.CSV,
-                exportId,
-            )
-            exportPath = artifact.path
-            val requestJson = ObjectMappers.newJsonMapper().writeValueAsString(
-                ExportRequest(
-                    dataTypes = setOf(ParticipantDataType.UsageEvents),
-                    participantIds = setOf(participantId),
-                    format = ExportFormat.CSV,
-                ),
-            )
-
-            getConnection().use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.execute(
-                        """
-                        CREATE TABLE $seedTable (
-                            operation_id UUID PRIMARY KEY,
-                            export_id UUID NOT NULL,
-                            target_study_id UUID NOT NULL,
-                            target_request JSONB NOT NULL,
-                            target_file_path TEXT NOT NULL,
-                            target_row_count BIGINT NOT NULL
-                        )
-                        """.trimIndent(),
-                    )
-                    statement.execute(
-                        """
-                        CREATE FUNCTION $triggerFunction() RETURNS trigger
-                        LANGUAGE plpgsql
-                        SECURITY DEFINER
-                        SET search_path = pg_catalog, public
-                        AS ${'$'}body${'$'}
-                        DECLARE
-                            seeded RECORD;
-                        BEGIN
-                            IF NEW.status = 'VERIFIED'
-                               AND OLD.status IS DISTINCT FROM 'VERIFIED' THEN
-                                DELETE FROM $seedTable
-                                WHERE operation_id = NEW.operation_id
-                                RETURNING * INTO seeded;
-                                IF FOUND THEN
-                                    INSERT INTO export_jobs (
-                                        export_id, study_id, status, format, request, created_by,
-                                        completed_at, row_count, file_path
-                                    ) VALUES (
-                                        seeded.export_id, seeded.target_study_id, 'COMPLETED',
-                                        'CSV', seeded.target_request, 'late-export-trigger',
-                                        now(), seeded.target_row_count, seeded.target_file_path
-                                    );
-                                END IF;
-                            END IF;
-                            RETURN NEW;
-                        END
-                        ${'$'}body${'$'}
-                        """.trimIndent(),
-                    )
-                    statement.execute(
-                        """
-                        CREATE TRIGGER $triggerName
-                        AFTER UPDATE OF status ON data_deletion_steps
-                        FOR EACH ROW EXECUTE FUNCTION $triggerFunction()
-                        """.trimIndent(),
-                    )
-                }
-                connection.prepareStatement(
-                    """
-                    INSERT INTO $seedTable (
-                        operation_id, export_id, target_study_id, target_request,
-                        target_file_path, target_row_count
-                    ) VALUES (?, ?, ?, ?::jsonb, ?, ?)
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, operationId)
-                    statement.setObject(2, exportId)
-                    statement.setObject(3, studyId)
-                    statement.setString(4, requestJson)
-                    statement.setString(5, artifact.path.toString())
-                    statement.setLong(6, artifact.rowCount)
-                    assertEquals(1, statement.executeUpdate())
-                }
-            }
-
-            assertEquals(1, orchestrator.processDueOperations(limit = 1))
-            assertEquals("COMPLETED", orchestrator.getOperation(operationId).status)
-            assertFalse(
-                "the final sweep must delete an export inserted after the initial sweep",
-                Files.exists(artifact.path),
-            )
-            getConnection().use { connection ->
-                connection.prepareStatement(
-                    """
-                    SELECT status, file_path, completed_at
-                    FROM export_jobs
-                    WHERE export_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, exportId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("FAILED", resultSet.getString("status"))
-                        assertNull(resultSet.getString("file_path"))
-                        assertNotNull(resultSet.getObject("completed_at"))
-                    }
-                }
-                connection.prepareStatement(
-                    "SELECT COUNT(*) FROM $seedTable WHERE operation_id = ?",
-                ).use { statement ->
-                    statement.setObject(1, operationId)
-                    statement.executeQuery().use { resultSet ->
-                        assertTrue(resultSet.next())
-                        assertEquals("the trigger must have exercised the intended race", 0, resultSet.getInt(1))
-                    }
-                }
-            }
-        } finally {
-            getConnection().use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.execute("DROP TRIGGER IF EXISTS $triggerName ON data_deletion_steps")
-                    statement.execute("DROP FUNCTION IF EXISTS $triggerFunction()")
-                    statement.execute("DROP TABLE IF EXISTS $seedTable")
-                }
-                connection.prepareStatement("DELETE FROM export_jobs WHERE export_id = ?").use { statement ->
-                    statement.setObject(1, exportId)
-                    statement.executeUpdate()
-                }
-                operationId?.let { id ->
-                    connection.prepareStatement("DELETE FROM data_deletion_tombstones WHERE operation_id = ?").use {
-                        it.setObject(1, id)
-                        it.executeUpdate()
-                    }
-                    connection.prepareStatement("DELETE FROM data_deletion_operations WHERE operation_id = ?").use {
-                        it.setObject(1, id)
-                        it.executeUpdate()
-                    }
-                }
-                connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use { statement ->
-                    statement.setObject(1, studyId)
-                    statement.executeUpdate()
-                }
-            }
-            exportPath?.let(Files::deleteIfExists)
         }
     }
 
@@ -7960,60 +4819,6 @@ class FlywayMigrationCorpusTest {
             assertStudyErasureRetention(fixture)
         } finally {
             cleanupErasureRetentionFixture(fixture, operationIds)
-        }
-    }
-
-    @Test
-    fun testRetentionHoldsBlockOverlappingStudyAndParticipantErasure() {
-        listOf(false, true).forEach { holdStudy ->
-            val fixture = ConcurrentWithdrawalFixture()
-            val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
-            try {
-                seedConcurrentWithdrawalFixture(fixture)
-                val participantOperation = orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId,
-                    DataDeletionMode.WITHDRAW_AND_ERASE, "migration-test", UUID.randomUUID())
-                val studyOperation = orchestrator.quarantineStudy(fixture.studyId, "migration-test", UUID.randomUUID())
-                val (held, target) = if (holdStudy) studyOperation to participantOperation else participantOperation to studyOperation
-                val hold = orchestrator.placeHold(held, fixture.studyId, "Preserve this scope for retention review",
-                    "migration-test", OffsetDateTime.now(ZoneOffset.UTC).plusDays(1))
-                makeDeletionDue(target)
-
-                assertEquals(0, orchestrator.processDueOperations(limit = 1))
-                assertEquals("QUARANTINED", orchestrator.getOperation(target).status)
-                assertEquals(1L, sweepCount(fixture, "study_participants"))
-
-                orchestrator.releaseHold(held, hold, fixture.studyId, "migration-test", "Retention review has been completed")
-                processDeletion(orchestrator, target)
-                assertEquals(0L, sweepCount(fixture, "study_participants"))
-            } finally {
-                cleanupConcurrentWithdrawalFixture(fixture)
-            }
-        }
-    }
-
-    @Test
-    fun testRetentionHoldPlacementRejectsAnOverlappingStartedErasure() {
-        val fixture = ConcurrentWithdrawalFixture()
-        val orchestrator = DataDeletionOrchestrator(storageResolver, Mockito.mock(AuditingManager::class.java))
-        try {
-            seedConcurrentWithdrawalFixture(fixture)
-            val participantOperation = orchestrator.quarantineParticipant(fixture.studyId, fixture.participantId,
-                DataDeletionMode.WITHDRAW_AND_ERASE, "migration-test", UUID.randomUUID())
-            val studyOperation = orchestrator.quarantineStudy(fixture.studyId, "migration-test", UUID.randomUUID())
-            getConnection().use { connection ->
-                executeSingleUpdate(connection,
-                    "UPDATE data_deletion_operations SET status = 'ERASING', started_at = now(), worker_lease_token = ?, " +
-                        "worker_lease_expires_at = now() + interval '30 minutes' WHERE operation_id = ?") {
-                    it.setObject(1, UUID.randomUUID())
-                    it.setObject(2, studyOperation)
-                }
-            }
-            assertThrows(IllegalStateException::class.java) {
-                orchestrator.placeHold(participantOperation, fixture.studyId, "Preserve this scope for retention review",
-                    "migration-test", OffsetDateTime.now(ZoneOffset.UTC).plusDays(1))
-            }
-        } finally {
-            cleanupConcurrentWithdrawalFixture(fixture)
         }
     }
 
@@ -8080,15 +4885,13 @@ class FlywayMigrationCorpusTest {
                 com.openlattice.chronicle.study.StudyCloneRequest()))
             getConnection().use { connection ->
                 connection.autoCommit = false
-                limits.reserveEnrollmentCapacity(connection, clonedId)
                 val candidate = candidates.registerCandidate(connection, com.openlattice.chronicle.candidates.Candidate())
                 enrollment.registerParticipant(connection, clonedId, fixture.participantId, candidate,
                     com.openlattice.chronicle.data.ParticipationStatus.ENROLLED)
                 connection.commit()
             }
-            val summary = lifecycle.getStudyDataSummary(clonedId)
-            assertEquals(1L, summary.participantCount)
-            assertEquals(0L, summary.usageEventsCount)
+            assertEquals(1L, studyRowCount(clonedId, "study_participants"))
+            assertEquals(0L, studyRowCount(clonedId, "chronicle_usage_events"))
             assertEquals(com.openlattice.chronicle.data.ParticipationStatus.ENROLLED,
                 enrollment.getDeviceParticipationStatus(clonedId, fixture.participantId))
         } finally {
@@ -8117,20 +4920,18 @@ class FlywayMigrationCorpusTest {
         try {
             seedConcurrentWithdrawalFixture(fixture)
             val attempts = fixture.devices.map { device ->
+                TestSecurityUtils.initPrincipalsIfNeeded("apikey:${device.keyId}", admin = false)
                 executor.submit<MobileSelfWithdrawalResult> {
-                    TestSecurityUtils.setupSecurityContext("mobile-withdraw-${device.keyId}")
-                    try {
+                    withDeviceRequestContext(fixture, device) {
                         ready.countDown()
                         check(release.await(10, TimeUnit.SECONDS))
                         service.executeSelfWithdrawal(
                             fixture.studyId,
                             fixture.participantId,
-                            device.deviceId,
+                            device.randomDeviceId,
                             device.keyId,
                             device.requestId,
                         )
-                    } finally {
-                        TestSecurityUtils.clearSecurityContext()
                     }
                 }
             }
@@ -8142,13 +4943,15 @@ class FlywayMigrationCorpusTest {
             TestSecurityUtils.setupSecurityContext("mobile-withdrawal-replay")
             try {
                 results.zip(fixture.devices).forEach { (first, device) ->
-                    val replay = service.executeSelfWithdrawal(
-                        fixture.studyId,
-                        fixture.participantId,
-                        device.deviceId,
-                        device.keyId,
-                        device.requestId,
-                    )
+                    val replay = withDeviceRequestContext(fixture, device) {
+                        service.executeSelfWithdrawal(
+                            fixture.studyId,
+                            fixture.participantId,
+                            device.randomDeviceId,
+                            device.keyId,
+                            device.requestId,
+                        )
+                    }
                     assertEquals(first, replay)
                 }
             } finally {
@@ -8180,7 +4983,7 @@ class FlywayMigrationCorpusTest {
                 service.executeSelfWithdrawal(
                     fixture.studyId,
                     fixture.participantId,
-                    device.deviceId,
+                    device.randomDeviceId,
                     device.keyId,
                     device.requestId,
                 )
@@ -8298,7 +5101,7 @@ class FlywayMigrationCorpusTest {
             ) { statement ->
                 statement.setObject(1, fixture.studyId)
                 statement.setString(2, fixture.participantId)
-                statement.setObject(3, UUID.randomUUID())
+                statement.setObject(3, seedCandidate(connection))
             }
             fixture.devices.forEachIndexed { index, device ->
                 executeSingleUpdate(
@@ -8306,7 +5109,7 @@ class FlywayMigrationCorpusTest {
                     """
                     INSERT INTO api_keys (
                         key_id, study_id, key_hash, key_prefix, name, scope, created_by,
-                        expires_at, revoked, participant_id, device_id
+                        expires_at, revoked, participant_id, random_device_id
                     ) VALUES (?, ?, ?, ?, ?, 'WRITE', 'migration-test',
                               now() + interval '1 day', false, ?, ?)
                     """.trimIndent(),
@@ -8317,7 +5120,7 @@ class FlywayMigrationCorpusTest {
                     statement.setString(4, "device-$index")
                     statement.setString(5, "withdrawal-device-$index")
                     statement.setString(6, fixture.participantId)
-                    statement.setObject(7, device.deviceId)
+                    statement.setObject(7, device.randomDeviceId)
                 }
             }
         }
@@ -8330,15 +5133,15 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-    @Test fun testStudyWithdrawalWithoutPolicyStillErasesData() =
+    @Test fun testStudyWithdrawalWithoutPolicyRetainsPriorData() =
         assertStudyWithdrawalPolicy(null)
 
     @Test fun testStudyWithdrawalEraseQuarantinesDataAndReportsWithdrawal() =
-        assertStudyWithdrawalPolicy(com.openlattice.chronicle.study.WithdrawalMode.ERASE)
+        assertStudyWithdrawalPolicy(WithdrawalMode.ERASE)
 
-    private fun assertStudyWithdrawalPolicy(mode: com.openlattice.chronicle.study.WithdrawalMode?) {
+    private fun assertStudyWithdrawalPolicy(mode: WithdrawalMode?) {
         val fixture = ConcurrentWithdrawalFixture()
-        val erase = mode != com.openlattice.chronicle.study.WithdrawalMode.KEEP_PRIOR_DATA
+        val erase = mode == WithdrawalMode.ERASE
         TestSecurityUtils.setupSecurityContext()
         try {
             seedConcurrentWithdrawalFixture(fixture, mode)
@@ -8346,31 +5149,17 @@ class FlywayMigrationCorpusTest {
             val service = createParticipantPurgeService(audit)
             val device = fixture.devices.first()
             val result = service.executeSelfWithdrawal(fixture.studyId, fixture.participantId,
-                device.deviceId, device.keyId, device.requestId)
+                device.randomDeviceId, device.keyId, device.requestId)
             assertFalse(result.alreadyWithdrawn)
             if (erase) assertNotNull("ERASE withdrawal creates an operation", result.deletionOperationId)
             else assertNull("KEEP_PRIOR_DATA withdrawal creates no operation", result.deletionOperationId)
             assertEquals(result, service.executeSelfWithdrawal(fixture.studyId, fixture.participantId,
-                device.deviceId, device.keyId, device.requestId))
+                device.randomDeviceId, device.keyId, device.requestId))
             assertEquals(if (erase) 1L else 0L, sweepCount(fixture, "data_deletion_operations"))
             assertEquals(1L, sweepCount(fixture, "mobile_withdrawal_requests"))
             assertFalse("Withdrawal revokes the device credential",
                 apiKeys().listApiKeys(fixture.studyId).any { it.keyId == device.keyId })
-            getConnection().use { connection ->
-                connection.prepareStatement("SELECT chronicle_participant_data_visible(?, ?)").use { statement ->
-                    statement.setObject(1, fixture.studyId)
-                    statement.setString(2, fixture.participantId)
-                    statement.executeQuery().use { rows ->
-                        assertTrue(rows.next())
-                        assertEquals("Only ERASE withdrawal quarantines prior data", !erase, rows.getBoolean(1))
-                    }
-                }
-                assertThrows(java.sql.SQLException::class.java) {
-                    executeSingleUpdate(connection, "UPDATE study_participants SET participation_status = 'ENROLLED' WHERE study_id = ?") {
-                        it.setObject(1, fixture.studyId)
-                    }
-                }
-            }
+            assertWithdrawalPriorDataVisibility(fixture, erase)
             result.deletionOperationId?.let {
                 processDeletion(DataDeletionOrchestrator(storageResolver, audit), it)
             }
@@ -8383,18 +5172,50 @@ class FlywayMigrationCorpusTest {
                 assertEquals(com.openlattice.chronicle.data.ParticipationStatus.NOT_ENROLLED, participant.participationStatus)
                 assertNotNull(participant.withdrawnAt)
             }
-            Mockito.verify(audit, Mockito.atLeastOnce()).recordEvents(org.mockito.kotlin.argThat {
-                any { it.eventType == AuditEventType.UPDATE_PARTICIPATION_STATUS && it.study == fixture.studyId }
-            })
-            Mockito.verify(audit, Mockito.atLeastOnce()).recordEvents(org.mockito.kotlin.argThat {
-                any { it.study == fixture.studyId && it.data["mode"] ==
-                    (if (erase) DataDeletionMode.WITHDRAW_AND_ERASE.name else mode?.name) &&
-                    (erase || ("operationId" !in it.data && it.description.contains("without erasure"))) }
-            })
+            assertWithdrawalAudits(audit, fixture, result)
         } finally {
             cleanupConcurrentWithdrawalFixture(fixture)
             TestSecurityUtils.clearSecurityContext()
         }
+    }
+
+    private fun assertWithdrawalPriorDataVisibility(fixture: ConcurrentWithdrawalFixture, erase: Boolean) {
+        getConnection().use { connection ->
+            connection.prepareStatement("SELECT chronicle_participant_data_visible(?, ?)").use { statement ->
+                statement.setObject(1, fixture.studyId)
+                statement.setString(2, fixture.participantId)
+                statement.executeQuery().use { rows ->
+                    assertTrue(rows.next())
+                    assertEquals("Only ERASE withdrawal quarantines prior data", !erase, rows.getBoolean(1))
+                }
+            }
+            assertThrows(SQLException::class.java) {
+                executeSingleUpdate(
+                    connection,
+                    "UPDATE study_participants SET participation_status = ? WHERE study_id = ?",
+                ) {
+                    it.setString(1, ParticipationStatus.ENROLLED.name)
+                    it.setObject(2, fixture.studyId)
+                }
+            }
+        }
+    }
+
+    private fun assertWithdrawalAudits(
+        audit: AuditingManager, fixture: ConcurrentWithdrawalFixture, result: MobileSelfWithdrawalResult,
+    ) {
+        val erase = result.deletionOperationId != null
+        val expectedMode = if (erase) DataDeletionMode.WITHDRAW_AND_ERASE.name else WithdrawalMode.KEEP_PRIOR_DATA.name
+        val recorded = Mockito.mockingDetails(audit).invocations.flatMap { invocation ->
+            when (val argument = invocation.arguments.lastOrNull()) {
+                is AuditObservation -> argument.events
+                is List<*> -> argument.filterIsInstance<AuditableEvent>()
+                else -> emptyList()
+            }
+        }
+        assertTrue(recorded.any { it.eventType == AuditEventType.UPDATE_PARTICIPATION_STATUS && it.study == fixture.studyId })
+        assertTrue(recorded.any { it.study == fixture.studyId && it.data["mode"] == expectedMode &&
+            (erase || ("operationId" !in it.data && it.description.contains("without erasure"))) })
     }
 
     private fun assertConcurrentWithdrawalLedger(connection: Connection, fixture: ConcurrentWithdrawalFixture) {
@@ -8483,7 +5304,7 @@ class FlywayMigrationCorpusTest {
             executeSingleUpdate(connection, "DELETE FROM study_participants WHERE study_id = ?", expected = null) {
                 it.setObject(1, fixture.studyId)
             }
-            deleteStudyRow(fixture.studyId)
+            studyFixture.deleteStudyRow(fixture.studyId)
         }
     }
 
@@ -8496,7 +5317,7 @@ class FlywayMigrationCorpusTest {
     )
 
     private data class ConcurrentWithdrawalDevice(
-        val deviceId: UUID,
+        val randomDeviceId: UUID,
         val keyId: UUID,
         val requestId: UUID,
     )
@@ -8523,7 +5344,7 @@ class FlywayMigrationCorpusTest {
         ) { statement ->
             statement.setObject(1, fixture.studyId)
             statement.setString(2, fixture.participantId)
-            statement.setObject(3, UUID.randomUUID())
+            statement.setObject(3, seedCandidate(connection))
         }
     }
 
@@ -8547,7 +5368,7 @@ class FlywayMigrationCorpusTest {
             """
             INSERT INTO api_keys (
                 key_id, study_id, key_hash, key_prefix, name, scope, created_by,
-                expires_at, revoked, participant_id, device_id
+                expires_at, revoked, participant_id, random_device_id
             ) VALUES (?, ?, ?, ?, 'withdrawal-retention', 'WRITE', 'migration-test',
                       now() + interval '1 day', true, ?, ?)
             """.trimIndent(),
@@ -8557,7 +5378,7 @@ class FlywayMigrationCorpusTest {
             statement.setString(3, UUID.randomUUID().toString().replace("-", "").repeat(2))
             statement.setString(4, "ck_test_")
             statement.setString(5, fixture.participantId)
-            statement.setObject(6, fixture.deviceId)
+            statement.setObject(6, fixture.randomDeviceId)
         }
     }
 
@@ -8566,7 +5387,7 @@ class FlywayMigrationCorpusTest {
             connection,
             """
             INSERT INTO mobile_withdrawal_requests (
-                request_id, api_key_id, study_id, participant_id, device_id, already_withdrawn
+                request_id, api_key_id, study_id, participant_id, random_device_id, already_withdrawn
             ) VALUES (?, ?, ?, ?, ?, false)
             """.trimIndent(),
         ) { statement ->
@@ -8574,22 +5395,22 @@ class FlywayMigrationCorpusTest {
             statement.setObject(2, fixture.apiKeyId)
             statement.setObject(3, fixture.studyId)
             statement.setString(4, fixture.participantId)
-            statement.setObject(5, fixture.deviceId)
+            statement.setObject(5, fixture.randomDeviceId)
         }
         executeSingleUpdate(
             connection,
             """
             INSERT INTO participant_collection_acknowledgment (
-                id, study_id, participant_id, source_device_id, acknowledged_modules,
+                id, study_id, participant_id, source_random_device_id, acknowledged_modules,
                 acknowledged_at, settings_version, disclosure_version, manifest_digest,
-                evidence_access_code_id, evidence_api_key_id
-            ) VALUES (?, ?, ?, ?, '[]'::jsonb, now(), 1, 'v1', ?, ?, ?)
+                evidence_access_code_id, evidence_api_key_id, decision_seq
+            ) VALUES (?, ?, ?, ?, '[]'::jsonb, now(), 1, 'v1', ?, ?, ?, 1)
             """.trimIndent(),
         ) { statement ->
             statement.setObject(1, fixture.acknowledgmentId)
             statement.setObject(2, fixture.studyId)
             statement.setString(3, fixture.participantId)
-            statement.setString(4, fixture.deviceId.toString())
+            statement.setString(4, fixture.randomDeviceId.toString())
             statement.setString(5, "a".repeat(64))
             statement.setObject(6, fixture.accessCodeId)
             statement.setObject(7, fixture.apiKeyId)
@@ -8620,11 +5441,11 @@ class FlywayMigrationCorpusTest {
         return operationId
     }
 
-    private fun processDeletion(orchestrator: DataDeletionOrchestrator, operationId: UUID) {
-        makeDeletionDue(operationId)
-        assertEquals(1, orchestrator.processDueOperations(limit = 1))
-        assertEquals("COMPLETED", orchestrator.getOperation(operationId).status)
-    }
+    private fun processDeletion(orchestrator: DataDeletionOrchestrator, operationId: UUID) =
+        RLSRequestContext.withDeletionWorkerContext {
+            val studyId = orchestrator.getOperation(operationId).studyId
+            assertEquals("COMPLETED", orchestrator.eraseNow(operationId, studyId, "migration-test").status)
+        }
 
     private fun assertParticipantErasureRetention(fixture: ErasureRetentionFixture) {
         getConnection().use { connection ->
@@ -8686,6 +5507,7 @@ class FlywayMigrationCorpusTest {
             deleteById(connection, "participant_form_access_codes", "access_code_id", fixture.accessCodeId)
             operationIds.forEach { operationId ->
                 deleteById(connection, "data_deletion_tombstones", "operation_id", operationId)
+                deleteById(connection, "data_deletion_audit_outbox", "operation_id", operationId)
                 deleteById(connection, "data_deletion_operations", "operation_id", operationId)
             }
             executeSingleUpdate(connection, "DELETE FROM study_participants WHERE study_id = ?", expected = null) {
@@ -8697,44 +5519,14 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-    private fun executeSingleUpdate(
-        connection: Connection,
-        sql: String,
-        expected: Int? = 1,
-        bind: (PreparedStatement) -> Unit,
-    ) {
-        connection.prepareStatement(sql).use { statement ->
-            bind(statement)
-            val updated = statement.executeUpdate()
-            expected?.let { assertEquals(it, updated) }
-        }
-    }
-
-    private fun deleteById(connection: Connection, table: String, column: String, id: UUID) {
-        executeSingleUpdate(connection, "DELETE FROM $table WHERE $column = ?", expected = null) {
-            it.setObject(1, id)
-        }
-    }
-
     private class ErasureRetentionFixture {
         val studyId: UUID = UUID.randomUUID()
         val participantId: String = "withdrawal-retention-${UUID.randomUUID()}"
-        val deviceId: UUID = UUID.randomUUID()
+        val randomDeviceId: UUID = UUID.randomUUID()
         val apiKeyId: UUID = UUID.randomUUID()
         val accessCodeId: UUID = UUID.randomUUID()
         val acknowledgmentId: UUID = UUID.randomUUID()
         val withdrawalRequestId: UUID = UUID.randomUUID()
-    }
-
-    private fun makeDeletionDue(operationId: UUID) {
-        getConnection().use { connection ->
-            connection.prepareStatement(
-                "UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?",
-            ).use { statement ->
-                statement.setObject(1, operationId)
-                assertEquals(1, statement.executeUpdate())
-            }
-        }
     }
 
     @Test
@@ -8815,20 +5607,9 @@ class FlywayMigrationCorpusTest {
                     statement.setString(6, "keep-me")
                     assertEquals(2, statement.executeUpdate())
                 }
-                connection.prepareStatement(
-                    """
-                    UPDATE data_deletion_operations
-                    SET quarantine_until = now() - interval '1 minute'
-                    WHERE operation_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, operationId)
-                    assertEquals(1, statement.executeUpdate())
-                }
             }
 
-            assertEquals(1, orchestrator.processDueOperations(limit = 1))
-            assertEquals("COMPLETED", orchestrator.getOperation(operationId).status)
+            assertEquals("COMPLETED", orchestrator.eraseNow(operationId!!, studyId, "migration-test").status)
             getConnection().use { connection ->
                 connection.prepareStatement(
                     "SELECT study_id, value FROM $dynamicTable ORDER BY value",
@@ -8878,9 +5659,11 @@ class FlywayMigrationCorpusTest {
                     statement.executeUpdate()
                 }
                 operationId?.let { id ->
-                    connection.prepareStatement("DELETE FROM data_deletion_tombstones WHERE operation_id = ?").use {
-                        it.setObject(1, id)
-                        it.executeUpdate()
+                    for (table in listOf("data_deletion_tombstones", "data_deletion_audit_outbox")) {
+                        connection.prepareStatement("DELETE FROM $table WHERE operation_id = ?").use {
+                            it.setObject(1, id)
+                            it.executeUpdate()
+                        }
                     }
                     connection.prepareStatement("DELETE FROM data_deletion_operations WHERE operation_id = ?").use {
                         it.setObject(1, id)
@@ -8938,19 +5721,9 @@ class FlywayMigrationCorpusTest {
                     statement.setObject(2, studyId)
                     assertEquals(1, statement.executeUpdate())
                 }
-                connection.prepareStatement(
-                    """
-                    UPDATE data_deletion_operations
-                    SET quarantine_until = now() - interval '1 minute'
-                    WHERE operation_id = ?
-                    """.trimIndent(),
-                ).use { statement ->
-                    statement.setObject(1, operationId)
-                    assertEquals(1, statement.executeUpdate())
-                }
             }
 
-            assertEquals(0, orchestrator.processDueOperations(limit = 1))
+            assertThrows(Exception::class.java) { orchestrator.eraseNow(operationId!!, studyId, "migration-test") }
             assertEquals("FAILED", orchestrator.getOperation(operationId).status)
             getConnection().use { connection ->
                 connection.prepareStatement(
@@ -8988,9 +5761,11 @@ class FlywayMigrationCorpusTest {
                     statement.execute("""DROP TABLE IF EXISTS "$unsafeTable"""")
                 }
                 operationId?.let { id ->
-                    connection.prepareStatement("DELETE FROM data_deletion_tombstones WHERE operation_id = ?").use {
-                        it.setObject(1, id)
-                        it.executeUpdate()
+                    for (table in listOf("data_deletion_tombstones", "data_deletion_audit_outbox")) {
+                        connection.prepareStatement("DELETE FROM $table WHERE operation_id = ?").use {
+                            it.setObject(1, id)
+                            it.executeUpdate()
+                        }
                     }
                     connection.prepareStatement("DELETE FROM data_deletion_operations WHERE operation_id = ?").use {
                         it.setObject(1, id)
@@ -9012,7 +5787,7 @@ class FlywayMigrationCorpusTest {
     fun testBaseSchemaIntegrity() {
         val criticalTables = listOf(
             STUDIES.name, STUDY_PARTICIPANTS.name, CANDIDATES.name, PARTICIPANT_STATS.name,
-            ORGANIZATIONS.name, UPGRADES.name, NOTIFICATIONS.name, QUESTIONNAIRES.name,
+            ORGANIZATIONS.name, NOTIFICATIONS.name, QUESTIONNAIRES.name,
             FILTERED_APPS.name, ANDROID_SENSOR_DATA.name, UPLOAD_BUFFER.name,
             ANDROID_DEVICE_SENSOR_AVAILABILITY.name, "flyway_schema_history",
         )
@@ -9025,48 +5800,55 @@ class FlywayMigrationCorpusTest {
         assertTrue(studyCols.contains("settings"))
     }
 
-    @Test fun auditIdRetryCountsCommittedEntriesAsDelivered() {
-        assertTrue("Roles created after V15 must be able to append audits",
-            roleHasPrivilege("chronicle_app", "audit_logs", "INSERT"))
-        val entry = com.openlattice.chronicle.audit.AuditLogEntry(ipAddress = "withheld",
-            action = com.openlattice.chronicle.audit.AuditAction.LOGIN, resourceType = "session", success = true)
-        val repository = com.openlattice.chronicle.audit.AuditLogRepository(storageResolver, ObjectMappers.newJsonMapper())
+    @Test fun auditRetryOfOneEventIsStoredOnceAndUnreadableToResearchers() {
+        assertTrue("The request role must be able to append audits", roleHasPrivilege("chronicle_app", "audit", "INSERT"))
+        val event = AuditableEvent(AclKey(UUID.randomUUID()), UUID.randomUUID(), Principal(PrincipalType.USER, "test-audit"),
+            AuditEventType.LOGIN, description = "retry-audit-${UUID.randomUUID()}")
+        val manager = PostgresAuditingManager(storageResolver)
         val context = RLSConnectionContext("test-audit", emptySet(), false)
         RLSRequestContext.set(context)
         try {
-            assertEquals(1, repository.saveBatch(listOf(entry)))
-            assertEquals(1, repository.saveBatch(listOf(entry)))
-            postgres.createConnection("").use { connection ->
-                connection.autoCommit = false
-                try {
-                    // Production bootstrap grants SELECT; grant it only within this RLS check.
-                    connection.createStatement().use { it.execute("GRANT SELECT ON audit_logs TO chronicle_app") }
-                    RLSConnectionSql.applyContext(connection, context)
-                    connection.createStatement().use { statement ->
-                        statement.executeQuery("SELECT current_user, count(*) FROM audit_logs").use { rows ->
-                            assertTrue(rows.next())
-                            assertEquals("chronicle_app", rows.getString(1))
-                            assertEquals("Researchers may append audits without reading them", 0, rows.getInt(2))
-                        }
-                    }
-                } finally {
-                    connection.rollback()
-                }
-            }
+            assertEquals(1, manager.recordObservations(AuditObservation.Intent(listOf(event))))
+            manager.recordObservations(AuditObservation.Intent(listOf(event)))
+            assertEquals("Researchers may append audits without reading them", "chronicle_app" to 0, auditRowsVisibleTo(context))
         } finally { RLSRequestContext.clear() }
-        getConnection().use { connection -> connection.prepareStatement("SELECT count(*) FROM audit_logs WHERE id = ?").use {
-            it.setObject(1, entry.id); it.executeQuery().use { rows -> rows.next(); assertEquals(1, rows.getInt(1)) }
+        getConnection().use { connection -> connection.prepareStatement("SELECT count(*) FROM audit WHERE event_id = ?").use {
+            it.setObject(1, event.eventId); it.executeQuery().use { rows -> rows.next(); assertEquals(1, rows.getInt(1)) }
         } }
+    }
+
+    /** The request role and the audit rows it can read, even with a table grant that RLS must still refuse. */
+    private fun auditRowsVisibleTo(context: RLSConnectionContext): Pair<String, Int> =
+        postgres.createConnection("").use { connection ->
+            connection.autoCommit = false
+            try {
+                readAuditAs(connection, context)
+            } finally {
+                connection.rollback()
+            }
+        }
+
+    private fun readAuditAs(connection: Connection, context: RLSConnectionContext): Pair<String, Int> {
+        connection.createStatement().use { it.execute("GRANT SELECT ON audit TO chronicle_app") }
+        RLSConnectionSql.applyContext(connection, context)
+        return connection.createStatement().use { statement ->
+            statement.executeQuery("SELECT current_user, count(*) FROM audit").use { rows ->
+                assertTrue(rows.next())
+                rows.getString(1) to rows.getInt(2)
+            }
+        }
     }
 
     @Test fun stagedSuccessAuditRollsBackAndCommitsWithItsOwner() {
         val event = AuditableEvent(AclKey(UUID.randomUUID()), UUID.randomUUID(), Principal(PrincipalType.USER, "test-audit"),
-            AuditEventType.UPDATE_STUDY, description = "transaction-audit-${UUID.randomUUID()}")
+            AuditEventType.UPDATE_STUDY, description = "transaction-audit-${UUID.randomUUID()}",
+            request = com.openlattice.chronicle.auditing.AuditRequest("ip:0123456789ab", "agent/1", "/chronicle/v3/study", "PATCH"))
         val manager = PostgresAuditingManager(storageResolver)
         getConnection().use { connection ->
             connection.autoCommit = false
-            assertEquals(1, manager.recordEvents(connection, listOf(event)))
-            connection.rollback()
+            com.openlattice.chronicle.storage.PinnedPlatformConnection.committing(
+                storageResolver.getPlatformStorage(), connection, commitWhen = { false },
+            ) { assertEquals(1, manager.recordEvents(connection, listOf(event))) }
         }
         fun count() = postgres.createConnection("").use { connection -> connection.prepareStatement(
             "SELECT count(*) FROM audit WHERE description = ?").use {
@@ -9075,9 +5857,21 @@ class FlywayMigrationCorpusTest {
         assertEquals(0, count())
         getConnection().use { connection ->
             connection.autoCommit = false
-            manager.recordEvents(connection, listOf(event)); connection.commit()
+            com.openlattice.chronicle.storage.PinnedPlatformConnection.committing(storageResolver.getPlatformStorage(), connection) {
+                manager.recordEvents(connection, listOf(event))
+            }
         }
         assertEquals(1, count())
+        // The buffer trigger forwards the request columns with the event.
+        postgres.createConnection("").use { connection -> connection.prepareStatement(
+            "SELECT event_id, client_ip_ref, user_agent, request_path, request_method FROM audit WHERE description = ?").use {
+            it.setString(1, event.description)
+            it.executeQuery().use { rows ->
+                assertTrue(rows.next())
+                assertEquals(event.eventId, rows.getObject(1))
+                assertEquals(listOf("ip:0123456789ab", "agent/1", "/chronicle/v3/study", "PATCH"), (2..5).map(rows::getString))
+            }
+        } }
     }
 
     @Test fun jwtRevocationsAndActivitySurviveEmptyHazelcastMaps() {
@@ -9102,14 +5896,14 @@ class FlywayMigrationCorpusTest {
         first.blockToken(jti, expires)
         val changedSubject = UUID.randomUUID().toString()
         first.revokePrincipalBefore(changedSubject, now.minus(Duration.ofDays(31)))
-        assertTrue(first.isSessionActive(active, issued, expires, Duration.ofMinutes(15), now.minus(Duration.ofMinutes(10))))
+        assertTrue(first.touchActivity(active, issued, expires, Duration.ofMinutes(15),
+            JwtBlocklist.ActivityTiming(now.minus(Duration.ofMinutes(10)))))
         val restarted = fresh()
         assertTrue(restarted.isBlocked(jti))
         assertEquals("Token was issued before a privilege change", restarted.credentialRejectionReason(null,
             UUID.randomUUID().toString(), now.minus(Duration.ofDays(32)), expires, Duration.ofMinutes(15), subject = changedSubject))
         assertTrue(restarted.isSessionActive(active, issued, expires, Duration.ofMinutes(15), now))
     }
-
 
     @Test fun bothDrainPathsContendOnTheSharedInsertionLocks() {
         getConnection().use { first ->
@@ -9137,18 +5931,18 @@ class FlywayMigrationCorpusTest {
         }
     }
 
-
     @Test fun nulBearingUsageAudioAndNotificationTextIsNormalizedBeforeStorage() {
         val study = UUID.randomUUID()
         val participant = "nul-${UUID.randomUUID()}"
+        studyFixture.ensureStudyParticipant(study, participant)
         val timestamp = OffsetDateTime.now()
         val usage = com.openlattice.chronicle.android.ChronicleUsageEvent(studyId = study, participantId = participant,
             appPackageName = "com.example\u0000.app", interactionType = "Foreground\u0000", timestamp = timestamp,
-            timezone = "UTC", user = "user\u0000", applicationLabel = "label\u0000", activityClass = "activity\u0000")
+            timezone = "UTC", user = "user\u0000", applicationLabel = "label\u0000", activityClass = "activity\u0000",
+            clientEventId = UUID.randomUUID())
         val service = com.openlattice.chronicle.services.upload.AppDataUploadService(storageResolver, Mockito.mock(
-            com.openlattice.chronicle.services.enrollment.EnrollmentManager::class.java), Mockito.mock(
             com.openlattice.chronicle.services.studies.StudyManager::class.java))
-        assertEquals(1, service.uploadAndroidUsageEvents(study, participant, UUID.randomUUID(), listOf(usage)))
+        assertEquals(setOf(usage.clientEventId), service.uploadAndroidUsageEvents(study, participant, UUID.randomUUID(), listOf(usage)))
         val audio = com.openlattice.chronicle.collection.AndroidAudioContentEvent(UUID.randomUUID().toString(), timestamp, "UTC",
             "media\u0000", title = "title\u0000", artist = "artist\u0000", album = "album\u0000")
         assertEquals(1, com.openlattice.chronicle.services.upload.AppAudioContentUploadService(storageResolver).upload(study, participant, listOf(

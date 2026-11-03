@@ -12,26 +12,7 @@ import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import java.sql.Connection
 import java.util.UUID
 
-/**
- * Regression test for append-only audit and withdrawal receipts under blanket application grants.
- *
- * `study_settings_audit` and `participant_collection_acknowledgment` were immutable in INTENT
- * (V25 / V26 `REVOKE DELETE, UPDATE ... FROM chronicle_app`) but MUTABLE in fact: the idempotent
- * blanket `GRANT ... ON ALL TABLES ... TO chronicle_app` in init-db-roles.sql re-grants UPDATE/DELETE
- * after the one-time REVOKE, so the request-path role could tamper with the trails.
- *
- * The fix (V44) defends them with RLS policies (the proven audit_logs design), which are evaluated
- * regardless of table privileges. **This test reproduces the exact prod condition that defeated the
- * REVOKE**: it grants `chronicle_app_test` the full SELECT/INSERT/UPDATE/DELETE blanket and then
- * asserts RLS still blocks UPDATE/DELETE — i.e. the immutability is GRANT-proof. A REVOKE-only design
- * would pass-through the UPDATE/DELETE here and fail this test. It also asserts the legitimate paths
- * (study-scoped SELECT, INSERT, study isolation) keep working, and that the superuser still bypasses
- * (so legitimate retention purges remain possible) — the control documenting why the app role matters.
- *
- * Fidelity: runs the ACTUAL V44 and V90 migrations verbatim off the classpath against real table shells, with
- * the production `chronicle_has_study_access` definition. Assertions run under `SET LOCAL ROLE` to a
- * NOSUPERUSER NOBYPASSRLS role (FORCE ROW LEVEL SECURITY makes the policies apply).
- */
+/** Fresh-schema audit immutability and study isolation, including hostile blanket grants. */
 class AuditTrailImmutabilityRlsTest {
 
     companion object {
@@ -42,33 +23,7 @@ class AuditTrailImmutabilityRlsTest {
         private val STUDY_A = UUID.randomUUID()
         private val STUDY_B = UUID.randomUUID()
 
-        // Production definition of chronicle_has_study_access (mirrors V1) — admin bypass, else
-        // membership in app.authorized_studies, deny on empty/unparseable context.
-        private val HAS_STUDY_ACCESS_FN = """
-            CREATE OR REPLACE FUNCTION public.chronicle_has_study_access(check_study_id uuid)
-            RETURNS boolean LANGUAGE plpgsql STABLE SECURITY DEFINER AS ${'$'}fn${'$'}
-            DECLARE
-                is_admin_user BOOLEAN;
-                authorized_studies_setting TEXT;
-                authorized_studies UUID[];
-            BEGIN
-                is_admin_user := COALESCE(NULLIF(current_setting('app.is_admin', true), '')::BOOLEAN, false);
-                IF is_admin_user THEN RETURN true; END IF;
-                authorized_studies_setting := current_setting('app.authorized_studies', true);
-                IF authorized_studies_setting IS NULL OR authorized_studies_setting = '' THEN RETURN false; END IF;
-                BEGIN
-                    authorized_studies := string_to_array(authorized_studies_setting, ',')::UUID[];
-                EXCEPTION WHEN OTHERS THEN RETURN false;
-                END;
-                RETURN check_study_id = ANY(authorized_studies);
-            END;
-            ${'$'}fn${'$'};
-        """.trimIndent()
 
-        private fun sqlResource(path: String): String =
-            requireNotNull(AuditTrailImmutabilityRlsTest::class.java.getResourceAsStream(path)) {
-                "$path not found on the classpath"
-            }.bufferedReader().use { it.readText() }
     }
 
     private lateinit var hds: HikariDataSource
@@ -83,39 +38,13 @@ class AuditTrailImmutabilityRlsTest {
             minimumIdle = 1
         })
 
+        ChronicleContractTestSchema.resetSchemaAndMigrations(postgres)
         hds.connection.use { c ->
             c.createStatement().use { st ->
-                // Minimal shells carrying the study_id the V44 policies key on.
-                st.execute(
-                    """
-                    CREATE TABLE study_settings_audit (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        study_id UUID NOT NULL,
-                        note TEXT
-                    )
-                    """.trimIndent(),
-                )
-                st.execute(
-                    """
-                    CREATE TABLE participant_collection_acknowledgment (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        study_id UUID NOT NULL,
-                        participant_id TEXT NOT NULL
-                    )
-                    """.trimIndent(),
-                )
-
-                st.execute(HAS_STUDY_ACCESS_FN)
-
-                st.execute("CREATE ROLE chronicle_admin NOSUPERUSER BYPASSRLS")
-
-                // The actual fix, verbatim.
-                st.execute(sqlResource("/db/migration/V44__audit_trail_rls_immutability.sql"))
-                st.execute(sqlResource("/db/migration/V90__bind_mobile_withdrawal_intents.sql"))
-
                 // Reproduce the prod condition: the role HAS the full blanket grant that defeated the
                 // REVOKE. If immutability were REVOKE-based this would re-open UPDATE/DELETE.
                 st.execute("CREATE ROLE $RLS_TEST_APP_ROLE NOSUPERUSER NOBYPASSRLS")
+                st.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO $RLS_TEST_APP_ROLE")
                 st.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON study_settings_audit TO $RLS_TEST_APP_ROLE")
                 st.execute(
                     "GRANT SELECT, INSERT, UPDATE, DELETE ON " +
@@ -127,15 +56,14 @@ class AuditTrailImmutabilityRlsTest {
                 )
 
                 // Seed as superuser (bypasses RLS): one row per study in each table.
-                st.execute("INSERT INTO study_settings_audit (study_id, note) VALUES ('$STUDY_A', 'a'), ('$STUDY_B', 'b')")
-                st.execute(
-                    "INSERT INTO participant_collection_acknowledgment (study_id, participant_id) " +
-                        "VALUES ('$STUDY_A', 'p-a'), ('$STUDY_B', 'p-b')",
-                )
+                for ((study, participant) in listOf(STUDY_A to "p-a", STUDY_B to "p-b")) {
+                    appendSetting(c, study)
+                    appendAcknowledgment(c, study, participant)
+                }
                 st.execute(
                     """
                     INSERT INTO mobile_withdrawal_requests
-                        (request_id, api_key_id, study_id, participant_id, device_id, already_withdrawn)
+                        (request_id, api_key_id, study_id, participant_id, random_device_id, already_withdrawn)
                     VALUES
                         (gen_random_uuid(), gen_random_uuid(), '$STUDY_A', 'p-a', gen_random_uuid(), false),
                         (gen_random_uuid(), gen_random_uuid(), '$STUDY_B', 'p-b', gen_random_uuid(), true)
@@ -148,12 +76,9 @@ class AuditTrailImmutabilityRlsTest {
     @After
     fun tearDown() {
         if (::hds.isInitialized) {
+            ChronicleContractTestSchema.clearSchema(postgres)
             hds.connection.use { c ->
                 c.createStatement().use { st ->
-                    st.execute("DROP TABLE IF EXISTS study_settings_audit")
-                    st.execute("DROP TABLE IF EXISTS participant_collection_acknowledgment")
-                    st.execute("DROP TABLE IF EXISTS mobile_withdrawal_requests")
-                    st.execute("DROP ROLE IF EXISTS chronicle_admin")
                     st.execute("DROP ROLE IF EXISTS $RLS_TEST_APP_ROLE")
                 }
             }
@@ -175,6 +100,26 @@ class AuditTrailImmutabilityRlsTest {
         }
     }
 
+    private fun appendSetting(connection: Connection, studyId: UUID): Int =
+        connection.prepareStatement("""
+            INSERT INTO study_settings_audit (id, study_id, changed_by, setting_key, after_value, change_summary)
+            VALUES (gen_random_uuid(), ?, 'fixture', 'fixture', '{}', 'fixture')
+        """.trimIndent()).use {
+            it.setObject(1, studyId)
+            it.executeUpdate()
+        }
+
+    private fun appendAcknowledgment(connection: Connection, studyId: UUID, participantId: String): Int =
+        connection.prepareStatement("""
+            INSERT INTO participant_collection_acknowledgment
+                (id, study_id, participant_id, source_random_device_id, acknowledged_modules, acknowledged_at, decision_seq)
+            VALUES (gen_random_uuid(), ?, ?, 'fixture-device', '[]', now(), 1)
+        """.trimIndent()).use {
+            it.setObject(1, studyId)
+            it.setString(2, participantId)
+            it.executeUpdate()
+        }
+
     private fun exec(c: Connection, sql: String): Int = c.createStatement().use { it.executeUpdate(sql) }
 
     private fun count(c: Connection, table: String): Int =
@@ -185,7 +130,7 @@ class AuditTrailImmutabilityRlsTest {
     @Test
     fun `study_settings_audit UPDATE is blocked despite a granted UPDATE privilege`() {
         val updated = inContext(STUDY_A.toString(), isAdmin = false) {
-            exec(it, "UPDATE study_settings_audit SET note = 'tampered' WHERE study_id = '$STUDY_A'")
+            exec(it, "UPDATE study_settings_audit SET change_summary = 'tampered' WHERE study_id = '$STUDY_A'")
         }
         assertEquals("RLS must block UPDATE on study_settings_audit even with UPDATE granted", 0, updated)
     }
@@ -229,10 +174,10 @@ class AuditTrailImmutabilityRlsTest {
     @Test
     fun `INSERT into both trails still works for the app role`() {
         val a = inContext(STUDY_A.toString(), isAdmin = false) {
-            exec(it, "INSERT INTO study_settings_audit (study_id, note) VALUES ('$STUDY_A', 'new')")
+            appendSetting(it, STUDY_A)
         }
         val b = inContext(STUDY_A.toString(), isAdmin = false) {
-            exec(it, "INSERT INTO participant_collection_acknowledgment (study_id, participant_id) VALUES ('$STUDY_A', 'p2')")
+            appendAcknowledgment(it, STUDY_A, "p2")
         }
         assertEquals("append (INSERT) must remain allowed on study_settings_audit", 1, a)
         assertEquals("append (INSERT) must remain allowed on the consent trail", 1, b)
@@ -241,7 +186,7 @@ class AuditTrailImmutabilityRlsTest {
                 it,
                 """
                 INSERT INTO mobile_withdrawal_requests
-                    (request_id, api_key_id, study_id, participant_id, device_id, already_withdrawn)
+                    (request_id, api_key_id, study_id, participant_id, random_device_id, already_withdrawn)
                 VALUES (gen_random_uuid(), gen_random_uuid(), '$STUDY_A', 'p-new', gen_random_uuid(), false)
                 """.trimIndent(),
             )
@@ -260,7 +205,7 @@ class AuditTrailImmutabilityRlsTest {
                         connection,
                         """
                         INSERT INTO mobile_withdrawal_requests
-                            (request_id, api_key_id, study_id, participant_id, device_id, already_withdrawn)
+                            (request_id, api_key_id, study_id, participant_id, random_device_id, already_withdrawn)
                         VALUES (gen_random_uuid(), gen_random_uuid(), '$STUDY_A', 'forged', gen_random_uuid(), false)
                         """.trimIndent(),
                     )

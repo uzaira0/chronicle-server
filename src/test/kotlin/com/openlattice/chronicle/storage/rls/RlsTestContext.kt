@@ -21,7 +21,10 @@ internal fun Connection.applyLocalRlsTestContext(
         """
         SELECT set_config('app.current_user_id', ?, true),
                set_config('app.is_admin', ?, true),
-               set_config('app.authorized_studies', ?, true)
+               set_config('app.authorized_studies', ?, true),
+               set_config('app.authorized_organizations', '', true),
+               set_config('app.is_deletion_worker', 'false', true),
+               set_config('app.receipt_owner_kind', '', true)
         """.trimIndent(),
     ).use { statement ->
         statement.setString(1, "tester")

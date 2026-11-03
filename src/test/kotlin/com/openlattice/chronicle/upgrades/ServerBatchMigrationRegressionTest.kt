@@ -1,5 +1,15 @@
 package com.openlattice.chronicle.upgrades
 
+import com.geekbeast.configuration.postgres.PostgresFlavor
+
+import com.openlattice.chronicle.storage.ResolvedStorage
+
+import com.openlattice.chronicle.contract.seedCandidate
+
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
+import com.openlattice.chronicle.exceptions.CollectionUnavailableException
+
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,13 +20,11 @@ import org.testcontainers.containers.PostgreSQLContainer
 import java.sql.SQLException
 import java.util.UUID
 
+private const val ERASURE_TEST_OWNER = "erasure_test_owner"
+
 class ServerBatchMigrationRegressionTest {
     @Test
-    fun outboxReplayDeduplicatesOnAFreshKeylessAuditTable() = withDatabase("130") { pg ->
-        pg.createConnection("").use { connection -> connection.createStatement().use { statement ->
-            statement.execute("ALTER TABLE audit DROP CONSTRAINT audit_pkey")
-        } }
-        assertTrue(ChronicleContractTestSchema.migrate(pg).success)
+    fun outboxReplayDeduplicatesOnAFreshKeylessAuditTable() = withDatabase() { pg ->
         pg.createConnection("").use { connection ->
             val key = com.openlattice.chronicle.services.delete.DataDeletionOrchestrator.DELETION_AUDIT_EVENT_ID
             val event = com.openlattice.chronicle.auditing.AuditableEvent(
@@ -28,35 +36,54 @@ class ServerBatchMigrationRegressionTest {
             )
             val manager = auditManager()
             connection.autoCommit = false
-            repeat(2) { manager.recordEvents(connection, listOf(event)); connection.commit() }
+            repeat(2) {
+                PinnedPlatformConnection.committing(requireNotNull(manager.transactionStorage), connection) {
+                    manager.recordEvents(connection, listOf(event))
+                }
+            }
             connection.prepareStatement("SELECT count(*) FROM audit WHERE data::jsonb ->> ? = ?").use { statement ->
                 statement.setString(1, key); statement.setString(2, event.data.getValue(key).toString())
                 statement.executeQuery().use { rows -> assertTrue(rows.next()); assertEquals(1, rows.getInt(1)) }
             }
         }
     }
-    @Test fun retainedErasedStudyAuditDoesNotBlockV93() = withDatabase("92") { pg ->
-        val erased = UUID.randomUUID()
-        pg.createConnection("").use { c -> c.createStatement().use { s ->
-            s.execute("""INSERT INTO study_settings_audit (id, study_id, changed_by, setting_key, after_value, change_summary)
-                VALUES ('${UUID.randomUUID()}', '$erased', 'test', 'DataCollection', '{"settingsVersion":1}', 'retained')""")
-        } }
-        assertTrue(ChronicleContractTestSchema.migrate(pg).success)
-        pg.createConnection("").use { c -> c.createStatement().use { s ->
-            s.executeQuery("SELECT count(*) FROM data_collection_settings_revisions WHERE study_id = '$erased'").use {
-                it.next(); assertEquals(0, it.getInt(1))
+    /** A batch whose commit landed but whose acknowledgment was lost is resent with new events: each is stored once. */
+    @Test fun aRetryAfterALostCommitAckStoresEachEventOnceAndLaterEventsStillFlush() = withDatabase() { pg ->
+        fun event(type: com.openlattice.chronicle.auditing.AuditEventType) = com.openlattice.chronicle.auditing.AuditableEvent(
+            com.openlattice.chronicle.authorization.AclKey(UUID.randomUUID()), UUID.randomUUID(),
+            com.openlattice.chronicle.authorization.Principal(com.openlattice.chronicle.authorization.PrincipalType.USER, "staff"), type,
+        )
+        val manager = auditManager { pg.createConnection("") }
+        fun commitSuccesses(batch: List<com.openlattice.chronicle.auditing.AuditableEvent>) = pg.createConnection("").use { connection ->
+            connection.autoCommit = false
+            PinnedPlatformConnection.committing(requireNotNull(manager.transactionStorage), connection) {
+                manager.recordEvents(connection, batch)
             }
-            s.executeQuery("SELECT count(*) FROM study_settings_audit WHERE study_id = '$erased'").use {
-                it.next(); assertEquals(1, it.getInt(1))
+        }
+        val success = event(com.openlattice.chronicle.auditing.AuditEventType.UPDATE_STUDY)
+        val nextSuccess = event(com.openlattice.chronicle.auditing.AuditEventType.UPDATE_STUDY)
+        val denial = event(com.openlattice.chronicle.auditing.AuditEventType.ACCESS_DENIED)
+        val nextDenial = event(com.openlattice.chronicle.auditing.AuditEventType.ACCESS_DENIED)
+        val later = event(com.openlattice.chronicle.auditing.AuditEventType.UPDATE_STUDY)
+        commitSuccesses(listOf(success))
+        commitSuccesses(listOf(success, nextSuccess))
+        manager.recordEvents(listOf(denial))
+        manager.recordEvents(listOf(denial, nextDenial))
+        commitSuccesses(listOf(later))
+        val stored = pg.createConnection("").use { connection ->
+            connection.prepareStatement("SELECT event_id::text, count(*) FROM audit WHERE event_id::text = ANY (?) GROUP BY 1").use {
+                val ids = listOf(success, nextSuccess, denial, nextDenial, later).map { event -> event.eventId.toString() }
+                it.setArray(1, connection.createArrayOf("text", ids.toTypedArray()))
+                it.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getString(1), rows.getInt(2)) } }
             }
-        } }
+        }
+        assertEquals(listOf(success, nextSuccess, denial, nextDenial, later).associate { it.eventId.toString() to 1 }, stored)
     }
 
-    @Test fun legacyPausedAndCompletedCutoffsUseTransactionalEvidenceBeforeLaterAnnotations() = withDatabase("117") { pg ->
+    @Test fun pausedAndCompletedCutoffsMigrateAsCaptureWindows() = withDatabase() { pg ->
         val study = UUID.randomUUID()
         val created = java.time.OffsetDateTime.parse("2026-09-01T00:00:00Z")
         val stopped = created.plusDays(6)
-        val uncertainStop = stopped.minusHours(1)
         val pausedStop = stopped.minusHours(2)
         // Unbound evidence (a keyed fingerprint stop, a study-wide duration pause) never sets or shortens a cutoff.
         val knownCutoffs = mapOf("paused" to pausedStop, "completed" to stopped)
@@ -69,52 +96,17 @@ class ServerBatchMigrationRegressionTest {
                 connection.prepareStatement("""INSERT INTO study_participants
                     (study_id, participant_id, candidate_id, participation_status, updated_at)
                     VALUES (?, ?, ?, ?, ?)""").use {
-                    it.setObject(1, study); it.setString(2, participant); it.setObject(3, UUID.randomUUID())
+                    it.setObject(1, study); it.setString(2, participant); it.setObject(3, seedCandidate(connection))
                     it.setString(4, status); it.setObject(5, stopped.plusDays(3)); it.executeUpdate()
                 }
             }
-            val events = listOf("paused", "completed").flatMap { participant ->
-                listOf("PAUSED" to created.plusDays(2), "ENROLLED" to created.plusDays(4),
-                    "PAUSED" to (if (participant == "paused") pausedStop else stopped),
-                    "COLLECTION_COMPLETED" to stopped.plusDays(1)).map { (status, time) ->
-                    com.openlattice.chronicle.auditing.AuditableEvent(
-                        aclKey = com.openlattice.chronicle.authorization.AclKey(study),
-                        securablePrincipalId = UUID.randomUUID(),
-                        principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
-                        eventType = com.openlattice.chronicle.auditing.AuditEventType.UPDATE_PARTICIPATION_STATUS,
-                        timestamp = time,
-                        description = "Set participation status of participant $participant in study $study to $status",
-                    )
+            }
+        pg.createConnection("").use { connection ->
+            connection.prepareStatement("UPDATE study_participants SET capture_cutoff = ? WHERE study_id = ? AND participant_id = ?").use {
+                for ((participant, cutoff) in knownCutoffs) {
+                    it.setObject(1, cutoff); it.setObject(2, study); it.setString(3, participant); it.executeUpdate()
                 }
-            } + listOf(
-                com.openlattice.chronicle.auditing.AuditableEvent(
-                    aclKey = com.openlattice.chronicle.authorization.AclKey(study),
-                    securablePrincipalId = UUID.randomUUID(),
-                    principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
-                    eventType = com.openlattice.chronicle.auditing.AuditEventType.UPDATE_PARTICIPATION_STATUS,
-                    timestamp = uncertainStop.plusMinutes(1),
-                    description = "Set participation status of participant duration in study $study to ENROLLED",
-                ),
-                com.openlattice.chronicle.auditing.AuditableEvent(
-                    aclKey = com.openlattice.chronicle.authorization.AclKey(study),
-                    securablePrincipalId = UUID.randomUUID(),
-                    principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
-                    eventType = com.openlattice.chronicle.auditing.AuditEventType.UPDATE_PARTICIPATION_STATUS,
-                    study = study, timestamp = stopped,
-                    description = "Paused 3 enrolled participants after study duration elapsed",
-                ),
-                com.openlattice.chronicle.auditing.AuditableEvent(
-                    aclKey = com.openlattice.chronicle.authorization.AclKey(study),
-                    securablePrincipalId = UUID.randomUUID(),
-                    principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
-                    eventType = com.openlattice.chronicle.auditing.AuditEventType.UPDATE_PARTICIPATION_STATUS,
-                    timestamp = uncertainStop,
-                    description = "Set participation status of participant participant:0123456789ab in study $study to PAUSED",
-                ),
-            )
-            connection.autoCommit = false
-            auditManager().recordEvents(connection, events)
-            connection.commit()
+            }
         }
         assertTrue(ChronicleContractTestSchema.migrate(pg).success)
         pg.createConnection("").use { connection ->
@@ -128,36 +120,37 @@ class ServerBatchMigrationRegressionTest {
                     assertEquals(knownCutoffs + mapOf("duration" to null, "unknown" to null, "enrolled" to null), cutoffs)
                 }
             }
-            for ((participant, cutoff) in knownCutoffs) {
-                val times = listOf(cutoff.minusSeconds(1), cutoff, stopped.plusSeconds(1), null)
-                assertEquals(listOf(times.first()), com.openlattice.chronicle.storage.ParticipantCollectionGate
-                    .retainQueuedCaptures(connection, study, participant, times) { it })
-            }
+            // The migrated cutoff publishes the window; the phone, not this gate, drops rows inside it.
+            for (participant in knownCutoffs.keys) ParticipantCollectionGate(connection).requireCollectionAvailable(study, participant)
             for (participant in listOf("duration", "unknown")) {
-                assertEquals(org.springframework.http.HttpStatus.FORBIDDEN, org.junit.Assert.assertThrows(
-                    org.springframework.web.server.ResponseStatusException::class.java,
+                assertEquals(CollectionUnavailableException.Scope.PARTICIPANT, assertThrows(
+                    CollectionUnavailableException::class.java,
                 ) {
-                    com.openlattice.chronicle.storage.ParticipantCollectionGate.retainQueuedCaptures(
-                        connection, study, participant, listOf(created.plusDays(1))) { it }
-                }.statusCode)
-                assertFalse(com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(
-                    connection, study, participant, allowQueuedCaptures = true))
+                    ParticipantCollectionGate(connection).requireCollectionAvailable(study, participant)
+                }.scope)
+                assertFalse(ParticipantCollectionGate(connection).isActive(study, participant, allowQueuedCaptures = true))
             }
-            assertTrue(com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, study, "enrolled"))
+            assertTrue(ParticipantCollectionGate(connection).isActive(study, "enrolled"))
             connection.rollback()
         }
     }
 
-    @Test fun trustedNonSuperuserCanEraseReceiptsButRuntimeCannot() = withDatabase("119") { pg ->
+    @Test fun trustedNonSuperuserCanEraseReceiptsButRuntimeCannot() = withDatabase() { pg ->
         val study = UUID.randomUUID()
         pg.createConnection("").use { c -> c.createStatement().use { s ->
-            s.execute("CREATE ROLE erasure_test_owner NOLOGIN NOSUPERUSER NOBYPASSRLS")
-            s.execute("GRANT USAGE ON SCHEMA public TO erasure_test_owner")
-            s.execute("GRANT SELECT ON data_deletion_operations TO erasure_test_owner")
-            s.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO erasure_test_owner")
-            s.execute("ALTER FUNCTION chronicle_delete_study_rows(TEXT, UUID) OWNER TO erasure_test_owner")
+            s.execute("CREATE ROLE $ERASURE_TEST_OWNER NOLOGIN NOSUPERUSER NOBYPASSRLS")
+            s.execute("GRANT USAGE ON SCHEMA public TO $ERASURE_TEST_OWNER")
+            s.execute("GRANT SELECT ON data_deletion_operations TO $ERASURE_TEST_OWNER")
+            s.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO $ERASURE_TEST_OWNER")
+            s.execute("ALTER FUNCTION chronicle_delete_study_rows(TEXT, UUID) OWNER TO $ERASURE_TEST_OWNER")
+            for (table in listOf("mobile_withdrawal_requests", "data_collection_settings_revisions")) {
+                s.execute("GRANT SELECT, DELETE ON $table TO $ERASURE_TEST_OWNER")
+                for (policy in listOf("erasure_worker_select", "erasure_worker_delete")) {
+                    s.execute("ALTER POLICY $policy ON $table TO $ERASURE_TEST_OWNER")
+                }
+            }
             s.execute("""INSERT INTO studies (study_id, title, settings) VALUES ('$study', 'test', '{"DataCollection":{"settingsVersion":1}}')""")
-            s.execute("""INSERT INTO mobile_withdrawal_requests (request_id, api_key_id, study_id, participant_id, device_id, already_withdrawn)
+            s.execute("""INSERT INTO mobile_withdrawal_requests (request_id, api_key_id, study_id, participant_id, random_device_id, already_withdrawn)
                 VALUES ('${UUID.randomUUID()}', '${UUID.randomUUID()}', '$study', 'p1', '${UUID.randomUUID()}', false)""")
             s.execute("""INSERT INTO data_deletion_operations (operation_id, study_id, mode, status, requested_by, idempotency_key, registry_version,
                 worker_lease_token, worker_lease_expires_at) VALUES ('${UUID.randomUUID()}', '$study', 'STUDY_ERASURE', 'ERASING', 'test',
@@ -178,55 +171,21 @@ class ServerBatchMigrationRegressionTest {
         } }
     }
 
-    @Test fun cancellingDeferredScrubPreservesEnrolledDeviceKeys() = withDatabase("110") { pg ->
-        val study = UUID.randomUUID(); val phone = UUID.randomUUID(); val operation = UUID.randomUUID()
-        pg.createConnection("").use { c -> c.createStatement().use { s ->
-            s.execute("""INSERT INTO devices (study_id, device_id, participant_id, device_type, source_device)
-                VALUES ('$study', '$phone', 'p1', 'Ios', '{"@class":"IOSDevice","name":"Private Phone","model":"iPhone"}')""")
-            for ((id, name) in listOf("legacy" to "Private Phone", "current" to phone.toString())) {
-                s.execute("""INSERT INTO sensor_data (study_id, participant_id, sample_id, sensor_type, sample_duration,
-                    device_version, device_name, device_model, device_system_name) VALUES ('$study', 'p1', '$id', 'deviceUsage', 1,
-                    '17.0', '$name', 'iPhone', '$name')""")
-            }
-            s.execute("""INSERT INTO data_deletion_operations (operation_id, study_id, participant_id, mode, status, requested_by,
-                idempotency_key, registry_version) VALUES ('$operation', '$study', 'p1', 'COLLECTED_DATA_PURGE', 'QUARANTINED', 'test',
-                '${UUID.randomUUID()}', 1)""")
-        } }
-        assertTrue(ChronicleContractTestSchema.migrate(pg).success)
-        pg.createConnection("").use { c -> c.createStatement().use { s ->
-            s.executeQuery("SELECT source_device ? 'name' FROM devices WHERE device_id = '$phone'").use { r ->
-                assertTrue(r.next()); assertTrue("Keep the name mapping until the quarantined sensors can be scrubbed", r.getBoolean(1))
-            }
-            s.execute(
-                "UPDATE data_deletion_operations SET status = 'CANCELLED', cancelled_by = 'test', cancelled_at = now() WHERE operation_id = " +
-                "'$operation'")
-            repeat(2) {
-                s.executeQuery("SELECT device_name, device_system_name FROM sensor_data WHERE study_id = '$study' ORDER BY sample_id").use { r ->
-                    var count = 0
-                    while (r.next()) { count++; assertEquals(phone.toString(), r.getString(1)); assertEquals("", r.getString(2)) }
-                    assertEquals(2, count)
-                }
-                s.execute("UPDATE data_deletion_operations SET status = 'CANCELLED' WHERE operation_id = '$operation'")
-            }
-            s.executeQuery("SELECT source_device ? 'name' FROM devices WHERE device_id = '$phone'").use { r -> r.next(); assertFalse(r.getBoolean(
-                1)) }
-        } }
-    }
-
-    private fun auditManager(): com.openlattice.chronicle.auditing.PostgresAuditingManager {
+    private fun auditManager(
+        connect: (() -> java.sql.Connection)? = null,
+    ): com.openlattice.chronicle.auditing.PostgresAuditingManager {
         val resolver = org.mockito.kotlin.mock<com.openlattice.chronicle.storage.StorageResolver>()
         val pool = org.mockito.kotlin.mock<com.zaxxer.hikari.HikariDataSource>()
+        connect?.let { org.mockito.kotlin.whenever(pool.connection).thenAnswer { _ -> it() } }
         org.mockito.kotlin.whenever(resolver.getPlatformStorage()).thenReturn(pool)
-        org.mockito.kotlin.whenever(resolver.getAuditStorage()).thenReturn(com.geekbeast.configuration.postgres.PostgresFlavor.VANILLA to pool)
+        org.mockito.kotlin.whenever(resolver.getAuditStorage()).thenReturn(ResolvedStorage(PostgresFlavor.VANILLA, pool))
         return com.openlattice.chronicle.auditing.PostgresAuditingManager(resolver)
     }
 
-    private fun withDatabase(target: String, action: (PostgreSQLContainer<*>) -> Unit) {
+    private fun withDatabase(action: (PostgreSQLContainer<*>) -> Unit) {
         ChronicleContractTestSchema.prodPostgresContainer("server_batch_migration").use { pg ->
             pg.start(); ChronicleContractTestSchema.waitForQueryReady(pg)
-            pg.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
-            assertTrue(FlywayMigrationService.baseConfiguration().dataSource(pg.jdbcUrl, pg.username, pg.password).target(target).load().migrate(
-                ).success)
+            ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(pg)
             action(pg)
         }
     }

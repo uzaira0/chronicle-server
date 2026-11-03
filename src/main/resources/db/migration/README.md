@@ -1,23 +1,26 @@
-# Migration safety
+# Fresh schema and future migrations
 
-Never edit, rename, or delete a published migration; add a new version instead.
-New versions must exceed every version in the last published release.
-Keep changes additive within a release: introduce replacements first, migrate
-consumers, and defer destructive cleanup to a follow-up release.
-Destructive changes require an explicit decision recorded in the SQL file header:
+`V1__fresh_schema.sql` replaces V1–V135 and their data backfills. It supports
+fresh installations only.
 
-```sql
--- chronicle:destructive-approved <reason>
-```
+Startup first runs the role bootstrap and rhizome's registered table definitions.
+Flyway records that framework bootstrap at version 0, then applies V1. V1 completes
+the framework tables and creates service tables, functions, views, constraints,
+indexes, triggers, row-security policies, grants, and the canary sentinel study.
+Role provisioning stays in the deployment bootstrap; the migration runner supplies
+the `chronicle` NOLOGIN placeholder for development and tests.
 
-Replace `<reason>` with the concrete rationale for the destructive change.
-Place this line among the leading comments, before any SQL. Approval only waives
-the destructive-statement check; published files remain immutable.
+V1 was derived from schema-only dumps of the framework bootstrap and the complete
+V1–V135 chain on the production Percona image. Framework objects already present
+are completed rather than recreated. Historical ledger rows and data repairs are
+omitted. Fresh deletion schedules require an operation link and previous status.
+Storage access methods and tablespaces follow the deployment defaults.
 
-Run `scripts/check-migrations-safe.sh` from the monorepo root, or run
-`bash scripts/local-ci.sh migration-safety`. The gate is included in `fast`.
-It checks tracked and untracked SQL in the server working tree against the newest
-`published-*` tag by creation date, falling back to the root commit.
-Override with `--server-dir <repo>` and `--since <git ref>`.
-Failures identify rewritten files, destructive statements with line numbers, or
-back-filled versions. Approved destructive matches also print their reason.
+Keep Flyway's versioned migration mechanism. Add future schema changes as V2 and
+higher; do not fold them into V1 after the reset release is published. Migration
+errors and checksum failures abort startup. Migration connections clear the
+server's statement, lock, and idle-transaction timeouts.
+
+Run `scripts/local-ci.sh migration-safety selfhost-restore contract-drift engineering`
+from the enclosing checkout. Destructive SQL requires a leading
+`-- chronicle:destructive-approved <reason>` comment describing the decision.

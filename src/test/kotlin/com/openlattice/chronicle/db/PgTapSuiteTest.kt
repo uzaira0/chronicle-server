@@ -1,6 +1,7 @@
 package com.openlattice.chronicle.db
 
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import com.openlattice.chronicle.services.delete.restoreResource
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
@@ -58,6 +59,9 @@ class PgTapSuiteTest {
                         connection.autoCommit = true
                     }
                 }
+                // chronicle_record_capture_cutoff reads the restore checkpoint, which exists only during a restore:
+                // check every function against the checkpoint the restore really captures.
+                connection.createStatement().use { it.execute(restoreResource("restore-checkpoint-capture.sql")) }
                 failures += checkFunctionsAndWriteCoverage(connection)
                 assertTrue(failures.joinToString("\n"), failures.isEmpty())
             }

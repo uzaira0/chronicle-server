@@ -1,4 +1,4 @@
-ARG PROD_POSTGRES_IMAGE=percona/percona-distribution-postgresql:18.6.1-3
+ARG PROD_POSTGRES_IMAGE=percona/percona-distribution-postgresql:18.6.1-4@sha256:27a1dba816fcc4cec88f216d54e3ec86db4c1d4b16799f49800055c41606e11e
 FROM ${PROD_POSTGRES_IMAGE} AS build
 USER root
 RUN dnf -y -q install gcc make git perl patch redhat-rpm-config \

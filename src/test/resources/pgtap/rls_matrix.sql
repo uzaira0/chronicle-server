@@ -1,4 +1,3 @@
--- SKIPPED: encrypted_payloads: V95 enforces CHECK (false); no valid row can exercise its RLS policies without changing production constraints.
 -- Context order: unset/false/true app.is_admin, each with owner/other principal and matching/foreign study.
 -- Entries 13..16: deletion worker; quarantined member; quarantined admin; quarantined deletion worker.
 -- Each four-bit entry is SELECT, INSERT, UPDATE, DELETE. Expectations are literal contracts, never derived from policy expressions.
@@ -10,18 +9,24 @@ CREATE TEMP TABLE rls_contract (
     PRIMARY KEY (table_name, scenario)
 );
 INSERT INTO rls_contract (table_name, expected, fixture) VALUES
+    ('studies', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
+    ('organizations', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
+    ('users', ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','1111','1111','1111','1111','1111','0000','1111','1111'], '{}'::jsonb),
+    ('jwt_session_state', ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','1111','1111','1111','1111','1111','0000','1111','1111'], '{}'::jsonb),
+    ('data_deletion_tombstones', ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','1111','1111','1111','1111','1111','0000','1111','1111'], '{}'::jsonb),
+    ('audit_buffer', ARRAY['0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100'], '{"event_id":"11111111-1111-1111-1111-111111111111"}'::jsonb),
     ('activity_recognition_events', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('ambient_audio_events', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('android_device_sensor_availability', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('android_sensor_data', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('api_keys', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"device_id":"11111111-1111-1111-1111-111111111111"}'::jsonb),
+    ('api_keys', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"random_device_id":"11111111-1111-1111-1111-111111111111"}'::jsonb),
     ('app_audio_activity', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('app_audio_content', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('app_network_usage', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('app_usage_survey', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('audit_logs', ARRAY['0100','0100','0100','0100','0100','0100','0100','0100','1100','1100','1100','1100','1100','0100','1100','1100'], '{}'::jsonb),
+    ('audit', ARRAY['0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100','0100'], '{}'::jsonb),
     ('battery_telemetry', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('candidates', ARRAY['1111','1111','0100','0100','1111','1111','0100','0100','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
+    ('cancelled_enrollment_attempts', ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','1100','1100','1100','1100','1100','0000','1100','1100'], '{}'::jsonb),
+    ('candidates', ARRAY['1110','1110','0100','0100','1110','1110','0100','0100','1110','1110','1110','1110','1110','1110','1110','1110'], '{}'::jsonb),
     ('chronicle_usage_events', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('chronicle_usage_stats', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('connectivity_state_events', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
@@ -29,73 +34,63 @@ INSERT INTO rls_contract (table_name, expected, fixture) VALUES
     ('data_deletion_form_access_revocations', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"resource_kind":"ACCESS_CODE"}'::jsonb),
     ('data_deletion_operations', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"mode":"COLLECTED_DATA_PURGE","status":"PREVIEW","registry_version":"1"}'::jsonb),
     ('data_deletion_steps', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"status":"PENDING"}'::jsonb),
-    ('data_quality_alerts', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"alert_type":"MISSING_DATA"}'::jsonb),
     ('device_settings', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('devices', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('erased_device_key_tombstones', ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','1000','1000','1000','1000','1110','0000','1000','1110'], '{"kind":"WITHDRAW_AND_ERASE","expires_at":"2080-01-01T00:00:00Z"}'::jsonb),
-    ('export_capacity_reservations', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('export_job_revocations', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    -- Framework bootstrap leaves status nullable; seed a worker state for the UPDATE/DELETE probes.
-    ('export_jobs', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"status":"PENDING","format":"CSV","request":{"participantIds":["tap-export-participant"]}}'::jsonb),
-    ('filtered_apps', ARRAY['1111','1111','0100','0100','1111','1111','0100','0100','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
+    ('filtered_apps', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
     ('health_metrics', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('interaction_events', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
+    ('ios_screen_time_usage', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"observation_start":"2026-01-01T00:00:00Z","observation_end":"2026-01-01T01:00:00Z"}'::jsonb),
     ('jobs', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"principal_type":"USER","status":"PENDING","definition":"{\"@type\":\"EmptyJobDefinition\",\"studyId\":\"11111111-1111-1111-1111-111111111111\",\"participantIds\":[\"tap-participant\"]}"}'::jsonb),
     ('mobile_withdrawal_requests', ARRAY['1100','1100','0000','0000','1100','1100','0000','0000','1100','1100','1100','1100','1100','1100','1100','1100'], '{}'::jsonb),
     ('notification_activity', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('notifications', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('organization_members', ARRAY['1111','1111','1000','0000','1111','1111','1000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('organization_quotas', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('organization_studies', ARRAY['1111','1111','0100','0100','1111','1111','0100','0100','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('participant_collection_acknowledgment', ARRAY['1100','1100','0100','0100','1100','1100','0100','0100','1100','1100','1100','1100','1100','1100','1100','1100'], '{}'::jsonb),
+    ('organization_studies', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
+    ('participant_collection_acknowledgment', ARRAY['1100','1100','0000','0000','1100','1100','0000','0000','1100','1100','1100','1100','1100','1100','1100','1100'], '{}'::jsonb),
     ('participant_form_access_codes', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"form_kind":"APP_USAGE","issuer_type":"RESEARCHER"}'::jsonb),
     ('participant_form_sessions', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"form_kind":"APP_USAGE"}'::jsonb),
     ('participant_form_submission_receipts', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"form_kind":"APP_USAGE","status":"PROCESSING"}'::jsonb),
-    ('participant_pseudonyms', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('participant_purge_cutoffs', ARRAY['1000','1000','0000','0000','1000','1000','0000','0000','1000','1000','1000','1000','1111','1000','1000','1111'], '{}'::jsonb),
     ('participant_stats', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('preprocessed_usage_events', ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000'], '{}'::jsonb),
     ('questionnaire_submissions', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('questionnaires', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('refresh_tokens', ARRAY['1111','1111','1111','1111','1111','1111','1111','1111','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('researcher_create_receipts', ARRAY['1111','0000','1111','0000','1111','0000','1111','0000','1111','0000','1111','0000','1001','1111','1111','1001'], '{}'::jsonb),
-    ('researcher_notification_settings', ARRAY['1111','0000','0000','0000','1111','0000','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('researcher_phone_numbers', ARRAY['1111','0000','1111','0000','1111','0000','1111','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('retention_holds', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('sensor_data', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
+    ('researcher_create_receipts', ARRAY['1111','0000','1111','0000','1111','0000','1111','0000','1111','0000','1111','0000','1001','1111','1111','1001'], '{"owner_kind":"USER"}'::jsonb),
     ('sleep_events', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('study_anonymization_config', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('study_deletion_schedule', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('study_encryption_keys', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"backend":"FILE"}'::jsonb),
-    ('study_event_stream', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
+    ('study_deletion_schedule', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"previous_status":"ACTIVE"}'::jsonb),
     ('study_lifecycle_events', ARRAY['1100','1100','0000','0000','1100','1100','0000','0000','1100','1100','1100','1100','1100','1100','1100','1100'], '{}'::jsonb),
-    ('study_limits', ARRAY['1111','1111','0100','0100','1111','1111','0100','0100','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    -- V68__make_deletion_proofs_observable_and_stable.sql:210,218 installs the INSERT guard; V79__isolate_upload_drain_from_deletion_quarantine.sql:32,111 denies quarantined writes.
+    ('study_limits', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
+    -- INSERT guards and mutation fences deny writes during participant quarantine.
     ('study_participants', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('study_realtime_stats', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{}'::jsonb),
-    ('study_settings_audit', ARRAY['1100','1100','0100','0100','1100','1100','0100','0100','1100','1100','1100','1100','1100','1100','1100','1100'], '{}'::jsonb),
+    ('study_settings_audit', ARRAY['1100','1100','0000','0000','1100','1100','0000','0000','1100','1100','1100','1100','1100','1100','1100','1100'], '{}'::jsonb),
     ('time_use_diary_submissions', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
     ('time_use_diary_summarized', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
-    ('upload_buffer', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb),
+    ('upload_buffer', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"upload_type":"Android"}'::jsonb),
     ('upload_diagnostic_erasures', ARRAY['1000','1000','0000','0000','1000','1000','0000','0000','1000','1000','1000','1000','1001','1000','1000','1001'], '{}'::jsonb),
-    ('upload_diagnostics', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"module_family":"USAGE_LIFECYCLE","issue_code":"UPLOAD_FAILURE","server_origin":"https://localhost"}'::jsonb),
-    ('usage_event_annotations', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{}'::jsonb);
+    ('upload_diagnostics', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"module_family":"USAGE_LIFECYCLE","issue_code":"UPLOAD_FAILURE","server_origin":"https://localhost"}'::jsonb);
 
 INSERT INTO rls_contract (table_name, scenario, expected, fixture)
 SELECT 'erased_device_key_tombstones', 'expired',
     ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','1001','1001','1001','1001','1111','0000','1001','1111'],
     '{"kind":"WITHDRAW_AND_ERASE","expires_at":"2000-01-01T00:00:00Z"}'::jsonb;
 
+-- Raw principal equality cannot claim another credential kind or an ambiguous historical receipt.
+INSERT INTO rls_contract (table_name, scenario, expected, fixture) VALUES
+    ('researcher_create_receipts', 'api-key-owner',
+        ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','1001','0000','0000','1001'],
+        '{"owner_kind":"API_KEY"}'::jsonb),
+    ('researcher_create_receipts', 'legacy-owner',
+        ARRAY['0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','0000','1001','0000','0000','1001'],
+        '{"owner_kind":"LEGACY"}'::jsonb);
+
 CREATE TEMP TABLE rls_skipped (table_name TEXT PRIMARY KEY);
 INSERT INTO rls_contract (table_name, expected, fixture) VALUES
     ('data_deletion_audit_outbox', ARRAY['1110','1110','0000','0000','1110','1110','0000','0000','1110','1110','1110','1110','1110','1110','1110','1110'], '{"event_type":"CANCEL_DATA_DELETION"}'::jsonb),
     ('webhook_registrations', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','1111','1111','1111'], '{"url":"https://localhost"}'::jsonb),
     ('webhook_deliveries', ARRAY['1111','1111','0000','0000','1111','1111','0000','0000','1111','1111','1111','1111','1111','0000','0000','1111'], '{"delivery_state":"PENDING","event_type":"DATA_SUBMITTED"}'::jsonb);
-INSERT INTO rls_skipped VALUES ('encrypted_payloads');
 
 CREATE TEMP TABLE rls_context (
     id INTEGER PRIMARY KEY, label TEXT, admin_setting TEXT, principal TEXT,
-    authorized BOOLEAN, quarantined BOOLEAN DEFAULT false
+    authorized BOOLEAN, quarantined BOOLEAN DEFAULT false, trusted_worker BOOLEAN DEFAULT false
 );
 INSERT INTO rls_context (id, label, admin_setting, principal, authorized, quarantined) VALUES
     (1, 'unset/owner/member', '', 'tap-owner', true, false),
@@ -114,6 +109,7 @@ INSERT INTO rls_context (id, label, admin_setting, principal, authorized, quaran
     (14, 'quarantined-member', 'false', 'tap-owner', true, true),
     (15, 'quarantined-admin', 'true', 'tap-owner', true, true),
     (16, 'quarantined-deletion-worker', 'true', 'chronicle-deletion-worker', false, true);
+UPDATE rls_context SET trusted_worker = true WHERE id IN (13, 16);
 
 -- Fixture metadata comes from columns and foreign keys, not from RLS predicates.
 CREATE FUNCTION pg_temp.rls_seed(target TEXT, supplied JSONB DEFAULT '{}', insert_row BOOLEAN DEFAULT true, visited TEXT[] DEFAULT '{}')
@@ -224,7 +220,7 @@ BEGIN
             probe_fixture := fixture || '{"mode":"STUDY_ERASURE","status":"QUARANTINED"}'::jsonb;
         END IF;
         insertion := pg_temp.rls_seed(target, probe_fixture, operation <> 2);
-        IF target = 'candidates' THEN
+        IF target = 'candidates' AND operation <> 2 THEN
             PERFORM pg_temp.rls_seed('study_participants');
         END IF;
         IF settings.quarantined AND target <> 'data_deletion_operations' THEN
@@ -234,17 +230,14 @@ BEGIN
         SELECT a.attname INTO STRICT column_name FROM pg_attribute a
         WHERE a.attrelid = format('public.%I', target)::regclass AND a.attnum > 0 AND NOT a.attisdropped
           AND a.attgenerated = ''
-        -- Export scope is immutable; exercise its permitted worker-state update instead.
-        ORDER BY CASE
-            WHEN target = 'export_jobs' AND a.attname = 'status' THEN 0
-            WHEN a.attname = 'message' THEN 1
-            ELSE 2
-        END, a.attnum LIMIT 1;
+        ORDER BY a.attname <> 'message', a.attnum LIMIT 1;
         PERFORM set_config('app.is_admin', settings.admin_setting, true);
         PERFORM set_config('app.current_user_id', settings.principal, true);
+        PERFORM set_config('app.is_deletion_worker', settings.trusted_worker::text, true);
+        PERFORM set_config('app.receipt_owner_kind', CASE WHEN settings.trusted_worker THEN '' ELSE 'USER' END, true);
         PERFORM set_config('app.authorized_studies', CASE WHEN settings.authorized
             THEN '11111111-1111-1111-1111-111111111111' ELSE '33333333-3333-3333-3333-333333333333' END, true);
-        PERFORM set_config('app.authorized_orgs', CASE WHEN settings.authorized
+        PERFORM set_config('app.authorized_organizations', CASE WHEN settings.authorized
             THEN '11111111-1111-1111-1111-111111111111' ELSE '33333333-3333-3333-3333-333333333333' END, true);
         EXECUTE 'SET LOCAL ROLE chronicle_app';
         switched := true;
@@ -255,6 +248,12 @@ BEGIN
             WHEN 4 THEN EXECUTE format('DELETE FROM public.%I WHERE %I IS NOT NULL', target, column_name);
         END CASE;
         IF operation <> 1 THEN GET DIAGNOSTICS row_count = ROW_COUNT; END IF;
+        IF target = 'audit_buffer' AND operation = 2 THEN
+            -- The legacy append trigger forwards the row to audit and returns NULL.
+            EXECUTE 'RESET ROLE';
+            SELECT count(*) INTO row_count FROM public.audit
+            WHERE event_id = '11111111-1111-1111-1111-111111111111'::uuid;
+        END IF;
         actual := row_count = 1;
         -- Roll back both the probe and its fixture before the next matrix entry.
         RAISE EXCEPTION USING ERRCODE = 'ZQ001', MESSAGE = 'probe rollback';
@@ -262,6 +261,9 @@ BEGIN
         WHEN SQLSTATE 'ZQ001' THEN NULL;
         WHEN insufficient_privilege THEN
             IF NOT switched THEN failure := SQLSTATE || ': fixture: ' || SQLERRM; END IF;
+        WHEN foreign_key_violation THEN
+            -- The retained candidate row must outlive every enrollment that references it.
+            IF NOT switched OR target <> 'candidates' OR operation <> 4 THEN failure := SQLSTATE || ': ' || SQLERRM; END IF;
         WHEN SQLSTATE '55000' THEN
             IF NOT switched OR NOT settings.quarantined THEN failure := SQLSTATE || ': ' || SQLERRM; END IF;
         WHEN OTHERS THEN failure := SQLSTATE || ': ' || SQLERRM;
@@ -274,13 +276,7 @@ BEGIN
 END
 $$;
 
-SELECT plan(3 + (SELECT count(*)::integer * 16 * 4 FROM rls_contract));
-SELECT ok(
-    NOT has_table_privilege('chronicle_app', 'export_jobs', 'UPDATE')
-    AND NOT has_column_privilege('chronicle_app', 'export_jobs', 'export_id', 'UPDATE')
-    AND NOT has_column_privilege('chronicle_app', 'export_jobs', 'study_id', 'UPDATE')
-    AND NOT has_column_privilege('chronicle_app', 'export_jobs', 'created_by', 'UPDATE'),
-    'export identity and ownership remain immutable to chronicle_app');
+SELECT plan(2 + (SELECT count(*)::integer * 16 * 4 FROM rls_contract));
 SELECT results_eq(
     $sql$SELECT c.relname::text COLLATE "default" FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relrowsecurity ORDER BY 1$sql$,

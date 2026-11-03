@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.storage.rls
 
+import com.openlattice.chronicle.data.ParticipationStatus
+
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.After
@@ -9,22 +11,15 @@ import org.junit.Before
 import org.junit.ClassRule
 import org.junit.Test
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import org.junit.Assert.assertThrows
+import java.sql.SQLException
 import java.sql.Connection
 import java.util.UUID
 
 /**
- * End-to-end RLS test for candidate orphan WRITE isolation (HIPAA-2028 W1, V30).
- *
- * V28 made an as-yet-unlinked (orphan) candidate visible so registration's validity check can
- * confirm a standalone candidate id — but its single `chronicle_has_candidate_access()` gated
- * SELECT/UPDATE/DELETE alike, so it also let any authenticated principal UPDATE or DELETE an orphan
- * candidate. V30 splits the policies: SELECT keeps orphan visibility, UPDATE/DELETE require
- * `chronicle_has_candidate_write_access()` (admin OR study-linked-authorized, no orphan branch).
- *
- * Fidelity (no drift): pre-creates the real `candidates` + `study_participants` table shells, then
- * runs the ACTUAL V14 -> V28 -> V30 migrations verbatim off the classpath, so the functions and
- * policies under test are the production objects. Assertions run under `SET LOCAL ROLE` to a plain
- * NOSUPERUSER NOBYPASSRLS role (FORCE ROW LEVEL SECURITY makes the policies apply).
+ * Candidate registration can see an unlinked ID; writes require admin or an authorized study link.
+ * The complete fresh schema is applied by real Flyway, then probes use a NOSUPERUSER NOBYPASSRLS role.
+ * A linked candidate cannot be deleted while enrollment still references it.
  */
 class CandidateOrphanWriteIsolationRlsTest {
 
@@ -38,10 +33,7 @@ class CandidateOrphanWriteIsolationRlsTest {
         private val ORPHAN_CANDIDATE = UUID.randomUUID()
         private val LINKED_CANDIDATE = UUID.randomUUID()
 
-        private fun sqlResource(path: String): String =
-            requireNotNull(CandidateOrphanWriteIsolationRlsTest::class.java.getResourceAsStream(path)) {
-                "$path not found on the classpath"
-            }.bufferedReader().use { it.readText() }
+
     }
 
     private lateinit var hds: HikariDataSource
@@ -56,37 +48,22 @@ class CandidateOrphanWriteIsolationRlsTest {
             minimumIdle = 1
         })
 
+        ChronicleContractTestSchema.resetSchemaAndMigrations(postgres)
         hds.connection.use { c ->
             c.createStatement().use { st ->
-                // Minimal shells of the real study-scoped tables. The candidate access functions
-                // join study_participants on candidate_id; candidates is candidate_id only.
-                st.execute("CREATE TABLE candidates (candidate_id UUID PRIMARY KEY)")
-                st.execute(
-                    """
-                    CREATE TABLE study_participants (
-                        study_id UUID NOT NULL,
-                        participant_id TEXT NOT NULL,
-                        candidate_id UUID NOT NULL,
-                        PRIMARY KEY (study_id, participant_id)
-                    )
-                    """.trimIndent(),
-                )
-
-                // Production migrations verbatim: V14 enables RLS + the candidate access function,
-                // V28 splits into per-command policies (orphan-visible everywhere), V30 restricts
-                // orphan visibility to SELECT only.
-                st.execute(sqlResource("/db/migration/V14__enable_rls_on_candidates.sql"))
-                st.execute(sqlResource("/db/migration/V28__loosen_control_plane_insert_rls.sql"))
-                st.execute(sqlResource("/db/migration/V30__candidate_orphan_write_isolation_rls.sql"))
-
                 st.execute("CREATE ROLE $RLS_TEST_APP_ROLE NOSUPERUSER NOBYPASSRLS")
+                st.execute("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO $RLS_TEST_APP_ROLE")
                 st.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON candidates TO $RLS_TEST_APP_ROLE")
 
                 // Seed (as superuser → bypasses RLS): one orphan candidate (no study link) and one
                 // candidate linked to STUDY_A via study_participants.
-                st.execute("INSERT INTO candidates VALUES ('$ORPHAN_CANDIDATE'), ('$LINKED_CANDIDATE')")
+                st.execute("INSERT INTO studies (study_id, title) VALUES ('$STUDY_A', 'candidate study')")
+                st.execute("INSERT INTO candidates (candidate_id) VALUES ('$ORPHAN_CANDIDATE'), ('$LINKED_CANDIDATE')")
                 st.execute(
-                    "INSERT INTO study_participants VALUES ('$STUDY_A', 'p-a', '$LINKED_CANDIDATE')",
+                    """
+                    INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES
+                    ('$STUDY_A', 'p-a', '$LINKED_CANDIDATE', '${ParticipationStatus.ENROLLED.name}')
+                    """.trimIndent(),
                 )
             }
         }
@@ -95,10 +72,9 @@ class CandidateOrphanWriteIsolationRlsTest {
     @After
     fun tearDown() {
         if (::hds.isInitialized) {
+            ChronicleContractTestSchema.clearSchema(postgres)
             hds.connection.use { c ->
                 c.createStatement().use { st ->
-                    st.execute("DROP TABLE IF EXISTS candidates")
-                    st.execute("DROP TABLE IF EXISTS study_participants")
                     st.execute("DROP ROLE IF EXISTS $RLS_TEST_APP_ROLE")
                 }
             }
@@ -156,11 +132,13 @@ class CandidateOrphanWriteIsolationRlsTest {
     }
 
     @Test
-    fun `study-linked candidate is deletable by a principal authorized for its study`() {
-        val deleted = inContext(authorizedStudies = STUDY_A.toString(), isAdmin = false) {
-            deleteCandidate(it, LINKED_CANDIDATE)
+    fun `study-linked candidate cannot delete an enrollment through its foreign key`() {
+        val failure = assertThrows(SQLException::class.java) {
+            inContext(authorizedStudies = STUDY_A.toString(), isAdmin = false) {
+                deleteCandidate(it, LINKED_CANDIDATE)
+            }
         }
-        assertEquals("an owner of the linked study may delete the candidate", 1, deleted)
+        assertEquals("23503", failure.sqlState)
     }
 
     @Test

@@ -10,20 +10,13 @@ import org.junit.Test
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.OffsetDateTime
+import java.util.UUID
 
 class V112RuntimeAuditPrivilegeMigrationTest {
     @Test fun requestRoleKeepsAppendAndPublishButLosesReadAndDelete() {
         ChronicleContractTestSchema.prodPostgresContainer("runtime_audit_privileges").use { pg ->
             pg.start(); ChronicleContractTestSchema.waitForQueryReady(pg)
-            pg.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
-            assertTrue(FlywayMigrationService.baseConfiguration().dataSource(pg.jdbcUrl, pg.username, pg.password)
-                .target("111").load().migrate().success)
-            pg.createConnection("").use { c -> c.createStatement().use {
-                // The role bootstrap's blanket grant, as deployed before V112.
-                it.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO chronicle_app")
-            } }
-
-            assertTrue(ChronicleContractTestSchema.migrate(pg).success)
+            ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(pg)
 
             pg.createConnection("").use { c ->
                 for (table in listOf("audit", "audit_buffer")) {
@@ -37,6 +30,8 @@ class V112RuntimeAuditPrivilegeMigrationTest {
                     c.prepareStatement(PostgresEventTables.buildMultilineInsertAuditEvents(1, true)).use { ps ->
                         (1..9).forEach { ps.setString(it, "v112") }
                         ps.setObject(10, OffsetDateTime.now())
+                        ps.setObject(11, UUID.randomUUID())
+                        (12..15).forEach { ps.setString(it, "v112") }
                         assertEquals(1, ps.executeUpdate())
                     }
                     s.executeUpdate("UPDATE data_deletion_audit_outbox SET published_at = now() WHERE false")

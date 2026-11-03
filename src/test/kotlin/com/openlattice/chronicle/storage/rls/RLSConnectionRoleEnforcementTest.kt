@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.storage.rls
 
+import com.openlattice.chronicle.data.ParticipationStatus
+
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.After
@@ -16,7 +18,7 @@ import java.sql.SQLException
 import java.util.UUID
 
 /**
- * Verifies the PRODUCTION request-path privilege drop — the W1 fix.
+ * Verifies the PRODUCTION request-path privilege drop.
  *
  * [RLSStudyIsolationTest] proves the RLS *policy* is correct by manually issuing
  * `SET LOCAL ROLE` to a non-superuser role. That cannot catch the actual production
@@ -42,7 +44,11 @@ class RLSConnectionRoleEnforcementTest {
         private const val APP_ROLE = "chronicle_app"
         private const val APP_PASSWORD = "chronicle-app-test-password"
         private val STUDY_A = UUID.randomUUID()
+        private val CANDIDATE = UUID.randomUUID()
         private val STUDY_B = UUID.randomUUID()
+        private const val AUDIT_INSERT_SQL = "INSERT INTO audit (event_id, description, acl_key, id, principal_type, " +
+            "principal_id, audit_event_type, study_id, organization_id, data) VALUES (?, ?, 'fixture', " +
+            "gen_random_uuid()::text, 'USER', 'fixture', 'VIEW', gen_random_uuid()::text, gen_random_uuid()::text, '{}')"
     }
 
     private lateinit var rawHds: HikariDataSource
@@ -52,6 +58,7 @@ class RLSConnectionRoleEnforcementTest {
 
     @Before
     fun setUp() {
+        previousAppRole = RLSDataSources.appRole
         // Pool authenticates as the container superuser — mirrors the prod `chronicle` pool.
         rawHds = HikariDataSource(HikariConfig().apply {
             jdbcUrl = postgres.jdbcUrl
@@ -61,35 +68,25 @@ class RLSConnectionRoleEnforcementTest {
             minimumIdle = 1
         })
 
+        ChronicleContractTestSchema.resetSchemaAndMigrations(postgres)
         rawHds.connection.use { c ->
             c.createStatement().use { st ->
-                st.execute(
-                    """
-                    CREATE TABLE study_participants (
-                        study_id UUID NOT NULL,
-                        participant_id TEXT NOT NULL,
-                        PRIMARY KEY (study_id, participant_id)
-                    )
-                    """.trimIndent(),
-                )
-            }
-            // Production RLS objects, verbatim: chronicle_has_study_access() + FORCE RLS + policy.
-            installProductionRlsMigration(c)
-            c.createStatement().use { st ->
-                // Minimal append-only audit table whose immutability is enforced by role-level REVOKE.
-                st.execute("CREATE TABLE audit_logs (id UUID PRIMARY KEY, action TEXT NOT NULL)")
                 // The non-superuser role the request path drops to.
                 st.execute(
-                    "CREATE ROLE $APP_ROLE WITH LOGIN PASSWORD '$APP_PASSWORD' NOSUPERUSER NOBYPASSRLS"
+                "ALTER ROLE $APP_ROLE WITH LOGIN PASSWORD '$APP_PASSWORD' NOSUPERUSER NOBYPASSRLS"
                 )
-                st.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON study_participants TO $APP_ROLE")
-                st.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON audit_logs TO $APP_ROLE")
-                // Audit immutability (mirrors V15/V25/V26): append-only for the application role.
-                st.execute("REVOKE UPDATE, DELETE ON audit_logs FROM $APP_ROLE")
+            }
+            c.createStatement().use { statement ->
+                statement.execute("INSERT INTO studies (study_id, title) VALUES ('$STUDY_A', 'study A'), ('$STUDY_B', 'study B')")
+                statement.execute("INSERT INTO candidates (candidate_id) VALUES ('$CANDIDATE')")
             }
             // Seed as the superuser (bypasses WITH CHECK).
             c.prepareStatement(
-                "INSERT INTO study_participants VALUES (?, ?), (?, ?)",
+                """
+                INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES
+                (?, ?, '$CANDIDATE', '${ParticipationStatus.ENROLLED.name}'),
+                (?, ?, '$CANDIDATE', '${ParticipationStatus.ENROLLED.name}')
+                """.trimIndent(),
             ).use { statement ->
                 statement.setObject(1, STUDY_A)
                 statement.setString(2, "p-a")
@@ -97,7 +94,7 @@ class RLSConnectionRoleEnforcementTest {
                 statement.setString(4, "p-b")
                 statement.executeUpdate()
             }
-            c.prepareStatement("INSERT INTO audit_logs VALUES (?, ?)").use { statement ->
+            c.prepareStatement(AUDIT_INSERT_SQL).use { statement ->
                 statement.setObject(1, UUID.randomUUID())
                 statement.setString(2, "seed")
                 statement.executeUpdate()
@@ -112,34 +109,16 @@ class RLSConnectionRoleEnforcementTest {
             minimumIdle = 1
         })
         rlsHds = RLSDataSources.wrapIfRequestScoped(rawHds)
-        previousAppRole = RLSDataSources.appRole
         RLSDataSources.appRole = APP_ROLE
-    }
-
-    private fun installProductionRlsMigration(connection: Connection) {
-        val migration = requireNotNull(
-            javaClass.getResourceAsStream("/db/migration/V1__enable_row_level_security.sql"),
-        ) {
-            "V1 migration not found on the classpath"
-        }.bufferedReader().use { it.readText() }
-        connection.createStatement().use { statement ->
-            statement.execute(migration)
-        }
     }
 
     @After
     fun tearDown() {
         RLSDataSources.appRole = previousAppRole
         if (::rawHds.isInitialized) {
+            ChronicleContractTestSchema.clearSchema(postgres)
             if (::restrictedHds.isInitialized) {
                 restrictedHds.close()
-            }
-            rawHds.connection.use { c ->
-                c.createStatement().use { st ->
-                    st.execute("DROP TABLE IF EXISTS study_participants")
-                    st.execute("DROP TABLE IF EXISTS audit_logs")
-                    st.execute("DROP ROLE IF EXISTS $APP_ROLE")
-                }
             }
             rawHds.close()
         }
@@ -232,18 +211,19 @@ class RLSConnectionRoleEnforcementTest {
     }
 
     @Test
-    fun `with no request context the connection keeps the privileged pool role`() {
-        // No RLSRequestContext -> wrapper returns the raw connection: this is the bootstrap /
-        // upgrade-runner path, which must keep full privileges and (as a superuser) bypass RLS.
+    fun `with no request context the connection is anonymous and cannot bypass row policies`() {
+        RLSRequestContext.clear()
         rlsHds.connection.use { c ->
-            val isSuper = c.createStatement().use { st ->
-                st.executeQuery("SELECT rolsuper FROM pg_roles WHERE rolname = current_user").use { rs ->
+            val attributes = c.createStatement().use { st ->
+                st.executeQuery("SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user").use { rs ->
                     rs.next()
-                    rs.getBoolean(1)
+                    Triple(rs.getString(1), rs.getBoolean(2), rs.getBoolean(3))
                 }
             }
-            assertTrue("bootstrap path must keep the privileged pool role", isSuper)
-            assertEquals(setOf(STUDY_A.toString(), STUDY_B.toString()), visibleStudyIds(c))
+            assertEquals(APP_ROLE, attributes.first)
+            assertFalse(attributes.second)
+            assertFalse(attributes.third)
+            assertEquals(emptySet<String>(), visibleStudyIds(c))
         }
     }
 
@@ -258,27 +238,52 @@ class RLSConnectionRoleEnforcementTest {
     }
 
     @Test
-    fun `audit_logs DELETE is rejected on the request path even for admins`() {
+    fun `audit DELETE is rejected on the request path even for admins`() {
         assertThrows(SQLException::class.java) {
             underRequestContext(setOf(STUDY_A), isAdmin = true) { c ->
-                c.createStatement().use { st -> st.executeUpdate("DELETE FROM audit_logs") }
+                c.createStatement().use { st -> st.executeUpdate("DELETE FROM audit") }
             }
         }
     }
 
     @Test
-    fun `audit_logs UPDATE is rejected on the request path even for admins`() {
+    fun `audit row policy deletes nothing even for a role holding DELETE and the admin flag`() {
+        // The table owner keeps DELETE for the superuser purge procedure; the row policy is what stops it.
+        rawHds.connection.use { c -> c.createStatement().use { it.execute("GRANT DELETE ON audit TO $APP_ROLE") } }
+        try {
+            restrictedHds.connection.use { c ->
+                c.createStatement().use { st ->
+                    st.execute("SET app.is_admin = 'true'")
+                    assertEquals(0, st.executeUpdate("DELETE FROM audit"))
+                }
+            }
+        } finally {
+            rawHds.connection.use { c -> c.createStatement().use { it.execute("REVOKE DELETE ON audit FROM $APP_ROLE") } }
+        }
+    }
+
+    @Test
+    fun `audit UPDATE is rejected on the request path even for admins`() {
         assertThrows(SQLException::class.java) {
             underRequestContext(setOf(STUDY_A), isAdmin = true) { c ->
-                c.createStatement().use { st -> st.executeUpdate("UPDATE audit_logs SET action = 'tamper'") }
+                c.createStatement().use { st -> st.executeUpdate("UPDATE audit SET description = 'tamper'") }
+            }
+        }
+        rawHds.connection.use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("SELECT description FROM audit").use { rows ->
+                    assertTrue(rows.next())
+                    assertEquals("seed", rows.getString(1))
+                    assertFalse(rows.next())
+                }
             }
         }
     }
 
     @Test
-    fun `audit_logs INSERT is allowed on the request path`() {
+    fun `audit INSERT is allowed on the request path`() {
         val inserted = underRequestContext(setOf(STUDY_A), isAdmin = false) { c ->
-            c.prepareStatement("INSERT INTO audit_logs VALUES (?, ?)").use { statement ->
+            c.prepareStatement(AUDIT_INSERT_SQL).use { statement ->
                 statement.setObject(1, UUID.randomUUID())
                 statement.setString(2, "request-write")
                 statement.executeUpdate()

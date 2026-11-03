@@ -1,6 +1,7 @@
 package com.openlattice.chronicle.storage.rls
 
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer.withAdminContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -11,7 +12,7 @@ import java.sql.DriverManager
 import java.sql.SQLException
 import java.util.UUID
 
-/** Real-PostgreSQL contracts for the V93 trigger owner, ACL, and legacy backfill boundary. */
+/** Fresh-schema revision authority under a non-bypass function owner and hostile grants. */
 class DataCollectionRevisionLedgerRlsTest {
     companion object {
         @ClassRule
@@ -19,199 +20,92 @@ class DataCollectionRevisionLedgerRlsTest {
         val postgres = ChronicleContractTestSchema.prodPostgresContainer("chronicle_revision_rls_test")
 
         private const val MIGRATION_ROLE = "chronicle_revision_migrator_test"
-        private val migration: String by lazy {
-            requireNotNull(
-                DataCollectionRevisionLedgerRlsTest::class.java.getResourceAsStream(
-                    "/db/migration/V93__make_data_collection_revisions_transactional.sql",
-                ),
-            ).bufferedReader().use { it.readText() }
-        }
+
     }
 
     @Test
     fun `non bypass migration owner can record through trigger while direct ledger writes stay denied`() {
         freshDatabase("revision_owner").use { connection ->
-            installRoleAndTableShells(connection)
-            val studyId = UUID.randomUUID()
-            connection.prepareStatement("INSERT INTO studies (study_id, settings) VALUES (?, '{}'::jsonb)").use {
-                it.setObject(1, studyId)
-                assertEquals(1, it.executeUpdate())
-            }
+            withAdminContext(connection) {
+                configureRestrictedLedgerOwner(connection)
+                val studyId = UUID.randomUUID()
+                insertStudy(connection, studyId, "{}")
 
-            applyMigrationAsRestrictedOwner(connection)
-            replayBlanketRuntimeGrantsAndFinalRevokes(connection)
+                replayBlanketRuntimeGrantsAndFinalRevokes(connection)
 
-            assertFalse(hasFunctionPrivilege(connection, "chronicle_app"))
-            assertFalse(hasFunctionPrivilege(connection, "chronicle_admin"))
-            assertFalse(hasSchemaCreatePrivilege(connection, "chronicle_app"))
-            assertFalse(hasSchemaCreatePrivilege(connection, "chronicle_admin"))
+                assertFalse(hasFunctionPrivilege(connection, "chronicle_app"))
+                assertFalse(hasFunctionPrivilege(connection, "chronicle_admin"))
+                assertFalse(hasSchemaCreatePrivilege(connection, "chronicle_app"))
+                assertFalse(hasSchemaCreatePrivilege(connection, "chronicle_admin"))
 
-            connection.autoCommit = false
-            connection.createStatement().use { it.execute("SET LOCAL ROLE chronicle_app") }
-            connection.prepareStatement(
-                "UPDATE studies SET settings = ?::jsonb WHERE study_id = ?",
-            ).use {
-                it.setString(1, "{\"DataCollection\":${dataCollectionSettings(version = 7, enabled = true)}}")
-                it.setObject(2, studyId)
-                assertEquals(1, it.executeUpdate())
-            }
-            connection.commit()
-            connection.autoCommit = true
-
-            assertEquals(1, ledgerCount(connection, studyId, 7))
-            assertEquals(1, ledgerCountAsRole(connection, "chronicle_app", studyId, 7))
-            assertDirectInsertDenied(connection, "chronicle_app", studyId, version = 8)
-            assertDirectInsertDenied(connection, "chronicle_admin", studyId, version = 9)
-            assertDirectInsertDenied(connection, MIGRATION_ROLE, studyId, version = 10)
-
-            listOf("UPDATE", "DELETE", "TRUNCATE").forEach { operation ->
-                assertMutationDeniedForRuntimeAdmin(connection, operation, studyId)
-            }
-            assertCompatibleAttackerTriggerRejected(connection, studyId)
-        }
-    }
-
-    @Test
-    fun `ambiguous legacy revision aborts before current payload can become authority`() {
-        freshDatabase("revision_ambiguity").use { connection ->
-            installRoleAndTableShells(connection)
-            val studyId = UUID.randomUUID()
-            val revisionA = dataCollectionSettings(version = 11, enabled = false)
-            val revisionB = dataCollectionSettings(version = 11, enabled = true)
-            connection.prepareStatement("INSERT INTO studies (study_id, settings) VALUES (?, ?::jsonb)").use {
-                it.setObject(1, studyId)
-                it.setString(2, "{\"DataCollection\":$revisionB}")
-                assertEquals(1, it.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO study_settings_audit (study_id, setting_key, before_value, after_value)
-                VALUES (?, 'DataCollection', NULL, ?::jsonb),
-                       (?, 'DataCollection', NULL, ?::jsonb)
-                """.trimIndent(),
-            ).use {
-                it.setObject(1, studyId)
-                it.setString(2, revisionA)
-                it.setObject(3, studyId)
-                it.setString(4, revisionB)
-                assertEquals(2, it.executeUpdate())
-            }
-
-            connection.autoCommit = false
-            connection.createStatement().use { it.execute("SET LOCAL ROLE $MIGRATION_ROLE") }
-            val failure = assertThrows(SQLException::class.java) {
-                connection.createStatement().use { it.execute(migration) }
-            }
-            assertFalse(
-                "migration must identify ambiguous authority instead of accepting current content",
-                failure.message.orEmpty().contains("success", ignoreCase = true),
-            )
-            connection.rollback()
-            connection.autoCommit = true
-
-            connection.prepareStatement("SELECT to_regclass('public.data_collection_settings_revisions') IS NULL").use {
-                it.executeQuery().use { result ->
-                    result.next()
-                    assertEquals(true, result.getBoolean(1))
+                connection.autoCommit = false
+                connection.createStatement().use { it.execute("SET LOCAL ROLE chronicle_app") }
+                connection.prepareStatement(
+                    "UPDATE studies SET settings = ?::jsonb WHERE study_id = ?",
+                ).use {
+                    it.setString(1, "{\"DataCollection\":${dataCollectionSettings(version = 7, enabled = true)}}")
+                    it.setObject(2, studyId)
+                    assertEquals(1, it.executeUpdate())
                 }
+                connection.commit()
+                connection.autoCommit = true
+
+                assertEquals(1, ledgerCount(connection, studyId, 7))
+                assertEquals(1, ledgerCountAsRole(connection, "chronicle_app", studyId, 7))
+                assertDirectInsertDenied(connection, "chronicle_app", studyId, version = 8)
+                assertDirectInsertDenied(connection, "chronicle_admin", studyId, version = 9)
+                assertDirectInsertDenied(connection, MIGRATION_ROLE, studyId, version = 10)
+
+                listOf("UPDATE", "DELETE", "TRUNCATE").forEach { operation ->
+                    assertMutationDeniedForRuntimeAdmin(connection, operation, studyId)
+                }
+                assertCompatibleAttackerTriggerRejected(connection, studyId)
             }
         }
     }
 
     @Test
-    fun `ambiguous historical revision is omitted after study advances to unambiguous current version`() {
-        freshDatabase("revision_historical_ambiguity").use { connection ->
-            installRoleAndTableShells(connection)
-            val studyId = UUID.randomUUID()
-            val ambiguousA = dataCollectionSettings(version = 11, enabled = false)
-            val ambiguousB = dataCollectionSettings(version = 11, enabled = true)
-            val current = dataCollectionSettings(version = 12, enabled = true)
-            connection.prepareStatement("INSERT INTO studies (study_id, settings) VALUES (?, ?::jsonb)").use {
-                it.setObject(1, studyId)
-                it.setString(2, "{\"DataCollection\":$current}")
-                assertEquals(1, it.executeUpdate())
-            }
-            connection.prepareStatement(
-                """
-                INSERT INTO study_settings_audit (study_id, setting_key, before_value, after_value)
-                VALUES (?, 'DataCollection', NULL, ?::jsonb),
-                       (?, 'DataCollection', NULL, ?::jsonb),
-                       (?, 'DataCollection', NULL, ?::jsonb)
-                """.trimIndent(),
-            ).use {
-                it.setObject(1, studyId)
-                it.setString(2, ambiguousA)
-                it.setObject(3, studyId)
-                it.setString(4, ambiguousB)
-                it.setObject(5, studyId)
-                it.setString(6, current)
-                assertEquals(3, it.executeUpdate())
-            }
-
-            applyMigrationAsRestrictedOwner(connection)
-
-            assertEquals(0, ledgerCount(connection, studyId, 11))
-            assertEquals(1, ledgerCount(connection, studyId, 12))
-        }
-    }
-
-    @Test
-    fun `legacy collection policy inserts without a synthetic revision while versioned policy is recorded`() {
+    fun `unversioned and malformed collection policy is rejected while versioned policy is recorded`() {
         freshDatabase("revision_new_study").use { connection ->
-            installRoleAndTableShells(connection)
-            applyMigrationAsRestrictedOwner(connection)
-
-            val legacyStudyId = UUID.randomUUID()
-            connection.prepareStatement("INSERT INTO studies (study_id, settings) VALUES (?, ?::jsonb)").use {
-                it.setObject(1, legacyStudyId)
-                it.setString(
-                    2,
-                    """{"DataCollection":{"appUsageFrequency":"DAILY"}}""",
-                )
-                assertEquals(1, it.executeUpdate())
-            }
-            assertEquals(0, ledgerCountForStudy(connection, legacyStudyId))
-
-            val malformedStudyId = UUID.randomUUID()
-            assertThrows(SQLException::class.java) {
-                connection.prepareStatement("INSERT INTO studies (study_id, settings) VALUES (?, ?::jsonb)").use {
-                    it.setObject(1, malformedStudyId)
-                    it.setString(2, """{"DataCollection":{"settingsVersion":null}}""")
-                    it.executeUpdate()
+            withAdminContext(connection) {
+                configureRestrictedLedgerOwner(connection)
+                for (candidate in listOf("""{"appUsageFrequency":"DAILY"}""", """{"settingsVersion":null}""")) {
+                    val studyId = UUID.randomUUID()
+                    assertThrows(SQLException::class.java) {
+                        insertStudy(connection, studyId, "{\"DataCollection\":$candidate}")
+                    }
+                    assertEquals(0, studyCount(connection, studyId))
+                    assertEquals(0, ledgerCountForStudy(connection, studyId))
                 }
+                val versionedStudyId = UUID.randomUUID()
+                insertStudy(connection, versionedStudyId,
+                    "{\"DataCollection\":${dataCollectionSettings(version = 1, enabled = false)}}")
+                assertEquals(1, ledgerCount(connection, versionedStudyId, version = 1))
             }
-            assertEquals(0, studyCount(connection, malformedStudyId))
+        }
+    }
 
-            val versionedStudyId = UUID.randomUUID()
-            connection.prepareStatement("INSERT INTO studies (study_id, settings) VALUES (?, ?::jsonb)").use {
-                it.setObject(1, versionedStudyId)
-                it.setString(2, "{\"DataCollection\":${dataCollectionSettings(version = 1, enabled = false)}}")
-                assertEquals(1, it.executeUpdate())
-            }
-            assertEquals(1, ledgerCount(connection, versionedStudyId, version = 1))
+    private fun insertStudy(connection: Connection, studyId: UUID, settingsJson: String) {
+        connection.prepareStatement("INSERT INTO studies (study_id, title, settings) VALUES (?, 'revision fixture', ?::jsonb)").use {
+            it.setObject(1, studyId)
+            it.setString(2, settingsJson)
+            assertEquals(1, it.executeUpdate())
         }
     }
 
     private fun freshDatabase(prefix: String): Connection {
-        val database = "${prefix}_${UUID.randomUUID().toString().replace("-", "")}"
-        postgres.createConnection("").use { admin ->
-            admin.createStatement().use { it.execute("CREATE DATABASE $database") }
-        }
-        val jdbcUrl = postgres.jdbcUrl.substringBeforeLast('/') + "/$database"
-        return DriverManager.getConnection(jdbcUrl, postgres.username, postgres.password)
+        val jdbcUrl = ChronicleContractTestSchema.createDatabase(postgres, prefix)
+        val connection = DriverManager.getConnection(jdbcUrl, postgres.username, postgres.password)
+        ChronicleContractTestSchema.applyFrameworkSchema(connection)
+        check(ChronicleContractTestSchema.flywayFor(jdbcUrl, postgres.username, postgres.password).migrate().success)
+        return connection
     }
 
-    private fun installRoleAndTableShells(connection: Connection) {
+    private fun configureRestrictedLedgerOwner(connection: Connection) {
         connection.createStatement().use { statement ->
             statement.execute(
                 """
                 DO ${'$'}${'$'} BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'chronicle_app') THEN
-                        CREATE ROLE chronicle_app NOLOGIN NOSUPERUSER NOBYPASSRLS;
-                    END IF;
-                    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'chronicle_admin') THEN
-                        CREATE ROLE chronicle_admin NOLOGIN NOSUPERUSER BYPASSRLS;
-                    END IF;
                     IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '$MIGRATION_ROLE') THEN
                         CREATE ROLE $MIGRATION_ROLE NOLOGIN NOSUPERUSER NOBYPASSRLS;
                     END IF;
@@ -219,48 +113,10 @@ class DataCollectionRevisionLedgerRlsTest {
                 """.trimIndent(),
             )
             statement.execute("GRANT USAGE, CREATE ON SCHEMA public TO $MIGRATION_ROLE")
-            statement.execute(
-                """
-                CREATE FUNCTION chronicle_has_study_access(UUID)
-                RETURNS BOOLEAN LANGUAGE sql STABLE AS 'SELECT true'
-                """.trimIndent(),
-            )
-            statement.execute(
-                """
-                CREATE TABLE studies (
-                    study_id UUID PRIMARY KEY,
-                    settings JSONB NOT NULL DEFAULT '{}'::jsonb
-                )
-                """.trimIndent(),
-            )
-            statement.execute(
-                """
-                CREATE TABLE study_settings_audit (
-                    study_id UUID NOT NULL,
-                    setting_key TEXT NOT NULL,
-                    before_value JSONB,
-                    after_value JSONB
-                )
-                """.trimIndent(),
-            )
             statement.execute("ALTER TABLE studies OWNER TO $MIGRATION_ROLE")
             statement.execute("ALTER TABLE study_settings_audit OWNER TO $MIGRATION_ROLE")
-        }
-    }
-
-    private fun applyMigrationAsRestrictedOwner(connection: Connection) {
-        connection.autoCommit = false
-        try {
-            connection.createStatement().use { statement ->
-                statement.execute("SET LOCAL ROLE $MIGRATION_ROLE")
-                statement.execute(migration)
-            }
-            connection.commit()
-        } catch (exception: Exception) {
-            connection.rollback()
-            throw exception
-        } finally {
-            connection.autoCommit = true
+            statement.execute("ALTER TABLE data_collection_settings_revisions OWNER TO $MIGRATION_ROLE")
+            statement.execute("ALTER FUNCTION record_data_collection_settings_revision() OWNER TO $MIGRATION_ROLE")
         }
     }
 
@@ -308,7 +164,7 @@ class DataCollectionRevisionLedgerRlsTest {
                             "FOR EACH ROW EXECUTE FUNCTION record_data_collection_settings_revision()",
                     )
                 }
-                it.prepareStatement("INSERT INTO forged_studies VALUES (?, ?::jsonb)").use { statement ->
+                it.prepareStatement("INSERT INTO forged_studies VALUES (?, 'revision fixture', ?::jsonb)").use { statement ->
                     statement.setObject(1, studyId)
                     statement.setString(2, "{\"DataCollection\":${dataCollectionSettings(99, enabled = true)}}")
                     statement.executeUpdate()

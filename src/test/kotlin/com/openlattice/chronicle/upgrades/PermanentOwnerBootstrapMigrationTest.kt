@@ -27,13 +27,7 @@ class PermanentOwnerBootstrapMigrationTest {
             postgres = ChronicleContractTestSchema.prodPostgresContainer("chronicle_owner_bootstrap_upgrade")
             postgres.start()
             ChronicleContractTestSchema.waitForQueryReady(postgres)
-            postgres.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
-
-            val result = flywayTargeting("66").migrate()
-            check(result.success) { "Flyway failed to establish the V66 upgrade boundary: ${result.warnings}" }
-            check(result.targetSchemaVersion == "66") {
-                "Expected the pre-V67 schema boundary, got ${result.targetSchemaVersion}"
-            }
+            ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(postgres)
         }
 
         @AfterClass
@@ -42,11 +36,7 @@ class PermanentOwnerBootstrapMigrationTest {
             postgres.stop()
         }
 
-        private fun flywayTargeting(version: String) =
-            FlywayMigrationService.baseConfiguration()
-                .dataSource(postgres.jdbcUrl, postgres.username, postgres.password)
-                .target(version)
-                .load()
+
     }
 
     @Test
@@ -67,10 +57,6 @@ class PermanentOwnerBootstrapMigrationTest {
             }
         }
 
-        val migration = flywayTargeting("67").migrate()
-        assertTrue(migration.success)
-        assertEquals(1, migration.migrationsExecuted)
-        assertEquals("67", migration.targetSchemaVersion)
 
         postgres.createConnection("").use { connection ->
             val reservedAclKey = listOf(UUID.randomUUID())

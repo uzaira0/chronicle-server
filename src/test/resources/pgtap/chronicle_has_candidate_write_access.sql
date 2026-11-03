@@ -1,4 +1,5 @@
 SELECT plan(8);
+INSERT INTO studies (study_id, title) VALUES ('33333333-3333-3333-3333-333333333333', 'candidate fixture');
 INSERT INTO candidates (candidate_id, expiration_date)
 VALUES ('11111111-1111-1111-1111-111111111111', now() + interval '1 day'),
     ('22222222-2222-2222-2222-222222222222', now() + interval '1 day');
@@ -34,7 +35,7 @@ SELECT results_eq(format('SELECT * FROM pg_temp.candidate_change(%L)', $sql$UPDA
 SELECT set_config('app.is_admin', 'true', true);
 SELECT results_eq(format('SELECT * FROM pg_temp.candidate_change(%L)', $sql$DELETE FROM candidates WHERE candidate_id = '22222222-2222-2222-2222-222222222222' RETURNING candidate_id::text$sql$),
     ARRAY['22222222-2222-2222-2222-222222222222'], 'admin may delete orphan candidate');
-SELECT results_eq(format('SELECT * FROM pg_temp.candidate_change(%L)', $sql$DELETE FROM candidates WHERE candidate_id = '11111111-1111-1111-1111-111111111111' RETURNING candidate_id::text$sql$),
-    ARRAY['11111111-1111-1111-1111-111111111111'], 'admin may delete linked candidate');
+SELECT throws_ok($sql$DELETE FROM candidates WHERE candidate_id = '11111111-1111-1111-1111-111111111111'$sql$,
+    '23503', NULL, 'linked candidate cannot erase its enrollment through a cascading delete');
 RESET ROLE;
 SELECT * FROM finish();
