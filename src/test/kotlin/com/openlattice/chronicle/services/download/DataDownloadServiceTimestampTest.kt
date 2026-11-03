@@ -22,6 +22,17 @@ class DataDownloadServiceTimestampTest {
     private val sampleTimestamp = PostgresColumnDefinition("sample_timestamp", PostgresDatatype.TIMESTAMPTZ)
 
     @Test
+    fun usageRowsRetainRetryIdentityAndNullableText() {
+        val rs = Mockito.mock(ResultSet::class.java)
+        val id = "00000000-0000-4000-8000-000000000001"
+        Mockito.`when`(rs.getString(PostgresEventColumns.CLIENT_EVENT_ID.name)).thenReturn(id)
+        val row = DataDownloadService.usageEventRow(rs)
+        assertEquals(id, row[PostgresEventColumns.CLIENT_EVENT_ID.name])
+        org.junit.Assert.assertTrue(row.containsKey(PostgresEventColumns.ACTIVITY_CLASS.name))
+        assertNull(row[PostgresEventColumns.ACTIVITY_CLASS.name])
+    }
+
+    @Test
     fun timestampsRenderInTheRowTimezone() {
         val rs = Mockito.mock(ResultSet::class.java)
         Mockito.`when`(rs.getString(PostgresColumns.SENSOR_TIMEZONE.name)).thenReturn("America/Santiago")

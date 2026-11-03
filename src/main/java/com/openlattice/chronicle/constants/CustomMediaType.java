@@ -26,6 +26,8 @@ import org.springframework.http.MediaType;
 
 public class CustomMediaType implements Serializable {
 
+    public static final String FILE_TYPE_PARAMETER = "fileType";
+
     private static final long     serialVersionUID = -948015479363478194L;
 
     public static final MediaType TEXT_CSV;

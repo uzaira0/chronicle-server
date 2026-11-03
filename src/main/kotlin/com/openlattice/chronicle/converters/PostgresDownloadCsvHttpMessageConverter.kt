@@ -18,7 +18,9 @@
  */
 package com.openlattice.chronicle.converters
 
+import com.openlattice.chronicle.storage.withFailureCleanup
 import com.fasterxml.jackson.databind.ObjectWriter
+import com.fasterxml.jackson.databind.SequenceWriter
 import com.fasterxml.jackson.databind.SerializationFeature
 import com.fasterxml.jackson.dataformat.csv.CsvGenerator
 import com.fasterxml.jackson.dataformat.csv.CsvMapper
@@ -28,7 +30,6 @@ import com.fasterxml.jackson.datatype.jdk8.Jdk8Module
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.blackbird.BlackbirdModule
 import com.geekbeast.postgres.PostgresDatatype
-import com.openlattice.chronicle.services.export.ExportFileWriter
 import com.openlattice.chronicle.constants.CustomMediaType
 import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresEventColumns
@@ -114,27 +115,48 @@ internal fun downloadCsvMapper(): CsvMapper = CsvMapper().apply {
     configure(CsvGenerator.Feature.STRICT_CHECK_FOR_QUOTING, true)
 }
 
-/**
- * Streams [rows] as CSV and finalizes the writer (header for an empty result, flush, end of stream)
- * only on success. A query, mapping or client-write failure must not be closed into what looks like a
- * complete 200 download, so it propagates with the writer unclosed. The row iterator is closed on every
- * path so its pooled connection is returned at once instead of at the iterator watchdog's expiry.
- */
+private val spreadsheetFormulaPrefixes = setOf('=', '+', '-', '@')
+private val spreadsheetControlPrefixes = setOf('\t', '\r', '\n')
+
+private fun spreadsheetSafeString(value: String): String {
+    if (value.isEmpty()) return value
+    val first = value.first()
+    val firstNonSpace = value.firstOrNull { it != ' ' }
+    return if (
+        first in spreadsheetControlPrefixes ||
+        firstNonSpace in spreadsheetFormulaPrefixes
+    ) {
+        "'$value"
+    } else {
+        value
+    }
+}
+
 internal fun spreadsheetSafeCsvValue(value: Any?): Any? = when (value) {
-    is String -> ExportFileWriter.spreadsheetSafeString(value)
+    is String -> spreadsheetSafeString(value)
     is Map<*, *> -> value.mapValues { spreadsheetSafeCsvValue(it.value) }
     is Iterable<*> -> value.map(::spreadsheetSafeCsvValue)
     is Array<*> -> value.map(::spreadsheetSafeCsvValue)
     else -> value
 }
 
-internal fun writeCsvRows(writer: ObjectWriter, out: OutputStream, rows: Iterable<*>) {
+internal fun writeCsvRows(writer: ObjectWriter, out: OutputStream, rows: Iterable<*>) =
+    writeRows(rows, ::spreadsheetSafeCsvValue) { writer.writeValues(out) }
+
+internal fun writeJsonRows(writer: ObjectWriter, out: OutputStream, rows: Iterable<*>) =
+    writeRows(rows, { it }) { writer.writeValuesAsArray(out) }
+
+/**
+ * Streams [rows] and finalizes the output (CSV header for an empty result, closing JSON bracket, flush) only on
+ * success. A query, mapping or client-write failure must not be closed into what looks like a complete 200
+ * download, so it propagates with the writer unclosed. The row iterator is closed on every path so its pooled
+ * connection is returned at once instead of at the iterator watchdog's expiry.
+ */
+private fun writeRows(rows: Iterable<*>, row: (Any?) -> Any?, open: () -> SequenceWriter) {
     val iterator = rows.iterator()
-    try {
-        val sequence = writer.writeValues(out)
-        iterator.forEach { sequence.write(spreadsheetSafeCsvValue(it)) }
+    withFailureCleanup({ (iterator as? AutoCloseable)?.close() }) {
+        val sequence = open()
+        iterator.forEach { sequence.write(row(it)) }
         sequence.close()
-    } finally {
-        (iterator as? AutoCloseable)?.close()
     }
 }

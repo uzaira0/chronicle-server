@@ -5,34 +5,25 @@ import com.geekbeast.postgres.PostgresColumnDefinition
 import com.geekbeast.postgres.PostgresDatatype
 import com.geekbeast.postgres.PostgresTableDefinition
 import com.geekbeast.postgres.streams.BasePostgresIterable
-import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
+import com.openlattice.chronicle.storage.StreamingReadTransaction
+import com.openlattice.chronicle.storage.studyReadScope
+import com.openlattice.chronicle.storage.zoneOrOffset
 import com.openlattice.chronicle.constants.OutputConstants
-import com.openlattice.chronicle.constants.ParticipantDataType
 import com.openlattice.chronicle.converters.PostgresDownloadWrapper
-import com.openlattice.chronicle.sensorkit.SensorType
 import com.openlattice.chronicle.services.surveys.SurveysService
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.APP_USAGE_SURVEY
 import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.APP_USERS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SUBMISSION_DATE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SURVEY_DATE
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APPLICATION_LABEL
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.EVENT_TYPE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.COLLECTED_AT
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.UPLOADED_AT
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.ACCELEROMETER_SENSOR_COLS
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_DATETIME_START
+import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.CLIENT_EVENT_ID
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.ACTIVITY_CLASS
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_PACKAGE_NAME
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_TIMEZONE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.DEVICE_USAGE_SENSOR_COLS
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.INTERACTION_TYPE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.KEYBOARD_METRICS_SENSOR_COLS
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.MESSAGES_USAGE_SENSOR_COLS
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.PARTICIPANT_ID
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.PHONE_USAGE_SENSOR_COLS
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.RECORDED_DATE_TIME
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.SENSOR_TYPE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.SHARED_SENSOR_COLS
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.TIMESTAMP
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.TIMEZONE
@@ -50,14 +41,15 @@ import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.HEALT
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.INTERACTION_EVENTS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.NOTIFICATION_ACTIVITY
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.SLEEP_EVENTS
+import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.IOS_SCREEN_TIME_USAGE
+import com.openlattice.chronicle.storage.ScreenTimeUsageCaptures
 import com.openlattice.chronicle.storage.PostgresEventTables.Companion.CHRONICLE_USAGE_EVENTS
-import com.openlattice.chronicle.storage.PostgresEventTables.Companion.IOS_SENSOR_DATA
-import com.openlattice.chronicle.storage.PostgresEventTables.Companion.PREPROCESSED_USAGE_EVENTS
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.ParticipantDataType as StudyParticipantDataType
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.time.OffsetDateTime
+import java.time.LocalDate
 import java.time.ZoneId
 import java.util.*
 
@@ -71,13 +63,6 @@ public open class DataDownloadService(
     internal companion object {
         private val CHRONICLE_USAGE_EVENTS_DEFS = CHRONICLE_USAGE_EVENTS.columns.map { it.name }
         private val CHRONICLE_USAGE_EVENTS_COLS = CHRONICLE_USAGE_EVENTS_DEFS.joinToString(",")
-        private val CHRONICLE_USAGE_EVENT_SINGLE_SQL = """
-            SELECT $CHRONICLE_USAGE_EVENTS_COLS 
-            FROM ${CHRONICLE_USAGE_EVENTS.name} 
-            WHERE ${STUDY_ID.name} = ?
-            AND ${PARTICIPANT_ID.name} = ?
-            ORDER BY ${TIMESTAMP.name} ASC
-        """.trimIndent()
 
         private fun chronicleUsageEventSql(filterParticipants: Boolean): String = """
             SELECT $CHRONICLE_USAGE_EVENTS_COLS
@@ -89,8 +74,8 @@ public open class DataDownloadService(
             ORDER BY ${TIMESTAMP.name} ASC
         """.trimIndent()
 
-        private val PREPROCESSED_DATA_COLS = PREPROCESSED_USAGE_EVENTS.columns.map { it.name }
-        private val PREPROCESSED_DATA_COLS_STR = PREPROCESSED_DATA_COLS.joinToString(", ")
+        
+        
 
         /**
          * PreparedStatement binding
@@ -99,25 +84,35 @@ public open class DataDownloadService(
          * 3) startDate
          * 4) endDate
          */
-        private fun preprocessedDataSql(filterParticipants: Boolean): String = """
-            SELECT $PREPROCESSED_DATA_COLS_STR
-            FROM ${PREPROCESSED_USAGE_EVENTS.name}
-            WHERE ${STUDY_ID.name} = ?
-            ${participantFilterSql(filterParticipants)}
-            AND ${APP_DATETIME_START.name} >= ?
-            AND ${APP_DATETIME_START.name} < ?
-        """.trimIndent()
+        
 
         private val APP_USAGE_SURVEY_COLS = APP_USAGE_SURVEY.columns.joinToString { it.name }
 
+        /** Seconds from the end of the answered survey day to the answer; null on rows without a survey day. */
+        internal const val ANSWER_LAG_SECONDS = "answer_lag_seconds"
+
         internal fun appUsageSurveySql(filterParticipants: Boolean): String = """
-             SELECT $APP_USAGE_SURVEY_COLS
+             SELECT $APP_USAGE_SURVEY_COLS,
+                 EXTRACT(EPOCH FROM ${SUBMISSION_DATE.name} - (((${SURVEY_DATE.name} + 1)::timestamp) AT TIME ZONE ${TIMEZONE.name}))::bigint
+                     AS $ANSWER_LAG_SECONDS
              FROM ${APP_USAGE_SURVEY.name}
              WHERE ${STUDY_ID.name} = ?
              ${participantFilterSql(filterParticipants)}
-             AND ${TIMESTAMP.name} >= ?
-             AND ${TIMESTAMP.name} < ?
+             AND ${SURVEY_DATE.name} >= COALESCE(?::date, '-infinity'::date)
+             AND ${SURVEY_DATE.name} < COALESCE(?::date, 'infinity'::date)
         """.trimIndent()
+
+        /**
+         * The first survey day starting at or after [instant] in the study's current [zone]. A range of days selects
+         * the survey days that start inside it, judged by `survey_date` rather than the stored `event_timestamp`,
+         * which keeps the day start of the zone in force when the answer was written.
+         */
+        internal fun firstSurveyDayFrom(instant: OffsetDateTime, zone: ZoneId): LocalDate? = when (instant) {
+            OffsetDateTime.MIN, OffsetDateTime.MAX -> null // open bound
+            else -> instant.atZoneSameInstant(zone).toLocalDate().let { day ->
+                if (day.atStartOfDay(zone).toInstant() < instant.toInstant()) day.plusDays(1) else day
+            }
+        }
 
         private val ANDROID_SENSOR_DATA_COLS = ANDROID_SENSOR_DATA.columns.map { it.name }
         private val ANDROID_SENSOR_DATA_COLS_STR = ANDROID_SENSOR_DATA_COLS.joinToString(",")
@@ -136,9 +131,13 @@ public open class DataDownloadService(
             ORDER BY ${PostgresColumns.SAMPLE_TIMESTAMP.name} ASC
         """.trimIndent()
 
-        internal data class CollectionExportDefinition(
+        internal class CollectionExportDefinition(
             val table: PostgresTableDefinition,
             val timestampColumn: PostgresColumnDefinition,
+            /** Every column of the [table] rows to export that match a WHERE clause. */
+            val rows: (where: String) -> String = { where ->
+                "SELECT ${table.columns.joinToString(",") { it.name }} FROM ${table.name} WHERE $where"
+            },
         )
 
         internal val COLLECTION_EXPORTS: Map<StudyParticipantDataType, CollectionExportDefinition> = mapOf(
@@ -166,17 +165,19 @@ public open class DataDownloadService(
                 CollectionExportDefinition(APP_NETWORK_USAGE, PostgresColumns.SAMPLE_TIMESTAMP),
             StudyParticipantDataType.DeviceSettings to
                 CollectionExportDefinition(DEVICE_SETTINGS, PostgresColumns.SAMPLE_TIMESTAMP),
+            // Each window is exported once, at its newest capture, and selected by the window it measures.
+            StudyParticipantDataType.IOSScreenTime to CollectionExportDefinition(
+                IOS_SCREEN_TIME_USAGE, PostgresColumns.SCREEN_TIME_OBSERVATION_START,
+                ScreenTimeUsageCaptures::newestCapturesSql,
+            ),
         )
 
         private val UPLOAD_DIAGNOSTICS_COLUMNS = listOf(
-            "study_id", "participant_id", "device_id", "event_id", "diagnostic_day", "module_family",
+            "study_id", "participant_id", "random_device_id", "event_id", "diagnostic_day", "module_family",
             "issue_code", "occurrence_count", "first_occurred_at", "last_occurred_at", "http_status",
             "error_type", "uploaded_at",
         )
-        private val DATA_QUALITY_ALERT_COLUMNS = listOf(
-            "study_id", "participant_id", "alert_id", "alert_type", "score", "evaluation_start",
-            "evaluation_end", "threshold", "created_at",
-        )
+        
 
         internal fun diagnosticsExclusiveEndDay(endDateTime: OffsetDateTime): java.time.LocalDate =
             endDateTime.toLocalDate().let { day ->
@@ -188,7 +189,7 @@ public open class DataDownloadService(
             filterStart: Boolean,
             filterEnd: Boolean,
         ): String = """
-            SELECT study_id, participant_id, device_id, event_id, diagnostic_day, module_family,
+            SELECT study_id, participant_id, random_device_id, event_id, diagnostic_day, module_family,
                    issue_code, occurrence_count, first_occurred_at, last_occurred_at,
                    http_status, error_type, uploaded_at
             FROM upload_diagnostics
@@ -196,45 +197,24 @@ public open class DataDownloadService(
               ${participantFilterSql(filterParticipants)}
               ${if (filterStart) "AND diagnostic_day >= ?::date" else ""}
               ${if (filterEnd) "AND diagnostic_day < ?::date" else ""}
-            ORDER BY diagnostic_day, participant_id, device_id, module_family, issue_code, event_id
+            ORDER BY diagnostic_day, participant_id, random_device_id, module_family, issue_code, event_id
         """.trimIndent()
 
-        internal fun retainedQualityAlertsSql(
-            filterParticipants: Boolean,
-            filterStart: Boolean,
-            filterEnd: Boolean,
-        ): String = """
-            SELECT study_id, participant_id, alert_id, alert_type, score,
-                   evaluation_start, evaluation_end, threshold, created_at
-            FROM data_quality_alerts
-            WHERE study_id = ?
-              ${participantFilterSql(filterParticipants)}
-              ${if (filterStart) "AND created_at >= ?" else ""}
-              ${if (filterEnd) "AND created_at < ?" else ""}
-            ORDER BY created_at, participant_id, alert_id
-        """.trimIndent()
+        
 
         internal fun collectionDataSql(dataType: StudyParticipantDataType, filterParticipants: Boolean): String {
             val definition = COLLECTION_EXPORTS[dataType]
                 ?: throw IllegalArgumentException("Participant data type $dataType is not a collection-table export")
-            val columns = definition.table.columns.joinToString(",") { it.name }
-            return """
-                SELECT $columns
-                FROM ${definition.table.name}
-                WHERE ${PostgresColumns.STUDY_ID.name} = ?
+            val where = """
+                ${PostgresColumns.STUDY_ID.name} = ?
                 ${participantFilterSql(filterParticipants)}
                 AND ${definition.timestampColumn.name} >= ?
                 AND ${definition.timestampColumn.name} < ?
-                ORDER BY ${definition.timestampColumn.name} ASC
             """.trimIndent()
+            return "${definition.rows(where)}\nORDER BY ${definition.timestampColumn.name} ASC"
         }
 
-        private const val FETCH_SIZE = 1_000
-        private const val QUERY_TIMEOUT_SECONDS = 600
-
-        private fun configureStreamingStatement(statement: PreparedStatement) {
-            statement.queryTimeout = QUERY_TIMEOUT_SECONDS
-        }
+        internal const val FETCH_SIZE = 1_000
 
         internal fun bindDownloadScope(
             statement: PreparedStatement,
@@ -242,7 +222,6 @@ public open class DataDownloadService(
             participantIds: Set<String>,
             eventStorage: Boolean = false,
         ): Int {
-            configureStreamingStatement(statement)
             if (eventStorage) statement.setString(1, studyId.toString()) else statement.setObject(1, studyId)
             if (participantIds.isEmpty()) return 1
             statement.setArray(2, PostgresArrays.createTextArray(statement.connection, participantIds))
@@ -252,12 +231,12 @@ public open class DataDownloadService(
         internal fun usageEventRow(rs: ResultSet): Map<String, Any> = mapOf(
             associateString(rs, STUDY_ID),
             associateString(rs, PARTICIPANT_ID),
+            associateString(rs, CLIENT_EVENT_ID),
             associateString(rs, APP_PACKAGE_NAME),
             associateString(rs, ACTIVITY_CLASS),
             associateString(rs, INTERACTION_TYPE),
             associateInteger(rs, EVENT_TYPE),
             associateOffsetDatetimeWithTimezone(rs, TIMEZONE, TIMESTAMP),
-            associateOffsetDatetimeWithTimezone(rs, TIMEZONE, COLLECTED_AT),
             associateOffsetDatetimeWithTimezone(rs, TIMEZONE, UPLOADED_AT),
             associateString(rs, TIMEZONE),
             associateString(rs, USERNAME),
@@ -266,16 +245,15 @@ public open class DataDownloadService(
 
         public fun associateString(rs: ResultSet, pcd: PostgresColumnDefinition) = pcd.name to rs.getString(pcd.name)
         public fun associateInteger(rs: ResultSet, pcd: PostgresColumnDefinition) = pcd.name to rs.getInt(pcd.name)
-        public fun associateDouble(rs: ResultSet, pcd: PostgresColumnDefinition) = pcd.name to rs.getDouble(pcd.name)
         public fun associateOffsetDatetimeWithTimezone(
             rs: ResultSet,
             timezoneColumn: PostgresColumnDefinition,
             timestampColumn: PostgresColumnDefinition
         ): Pair<String, Any> {
-            val zoneId = ZoneId.of(rs.getString(timezoneColumn.name) ?: OutputConstants.DEFAULT_TIMEZONE)
             val odt = rs.getObject(timestampColumn.name, OffsetDateTime::class.java)
-            return if(odt == null ) timestampColumn.name to ""
-            else timestampColumn.name to odt.toInstant().atZone(zoneId).toOffsetDateTime()
+                ?: return timestampColumn.name to ""
+            val zone = zoneOrOffset(rs.getString(timezoneColumn.name) ?: OutputConstants.DEFAULT_TIMEZONE, odt)
+            return timestampColumn.name to odt.toInstant().atZone(zone).toOffsetDateTime()
         }
 
         public fun associateObject(rs: ResultSet, pcd: PostgresColumnDefinition, clazz: Class<*>) =
@@ -301,139 +279,28 @@ public open class DataDownloadService(
         private fun participantFilterSql(enabled: Boolean): String =
             if (enabled) "AND ${PARTICIPANT_ID.name} = ANY(?)" else ""
 
-        private data class SensorDataQuery(
-            val columns: Set<PostgresColumnDefinition>,
-            val sql: String,
-            val sensorFilter: Set<SensorType>,
-        )
-
-        private fun getSensorDataQuery(
-            sensors: Set<SensorType>,
-            filterParticipants: Boolean,
-        ): SensorDataQuery {
-            val mapping = mapOf(
-                SensorType.accelerometer to ACCELEROMETER_SENSOR_COLS,
-                SensorType.pedometer to ACCELEROMETER_SENSOR_COLS,
-                SensorType.motionActivity to ACCELEROMETER_SENSOR_COLS,
-                SensorType.phoneUsage to PHONE_USAGE_SENSOR_COLS,
-                SensorType.keyboardMetrics to KEYBOARD_METRICS_SENSOR_COLS,
-                SensorType.deviceUsage to DEVICE_USAGE_SENSOR_COLS,
-                SensorType.messagesUsage to MESSAGES_USAGE_SENSOR_COLS
-            )
-
-            val selectedSensors = if (sensors.isEmpty()) mapping.keys else sensors
-            val cols = SHARED_SENSOR_COLS + selectedSensors.flatMap { mapping.getValue(it) }.toSet()
-            val values = cols.joinToString(",") { it.name }
-            val sensorFilterSql = if (sensors.isEmpty()) "" else "AND ${SENSOR_TYPE.name} = Any(?)"
-
-            val sql = """
-                SELECT $values FROM ${IOS_SENSOR_DATA.name}
-                WHERE ${STUDY_ID.name} = ?
-                ${participantFilterSql(filterParticipants)}
-                $sensorFilterSql
-                AND ${RECORDED_DATE_TIME.name} >= ?
-                AND ${RECORDED_DATE_TIME.name} < ?
-                ORDER BY ${RECORDED_DATE_TIME.name} ASC
-            """.trimIndent()
-
-            return SensorDataQuery(cols, sql, sensors)
-        }
-
-    }
-
-    private fun getParticipantDataHelper(
-        studyId: UUID,
-        participantId: String,
-    ): Iterable<Map<String, Any>> {
-        val (flavor, hds) = storageResolver.resolveAndGetFlavor(studyId)
-        val pgIter = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
-                hds,
-                CHRONICLE_USAGE_EVENT_SINGLE_SQL,
-                FETCH_SIZE
-            ) { ps ->
-                configureStreamingStatement(ps)
-                ps.setString(1, studyId.toString())
-                ps.setString(2, participantId)
-            }) { rs ->
-            usageEventRow(rs)
-        }
-
-        return PostgresDownloadWrapper(pgIter).withColumnAdvice(CHRONICLE_USAGE_EVENTS.columns.map { it.name })
-    }
-
-    override fun getParticipantData(
-        studyId: UUID,
-        participantId: String,
-        dataType: ParticipantDataType,
-        token: String
-    ): Iterable<Map<String, Any>> {
-        return getParticipantDataHelper(
-            studyId,
-            participantId
-        )
-    }
-
-    override fun getParticipantsSensorData(
-        studyId: UUID,
-        participantIds: Set<String>,
-        sensors: Set<SensorType>,
-        startDateTime: OffsetDateTime,
-        endDateTime: OffsetDateTime
-    ): Iterable<Map<String, Any>> {
-        if (sensors.isEmpty()) {
-            return emptyList()
-        }
-        val (_, hds) = storageResolver.resolveAndGetFlavor(studyId)
-        val query = getSensorDataQuery(sensors, participantIds.isNotEmpty())
-        val cols = query.columns
-
-        val iterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
-                hds,
-                query.sql,
-                FETCH_SIZE
-            ) { ps ->
-                var index = bindDownloadScope(ps, studyId, participantIds, eventStorage = true)
-                if (query.sensorFilter.isNotEmpty()) {
-                    ps.setArray(
-                        ++index,
-                        PostgresArrays.createTextArray(ps.connection, query.sensorFilter.map { it.name }),
-                    )
-                }
-                ps.setObject(++index, startDateTime)
-                ps.setObject(++index, endDateTime)
-            }
-        ) { rs ->
-            cols.associate { col ->
-                when (col.datatype) {
-                    PostgresDatatype.TIMESTAMPTZ -> associateOffsetDatetimeWithTimezone(rs, TIMEZONE, col)
-                    else -> associateString(rs, col)
-                }
-            }
-        }
-
-        return PostgresDownloadWrapper(iterable).withColumnAdvice(cols.map { it.name })
     }
 
     override fun getParticipantsAppUsageSurveyData(
         studyId: UUID,
         participantIds: Set<String>,
         startDateTime: OffsetDateTime,
-        endDateTime: OffsetDateTime
+        endDateTime: OffsetDateTime,
+        studyZone: ZoneId,
     ): Iterable<Map<String, Any>> {
 
         val hds = storageResolver.getPlatformReadStorage()
         val filterParticipants = participantIds.isNotEmpty()
         val iterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
+            StreamingReadTransaction(
                 hds,
                 appUsageSurveySql(filterParticipants),
-                FETCH_SIZE
+                FETCH_SIZE,
+                studyScope = storageResolver.studyReadScope(studyId),
             ) { ps ->
                 var index = bindDownloadScope(ps, studyId, participantIds)
-                ps.setObject(++index, startDateTime)
-                ps.setObject(++index, endDateTime)
+                ps.setObject(++index, firstSurveyDayFrom(startDateTime, studyZone))
+                ps.setObject(++index, firstSurveyDayFrom(endDateTime, studyZone))
             }
         ) { rs ->
             mapOf(
@@ -444,11 +311,13 @@ public open class DataDownloadService(
                 associateOffsetDatetimeWithTimezone(rs, TIMEZONE, TIMESTAMP),
                 associateOffsetDatetimeWithTimezone(rs, TIMEZONE, SUBMISSION_DATE),
                 associateString(rs, TIMEZONE),
-                associateString(rs, APP_USERS)
+                associateString(rs, APP_USERS),
+                associateString(rs, SURVEY_DATE),
+                ANSWER_LAG_SECONDS to rs.getObject(ANSWER_LAG_SECONDS),
             )
         }
 
-        return PostgresDownloadWrapper(iterable).withColumnAdvice(APP_USAGE_SURVEY.columns.map { it.name })
+        return PostgresDownloadWrapper(iterable).withColumnAdvice(APP_USAGE_SURVEY.columns.map { it.name } + ANSWER_LAG_SECONDS)
     }
 
     override fun getParticipantsUsageEventsData(
@@ -457,13 +326,14 @@ public open class DataDownloadService(
         startDateTime: OffsetDateTime,
         endDateTime: OffsetDateTime
     ): Iterable<Map<String, Any>> {
-        val (_, hds) = storageResolver.resolveAndGetFlavor(studyId)
+        val hds = storageResolver.resolveAndGetFlavor(studyId).dataSource
         val filterParticipants = participantIds.isNotEmpty()
         val pgIter = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
+            StreamingReadTransaction(
                 hds,
                 chronicleUsageEventSql(filterParticipants),
-                FETCH_SIZE
+                FETCH_SIZE,
+                studyScope = storageResolver.studyReadScope(studyId),
             ) { ps ->
                 var index = bindDownloadScope(ps, studyId, participantIds, eventStorage = true)
                 ps.setObject(++index, startDateTime)
@@ -475,46 +345,7 @@ public open class DataDownloadService(
         return PostgresDownloadWrapper(pgIter).withColumnAdvice(CHRONICLE_USAGE_EVENTS.columns.map { it.name })
     }
 
-    override fun getPreprocessedUsageEventsData(
-        studyId: UUID,
-        participantIds: Set<String>,
-        startDateTime: OffsetDateTime,
-        endDateTime: OffsetDateTime
-    ): Iterable<Map<String, Any>> {
-        val (_, hds) = storageResolver.resolveAndGetFlavor(studyId)
-        val filterParticipants = participantIds.isNotEmpty()
-
-        val resultSetAwareCols = PREPROCESSED_USAGE_EVENTS.columns.map {
-            val name = it.name.replace("\"", "")
-            PostgresColumnDefinition(name, it.datatype)
-        }
-        val pgIterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
-                hds,
-                preprocessedDataSql(filterParticipants),
-                FETCH_SIZE
-            ) { ps ->
-                var index = bindDownloadScope(ps, studyId, participantIds, eventStorage = true)
-                ps.setObject(++index, startDateTime)
-                ps.setObject(++index, endDateTime)
-            }
-        ) { rs ->
-            resultSetAwareCols.associate {
-                when(it.datatype) {
-                    PostgresDatatype.TEXT -> associateString(rs, it)
-                    PostgresDatatype.TEXT_128 -> associateString(rs, it)
-                    PostgresDatatype.TEXT_256 -> associateString(rs, it)
-                    PostgresDatatype.TIMESTAMPTZ -> associateOffsetDatetimeWithTimezone(rs, APP_TIMEZONE, it)
-                    PostgresDatatype.TEXT_UUID -> associateString(rs, it)
-                    PostgresDatatype.INTEGER -> associateInteger(rs, it)
-                    PostgresDatatype.DOUBLE -> associateDouble(rs, it)
-                    else -> error("Invalid column type: ${it.datatype}")
-                }
-            }
-        }
-
-        return PostgresDownloadWrapper(pgIterable).withColumnAdvice(resultSetAwareCols.map { it.name })
-    }
+    
 
     override fun getParticipantsAndroidSensorData(
         studyId: UUID,
@@ -528,10 +359,11 @@ public open class DataDownloadService(
         val filterParticipants = participantIds.isNotEmpty()
         val sql = androidSensorDataSql(filterParticipants, hasSensorFilter)
         val iterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
+            StreamingReadTransaction(
                 hds,
                 sql,
-                FETCH_SIZE
+                FETCH_SIZE,
+                studyScope = storageResolver.studyReadScope(studyId),
             ) { ps ->
                 var index = bindDownloadScope(ps, studyId, participantIds)
                 ps.setObject(++index, startDateTime)
@@ -574,10 +406,11 @@ public open class DataDownloadService(
             ?: throw IllegalArgumentException("Participant data type $dataType is not a collection-table export")
         val filterParticipants = participantIds.isNotEmpty()
         val iterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
+            StreamingReadTransaction(
                 storageResolver.getPlatformReadStorage(),
                 collectionDataSql(dataType, filterParticipants),
                 FETCH_SIZE,
+                studyScope = storageResolver.studyReadScope(studyId),
             ) { statement ->
                 var index = bindDownloadScope(statement, studyId, participantIds)
                 statement.setObject(++index, startDateTime)
@@ -611,18 +444,19 @@ public open class DataDownloadService(
         startDateTime: OffsetDateTime,
         endDateTime: OffsetDateTime,
         sql: (Boolean, Boolean, Boolean) -> String,
-        dayBounds: Boolean = false,
-    ): PreparedStatementHolderSupplier {
+    ): StreamingReadTransaction {
         val filterStart = startDateTime != OffsetDateTime.MIN
         val filterEnd = endDateTime != OffsetDateTime.MAX
-        return PreparedStatementHolderSupplier(
+        return StreamingReadTransaction(
             storageResolver.getPlatformReadStorage(),
             sql(participantIds.isNotEmpty(), filterStart, filterEnd),
             FETCH_SIZE,
+            studyScope = storageResolver.studyReadScope(studyId),
         ) { statement ->
             var index = bindDownloadScope(statement, studyId, participantIds)
-            if (filterStart) statement.setObject(++index, if (dayBounds) startDateTime.toLocalDate() else startDateTime)
-            if (filterEnd) statement.setObject(++index, if (dayBounds) diagnosticsExclusiveEndDay(endDateTime) else endDateTime)
+            // Diagnostics are kept per day: the range binds as whole days.
+            if (filterStart) statement.setObject(++index, startDateTime.toLocalDate())
+            if (filterEnd) statement.setObject(++index, diagnosticsExclusiveEndDay(endDateTime))
         }
     }
 
@@ -633,13 +467,13 @@ public open class DataDownloadService(
         endDateTime: OffsetDateTime,
     ): Iterable<Map<String, Any>> {
         val iterable = BasePostgresIterable<Map<String, Any>>(
-            retainedDataSupplier(studyId, participantIds, startDateTime, endDateTime, ::retainedDiagnosticsSql, dayBounds = true),
+            retainedDataSupplier(studyId, participantIds, startDateTime, endDateTime, ::retainedDiagnosticsSql),
         ) { resultSet ->
             val httpStatus = resultSet.getInt("http_status").let { if (resultSet.wasNull()) "" else it }
             mapOf(
                 "study_id" to (resultSet.getString("study_id") ?: ""),
                 "participant_id" to (resultSet.getString("participant_id") ?: ""),
-                "device_id" to (resultSet.getString("device_id") ?: ""),
+                "random_device_id" to (resultSet.getString("random_device_id") ?: ""),
                 "event_id" to (resultSet.getString("event_id") ?: ""),
                 "diagnostic_day" to (resultSet.getObject("diagnostic_day") ?: ""),
                 "module_family" to (resultSet.getString("module_family") ?: ""),
@@ -655,29 +489,7 @@ public open class DataDownloadService(
         return PostgresDownloadWrapper(iterable).withColumnAdvice(UPLOAD_DIAGNOSTICS_COLUMNS)
     }
 
-    override fun getParticipantsDataQualityAlertsData(
-        studyId: UUID,
-        participantIds: Set<String>,
-        startDateTime: OffsetDateTime,
-        endDateTime: OffsetDateTime,
-    ): Iterable<Map<String, Any>> {
-        val iterable = BasePostgresIterable<Map<String, Any>>(
-            retainedDataSupplier(studyId, participantIds, startDateTime, endDateTime, ::retainedQualityAlertsSql),
-        ) { resultSet ->
-            mapOf(
-                "study_id" to (resultSet.getString("study_id") ?: ""),
-                "participant_id" to (resultSet.getString("participant_id") ?: ""),
-                "alert_id" to (resultSet.getString("alert_id") ?: ""),
-                "alert_type" to (resultSet.getString("alert_type") ?: ""),
-                "score" to resultSet.getDouble("score"),
-                "evaluation_start" to (resultSet.getObject("evaluation_start", OffsetDateTime::class.java) ?: ""),
-                "evaluation_end" to (resultSet.getObject("evaluation_end", OffsetDateTime::class.java) ?: ""),
-                "threshold" to resultSet.getDouble("threshold").let { if (resultSet.wasNull()) "" else it },
-                "created_at" to (resultSet.getObject("created_at", OffsetDateTime::class.java) ?: ""),
-            )
-        }
-        return PostgresDownloadWrapper(iterable).withColumnAdvice(DATA_QUALITY_ALERT_COLUMNS)
-    }
+    
 
     override fun getQuestionnaireResponses(
         studyId: UUID,
@@ -690,12 +502,12 @@ public open class DataDownloadService(
             PostgresColumns.RESPONSES
         )
         val iterable = BasePostgresIterable<Map<String, Any>>(
-            PreparedStatementHolderSupplier(
+            StreamingReadTransaction(
                 hds = storageResolver.getPlatformStorage(),
                 SurveysService.GET_QUESTIONNAIRE_SUBMISSIONS_SQL,
-                FETCH_SIZE
+                FETCH_SIZE,
+                studyScope = storageResolver.studyReadScope(studyId),
             ) { ps ->
-                configureStreamingStatement(ps)
                 ps.setObject(1, studyId)
                 ps.setObject(2, questionnaireId)
             }

@@ -50,7 +50,7 @@ class CsvDownloadFailureTest {
             ),
         ).withColumnAdvice(listOf("value"))
 
-    // Regression V-2: a failure in the middle of the stream was closed into a clean 200 CSV that
+    // Regression: a failure in the middle of the stream was closed into a clean 200 CSV that
     // looked complete. The writer must stay unclosed so the response is aborted, not terminated.
     @Test
     fun midStreamFailureDoesNotFinalizeTheResponse() {
@@ -71,7 +71,7 @@ class CsvDownloadFailureTest {
         assertFalse("a failed download must not end as a cleanly closed CSV", output.closed)
     }
 
-    // Regression V-28: a client abort left the unexhausted iterator, and its pooled connection,
+    // Regression: a client abort left the unexhausted iterator, and its pooled connection,
     // checked out until the watchdog expired it.
     @Test
     fun clientAbortReleasesTheConnectionImmediately() {

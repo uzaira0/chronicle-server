@@ -1,8 +1,9 @@
 package com.openlattice.chronicle.services.download
 
+import com.zaxxer.hikari.HikariDataSource
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.converters.PostgresDownloadWrapper
+import com.openlattice.chronicle.storage.StudyDisclosureGeneration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -11,6 +12,7 @@ import org.mockito.Mockito
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
+import java.sql.Statement
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.UUID
@@ -20,8 +22,10 @@ class DataDownloadServiceTest {
     @Test
     fun `usage download scope preserves study bindings participant selection and streaming timeout`() {
         val storageResolver = Mockito.mock(StorageResolver::class.java)
-        val dataSource = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
+        val dataSource = Mockito.mock(HikariDataSource::class.java)
         val connection = Mockito.mock(Connection::class.java)
+        Mockito.`when`(connection.transactionIsolation).thenReturn(Connection.TRANSACTION_READ_COMMITTED)
+        Mockito.`when`(connection.createStatement()).thenReturn(Mockito.mock(Statement::class.java))
         val statement = Mockito.mock(PreparedStatement::class.java)
         val participantArray = Mockito.mock(java.sql.Array::class.java)
         Mockito.`when`(statement.connection).thenReturn(connection)
@@ -32,7 +36,7 @@ class DataDownloadServiceTest {
 
         assertEquals(1, DataDownloadService.bindDownloadScope(statement, studyId, emptySet(), eventStorage = true))
         Mockito.verify(statement).setString(1, studyId.toString())
-        Mockito.verify(statement).queryTimeout = 600
+        Mockito.verify(statement, Mockito.never()).setQueryTimeout(Mockito.anyInt())
         Mockito.verify(statement, Mockito.never()).setArray(Mockito.anyInt(), Mockito.any())
 
         Mockito.clearInvocations(statement)
@@ -42,17 +46,25 @@ class DataDownloadServiceTest {
 
         Mockito.clearInvocations(statement)
         Mockito.`when`(storageResolver.getPlatformReadStorage()).thenReturn(dataSource)
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
         Mockito.`when`(dataSource.connection).thenReturn(connection)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
         Mockito.`when`(statement.executeQuery()).thenReturn(Mockito.mock(ResultSet::class.java))
+        val generation = Mockito.mock(PreparedStatement::class.java)
+        val generationRows = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(connection.prepareStatement(Mockito.contains(StudyDisclosureGeneration.COLUMN))).thenReturn(generation)
+        Mockito.`when`(generation.executeQuery()).thenReturn(generationRows)
+        Mockito.`when`(generationRows.next()).thenReturn(true)
+        Mockito.`when`(generationRows.getObject(1, UUID::class.java)).thenReturn(studyId)
         val rows = DataDownloadService(storageResolver).getParticipantsAppUsageSurveyData(
-            studyId, setOf("participant-1"), start, end,
+            studyId, setOf("participant-1"), start, end, ZoneOffset.UTC,
         )
         assertFalse(rows.iterator().hasNext())
+        Mockito.verify(connection.createStatement()).execute("SET LOCAL statement_timeout = 0")
         Mockito.verify(statement).setObject(1, studyId)
         Mockito.verify(statement).setArray(2, participantArray)
-        Mockito.verify(statement).setObject(3, start)
-        Mockito.verify(statement).setObject(4, end)
+        Mockito.verify(statement).setObject(3, start.toLocalDate())
+        Mockito.verify(statement).setObject(4, end.toLocalDate())
 
         val service = DataDownloadService(storageResolver)
         Mockito.clearInvocations(statement)
@@ -61,32 +73,9 @@ class DataDownloadServiceTest {
         Mockito.verify(statement).setObject(3, end.toLocalDate().plusDays(1))
 
         Mockito.clearInvocations(statement)
-        assertFalse(service.getParticipantsDataQualityAlertsData(studyId, emptySet(), start, end).iterator().hasNext())
-        Mockito.verify(statement).setObject(2, start)
-        Mockito.verify(statement).setObject(3, end)
-
-        Mockito.clearInvocations(statement)
         assertFalse(service.getParticipantsUploadDiagnosticsData(studyId, emptySet(), OffsetDateTime.MIN, OffsetDateTime.MAX).iterator().hasNext())
         Mockito.verify(statement).setObject(1, studyId)
         Mockito.verify(statement, Mockito.never()).setObject(Mockito.eq(2), Mockito.any())
-    }
-
-    @Test
-    fun testEmptyIosSensorSelectionReturnsNoRowsWithoutTouchingStorage() {
-        val storageResolver = Mockito.mock(StorageResolver::class.java)
-        val service = DataDownloadService(storageResolver)
-        val now = OffsetDateTime.now(ZoneOffset.UTC)
-
-        val rows = service.getParticipantsSensorData(
-            UUID.randomUUID(),
-            setOf("participant-1"),
-            emptySet(),
-            now.minusDays(1),
-            now,
-        )
-
-        assertFalse(rows.iterator().hasNext())
-        Mockito.verifyNoInteractions(storageResolver)
     }
 
     @Test
@@ -116,34 +105,7 @@ class DataDownloadServiceTest {
         }
     }
 
-    @Test
-    fun `diagnostic exports use retained day and alert-time filters without message columns`() {
-        val diagnosticsSql = DataDownloadService.retainedDiagnosticsSql(
-            filterParticipants = true,
-            filterStart = true,
-            filterEnd = true,
-        )
-        assertTrue(diagnosticsSql.contains("FROM upload_diagnostics"))
-        assertTrue(diagnosticsSql.contains("participant_id = ANY(?)"))
-        assertTrue(diagnosticsSql.contains("diagnostic_day >= ?::date"))
-        assertTrue(diagnosticsSql.contains("diagnostic_day < ?::date"))
-        assertTrue(diagnosticsSql.contains("event_id"))
-        assertFalse(diagnosticsSql.contains("server_origin"))
-        assertFalse(diagnosticsSql.contains("error_message"))
-
-        val alertsSql = DataDownloadService.retainedQualityAlertsSql(
-            filterParticipants = true,
-            filterStart = true,
-            filterEnd = true,
-        )
-        assertTrue(alertsSql.contains("FROM data_quality_alerts"))
-        assertTrue(alertsSql.contains("created_at >= ?"))
-        assertTrue(alertsSql.contains("created_at < ?"))
-        for (column in listOf("evaluation_start", "evaluation_end", "threshold")) {
-            assertTrue("Missing alert export column $column", alertsSql.contains(column))
-        }
-        assertFalse(alertsSql.contains("message"))
-    }
+    
 
     @Test
     fun `diagnostic upper day honors each supplied offset and non-midnight end`() {
@@ -176,14 +138,5 @@ class DataDownloadServiceTest {
         )
     }
 
-    @Test
-    fun `quality alert export advertises its evaluation fields`() {
-        val storageResolver = Mockito.mock(StorageResolver::class.java)
-        Mockito.`when`(storageResolver.getPlatformReadStorage())
-            .thenReturn(Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java))
-        val rows = DataDownloadService(storageResolver).getParticipantsDataQualityAlertsData(
-            UUID.randomUUID(), emptySet(), OffsetDateTime.MIN, OffsetDateTime.MAX,
-        ) as PostgresDownloadWrapper
-        assertTrue(rows.columnAdvice.containsAll(listOf("evaluation_start", "evaluation_end", "threshold")))
-    }
+    
 }
