@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.filters
 
+import com.geekbeast.mappers.mappers.ObjectMappers
 import jakarta.servlet.DispatcherType
 import jakarta.servlet.Filter
 import jakarta.servlet.http.HttpServlet
@@ -17,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.springframework.http.HttpStatus as SpringHttpStatus
 import java.util.EnumSet
 import java.util.UUID
 
@@ -39,9 +41,11 @@ class ServletErrorHardeningTest {
         assertTrue(response, parsed.get(HttpHeader.CONTENT_TYPE).startsWith("application/json"))
         assertEquals("no-store", parsed.get(HttpHeader.CACHE_CONTROL))
         val body = parsed.content
-        val match = Regex("""\{"status":$code,"message":"Request failed","errorId":"([0-9a-f-]+)"}""").matchEntire(body)
-        assertTrue(response, match != null)
-        UUID.fromString(checkNotNull(match).groupValues[1])
+        val error = ObjectMappers.getJsonMapper().readTree(body)
+        assertEquals(code, error.path("status").asInt())
+        assertEquals(SpringHttpStatus.valueOf(code).reasonPhrase, error.path("error").asText())
+        assertEquals("Request failed", error.path("message").asText())
+        UUID.fromString(error.path("errorId").asText().removePrefix("ERR-"))
         assertFalse(response, body.contains(DIAGNOSTIC))
         assertFalse(response, body.contains(CAUSE))
         assertFalse(response, body.contains(PRIVATE_URI))

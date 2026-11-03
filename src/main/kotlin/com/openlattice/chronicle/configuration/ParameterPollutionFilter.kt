@@ -21,6 +21,7 @@ package com.openlattice.chronicle.configuration
 
 import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
+import com.openlattice.chronicle.filters.NativeExportDownload
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -89,15 +90,6 @@ public open class ParameterPollutionConfig {
             "exclude",
             "select",
             "expand"
-        )
-
-        /**
-         * URL patterns where duplicate parameters are allowed.
-         * Use with caution - only for specific endpoints that need multi-value params.
-         */
-        public val ALLOWED_DUPLICATE_PATHS: List<Regex> = listOf(
-            // Example: Regex("^/api/v1/search.*"),
-            // Example: Regex("^/api/v1/bulk.*")
         )
 
         /**
@@ -178,12 +170,6 @@ public open class ParameterPollutionConfig {
     // reason: boundary catch — unreadable parameter map must let the request through, not break the filter, regardless of failure type
     @Suppress("TooGenericExceptionCaught")
     private fun checkForParameterPollution(request: HttpServletRequest): PollutionResult {
-        // Check if this path is in the allow list
-        val requestUri = request.requestURI
-        if (ALLOWED_DUPLICATE_PATHS.any { it.matches(requestUri) }) {
-            return PollutionResult.Clean
-        }
-
         // Get parameter map (name -> array of values)
         val parameterMap: Map<String, Array<String>>
         try {
@@ -197,7 +183,7 @@ public open class ParameterPollutionConfig {
 
         // Check each parameter
         return parameterMap.firstNotNullOfOrNull { (paramName, values) ->
-            evaluateParameter(paramName, values)
+            if (NativeExportDownload.allowsMultipleValues(request, paramName)) null else evaluateParameter(paramName, values)
         } ?: PollutionResult.Clean
     }
 

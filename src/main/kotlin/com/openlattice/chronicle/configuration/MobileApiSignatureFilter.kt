@@ -16,37 +16,50 @@
  */
 package com.openlattice.chronicle.configuration
 
+import com.openlattice.chronicle.generated.ChronicleHeaders
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
-import com.openlattice.chronicle.audit.AuditAction
-import com.openlattice.chronicle.audit.AuditLogEntryBuilder
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.audit.AuditEntryBuilder
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.filters.MobileApiHmacAuthenticationToken
 import com.openlattice.chronicle.filters.MobileEnrollmentAuthenticationToken
 import com.openlattice.chronicle.filters.MobileReviewerAuthenticationToken
+import com.openlattice.chronicle.filters.writeFilterError
+import com.openlattice.chronicle.controllers.ReviewerEnrollmentController
+import com.openlattice.chronicle.generated.EnrollmentAttemptContracts
+import com.openlattice.chronicle.generated.UploadLimits
+import com.openlattice.chronicle.i18n.Messages
+import com.openlattice.chronicle.services.enrollment.EnrollmentAttemptDigest
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
+import com.openlattice.chronicle.study.StudyApi
+import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.util.API_KEY_HEADER
 import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
-import org.slf4j.LoggerFactory
-import org.springframework.http.HttpStatus
-import org.springframework.security.core.context.SecurityContextHolder
-import org.springframework.web.filter.OncePerRequestFilter
+import com.openlattice.chronicle.util.matchingSegments
+import com.openlattice.chronicle.util.parsedPath
+import jakarta.servlet.FilterChain
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
-import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
 import java.util.*
 import java.util.concurrent.TimeUnit
 import java.util.zip.InflaterInputStream
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import jakarta.servlet.FilterChain
-import jakarta.servlet.http.HttpServletRequest
-import jakarta.servlet.http.HttpServletResponse
+import org.slf4j.LoggerFactory
+import org.springframework.http.HttpStatus
+import org.springframework.http.server.PathContainer
+import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.web.filter.OncePerRequestFilter
+import org.springframework.web.util.pattern.PathPattern
+import org.springframework.web.util.pattern.PathPatternParser
 
 /**
  * HMAC Request Signing and Replay Prevention Filter for Mobile API endpoints.
@@ -114,7 +127,7 @@ public open class MobileApiSignatureFilter(
     private val clockSkewSeconds: Long = 30,
     private val nonceTtlMinutes: Long = 10,
     private val signatureVerificationEnabled: Boolean = true,
-    private val maxDecodedBodyBytes: Int = SecurityHardeningConfig.MAX_REQUEST_SIZE_BYTES.toInt(),
+    private val maxDecodedBodyBytes: Int = UploadLimits.MAX_REQUEST_SIZE_BYTES.toInt(),
     private val internalWebSecret: String = "",
     previousSigningSecrets: List<String> = emptyList(),
     private val participantFormAccessService: ParticipantFormAccessService? = null,
@@ -131,11 +144,14 @@ public open class MobileApiSignatureFilter(
     internal companion object {
 
         // Header names
-        public const val HEADER_SIGNATURE = "X-Chronicle-Signature"
-        public const val HEADER_TIMESTAMP = "X-Chronicle-Timestamp"
-        public const val HEADER_NONCE = "X-Chronicle-Nonce"
-        public const val HEADER_ENROLLMENT_CODE = "X-Chronicle-Enrollment-Code"
-        public const val HEADER_REVIEWER_SECRET = "X-Chronicle-Reviewer-Secret"
+        public const val HEADER_SIGNATURE = ChronicleHeaders.SIGNATURE_HEADER
+        public const val HEADER_TIMESTAMP = ChronicleHeaders.SIGNATURE_TIMESTAMP_HEADER
+        public const val HEADER_NONCE = ChronicleHeaders.SIGNATURE_NONCE_HEADER
+        public const val HEADER_ENROLLMENT_CODE = ChronicleHeaders.ENROLLMENT_CODE_HEADER
+        public const val HEADER_MANIFEST_DIGEST = ChronicleHeaders.MANIFEST_DIGEST_HEADER
+        public const val HEADER_ENROLLMENT_ATTEMPT_ID = ChronicleHeaders.ENROLLMENT_ATTEMPT_ID_HEADER
+        public const val HEADER_PROPOSED_API_KEY = ChronicleHeaders.PROPOSED_API_KEY_HEADER
+        public const val HEADER_REVIEWER_SECRET = ChronicleHeaders.REVIEWER_SECRET_HEADER
 
         // Hazelcast map name for nonce storage
         public const val NONCE_CACHE_MAP_NAME = "MOBILE_API_NONCES"
@@ -149,44 +165,48 @@ public open class MobileApiSignatureFilter(
 
         // Mobile API path prefixes — must match actual mobile endpoint paths
         private val MOBILE_API_PREFIXES = listOf(
-            "/chronicle/v3/study/",
-            "/chronicle/v4/study/",
-            "/chronicle/v4/mobile/",
+            "${StudyApi.BASE}/",
+            "${StudyApi.V4_BASE}/",
+            "${ReviewerEnrollmentController.PATH.substringBeforeLast('/')}/",
         )
+        private val MOBILE_API_SEGMENTS = MOBILE_API_PREFIXES.map { PathContainer.parsePath(it).matchingSegments() }
 
-        private const val API_KEY_HEADER = "X-Api-Key"
-        private const val DEVICE_ID_HEADER = "X-Chronicle-Device-Id"
+        const val RANDOM_DEVICE_ID_HEADER = ChronicleHeaders.RANDOM_DEVICE_ID_HEADER
         private const val AUTH_COOKIE = "chronicle_auth"
-        private const val REVIEWER_ENROLLMENT_PATH = "/chronicle/v4/mobile/reviewer-enrollment"
+        private val REVIEWER_ENROLLMENT_PATH =
+            PathPatternParser.defaultInstance.parse(ReviewerEnrollmentController.PATH)
         private val V4_ENROLLMENT_PATH =
-            Regex("""^/chronicle/v4/study/([0-9a-fA-F-]{36})/participant/([^/]+)/enroll$""")
+            PathPatternParser.defaultInstance.parse(StudyApi.V4_BASE + StudyApi.STUDY_ID_PATH +
+                StudyApi.PARTICIPANT_PATH + StudyApi.PARTICIPANT_ID_PATH + StudyApi.ENROLL_PATH)
         private val V4_ENROLLMENT_PREVIEW_PATH =
-            Regex("""^/chronicle/v4/study/([0-9a-fA-F-]{36})/participant/([^/]+)/enrollment-preview$""")
-        private val LEGACY_V3_ENROLLMENT_PATH =
-            Regex("""^/chronicle/v3/study/([0-9a-fA-F-]{36})/participant/([^/]+)/[^/]+/enroll$""")
+            PathPatternParser.defaultInstance.parse(StudyApi.V4_BASE + StudyApi.STUDY_ID_PATH +
+                StudyApi.PARTICIPANT_PATH + StudyApi.PARTICIPANT_ID_PATH + StudyApi.ENROLLMENT_PREVIEW_PATH)
         private val ENROLLMENT_PATHS = listOf(
             V4_ENROLLMENT_PATH,
             V4_ENROLLMENT_PREVIEW_PATH,
-            LEGACY_V3_ENROLLMENT_PATH,
         )
         internal const val ENROLLMENT_METRIC_ENDPOINT = "enrollment"
 
         internal fun enrollmentMetricEndpoint(request: HttpServletRequest): String? {
-            if (request.method == "POST" && request.requestURI == REVIEWER_ENROLLMENT_PATH) return ENROLLMENT_METRIC_ENDPOINT
-            return enrollmentPaths(request).asSequence().mapNotNull { it.matchEntire(request.requestURI) }
-                .firstOrNull { runCatching { UUID.fromString(it.groupValues[1]) }.isSuccess }
+            val path = request.parsedPath() ?: return null
+            if (request.method == "POST" && REVIEWER_ENROLLMENT_PATH.matches(path)) return ENROLLMENT_METRIC_ENDPOINT
+            return enrollmentPaths(request).asSequence().mapNotNull { it.matchAndExtract(path) }
+                .firstOrNull {
+                    runCatching { UUID.fromString(it.uriVariables.getValue(StudyApi.STUDY_ID).trim()) }.isSuccess
+                }
                 ?.let { ENROLLMENT_METRIC_ENDPOINT }
         }
 
-        private fun enrollmentPaths(request: HttpServletRequest): List<Regex> = when (request.method.uppercase()) {
-                "POST" -> listOf(V4_ENROLLMENT_PATH, LEGACY_V3_ENROLLMENT_PATH)
+        private fun enrollmentPaths(request: HttpServletRequest): List<PathPattern> =
+            when (request.method.uppercase()) {
+                "POST" -> listOf(V4_ENROLLMENT_PATH)
                 "GET" -> listOf(V4_ENROLLMENT_PREVIEW_PATH)
                 else -> emptyList()
             }
-        private val PUBLIC_SETTINGS_PATHS = listOf(
-            Regex("""^/chronicle/v3/study/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/settings/sensors$"""),
-            Regex("""^/chronicle/v3/study/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/settings/type/(?:AndroidSensor|Sensor|DataCollection|Encryption)$"""),
+        private val PUBLIC_SETTINGS_PATH = PathPatternParser.defaultInstance.parse(
+            StudyApi.BASE + StudyApi.STUDY_ID_PATH + StudyApi.SETTINGS_PATH + StudyApi.SETTING_TYPE_PATH,
         )
+        private val PUBLIC_SETTING_TYPES = setOf(StudySettingType.DataCollection.name)
         private const val CONTENT_ENCODING = "Content-Encoding"
         private const val IDENTITY_ENCODING = "identity"
         private const val DEFLATE_ENCODING = "deflate"
@@ -196,39 +216,90 @@ public open class MobileApiSignatureFilter(
     // Hazelcast map for storing used nonces (prevents replay attacks)
     private val nonceCache: IMap<String, Long> = hazelcastInstance.getMap(NONCE_CACHE_MAP_NAME)
 
-    // reason: security HMAC/replay filter — sequential guard-clause validation with early returns
-    // is the clearest, safest control flow; restructuring risks weakening signature/replay enforcement
-    @Suppress("LongMethod", "ReturnCount")
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
-        filterChain: FilterChain
+        filterChain: FilterChain,
     ) {
-        // Only apply to mobile API endpoints
-        if (!isMobileApiRequest(request)) {
-            filterChain.doFilter(request, response)
+        val path = request.parsedPath()
+        val enrollmentCode = request.getHeader(HEADER_ENROLLMENT_CODE)
+        // Preserve the credential priority: reviewer, public/internal reads, invitation, device key, then HMAC.
+        when {
+            path == null -> sendError(response, HttpStatus.BAD_REQUEST, "Invalid request path")
+            !isMobileApiRequest(path) -> filterChain.doFilter(request, response)
+            REVIEWER_ENROLLMENT_PATH.matches(path) -> authenticateReviewerRequest(request, response, filterChain)
+            isPublicSettingsRequest(request) || isInternalWebRequest(request) -> filterChain.doFilter(request, response)
+            !enrollmentCode.isNullOrBlank() -> authenticateEnrollmentCodeRequest(request, response, filterChain, enrollmentCode)
+            V4_ENROLLMENT_PREVIEW_PATH.matches(path) -> sendError(response, HttpStatus.UNAUTHORIZED, "Invalid enrollment credential")
+            !request.getHeader(API_KEY_HEADER).isNullOrBlank() || !signatureVerificationEnabled ->
+                continueWithDecodedBody(CachedBodyHttpServletRequest(request), response, filterChain)
+            else -> filterSignedRequest(request, response, filterChain)
+        }
+    }
+
+    private fun authenticateEnrollmentCodeRequest(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        filterChain: FilterChain,
+        enrollmentCode: String,
+    ) {
+        val enrollmentTarget = enrollmentTarget(request)
+        if (enrollmentTarget == null || participantFormAccessService == null) {
+            sendError(response, HttpStatus.UNAUTHORIZED, "Invalid enrollment credential")
             return
         }
-
-        if (request.requestURI == REVIEWER_ENROLLMENT_PATH) {
-            authenticateReviewerRequest(request, response, filterChain)
+        val securityContext = SecurityContextHolder.getContext()
+        val previousAuthentication = securityContext.authentication
+        val bootstrapAuthentication = MobileEnrollmentAuthenticationToken(enrollmentTarget.studyId)
+        // The access-code table is protected by study RLS. Install only the narrowly
+        // scoped bootstrap identity before borrowing the connection. V4 validates
+        // without consuming so the controller can first bind final enrollment to the
+        // accepted manifest digest. An enrollment target is only ever the v4 POST or preview GET.
+        securityContext.authentication = bootstrapAuthentication
+        var accepted = false
+        try {
+            accepted = if (isV4EnrollmentPost(request)) {
+                participantFormAccessService.resolveEnrollmentAccessCodeForRequest(
+                    enrollmentCode,
+                    enrollmentTarget.studyId,
+                    enrollmentTarget.participantId,
+                ) != null
+            } else {
+                participantFormAccessService.resolveEnrollmentAccessCode(
+                    enrollmentCode,
+                    enrollmentTarget.studyId,
+                    enrollmentTarget.participantId,
+                ) != null
+            }
+        } finally {
+            if (!accepted) {
+                securityContext.authentication = previousAuthentication
+            }
+        }
+        if (!accepted) {
+            // A cancel revoked this invitation: the phone's enroll of that attempt is told so, not a bare 401.
+            val attemptId = request.getHeader(ChronicleHeaders.ENROLLMENT_ATTEMPT_ID_HEADER)
+                ?.let { EnrollmentAttemptDigest.parseCanonicalUuid(it) }
+            if (isV4EnrollmentPost(request) && attemptId != null &&
+                participantFormAccessService.isCancelledEnrollmentAttempt(attemptId)) {
+                sendError(response, HttpStatus.GONE, Messages.get("error.enrollment.cancelled"),
+                    EnrollmentAttemptContracts.ENROLLMENT_CANCELLED_CODE)
+            } else {
+                sendError(response, HttpStatus.UNAUTHORIZED, "Invalid enrollment credential")
+            }
             return
         }
+        val cachedRequest = CachedBodyHttpServletRequest(request)
+        continueWithDecodedBody(cachedRequest, response, filterChain)
+    }
 
-        // These exact read-only settings routes are intentionally anonymous in
-        // ChronicleServerSecurityPod and contain no participant data or secrets.
-        // Public app distributions therefore do not need an extractable global
-        // HMAC credential just to obtain their study's collection configuration.
-        if (isPublicSettingsRequest(request)) {
-            filterChain.doFilter(request, response)
-            return
-        }
-
-        if (isInternalWebRequest(request)) {
-            filterChain.doFilter(request, response)
-            return
-        }
-
+    // reason: HMAC checks keep their sequential guard clauses and constant-time all-candidate verification together.
+    @Suppress("LongMethod", "ReturnCount")
+    private fun filterSignedRequest(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        filterChain: FilterChain,
+    ) {
         val ipRef = ClientIpRecord.logReference(request)
         val safePath = LogSanitizer.sanitizeRequestPath(request.requestURI)
 
@@ -236,74 +307,6 @@ public open class MobileApiSignatureFilter(
         val signature = request.getHeader(HEADER_SIGNATURE)
         val timestampStr = request.getHeader(HEADER_TIMESTAMP)
         val nonce = request.getHeader(HEADER_NONCE)
-
-        val enrollmentTarget = enrollmentTarget(request)
-        val enrollmentCode = request.getHeader(HEADER_ENROLLMENT_CODE)
-        if (!enrollmentCode.isNullOrBlank()) {
-            if (enrollmentTarget == null || participantFormAccessService == null) {
-                sendError(response, HttpStatus.UNAUTHORIZED, "Invalid enrollment credential")
-                return
-            }
-            val securityContext = SecurityContextHolder.getContext()
-            val previousAuthentication = securityContext.authentication
-            val bootstrapAuthentication = MobileEnrollmentAuthenticationToken(enrollmentTarget.studyId)
-            // The access-code table is protected by study RLS. Install only the narrowly
-            // scoped bootstrap identity before borrowing the connection. V4 validates
-            // without consuming so the controller can first bind final enrollment to the
-            // accepted manifest digest; legacy v3 keeps its historical consume-at-filter behavior.
-            securityContext.authentication = bootstrapAuthentication
-            var accepted = false
-            try {
-                accepted = if (isV4EnrollmentPost(request)) {
-                    participantFormAccessService.resolveEnrollmentAccessCodeForRequest(
-                        enrollmentCode,
-                        enrollmentTarget.studyId,
-                        enrollmentTarget.participantId,
-                    ) != null
-                } else if (isV4EnrollmentPreview(request)) {
-                    participantFormAccessService.resolveEnrollmentAccessCode(
-                        enrollmentCode,
-                        enrollmentTarget.studyId,
-                        enrollmentTarget.participantId,
-                    ) != null
-                } else {
-                    participantFormAccessService.consumeEnrollmentAccessCode(
-                        enrollmentCode,
-                        enrollmentTarget.studyId,
-                        enrollmentTarget.participantId,
-                    )
-                }
-            } finally {
-                if (!accepted) {
-                    securityContext.authentication = previousAuthentication
-                }
-            }
-            if (!accepted) {
-                sendError(response, HttpStatus.UNAUTHORIZED, "Invalid enrollment credential")
-                return
-            }
-            val cachedRequest = CachedBodyHttpServletRequest(request)
-            continueWithDecodedBody(cachedRequest, response, filterChain)
-            return
-        }
-        if (V4_ENROLLMENT_PREVIEW_PATH.matches(request.requestURI)) {
-            sendError(response, HttpStatus.UNAUTHORIZED, "Invalid enrollment credential")
-            return
-        }
-
-        // The downstream API-key filter authenticates and path-binds this request.
-        // A distributed client must not also need an extractable global HMAC key.
-        if (!request.getHeader(API_KEY_HEADER).isNullOrBlank()) {
-            val cachedRequest = CachedBodyHttpServletRequest(request)
-            continueWithDecodedBody(cachedRequest, response, filterChain)
-            return
-        }
-
-        if (!signatureVerificationEnabled) {
-            val cachedRequest = CachedBodyHttpServletRequest(request)
-            continueWithDecodedBody(cachedRequest, response, filterChain)
-            return
-        }
 
         // Check if signature headers are present
         val hasSignatureHeaders = !signature.isNullOrBlank() &&
@@ -336,36 +339,7 @@ public open class MobileApiSignatureFilter(
             }
         }
 
-        // Parse timestamp
-        val timestamp = try {
-            timestampStr.toLong()
-        } catch (e: NumberFormatException) {
-            log.warn(
-                "Invalid timestamp format from ipRef: {}, path: {}",
-                ipRef,
-                safePath
-            )
-            sendError(response, HttpStatus.BAD_REQUEST, "Invalid timestamp format")
-            return
-        }
-
-        // Validate timestamp (replay prevention - time window check)
-        val timestampValidation = validateTimestamp(timestamp)
-        if (!timestampValidation.isValid) {
-            log.warn(
-                "Timestamp validation failed from ipRef: {}, path: {}, reason: {}",
-                ipRef,
-                safePath,
-                timestampValidation.reason
-            )
-            val status = if (timestampValidation.reason == "Request timestamp is out of range") {
-                HttpStatus.BAD_REQUEST
-            } else {
-                HttpStatus.UNAUTHORIZED
-            }
-            sendError(response, status, timestampValidation.reason)
-            return
-        }
+        if (signatureTimestamp(timestampStr, response, ipRef, safePath) == null) return
 
         // Validate nonce format
         if (!isValidUuid(nonce)) {
@@ -451,6 +425,44 @@ public open class MobileApiSignatureFilter(
         continueWithDecodedBody(cachedRequest, response, filterChain)
     }
 
+    private fun signatureTimestamp(
+        timestampStr: String,
+        response: HttpServletResponse,
+        ipRef: String,
+        safePath: String,
+    ): Long? {
+        val timestamp = try {
+            timestampStr.toLong()
+        } catch (e: NumberFormatException) {
+            log.warn(
+                "Invalid timestamp format from ipRef: {}, path: {}",
+                ipRef,
+                safePath
+            )
+            sendError(response, HttpStatus.BAD_REQUEST, "Invalid timestamp format")
+            return null
+        }
+
+        val timestampValidation = validateTimestamp(timestamp)
+        if (!timestampValidation.isValid) {
+            log.warn(
+                "Timestamp validation failed from ipRef: {}, path: {}, reason: {}",
+                ipRef,
+                safePath,
+                timestampValidation.reason
+            )
+            val status = if (timestampValidation.reason == "Request timestamp is out of range") {
+                HttpStatus.BAD_REQUEST
+            } else {
+                HttpStatus.UNAUTHORIZED
+            }
+            sendError(response, status, timestampValidation.reason)
+            return null
+        }
+
+        return timestamp
+    }
+
     private fun authenticateEnrollmentRequest(request: HttpServletRequest) {
         val studyId = enrollmentTarget(request)?.studyId ?: return
 
@@ -491,40 +503,37 @@ public open class MobileApiSignatureFilter(
         studyId: UUID? = null,
     ) {
         val service = auditService ?: return
-        val event = AuditLogEntryBuilder()
-            .ipAddress(ClientIpRecord.WITHHELD)
-            .userAgent(request.getHeader("User-Agent"))
-            .requestPath(LogSanitizer.sanitizeRequestPath(request.requestURI))
-            .requestMethod(request.method)
-            .action(AuditAction.UNAUTHORIZED_ACCESS)
-            .resourceType("PlayReviewerEnrollmentBootstrap")
-            .studyId(studyId)
-            .success(false)
-            .responseCode(status.value())
-            .additionalData(mapOf("outcome" to outcome))
-            .build()
-        service.log(event)
+        service.log(
+            AuditEntryBuilder()
+                .request(request, ClientIpRecord.WITHHELD)
+                .action(AuditEventType.UNAUTHORIZED_ACCESS)
+                .resourceType("PlayReviewerEnrollmentBootstrap")
+                .studyId(studyId)
+                .success(false)
+                .responseCode(status.value())
+                .additionalData(mapOf("outcome" to outcome)),
+        )
     }
 
     private fun enrollmentTarget(request: HttpServletRequest): EnrollmentTarget? {
+        val path = request.parsedPath() ?: return null
         return enrollmentPaths(request).asSequence()
-            .mapNotNull { pattern -> pattern.matchEntire(request.requestURI) }
+            .mapNotNull { pattern -> pattern.matchAndExtract(path) }
             .mapNotNull { match ->
-                val studyId = runCatching { UUID.fromString(match.groupValues[1]) }.getOrNull()
-                    ?: return@mapNotNull null
+                val studyId = runCatching {
+                    UUID.fromString(match.uriVariables.getValue(StudyApi.STUDY_ID).trim())
+                }.getOrNull() ?: return@mapNotNull null
                 EnrollmentTarget(
                     studyId,
-                    URLDecoder.decode(match.groupValues[2], StandardCharsets.UTF_8),
+                    match.uriVariables.getValue(StudyApi.PARTICIPANT_ID),
                 )
             }
             .firstOrNull()
     }
 
     private fun isV4EnrollmentPost(request: HttpServletRequest): Boolean =
-        request.method.equals("POST", ignoreCase = true) && V4_ENROLLMENT_PATH.matches(request.requestURI)
-
-    private fun isV4EnrollmentPreview(request: HttpServletRequest): Boolean =
-        request.method.equals("GET", ignoreCase = true) && V4_ENROLLMENT_PREVIEW_PATH.matches(request.requestURI)
+        request.method.equals("POST", ignoreCase = true) &&
+            request.parsedPath()?.let(V4_ENROLLMENT_PATH::matches) == true
 
     private data class EnrollmentTarget(val studyId: UUID, val participantId: String)
 
@@ -589,13 +598,16 @@ public open class MobileApiSignatureFilter(
     /**
      * Checks if the request is for a mobile API endpoint.
      */
-    private fun isMobileApiRequest(request: HttpServletRequest): Boolean {
-        return MOBILE_API_PREFIXES.any { request.requestURI.startsWith(it) }
+    private fun isMobileApiRequest(path: PathContainer): Boolean {
+        val segments = path.matchingSegments()
+        return MOBILE_API_SEGMENTS.any { prefix -> segments.size > prefix.size && segments.take(prefix.size) == prefix }
     }
 
     private fun isPublicSettingsRequest(request: HttpServletRequest): Boolean {
-        return request.method.equals("GET", ignoreCase = true) &&
-                PUBLIC_SETTINGS_PATHS.any { it.matches(request.requestURI) }
+        if (!request.method.equals("GET", ignoreCase = true)) return false
+        val match = request.parsedPath()?.let(PUBLIC_SETTINGS_PATH::matchAndExtract) ?: return false
+        return match.uriVariables[StudyApi.SETTING_TYPE] in PUBLIC_SETTING_TYPES &&
+            runCatching { UUID.fromString(match.uriVariables.getValue(StudyApi.STUDY_ID).trim()) }.isSuccess
     }
 
     /**
@@ -615,10 +627,10 @@ public open class MobileApiSignatureFilter(
         if (!MobileSecurityConfiguration.isTrustedInternalWebMarker(internalWebSecret, marker)) {
             return false
         }
-        if (ENROLLMENT_PATHS.any { it.matches(request.requestURI) }) return false
+        if (request.parsedPath()?.let { path -> ENROLLMENT_PATHS.any { it.matches(path) } } == true) return false
         if (
             !request.getHeader(API_KEY_HEADER).isNullOrBlank() ||
-            !request.getHeader(DEVICE_ID_HEADER).isNullOrBlank() ||
+            !request.getHeader(RANDOM_DEVICE_ID_HEADER).isNullOrBlank() ||
             !request.getHeader(HEADER_SIGNATURE).isNullOrBlank()
         ) {
             return false
@@ -709,7 +721,7 @@ public open class MobileApiSignatureFilter(
         secret: String,
     ): String {
         // Compute SHA-256 hash of the body
-        val bodyHash = computeBodyHash(body)
+        val bodyHash = MessageDigest.getInstance(HASH_ALGORITHM).digest(body).joinToString("") { "%02x".format(it) }
 
         // Build the signing string
         val signingString = buildString {
@@ -733,20 +745,6 @@ public open class MobileApiSignatureFilter(
 
         // Return Base64-encoded signature
         return Base64.getEncoder().encodeToString(hmacBytes)
-    }
-
-    /**
-     * Computes SHA-256 hash of the request body.
-     *
-     * @param body Request body bytes
-     * @return Hex-encoded SHA-256 hash
-     */
-    private fun computeBodyHash(body: ByteArray): String {
-        val digest = MessageDigest.getInstance(HASH_ALGORITHM)
-        val hashBytes = digest.digest(body)
-
-        // Convert to hex string
-        return hashBytes.joinToString("") { "%02x".format(it) }
     }
 
     /**
@@ -784,11 +782,8 @@ public open class MobileApiSignatureFilter(
     /**
      * Sends an error response with JSON body.
      */
-    private fun sendError(response: HttpServletResponse, status: HttpStatus, message: String) {
-        response.status = status.value()
-        response.contentType = "application/json"
-        response.writer.write("""{"error": "$message", "status": ${status.value()}}""")
-        response.writer.flush()
+    private fun sendError(response: HttpServletResponse, status: HttpStatus, message: String, code: String? = null) {
+        writeFilterError(response, status.value(), message, code)
     }
 
     /**

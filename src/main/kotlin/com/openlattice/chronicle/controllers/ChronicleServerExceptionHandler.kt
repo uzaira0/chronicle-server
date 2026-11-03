@@ -19,7 +19,14 @@
  */
 package com.openlattice.chronicle.controllers
 
+import com.openlattice.chronicle.services.studies.EnrollmentDisclosurePendingException
+
+import com.openlattice.chronicle.services.studies.StudySettingsRevisionMismatchException
+
+import com.openlattice.chronicle.util.sqlCause
+
 import com.fasterxml.jackson.databind.JsonMappingException
+import com.geekbeast.controllers.exceptions.ForbiddenException
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditingComponent
@@ -27,37 +34,52 @@ import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.configuration.ErrorSanitizationConfig
+import com.openlattice.chronicle.configuration.RequestBodyTooLargeException
+import com.openlattice.chronicle.constants.CustomMediaType.FILE_TYPE_PARAMETER
+import com.openlattice.chronicle.data.FileType
+import com.openlattice.chronicle.controllers.ExceptionLogging.Companion.safeErrorPath
+import com.openlattice.chronicle.controllers.ExceptionLogging.Companion.sanitizeLogValue
+import com.openlattice.chronicle.exceptions.CandidateNotFoundException
+import com.openlattice.chronicle.exceptions.CollectionUnavailableException
+import com.openlattice.chronicle.exceptions.OrganizationNotFoundException
+import com.openlattice.chronicle.exceptions.StudyNotFoundException
+import com.openlattice.chronicle.exceptions.StudyRegistrationNotFoundException
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.ids.IdConstants
+import com.openlattice.chronicle.study.StudySettingsPreconditionFailure
 import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.SsrfException
-import jakarta.validation.ConstraintViolationException
+import jakarta.inject.Inject
+import jakarta.servlet.http.HttpServletRequest
+import java.sql.SQLException
 import org.slf4j.LoggerFactory
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
-import org.springframework.web.HttpMediaTypeNotSupportedException
-import org.springframework.web.HttpRequestMethodNotSupportedException
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.security.access.AccessDeniedException
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException
 import org.springframework.security.authentication.BadCredentialsException
 import org.springframework.security.core.AuthenticationException
+import org.springframework.web.HttpMediaTypeNotSupportedException
+import org.springframework.web.HttpMediaTypeNotAcceptableException
+import org.springframework.web.HttpRequestMethodNotSupportedException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.MissingRequestHeaderException
 import org.springframework.web.bind.MissingServletRequestParameterException
-import com.openlattice.chronicle.study.StudySettingsPreconditionFailure
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.method.annotation.HandlerMethodValidationException
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 import org.springframework.web.server.ResponseStatusException
+import com.openlattice.chronicle.services.surveys.AppUsageDayConflictException
+import com.openlattice.chronicle.services.enrollment.EnrollmentAttemptEndedException
+import com.openlattice.chronicle.storage.ParticipantProcessingBlockedException
+import com.openlattice.chronicle.generated.ParticipantProcessingContracts
 import org.springframework.web.servlet.NoHandlerFoundException
-import java.sql.SQLException
-import java.util.*
-import jakarta.inject.Inject
-import jakarta.servlet.http.HttpServletRequest
 
 /**
  * Central exception handler for Chronicle API with error response sanitization.
@@ -79,6 +101,10 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     override val auditingManager: AuditingManager,
     private val errorSanitizationConfig: ErrorSanitizationConfig
 ) : AuditingComponent {
+    private val logging = ExceptionLogging(errorSanitizationConfig)
+    private val requestErrors = RequestErrorResponses(errorSanitizationConfig)
+    private val errors = ErrorResponses(errorSanitizationConfig)
+    private val databaseErrors = DatabaseErrorResponses(errors, logging)
 
     /**
      * Handles NullPointerException as 500 Internal Server Error.
@@ -86,18 +112,12 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      */
     @ExceptionHandler(NullPointerException::class)
     public fun handleNullPointerException(req: HttpServletRequest, e: NullPointerException): ResponseEntity<ApiError> {
-        findSqlCause(e)
+        e.sqlCause()
             ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e)
 
-        return ResponseEntity(
-            ApiError.internalServerError(
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                path = safeErrorPath(req)
-            ),
-            HttpStatus.INTERNAL_SERVER_ERROR
-        )
+        return errors.internalError(req, errorId)
     }
 
     /**
@@ -112,118 +132,51 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         NoHandlerFoundException::class,
         NoSuchElementException::class
     )
-    // reason: boundary catch — auditing failure must not break the generic 404 response path
-    @Suppress("TooGenericExceptionCaught")
     public fun handleNotFoundException(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
 
         // Audit study not found events
-        try {
+        recordEventBestEffort {
             val principal = Principals.getCurrentSecurablePrincipal()
             val principals = Principals.getCurrentPrincipals()
-            val event = when (e) {
-                is StudyNotFoundException -> {
-                    AuditableEvent(
-                        AclKey(e.studyId),
-                        principal.id,
-                        principal.principal,
-                        AuditEventType.STUDY_NOT_FOUND,
-                        "Unable to find study ${e.studyId} [ErrorId: $errorId]",
-                        e.studyId,
-                        data = mapOf("principals" to principals, "errorId" to errorId)
-                    )
-                }
-                else -> {
-                    AuditableEvent(
-                        AclKey(IdConstants.CHRONICLE.id),
-                        principal.id,
-                        principal.principal,
-                        AuditEventType.STUDY_NOT_FOUND,
-                        "Resource not found [ErrorId: $errorId]",
-                        IdConstants.UNINITIALIZED.id,
-                        data = mapOf("principals" to principals, "errorId" to errorId)
-                    )
-                }
-            }
-            recordEvent(event)
-        } catch (auditEx: Exception) {
-            logger.warn("Failed to audit not found event: {}", auditEx.message)
+            val studyId = (e as? StudyNotFoundException)?.studyId
+            AuditableEvent(
+                AclKey(studyId ?: IdConstants.CHRONICLE.id), principal.id, principal.principal,
+                AuditEventType.STUDY_NOT_FOUND,
+                if (studyId != null) "Unable to find study $studyId [ErrorId: $errorId]"
+                    else "Resource not found [ErrorId: $errorId]",
+                studyId ?: IdConstants.UNINITIALIZED.id,
+                data = mapOf("principals" to principals, "errorId" to errorId),
+            )
         }
-
-        // Always return generic 404 response to prevent information disclosure
-        return ResponseEntity(
-            ApiError.notFound(
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.NOT_FOUND
-        )
+        return errors.notFound(req, errorId)
     }
 
     /**
      * Handles 400 Bad Request for illegal arguments and malformed requests.
      */
-    // reason: boundary catch — measuring body length must not throw past the bad-request handler
-    @Suppress("TooGenericExceptionCaught")
-    @ExceptionHandler(IllegalArgumentException::class, HttpMessageNotReadableException::class)
+    @ExceptionHandler(IllegalArgumentException::class, HttpMessageNotReadableException::class, RequestBodyTooLargeException::class)
     public fun handleIllegalArgumentException(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
-        findSqlCause(e)
-            ?.let { return handleSqlException(req, it) }
+        if (generateSequence<Throwable>(e) { it.cause }.any { it is RequestBodyTooLargeException }) {
+            return handleResponseStatusException(req, ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE))
+        }
+        e.sqlCause()?.let { return databaseErrors.handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
-
-        when (e) {
-            is HttpMessageNotReadableException -> {
-                // Never log the raw request body. Mobile collection upload bodies can carry
-                // participant data (PHI risk), and the existing sanitizers only scrub
-                // log-injection / paths / SQL / credentials — NOT participant content. Log the
-                // body SIZE only; the parse location/type travels with the exception elsewhere.
-                val bodyLength = try {
-                    e.httpInputMessage.body.readBytes().size
-                } catch (ioEx: Exception) {
-                    // Body unreadable; fall back to unknown length. Log the cause WITHOUT the body content.
-                    logger.debug("Could not measure unreadable request body length [ErrorId: {}]", errorId, ioEx)
-                    -1
-                }
-                logger.error(
-                    "Unreadable request body [ErrorId: {}], length={} bytes (content not logged)",
-                    errorId,
-                    bodyLength
-                )
-            }
-            else -> logger.debug("Body is not available.")
-        }
-
-        // A HttpMessageNotReadableException's message/stack embeds the offending body VALUE
-        // (Jackson populates it), which can be participant content — so suppress it in the log.
-        logExceptionWithId(errorId, req, e, logMessage = e !is HttpMessageNotReadableException)
-
-        val message = when {
-            // Body-parse failure: never echo the value back to the client either — the sanitizers
-            // do not scrub participant content. Return a fixed generic message.
-            e is HttpMessageNotReadableException -> Messages.get("error.request.invalidBody")
-            errorSanitizationConfig.sanitizeErrors -> errorSanitizationConfig.sanitizeMessage(e.message)
-            else -> e.message ?: Messages.get("error.request.invalid")
-        }
-
-        return ResponseEntity(
-            ApiError.badRequest(
-                message = message,
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.BAD_REQUEST
-        )
+        val message = requestErrors.invalidArgumentMessage(e)
+        if (e is HttpMessageNotReadableException) logging.logUnreadableBody(errorId, e)
+        logging.logExceptionWithId(errorId, req, e, logMessage = e !is HttpMessageNotReadableException, clientError = true)
+        return errors.badRequest(req, errorId, message, code = requestErrors.bodyErrorCode(e))
     }
 
     /**
-     * Handles validation errors from @Valid annotations on @RequestBody parameters.
-     * Returns field-specific validation errors without exposing internal details.
+     * Handles bean validation of request bodies (@Valid) and of method parameters, including the rows of a list body
+     * and constraints on path variables. Returns field-specific validation errors without exposing internal details.
      */
-    @ExceptionHandler(MethodArgumentNotValidException::class)
-    public fun handleMethodArgumentNotValidException(
+    @ExceptionHandler(MethodArgumentNotValidException::class, HandlerMethodValidationException::class)
+    public fun handleValidationException(
         req: HttpServletRequest,
-        e: MethodArgumentNotValidException
+        e: Exception
     ): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
         logger.warn(
@@ -233,53 +186,10 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
             errorId
         )
 
-        // Extract field errors - only expose field names and validation messages
-        val errors = e.bindingResult.fieldErrors.map { fieldError ->
-            "${fieldError.field}: ${fieldError.defaultMessage}"
-        }
-
-        return ResponseEntity(
-            ApiError.badRequest(
-                message = Messages.get("error.request.validationFailed"),
-                details = errors.ifEmpty { null },
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.BAD_REQUEST
-        )
-    }
-
-    /**
-     * Handles constraint violations from @Validated annotations on method parameters.
-     * This covers @PathVariable and @RequestParam validation.
-     */
-    @ExceptionHandler(ConstraintViolationException::class)
-    public fun handleConstraintViolationException(
-        req: HttpServletRequest,
-        e: ConstraintViolationException
-    ): ResponseEntity<ApiError> {
-        val errorId = ApiError.generateErrorId()
-        logger.warn(
-            "Constraint violation for request {} {} [ErrorId: {}]",
-            sanitizeLogValue(req.method),
-            safeErrorPath(req),
-            errorId
-        )
-
-        val errors = e.constraintViolations.map { violation ->
-            val propertyPath = violation.propertyPath.toString()
-            val paramName = propertyPath.substringAfterLast('.')
-            "$paramName: ${violation.message}"
-        }
-
-        return ResponseEntity(
-            ApiError.badRequest(
-                message = Messages.get("error.request.invalidParameters"),
-                details = errors.ifEmpty { null },
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.BAD_REQUEST
+        return errors.badRequest(req = req, errorId = errorId,
+            message = Messages.get("error.request.validationFailed"),
+            details = ValidationDetails.of(e),
+            code = requestErrors.validationErrorCode(),
         )
     }
 
@@ -292,16 +202,11 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         e: MissingServletRequestParameterException
     ): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
 
-        return ResponseEntity(
-            ApiError.badRequest(
-                message = Messages.get("error.request.missingParameter"),
-                details = listOf(Messages.format("error.request.missingParameter.detail", e.parameterName)),
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.BAD_REQUEST
+        return errors.badRequest(req = req, errorId = errorId,
+            message = Messages.get("error.request.missingParameter"),
+            details = listOf(Messages.format("error.request.missingParameter.detail", e.parameterName)),
         )
     }
 
@@ -314,16 +219,11 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         e: MissingRequestHeaderException
     ): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
 
-        return ResponseEntity(
-            ApiError.badRequest(
-                message = Messages.get("error.request.missingHeader"),
-                details = listOf(Messages.format("error.request.missingHeader.detail", e.headerName)),
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.BAD_REQUEST
+        return errors.badRequest(req = req, errorId = errorId,
+            message = Messages.get("error.request.missingHeader"),
+            details = listOf(Messages.format("error.request.missingHeader.detail", e.headerName)),
         )
     }
 
@@ -336,18 +236,29 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         e: MethodArgumentTypeMismatchException
     ): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
 
         val expectedType = e.requiredType?.simpleName ?: "unknown"
-        return ResponseEntity(
-            ApiError.badRequest(
-                message = Messages.get("error.request.invalidParameterType"),
-                details = listOf(Messages.format("error.request.invalidParameterType.detail", e.name, expectedType)),
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.BAD_REQUEST
+        return errors.badRequest(req = req, errorId = errorId,
+            message = Messages.get("error.request.invalidParameterType"),
+            details = listOf(Messages.format("error.request.invalidParameterType.detail", e.name, expectedType)),
         )
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotAcceptableException::class)
+    public fun handleNotAcceptableException(
+        req: HttpServletRequest,
+        e: HttpMediaTypeNotAcceptableException,
+    ): ResponseEntity<ApiError> {
+        val errorId = ApiError.generateErrorId()
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
+        val fileType = req.getParameter(FILE_TYPE_PARAMETER)
+        return if (fileType != null && FileType.values().none { it.name == fileType }) {
+            errors.badRequest(req, errorId, Messages.get("error.request.invalidParameterType"))
+        } else {
+            val status = HttpStatus.NOT_ACCEPTABLE
+            errors.response(req, errorId, ApiError(status.value(), status.reasonPhrase, status.reasonPhrase))
+        }
     }
 
     /**
@@ -356,14 +267,14 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     @ExceptionHandler(IllegalStateException::class)
     public fun handleIllegalStateException(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
         if (e.message == "Participant is already registered for this study" && (e.cause as? SQLException)?.sqlState == "23505") {
-            logExceptionWithId(ApiError.generateErrorId(), req, e)
+            logging.logExceptionWithId(ApiError.generateErrorId(), req, e, clientError = true)
             return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiError(409, "Conflict",
                 "Participant is already registered for this study", path = safeErrorPath(req)))
         }
-        findSqlCause(e)
+        e.sqlCause()
             ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e)
 
         val message = if (errorSanitizationConfig.sanitizeErrors) {
             errorSanitizationConfig.sanitizeMessage(e.message)
@@ -371,16 +282,9 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
             e.message ?: Messages.get("error.state.invalid")
         }
 
-        return ResponseEntity(
-            ApiError(
-                status = HttpStatus.CONFLICT.value(),
-                error = "Conflict",
-                message = message,
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                path = safeErrorPath(req)
-            ),
-            HttpStatus.CONFLICT
-        )
+        return errors.response(req, errorId, ApiError(
+            status = HttpStatus.CONFLICT.value(), error = "Conflict", message = message,
+        ))
     }
 
     /**
@@ -404,7 +308,6 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      */
     @ExceptionHandler(StudySettingsRevisionMismatchException::class)
     public fun handleStudySettingsRevisionMismatch(
-        req: HttpServletRequest,
         e: StudySettingsRevisionMismatchException,
     ): ResponseEntity<StudySettingsPreconditionFailure> {
         logger.info("Study settings precondition failed at revision {}", e.currentRevision)
@@ -424,32 +327,30 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         e: ResponseStatusException
     ): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
-
         val status = HttpStatus.resolve(e.statusCode.value()) ?: HttpStatus.INTERNAL_SERVER_ERROR
+        logging.logExceptionWithId(errorId, req, e, logMessage = e !is EnrollmentDisclosurePendingException,
+            clientError = status.is4xxClientError)
         if (status.is5xxServerError) {
-            return ResponseEntity(
-                ApiError.internalServerError(
-                    errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                    path = safeErrorPath(req)
-                ),
-                status
-            )
+            return errors.internalError(req, errorId, status)
         }
 
         // Preserve the existing 413 error text after Spring 7 renamed this status.
         val reasonPhrase = if (status == HttpStatus.CONTENT_TOO_LARGE) PAYLOAD_TOO_LARGE_REASON else status.reasonPhrase
-        return ResponseEntity(
-            ApiError(
-                status = status.value(),
-                error = reasonPhrase,
-                message = e.reason ?: reasonPhrase,
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                path = safeErrorPath(req)
-            ),
-            status
-        )
+        return errors.response(req, errorId, ApiError(
+            status = status.value(), error = reasonPhrase, message = e.reason ?: reasonPhrase,
+            blockingParticipantIds = (e as? EnrollmentDisclosurePendingException)?.blockingParticipantIds,
+            code = (e as? ParticipantProcessingBlockedException)?.let { ParticipantProcessingContracts.PARTICIPANT_PROCESSING_BLOCKED_CODE }
+                ?: (e as? AppUsageDayConflictException)?.conflict?.name
+                ?: (e as? EnrollmentAttemptEndedException)?.code,
+        ))
     }
+
+    @ExceptionHandler(CollectionUnavailableException::class)
+    internal fun handleCollectionUnavailable(req: HttpServletRequest, failure: CollectionUnavailableException): ResponseEntity<ApiError> =
+        handleResponseStatusException(req, ResponseStatusException(HttpStatus.FORBIDDEN, Messages.get(when (failure.scope) {
+            CollectionUnavailableException.Scope.STUDY -> "error.study.registrationUnavailable"
+            CollectionUnavailableException.Scope.PARTICIPANT -> "error.enrollment.notEnrolled"
+        })))
 
     /**
      * Handles 401 Unauthorized for authentication failures.
@@ -462,35 +363,23 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     )
     public fun handleAuthenticationException(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
 
         // Always return generic unauthorized response
-        return ResponseEntity(
-            ApiError.unauthorized(
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.UNAUTHORIZED
-        )
+        return errors.unauthorized(req, errorId)
     }
 
     /**
      * Handles 403 Forbidden for access denied exceptions.
      * Always returns generic message to prevent information disclosure.
      */
-    @ExceptionHandler(AccessDeniedException::class, com.geekbeast.controllers.exceptions.ForbiddenException::class)
+    @ExceptionHandler(AccessDeniedException::class, ForbiddenException::class)
     public fun handleUnauthorizedExceptions(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
 
         // Always return generic forbidden response
-        return ResponseEntity(
-            ApiError.forbidden(
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.FORBIDDEN
-        )
+        return errors.forbidden(req, errorId)
     }
 
     /**
@@ -515,13 +404,7 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         )
 
         // Return generic error to prevent information disclosure
-        return ResponseEntity(
-            ApiError.forbidden(
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.FORBIDDEN
-        )
+        return errors.forbidden(req, errorId)
     }
 
     /**
@@ -529,34 +412,8 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      * ALWAYS returns generic error to prevent SQL/schema disclosure.
      */
     @ExceptionHandler(SQLException::class)
-    public fun handleSqlException(req: HttpServletRequest, e: SQLException): ResponseEntity<ApiError> {
-        val errorId = ApiError.generateErrorId()
-
-        // Log SQL diagnostics without raw SQL/error text. Error messages can include
-        // query fragments, table names, connection strings, or values.
-        logger.error(
-            "Database error [ErrorId: {}] - SQLState: {}, ErrorCode: {}",
-            errorId,
-            e.sqlState,
-            e.errorCode,
-        )
-
-        val failures = generateSequence(e) { it.nextException }.take(32).toList()
-        val status = failures.mapNotNull { failure ->
-            when {
-                failure is java.sql.SQLTransientConnectionException -> HttpStatus.SERVICE_UNAVAILABLE
-                failure.sqlState?.startsWith("22") == true -> HttpStatus.BAD_REQUEST
-                failure.sqlState == "42501" -> HttpStatus.FORBIDDEN
-                failure.sqlState?.take(2) in setOf("08", "40", "53") || failure.sqlState == "57P01" ->
-                    HttpStatus.SERVICE_UNAVAILABLE
-                else -> null
-            }
-        }.firstOrNull() ?: HttpStatus.INTERNAL_SERVER_ERROR
-        val response = ResponseEntity.status(status)
-        if (status == HttpStatus.SERVICE_UNAVAILABLE) response.header("Retry-After", "5")
-        return response.body(ApiError(status.value(), status.reasonPhrase, status.reasonPhrase,
-            if (errorSanitizationConfig.includeErrorId) errorId else null, path = safeErrorPath(req)))
-    }
+    public fun handleSqlException(req: HttpServletRequest, e: SQLException): ResponseEntity<ApiError> =
+        databaseErrors.handleSqlException(req, e)
 
     /**
      * Handles JSON mapping/parsing exceptions.
@@ -567,17 +424,12 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
         // Log only the field PATH (e.g. "rows[3].timestamp"), never e.originalMessage — the
         // original message embeds the offending field VALUE, which can be participant content/PHI.
         val fieldPath = e.path.joinToString(".") { ref -> ref.fieldName ?: "[${ref.index}]" }
-        logger.error("JSON mapping error [ErrorId: {}] at path: {} (value not logged)", errorId, fieldPath)
+        logger.warn("JSON mapping error [ErrorId: {}] at path: {} (value not logged)", errorId, fieldPath)
         // e.message / stack embed the offending field VALUE (Jackson populates it) — suppress it.
-        logExceptionWithId(errorId, req, e, logMessage = false)
+        logging.logExceptionWithId(errorId, req, e, logMessage = false, clientError = true)
 
-        return ResponseEntity(
-            ApiError.badRequest(
-                message = Messages.get("error.request.invalidJson"),
-                path = safeErrorPath(req),
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null
-            ),
-            HttpStatus.BAD_REQUEST
+        return errors.badRequest(req = req, errorId = errorId,
+            message = Messages.get("error.request.invalidJson"),
         )
     }
 
@@ -591,24 +443,16 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
     @ExceptionHandler(HttpRequestMethodNotSupportedException::class, HttpMediaTypeNotSupportedException::class)
     public fun handleUnsupportedRequest(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e, clientError = true)
         val status = if (e is HttpRequestMethodNotSupportedException) {
             HttpStatus.METHOD_NOT_ALLOWED
         } else {
             HttpStatus.UNSUPPORTED_MEDIA_TYPE
         }
-        val builder = ResponseEntity.status(status)
+        val headers = HttpHeaders()
         val allowed = (e as? HttpRequestMethodNotSupportedException)?.supportedHttpMethods
-        if (!allowed.isNullOrEmpty()) builder.allow(*allowed.toTypedArray())
-        return builder.body(
-            ApiError(
-                status = status.value(),
-                error = status.reasonPhrase,
-                message = status.reasonPhrase,
-                errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                path = safeErrorPath(req)
-            )
-        )
+        if (!allowed.isNullOrEmpty()) headers.allow = allowed
+        return errors.response(req, errorId, ApiError(status.value(), status.reasonPhrase, status.reasonPhrase), headers)
     }
 
     /**
@@ -617,130 +461,26 @@ public open class ChronicleServerExceptionHandler @Inject constructor(
      */
     @ExceptionHandler(Exception::class)
     public fun handleOtherExceptions(req: HttpServletRequest, e: Exception): ResponseEntity<ApiError> {
-        findSqlCause(e)
+        e.sqlCause()
             ?.let { return handleSqlException(req, it) }
         val errorId = ApiError.generateErrorId()
-        logExceptionWithId(errorId, req, e)
+        logging.logExceptionWithId(errorId, req, e)
 
         // Check if this exception type should always be sanitized
         val shouldAlwaysSanitize = errorSanitizationConfig.shouldAlwaysSanitize(e.javaClass.name)
 
         return if (errorSanitizationConfig.sanitizeErrors || shouldAlwaysSanitize) {
-            // Production mode: return generic error with error ID for correlation
-            ResponseEntity(
-                ApiError.internalServerError(
-                    errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                    path = safeErrorPath(req)
-                ),
-                HttpStatus.INTERNAL_SERVER_ERROR
-            )
+            errors.internalError(req, errorId)
         } else {
-            // Development mode: include more details
-            ResponseEntity(
-                ApiError(
-                    status = HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                    error = "Internal Server Error",
-                    message = e.message ?: Messages.get("error.unexpected"),
-                    errorId = if (errorSanitizationConfig.includeErrorId) errorId else null,
-                    path = safeErrorPath(req),
-                    trace = null
-                ),
-                HttpStatus.INTERNAL_SERVER_ERROR
-            )
+            errors.response(req, errorId, ApiError(
+                status = HttpStatus.INTERNAL_SERVER_ERROR.value(), error = "Internal Server Error",
+                message = e.message ?: Messages.get("error.unexpected"),
+            ))
         }
     }
-
-    private fun findSqlCause(failure: Throwable): SQLException? =
-        generateSequence(failure) { it.cause }.take(32).filterIsInstance<SQLException>().firstOrNull()
-
-    /**
-     * Logs an exception with the error ID for correlation.
-     */
-    private fun logExceptionWithId(
-        errorId: String,
-        req: HttpServletRequest,
-        e: Exception,
-        // For body-parse exceptions (HttpMessageNotReadableException / JsonMappingException) the
-        // exception MESSAGE and stack embed the offending request VALUE — which can be participant
-        // content (PHI). Those call sites pass logMessage=false so only the error id + exception
-        // CLASS are logged here; the field path / body length is already logged (without the value)
-        // by the caller.
-        logMessage: Boolean = true,
-    ) {
-        val databaseFailure = findSqlCause(e)
-        if (databaseFailure != null) {
-            logger.error("Database error [ErrorId: {}] - SQLState: {}, ErrorCode: {}",
-                errorId, databaseFailure.sqlState, databaseFailure.errorCode)
-            return
-        }
-        // Spring builds NoHandlerFoundException messages from the raw request URI. That URI can
-        // contain arbitrary participant content, so never pass this framework-generated message,
-        // stack, or URI to an application logger. A one-way route reference retains correlation
-        // without assuming an unknown path follows any known route schema.
-        if (e is NoHandlerFoundException) {
-            logger.error(
-                "Error ID: {} | Method: {} | URI: unmapped-route | routeRef: {} | Exception: {} | Message: request-derived message omitted",
-                errorId,
-                sanitizeLogValue(req.method),
-                LogSanitizer.stableFingerprint(req.requestURI, prefix = "route"),
-                e.javaClass.name,
-            )
-            return
-        }
-        if (!logMessage) {
-            logger.error(
-                "Error ID: {} - {} (message/stack omitted: may contain request content)",
-                errorId,
-                e.javaClass.simpleName,
-            )
-            return
-        }
-        if (errorSanitizationConfig.logFullErrors) {
-            logger.error(
-                "Error ID: {} | Method: {} | URI: {} | IP: {} | Exception: {} | Message: {}",
-                errorId,
-                sanitizeLogValue(req.method),
-                safeErrorPath(req),
-                ClientIpRecord.logReference(req),
-                e.javaClass.name,
-                errorSanitizationConfig.sanitizeMessage(e.message)
-            )
-        } else {
-            logger.error(
-                "Error ID: {} - {} - {}",
-                errorId,
-                e.javaClass.simpleName,
-                errorSanitizationConfig.sanitizeMessage(e.message)
-            )
-        }
-    }
-
-    /**
-     * Sanitizes a value for safe logging (prevents log injection).
-     */
-    private fun sanitizeLogValue(value: String?): String {
-        if (value == null) return "null"
-        return value
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-            .take(500)
-    }
-
-    private fun safeErrorPath(req: HttpServletRequest): String = LogSanitizer.sanitizeRequestPath(req.requestURI)
 
     internal companion object {
         internal const val PAYLOAD_TOO_LARGE_REASON = "Payload Too Large"
         private val logger = LoggerFactory.getLogger(ChronicleServerExceptionHandler::class.java)
     }
 }
-
-public open class StudyRegistrationNotFoundException : RuntimeException {
-    internal constructor(message: String) : super(message)
-    internal constructor(message: String, cause: Throwable) : super(message, cause)
-}
-
-public open class CandidateNotFoundException(candidateId: UUID, message: String? = "$candidateId") : RuntimeException(message)
-public open class StudyNotFoundException(public val studyId: UUID, message: String) : RuntimeException(message)
-public open class OrganizationNotFoundException(public val organization: UUID, message: String) : RuntimeException(message)
-public open class TimeUseDiaryDownloadException(public val studyId: UUID, message: String) : RuntimeException(message)

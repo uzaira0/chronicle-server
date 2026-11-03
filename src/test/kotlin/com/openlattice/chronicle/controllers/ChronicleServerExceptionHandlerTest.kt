@@ -3,7 +3,16 @@ package com.openlattice.chronicle.controllers
 import com.fasterxml.jackson.databind.JsonMappingException
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.configuration.ErrorSanitizationConfig
+import com.openlattice.chronicle.constants.CustomMediaType.FILE_TYPE_PARAMETER
+import com.openlattice.chronicle.exceptions.CandidateNotFoundException
+import com.openlattice.chronicle.exceptions.OrganizationNotFoundException
+import com.openlattice.chronicle.exceptions.StudyNotFoundException
 import com.openlattice.chronicle.util.SsrfException
+import com.openlattice.chronicle.util.SsrfViolationType
+import jakarta.servlet.http.HttpServletRequest
+import java.sql.SQLException
+import java.sql.SQLTransientConnectionException
+import java.util.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -13,58 +22,59 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
+import org.springframework.core.MethodParameter
 import org.springframework.http.HttpStatus
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.security.access.AccessDeniedException
 import org.springframework.security.authentication.BadCredentialsException
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
+import org.springframework.test.web.servlet.setup.MockMvcBuilders
+import org.springframework.web.bind.MissingRequestHeaderException
+import org.springframework.web.bind.MissingServletRequestParameterException
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
-import java.sql.SQLException
-import java.util.*
 
-class ChronicleServerExceptionHandlerTest {
+class ChronicleServerExceptionHandlerTest : ChronicleServerExceptionHandlerTestSupport() {
 
     @Test
-    fun databaseCauseClassificationReturnsClientAndRetryableStatusesWithoutPayload() {
-        val cases = listOf(
-            SQLException("uniquePayloadSentinel", "22021") to 400,
-            SQLException("uniquePayloadSentinel", "22P05") to 400,
-            SQLException("uniquePayloadSentinel", "42501") to 403,
-            SQLException("uniquePayloadSentinel", "53100") to 503,
-            java.sql.SQLTransientConnectionException("uniquePayloadSentinel") to 503,
-        )
-        for ((error, status) in cases) {
-            for (wrapped in listOf(false, true)) {
-                val result = if (wrapped) handler.handleOtherExceptions(mockRequest(), RuntimeException("uniquePayloadSentinel", error))
-                    else handler.handleSqlException(mockRequest(), error)
-                assertEquals(status, result.statusCode.value())
-                assertFalse(result.body.toString().contains("uniquePayloadSentinel"))
-                if (status == 503) assertEquals("5", result.headers.getFirst("Retry-After"))
+    fun invalidEnumQueryParametersReturnSanitized400AcrossControllers() {
+        val mapper = com.openlattice.chronicle.configuration.JacksonSecurityConfig().secureObjectMapper()
+        val pod = com.openlattice.chronicle.pods.servlet.ChronicleServerMvcPod(mapper)
+        pod.setServletContext(org.springframework.mock.web.MockServletContext())
+        val mvc = MockMvcBuilders.standaloneSetup(
+            Mockito.mock(SurveyController::class.java), Mockito.mock(AuthorizationsController::class.java),
+        ).setControllerAdvice(handler)
+            .setContentNegotiationManager(pod.mvcContentNegotiationManager())
+            .setCustomHandlerMapping {
+                org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping().apply {
+                    setContentNegotiationManager(pod.mvcContentNegotiationManager())
+                }
+            }
+            .setMessageConverters(org.springframework.http.converter.json.MappingJackson2HttpMessageConverter(mapper))
+            .build()
+        val id = UUID.randomUUID()
+        val questionnaireData = "/chronicle/v3/survey/$id/questionnaire/$id/data"
+        val invalidValue = "AAA"
+        val badRequest = HttpStatus.BAD_REQUEST.value()
+        for ((path, parameters, status) in listOf(
+            Triple(questionnaireData, mapOf("type" to invalidValue, FILE_TYPE_PARAMETER to invalidValue), badRequest),
+            Triple("/chronicle/v3/authorizations", mapOf("objectType" to invalidValue, "permission" to "READ"), badRequest),
+            Triple(questionnaireData, mapOf(FILE_TYPE_PARAMETER to "csv"), HttpStatus.NOT_ACCEPTABLE.value()),
+        )) {
+            val request = get(path).contextPath("/chronicle")
+            parameters.forEach { (name, value) -> request.param(name, value) }
+            val response = mvc.perform(request).andReturn().response
+            assertEquals(path, status, response.status)
+            val body = mapper.readTree(response.contentAsString)
+            assertTrue("Expected a JSON error body: ${response.contentAsString}", body.isObject)
+            assertEquals(status, body["status"].asInt())
+            assertTrue(body["errorId"].asText().startsWith("ERR-"))
+            for (internal in listOf(invalidValue, "com.openlattice", "org.springframework", id.toString())) {
+                assertFalse(response.contentAsString, response.contentAsString.contains(internal))
             }
         }
-    }
-
-    private val auditingManager = Mockito.mock(AuditingManager::class.java)
-    private val config = ErrorSanitizationConfig(
-        sanitizeErrors = true,
-        includeErrorId = true,
-        logFullErrors = false
-    )
-    private val devConfig = ErrorSanitizationConfig(
-        sanitizeErrors = false,
-        includeStackTrace = true,
-        includeErrorId = true,
-        logFullErrors = false
-    )
-
-    private lateinit var handler: ChronicleServerExceptionHandler
-
-    @Before
-    fun setUp() {
-        handler = ChronicleServerExceptionHandler(auditingManager, config)
-    }
-
-    private fun mockRequest(uri: String = "/api/test"): MockHttpServletRequest {
-        return MockHttpServletRequest("GET", uri)
     }
 
     // --- handleResponseStatusException ---
@@ -158,21 +168,19 @@ class ChronicleServerExceptionHandlerTest {
     fun testErrorPathRedactsRequestIdentifiers() {
         val studyId = "550e8400-e29b-41d4-a716-446655440000"
         val participantId = "u15-device-owner"
-        val sourceDeviceId = "iphone-idfv"
         val e = NullPointerException("null ref")
 
         val result = handler.handleNullPointerException(
-            mockRequest("/chronicle/v3/study/$studyId/participant/$participantId/ios/$sourceDeviceId/upload?token=secret"),
+            mockRequest("/chronicle/v4/study/$studyId/participant/$participantId/ios/screen-time?token=secret"),
             e
         )
 
         assertEquals(
-            "/chronicle/v3/study/{studyId}/participant/{participantId}/ios/{sourceDeviceId}/upload",
+            "/chronicle/v4/study/{studyId}/participant/{participantId}/ios/screen-time",
             result.body?.path
         )
         assertFalse(result.body?.path?.contains(studyId) == true)
         assertFalse(result.body?.path?.contains(participantId) == true)
-        assertFalse(result.body?.path?.contains(sourceDeviceId) == true)
         assertFalse(result.body?.path?.contains("token=secret") == true)
     }
 
@@ -313,31 +321,6 @@ class ChronicleServerExceptionHandlerTest {
         assertEquals("Access denied", result.body?.message)
     }
 
-    // --- handleSqlException ---
-
-    @Test
-    fun testHandleSqlExceptionReturns500() {
-        val e = SQLException("ERROR: relation does not exist", "42P01")
-        val result = handler.handleSqlException(mockRequest(), e)
-        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, result.statusCode)
-        assertEquals(500, result.body?.status)
-    }
-
-    @Test
-    fun testHandleSqlExceptionNeverExposesSqlDetails() {
-        val e = SQLException("ERROR: SELECT * FROM secret_table", "42P01", 1)
-        val result = handler.handleSqlException(mockRequest(), e)
-        assertFalse(result.body?.message?.contains("SELECT") == true)
-        assertFalse(result.body?.message?.contains("secret_table") == true)
-    }
-
-    @Test
-    fun testHandleSqlExceptionIncludesErrorId() {
-        val e = SQLException("db error")
-        val result = handler.handleSqlException(mockRequest(), e)
-        assertNotNull(result.body?.errorId)
-    }
-
     // --- handleJsonExceptions ---
 
     @Test
@@ -421,7 +404,7 @@ class ChronicleServerExceptionHandlerTest {
     @Test
     fun testHandleSsrfExceptionReturns403() {
         val e = SsrfException(
-            com.openlattice.chronicle.util.SsrfViolationType.PRIVATE_IP,
+            SsrfViolationType.PRIVATE_IP,
             "http://internal:8080",
             "Blocked private IP"
         )
@@ -430,11 +413,90 @@ class ChronicleServerExceptionHandlerTest {
         assertEquals("Access denied", result.body?.message)
     }
 
+
+}
+
+abstract class ChronicleServerExceptionHandlerTestSupport {
+    protected val auditingManager = Mockito.mock(AuditingManager::class.java)
+    protected val config = ErrorSanitizationConfig(
+        sanitizeErrors = true,
+        includeErrorId = true,
+        logFullErrors = false
+    )
+    protected val devConfig = ErrorSanitizationConfig(
+        sanitizeErrors = false,
+        includeStackTrace = true,
+        includeErrorId = true,
+        logFullErrors = false
+    )
+
+    protected var handler = ChronicleServerExceptionHandler(auditingManager, config)
+
+    @Before
+    fun setUp() {
+        handler = ChronicleServerExceptionHandler(auditingManager, config)
+    }
+
+    protected fun mockRequest(uri: String = "/api/test"): MockHttpServletRequest {
+        return MockHttpServletRequest("GET", uri)
+    }
+
+}
+
+class ChronicleServerSqlExceptionHandlerTest : ChronicleServerExceptionHandlerTestSupport() {
+    @Test
+    fun databaseCauseClassificationReturnsClientAndRetryableStatusesWithoutPayload() {
+        val cases = listOf(
+            SQLException("uniquePayloadSentinel", "22021") to 400,
+            SQLException("uniquePayloadSentinel", "22P05") to 400,
+            SQLException("uniquePayloadSentinel", "42501") to 403,
+            SQLException("uniquePayloadSentinel", "53100") to 503,
+            SQLTransientConnectionException("uniquePayloadSentinel") to 503,
+        )
+        for ((error, status) in cases) {
+            for (wrapped in listOf(false, true)) {
+                val result = if (wrapped) handler.handleOtherExceptions(mockRequest(), RuntimeException("uniquePayloadSentinel", error))
+                    else handler.handleSqlException(mockRequest(), error)
+                assertEquals(status, result.statusCode.value())
+                assertFalse(result.body.toString().contains("uniquePayloadSentinel"))
+                if (status == 503) assertEquals("5", result.headers.getFirst("Retry-After"))
+            }
+        }
+    }
+
+    // --- handleSqlException ---
+
+    @Test
+    fun testHandleSqlExceptionReturns500() {
+        val e = SQLException("ERROR: relation does not exist", "42P01")
+        val result = handler.handleSqlException(mockRequest(), e)
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, result.statusCode)
+        assertEquals(500, result.body?.status)
+    }
+
+    @Test
+    fun testHandleSqlExceptionNeverExposesSqlDetails() {
+        val e = SQLException("ERROR: SELECT * FROM secret_table", "42P01", 1)
+        val result = handler.handleSqlException(mockRequest(), e)
+        assertFalse(result.body?.message?.contains("SELECT") == true)
+        assertFalse(result.body?.message?.contains("secret_table") == true)
+    }
+
+    @Test
+    fun testHandleSqlExceptionIncludesErrorId() {
+        val e = SQLException("db error")
+        val result = handler.handleSqlException(mockRequest(), e)
+        assertNotNull(result.body?.errorId)
+    }
+
+}
+
+class ChronicleServerProtocolExceptionHandlerTest : ChronicleServerExceptionHandlerTestSupport() {
     // --- handleMissingServletRequestParameterException ---
 
     @Test
     fun testHandleMissingParamReturns400() {
-        val e = org.springframework.web.bind.MissingServletRequestParameterException("studyId", "UUID")
+        val e = MissingServletRequestParameterException("studyId", "UUID")
         val result = handler.handleMissingServletRequestParameterException(mockRequest(), e)
         assertEquals(HttpStatus.BAD_REQUEST, result.statusCode)
         assertEquals("Missing required parameter", result.body?.message)
@@ -443,19 +505,19 @@ class ChronicleServerExceptionHandlerTest {
 
     @Test
     fun testHandleMissingParamIncludesParamName() {
-        val e = org.springframework.web.bind.MissingServletRequestParameterException("studyId", "UUID")
+        val e = MissingServletRequestParameterException("studyId", "UUID")
         val result = handler.handleMissingServletRequestParameterException(mockRequest(), e)
         assertTrue(result.body?.details?.any { it.contains("studyId") } == true)
     }
 
     @Test
     fun testHandleMissingHeaderReturns400WithoutLeakingValues() {
-        val methodParameter = org.springframework.core.MethodParameter(
+        val methodParameter = MethodParameter(
             String::class.java.getDeclaredMethod("substring", Int::class.javaPrimitiveType),
             0
         )
-        val e = org.springframework.web.bind.MissingRequestHeaderException(
-            "X-Chronicle-Device-Id",
+        val e = MissingRequestHeaderException(
+            "Test-Header",
             methodParameter
         )
 
@@ -464,31 +526,58 @@ class ChronicleServerExceptionHandlerTest {
         assertEquals(HttpStatus.BAD_REQUEST, result.statusCode)
         assertEquals("Missing required header", result.body?.message)
         assertEquals(
-            listOf("X-Chronicle-Device-Id: Required header is missing"),
+            listOf("Test-Header: Required header is missing"),
             result.body?.details
         )
     }
 
-    // Regression V-1: a GET to a POST-only route went to the catch-all and answered 500, so a
+    // Regression: a GET to a POST-only route went to the catch-all and answered 500, so a
     // client probing a newer GET against an older server could not detect "method not supported".
     @Test
     fun testWrongMethodOnMappedRouteAnswers405NotA500() {
-        val mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders
+        val mvc = MockMvcBuilders
             .standaloneSetup(PostOnlyController())
             .setControllerAdvice(handler)
             .build()
 
         val response = mvc.perform(
-            org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/reminders")
+            get("/reminders")
         ).andReturn().response
 
         assertEquals(405, response.status)
         assertEquals("POST", response.getHeader("Allow"))
+        assertEquals(HttpStatus.OK.value(), mvc.perform(post("/reminders")).andReturn().response.status)
     }
 
-    @org.springframework.web.bind.annotation.RestController
+    /** A refusal raised in a handler, of either forbidden type, answers 403 with the generic message and no detail. */
+    @Test
+    fun forbiddenDomainExceptionsDispatchAs403WithoutTheirDetail() {
+        val mvc = MockMvcBuilders.standaloneSetup(ForbiddingController()).setControllerAdvice(handler).build()
+        for (path in listOf("/forbidden/domain", "/forbidden/security")) {
+            val response = mvc.perform(get(path)).andReturn().response
+            assertEquals(path, 403, response.status)
+            assertEquals(path, "Access denied", com.geekbeast.mappers.mappers.ObjectMappers.getJsonMapper()
+                .readTree(response.contentAsString).get("message").asText())
+            for (leak in listOf("SELECT", "studies", "Forbidding.kt")) {
+                assertFalse("$path leaked $leak", response.contentAsString.contains(leak))
+            }
+        }
+    }
+
+    @RestController
+    class ForbiddingController {
+        private val detail = "SELECT * FROM studies WHERE owner = 'x' at Forbidding.kt:1"
+
+        @org.springframework.web.bind.annotation.GetMapping("/forbidden/domain")
+        fun domain(): String = throw com.geekbeast.controllers.exceptions.ForbiddenException(detail)
+
+        @org.springframework.web.bind.annotation.GetMapping("/forbidden/security")
+        fun security(): String = throw AccessDeniedException(detail)
+    }
+
+    @RestController
     class PostOnlyController {
-        @org.springframework.web.bind.annotation.PostMapping("/reminders")
-        fun reminders(): String = "ok"
+        @PostMapping("/reminders")
+        fun reminders(request: HttpServletRequest): String = request.method
     }
 }

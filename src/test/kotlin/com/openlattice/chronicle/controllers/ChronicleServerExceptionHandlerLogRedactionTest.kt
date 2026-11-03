@@ -1,20 +1,18 @@
 package com.openlattice.chronicle.controllers
 
+import com.openlattice.chronicle.ScopedLogCapture
+import com.openlattice.chronicle.services.studies.EnrollmentDisclosurePendingException
+
 import com.fasterxml.jackson.databind.JsonMappingException
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.configuration.ErrorSanitizationConfig
 import com.openlattice.chronicle.util.SsrfException
 import com.openlattice.chronicle.util.SsrfViolationType
-import org.apache.logging.log4j.LogManager
-import org.apache.logging.log4j.core.Appender
-import org.apache.logging.log4j.core.LogEvent
-import org.apache.logging.log4j.core.Logger
-import org.apache.logging.log4j.core.appender.AbstractAppender
-import org.apache.logging.log4j.core.config.Property
 import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.mockito.Mockito
 import org.springframework.http.HttpHeaders
@@ -24,7 +22,6 @@ import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.web.servlet.NoHandlerFoundException
 import java.io.ByteArrayInputStream
 import java.io.InputStream
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Guards the PHI-in-logs redaction in [ChronicleServerExceptionHandler]. Mobile collection-upload
@@ -43,31 +40,39 @@ class ChronicleServerExceptionHandlerLogRedactionTest {
     private val config = ErrorSanitizationConfig(sanitizeErrors = true, includeErrorId = true, logFullErrors = false)
     private val handler = ChronicleServerExceptionHandler(auditingManager, config)
 
-    private val captured = CopyOnWriteArrayList<String>()
-    private lateinit var appender: Appender
-    private lateinit var coreLogger: Logger
-
-    private class CapturingAppender(private val sink: MutableList<String>) :
-        AbstractAppender("phi-redaction-capture", null, null, true, Property.EMPTY_ARRAY) {
-        override fun append(event: LogEvent) {
-            sink.add(event.message.formattedMessage)
-        }
-    }
+    private lateinit var capture: ScopedLogCapture
+    private val captured get() = capture.messages
 
     @Before
     fun attachAppender() {
-        appender = CapturingAppender(captured).also { it.start() }
-        coreLogger = LogManager.getLogger(ChronicleServerExceptionHandler::class.java) as Logger
-        coreLogger.addAppender(appender)
+        capture = ScopedLogCapture(ChronicleServerExceptionHandler::class.java, pattern = "%m")
     }
 
     @After
     fun detachAppender() {
-        coreLogger.removeAppender(appender)
-        appender.stop()
+        capture.close()
     }
 
     private fun mockRequest() = MockHttpServletRequest("POST", "/chronicle/v4/study/x/participant/p/android/sleep")
+
+    @Test
+    fun pendingEnrollmentIdsStayInConflictBodyAndOutOfLogs() {
+        val ids = listOf("participant-private-sentinel-one", "participant-private-sentinel-two")
+        for (fullErrors in listOf(false, true)) {
+            val configuredHandler = ChronicleServerExceptionHandler(
+                auditingManager, config.copy(logFullErrors = fullErrors),
+            )
+            val response = configuredHandler.handleResponseStatusException(
+                MockHttpServletRequest("PATCH", "/chronicle/v3/study/x/settings"),
+                EnrollmentDisclosurePendingException(ids),
+            )
+            assertEquals(409, response.statusCode.value())
+            assertEquals(ids, response.body?.blockingParticipantIds)
+            ids.forEach { assertTrue(response.body?.message?.contains(it) == true) }
+        }
+        assertTrue(captured.isNotEmpty())
+        ids.forEach { assertFalse(captured.joinToString("\n").contains(it)) }
+    }
 
     @Test
     fun postgresDiagnosticsNeverLogPayloadIncludingWrappedCauses() {

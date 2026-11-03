@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.controllers
 
+import com.fasterxml.jackson.databind.JsonNode
+import com.geekbeast.mappers.mappers.ObjectMappers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
@@ -141,6 +143,8 @@ class ApiErrorTest {
     fun testTooManyRequestsWithRetryAfter() {
         val error = ApiError.tooManyRequests(retryAfterSeconds = 30)
         assertTrue(error.message.contains("30"))
+        val json = ObjectMappers.getJsonMapper().valueToTree<JsonNode>(error)
+        assertEquals(30L, json.path("retryAfter").asLong())
     }
 
     @Test

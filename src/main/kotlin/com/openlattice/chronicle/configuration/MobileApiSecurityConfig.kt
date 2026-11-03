@@ -21,7 +21,6 @@ import com.geekbeast.rhizome.configuration.Configuration
 import com.geekbeast.rhizome.configuration.ConfigurationKey
 import com.geekbeast.rhizome.configuration.SimpleConfigurationKey
 import com.geekbeast.rhizome.configuration.configuration.annotation.ReloadableConfiguration
-import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import com.hazelcast.core.HazelcastInstance
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
@@ -326,12 +325,7 @@ public data class MobileSecurityConfiguration(
         public val key = SimpleConfigurationKey("mobile-security.yaml")
     }
 
-    @SuppressFBWarnings(
-        value = ["IL_INFINITE_RECURSIVE_LOOP"],
-        justification = "Kotlin companion-object key accessed from getKey(); findbugs misreads " +
-            "companion-member access as self-recursion. Not recursive.",
-    )
-    override fun getKey(): ConfigurationKey = key
+    override fun getKey(): ConfigurationKey = Companion.key
 }
 
 public data class ReviewerEnrollmentConfiguration(

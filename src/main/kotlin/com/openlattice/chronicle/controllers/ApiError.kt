@@ -22,6 +22,7 @@ import com.openlattice.chronicle.i18n.Messages
 import java.time.OffsetDateTime
 import java.util.UUID
 
+
 /**
  * Standardized API error response with sanitization support.
  *
@@ -69,7 +70,16 @@ public data class ApiError(
     val details: List<String>? = null,
 
     @param:JsonProperty("trace")
-    val trace: String? = null
+    val trace: String? = null,
+
+    @param:JsonProperty("blockingParticipantIds")
+    val blockingParticipantIds: List<String>? = null,
+
+    @param:JsonProperty("code")
+    val code: String? = null,
+
+    @param:JsonProperty("retryAfter")
+    val retryAfterSeconds: Long? = null,
 ) {
     internal companion object {
         /**
@@ -171,7 +181,8 @@ public data class ApiError(
                 Messages.get("error.rateLimited")
             },
             errorId = errorId,
-            path = path
+            path = path,
+            retryAfterSeconds = retryAfterSeconds,
         )
     }
 }

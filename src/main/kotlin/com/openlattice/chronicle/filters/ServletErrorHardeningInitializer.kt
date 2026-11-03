@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.filters
 
+import com.geekbeast.mappers.mappers.ObjectMappers
 import jakarta.servlet.ServletContext
 import org.eclipse.jetty.ee11.servlet.ErrorHandler
 import org.eclipse.jetty.ee11.servlet.ServletContextHandler
@@ -10,7 +11,6 @@ import org.eclipse.jetty.util.Callback
 import org.springframework.web.WebApplicationInitializer
 import java.io.PrintWriter
 import java.nio.charset.StandardCharsets
-import java.util.UUID
 
 /** Covers sendError and exceptions raised before DispatcherServlet's exception advice. */
 public class ServletErrorHardeningInitializer : WebApplicationInitializer {
@@ -35,7 +35,7 @@ public class ServletErrorHardeningInitializer : WebApplicationInitializer {
         }
 
         override fun writeErrorJson(request: Request, writer: PrintWriter, code: Int, message: String?, cause: Throwable?) {
-            writer.write("""{"status":$code,"message":"Request failed","errorId":"${UUID.randomUUID()}"}""")
+            writer.write(ObjectMappers.getJsonMapper().writeValueAsString(filterError(code, "Request failed")))
         }
     }
 }

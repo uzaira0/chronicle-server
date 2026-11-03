@@ -1,40 +1,41 @@
 package com.openlattice.chronicle.configuration
 
-import com.hazelcast.config.Config
 import com.hazelcast.core.Hazelcast
 import com.hazelcast.core.HazelcastInstance
-import com.openlattice.chronicle.audit.AuditLogEntry
+import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.testing.isolatedHazelcastConfig
+import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.filters.MobileApiHmacAuthenticationToken
 import com.openlattice.chronicle.filters.MobileEnrollmentAuthenticationToken
 import com.openlattice.chronicle.filters.MobileReviewerAuthenticationToken
 import com.openlattice.chronicle.services.participantaccess.EnrollmentAccessCodeScope
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
-import org.junit.AfterClass
-import org.junit.After
-import org.junit.Assert
-import org.junit.BeforeClass
-import org.junit.Test
-import org.springframework.mock.web.MockFilterChain
-import org.springframework.mock.web.MockHttpServletRequest
-import org.springframework.mock.web.MockHttpServletResponse
-import org.springframework.security.core.context.SecurityContextHolder
-import org.springframework.web.filter.UrlHandlerFilter
+import com.openlattice.chronicle.util.API_KEY_HEADER
+import jakarta.servlet.http.Cookie
+import jakarta.servlet.http.HttpServletRequest
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.util.*
-import jakarta.servlet.http.Cookie
 import java.util.zip.DeflaterOutputStream
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
-import jakarta.servlet.http.HttpServletRequest
+import org.junit.After
+import org.junit.AfterClass
+import org.junit.Assert
+import org.junit.BeforeClass
+import org.junit.Test
 import org.mockito.Mockito
+import org.mockito.Mockito.`when`
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
-import org.mockito.Mockito.`when`
-import org.mockito.kotlin.argumentCaptor
+import org.springframework.mock.web.MockFilterChain
+import org.springframework.mock.web.MockHttpServletRequest
+import org.springframework.mock.web.MockHttpServletResponse
+import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.web.filter.UrlHandlerFilter
 
 /**
  * Unit test for the HMAC signature filter (Item 4/9).
@@ -50,9 +51,9 @@ class MobileApiSignatureFilterTest {
     companion object {
         internal const val SECRET = "test-secret-key-for-hmac-at-least-32-bytes!!"
         private const val MOBILE_DATA_PATH =
-            "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/participant/test-participant/android/data"
+            "/chronicle/v4/study/00000000-0000-0000-0000-000000000001/participant/test-participant/android"
         private const val MOBILE_STATUS_PATH =
-            "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/participant/test-participant/android/status"
+            "/chronicle/v4/study/00000000-0000-0000-0000-000000000001/participant/test-participant/android/status"
         private const val MOBILE_UPLOAD_PATH =
             "/chronicle/v4/study/00000000-0000-0000-0000-000000000001/participant/test-participant/android/upload"
         private const val MOBILE_WITHDRAWAL_PATH = "/chronicle/v4/mobile/enrollments/current"
@@ -61,8 +62,6 @@ class MobileApiSignatureFilterTest {
             "/chronicle/v4/study/00000000-0000-0000-0000-000000000001/participant/test-participant/enroll"
         private const val MOBILE_ENROLLMENT_PREVIEW_PATH =
             "/chronicle/v4/study/00000000-0000-0000-0000-000000000001/participant/test-participant/enrollment-preview"
-        private const val LEGACY_MOBILE_ENROLLMENT_PATH =
-            "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/participant/test-participant/device-1/enroll"
         private const val PUBLIC_DATA_COLLECTION_SETTINGS_PATH =
             "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/settings/type/DataCollection"
         private const val WEB_ACCESS_CODE_PATH =
@@ -72,9 +71,7 @@ class MobileApiSignatureFilterTest {
         @BeforeClass
         @JvmStatic
         fun setUp() {
-            val config = Config()
-            config.clusterName = "mobile-filter-test-${UUID.randomUUID()}"
-            config.networkConfig.join.multicastConfig.isEnabled = false
+            val config = isolatedHazelcastConfig("mobile-filter-test")
             hz = Hazelcast.newHazelcastInstance(config)
         }
 
@@ -230,8 +227,6 @@ class MobileApiSignatureFilterTest {
         filter.doFilter(request, response, chain)
 
         verify(accessService).resolveEnrollmentAccessCodeForRequest(enrollmentCode, studyId, "test-participant")
-        Mockito.verify(accessService, Mockito.never())
-            .consumeEnrollmentAccessCode(enrollmentCode, studyId, "test-participant")
         val authentication = SecurityContextHolder.getContext().authentication
         Assert.assertTrue(authentication is MobileEnrollmentAuthenticationToken)
         Assert.assertEquals(studyId, (authentication as MobileEnrollmentAuthenticationToken).studyId)
@@ -297,37 +292,16 @@ class MobileApiSignatureFilterTest {
         filter.doFilter(request, response, chain)
 
         verify(accessService).resolveEnrollmentAccessCode(enrollmentCode, studyId, "test-participant")
-        Mockito.verify(accessService, Mockito.never())
-            .consumeEnrollmentAccessCode(enrollmentCode, studyId, "test-participant")
         Assert.assertNotNull(chain.request)
         Assert.assertEquals(200, response.status)
     }
 
-    @Test
-    fun `legacy v3 enrollment code remains one time at the filter boundary`() {
-        val accessService = mock(ParticipantFormAccessService::class.java)
-        val enrollmentCode = "d".repeat(64)
-        val studyId = UUID.fromString("00000000-0000-0000-0000-000000000001")
-        `when`(accessService.consumeEnrollmentAccessCode(enrollmentCode, studyId, "test-participant"))
-            .thenReturn(true)
-        val filter = newFilter(participantFormAccessService = accessService)
-        val request = MockHttpServletRequest("POST", LEGACY_MOBILE_ENROLLMENT_PATH).apply {
-            addHeader(MobileApiSignatureFilter.HEADER_ENROLLMENT_CODE, enrollmentCode)
-        }
-        val response = MockHttpServletResponse()
-        val chain = MockFilterChain()
 
-        filter.doFilter(request, response, chain)
-
-        verify(accessService).consumeEnrollmentAccessCode(enrollmentCode, studyId, "test-participant")
-        Assert.assertNotNull(chain.request)
-        Assert.assertEquals(200, response.status)
-    }
 
     @Test
-    fun `wrong method never consumes a legacy enrollment code`() {
+    fun `wrong method never consumes an enrollment code`() {
         val accessService = mock(ParticipantFormAccessService::class.java)
-        val request = MockHttpServletRequest("GET", LEGACY_MOBILE_ENROLLMENT_PATH).apply {
+        val request = MockHttpServletRequest("GET", MOBILE_ENROLLMENT_PATH).apply {
             addHeader(MobileApiSignatureFilter.HEADER_ENROLLMENT_CODE, "e".repeat(64))
         }
         val response = MockHttpServletResponse()
@@ -382,7 +356,8 @@ class MobileApiSignatureFilterTest {
     fun `wrong reviewer secret and route lookalikes cannot enter the bootstrap chain`() {
         val studyId = UUID.fromString("00000000-0000-0000-0000-000000000001")
         val reviewerSecret = "reviewer-console-secret-with-at-least-32-random-chars"
-        val auditService = mock(AuditService::class.java)
+        val audit = com.openlattice.chronicle.audit.RecordingAuditingManager()
+        val auditService = AuditService(audit)
         val filter = newFilter(
             reviewerEnrollmentSecret = reviewerSecret,
             reviewerStudyId = studyId,
@@ -401,12 +376,12 @@ class MobileApiSignatureFilterTest {
         Assert.assertNull(wrongSecretChain.request)
         Assert.assertEquals(401, wrongSecretResponse.status)
         Assert.assertNull(SecurityContextHolder.getContext().authentication)
-        val auditCaptor = argumentCaptor<AuditLogEntry>()
-        verify(auditService).log(auditCaptor.capture())
-        Assert.assertEquals(studyId, auditCaptor.firstValue.studyId)
-        Assert.assertFalse(auditCaptor.firstValue.success)
-        Assert.assertEquals(401, auditCaptor.firstValue.responseCode)
-        Assert.assertFalse(auditCaptor.firstValue.toString().contains(reviewerSecret))
+        val event = audit.events.single()
+        Assert.assertEquals(studyId, event.study)
+        Assert.assertEquals(false, event.data["success"])
+        Assert.assertEquals(401, event.data["responseCode"])
+        Assert.assertEquals(ClientIpRecord.WITHHELD, event.request?.clientIpRef)
+        Assert.assertFalse(event.toString().contains(reviewerSecret))
 
         val lookalikeResponse = MockHttpServletResponse()
         val lookalikeChain = MockFilterChain()
@@ -449,11 +424,7 @@ class MobileApiSignatureFilterTest {
     fun `exact public settings GETs do not require a distributed HMAC secret`() {
         val filter = newFilter(signingRequired = true)
         val publicPaths = listOf(
-            "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/settings/sensors",
-            "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/settings/type/AndroidSensor",
-            "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/settings/type/Sensor",
             PUBLIC_DATA_COLLECTION_SETTINGS_PATH,
-            "/chronicle/v3/study/00000000-0000-0000-0000-000000000001/settings/type/Encryption",
         )
 
         publicPaths.forEach { path ->
@@ -498,7 +469,7 @@ class MobileApiSignatureFilterTest {
         val filter = newFilter()
         val request = MockHttpServletRequest("POST", MOBILE_UPLOAD_PATH).apply {
             setContent("""{"data":"test"}""".toByteArray())
-            addHeader("X-Api-Key", "device-key")
+            addHeader(API_KEY_HEADER, "device-key")
         }
         val response = MockHttpServletResponse()
         val chain = MockFilterChain()
@@ -601,6 +572,53 @@ class MobileApiSignatureFilterTest {
         Assert.assertNull(downstreamRequest.getHeader("Content-Encoding"))
         Assert.assertEquals(decodedBody.size, downstreamRequest.contentLength)
         Assert.assertEquals(200, response.status)
+    }
+
+    /**
+     * After the filter inflates a phone's deflate upload, every way the application reads the request agrees on the
+     * decoded body: no Content-Encoding, the decoded Content-Length, the decoded text through the reader or a skip,
+     * and every other header untouched. A body the controller re-reads is the same body.
+     */
+    @Test
+    fun inflatedUploadPresentsOnlyTheDecodedBodyToTheApplication() {
+        val filter = MobileApiSignatureFilter(hazelcastInstance = hz, signingSecret = "", signatureVerificationEnabled = false)
+        val text = """[{"appPackageName":"cl.example.app","timezone":"America/Santiago"}]""".repeat(50)
+        val decodedBody = text.toByteArray(Charsets.UTF_8)
+        val encodedBody = deflate(decodedBody)
+        val request = MockHttpServletRequest("POST", MOBILE_DATA_PATH).apply {
+            setContent(encodedBody)
+            characterEncoding = "UTF-8"
+            addHeader("Content-Encoding", "deflate")
+            addHeader("Content-Length", encodedBody.size.toString())
+            addHeader("X-Upload-Attempt", "2")
+        }
+        val chain = MockFilterChain()
+
+        filter.doFilter(request, MockHttpServletResponse(), chain)
+
+        val downstream = chain.request as HttpServletRequest
+        val size = decodedBody.size.toString()
+        Assert.assertNull(downstream.getHeader("content-encoding"))
+        Assert.assertEquals(size, downstream.getHeader("content-length"))
+        Assert.assertEquals("2", downstream.getHeader("X-Upload-Attempt"))
+        Assert.assertEquals(emptyList<String>(), java.util.Collections.list(downstream.getHeaders("Content-Encoding")))
+        Assert.assertEquals(listOf(size), java.util.Collections.list(downstream.getHeaders("CONTENT-LENGTH")))
+        Assert.assertEquals(listOf("2"), java.util.Collections.list(downstream.getHeaders("X-Upload-Attempt")))
+        val names = java.util.Collections.list(downstream.headerNames)
+        Assert.assertTrue(names.toString(), names.none { it.equals("Content-Encoding", ignoreCase = true) })
+        Assert.assertTrue(names.toString(), "X-Upload-Attempt" in names)
+        Assert.assertEquals(decodedBody.size, downstream.getIntHeader("Content-Length"))
+        Assert.assertEquals(2, downstream.getIntHeader("X-Upload-Attempt"))
+        Assert.assertEquals(decodedBody.size.toLong(), downstream.contentLengthLong)
+        Assert.assertEquals(text, downstream.reader.readText())
+        Assert.assertEquals("the controller can read the body again", text, downstream.reader.readText())
+        downstream.inputStream.use { stream ->
+            Assert.assertTrue(stream.isReady)
+            Assert.assertEquals(2L, stream.skip(2))
+            Assert.assertEquals(text.drop(2), String(stream.readBytes(), Charsets.UTF_8))
+            Assert.assertTrue(stream.isFinished)
+            Assert.assertThrows(UnsupportedOperationException::class.java) { stream.setReadListener(null) }
+        }
     }
 
     @Test
@@ -775,6 +793,9 @@ class MobileApiSignatureFilterTest {
 
         Assert.assertNull("Request should NOT have passed through the filter chain", chain.request)
         Assert.assertEquals(401, response.status)
+        val error = ObjectMappers.getJsonMapper().readTree(response.contentAsByteArray)
+        Assert.assertEquals("Unauthorized", error.path("error").asText())
+        Assert.assertEquals("Invalid request signature", error.path("message").asText())
     }
 
     @Test
@@ -911,7 +932,7 @@ class MobileApiSignatureFilterTest {
     fun testMobileCredentialUsesApiKeyPathEvenWhenWebMarkerIsPresent() {
         val request = MockHttpServletRequest("POST", MOBILE_DATA_PATH).apply {
             addHeader("X-Chronicle-Internal-Web", "true")
-            addHeader("X-Api-Key", "stolen-device-key")
+            addHeader(API_KEY_HEADER, "stolen-device-key")
             setCookies(Cookie("chronicle_auth", "fake-browser-cookie"))
         }
         val response = MockHttpServletResponse()
@@ -940,7 +961,7 @@ class MobileApiSignatureFilterTest {
     }
 
     @Test
-    fun testLegacyTrueMarkerRejectedWhenInternalWebSecretIsBlank() {
+    fun testBooleanMarkerRejectedWhenInternalWebSecretIsBlank() {
         val request = MockHttpServletRequest("GET", MOBILE_STATUS_PATH).apply {
             addHeader("X-Chronicle-Internal-Web", "true")
             addHeader("Authorization", "Bearer browser-jwt-placeholder")
@@ -955,7 +976,7 @@ class MobileApiSignatureFilterTest {
     }
 
     @Test
-    fun testLegacyTrueMarkerRejectedWhenInternalWebSecretConfigured() {
+    fun testBooleanMarkerRejectedWhenInternalWebSecretConfigured() {
         val request = MockHttpServletRequest("GET", MOBILE_STATUS_PATH).apply {
             addHeader("X-Chronicle-Internal-Web", "true")
             addHeader("Authorization", "Bearer browser-jwt-placeholder")
