@@ -14,64 +14,37 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
 package com.openlattice.chronicle.audit
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.openlattice.chronicle.util.ClientIpRecord
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.auditing.AuditRequest
+import com.openlattice.chronicle.auditing.AuditableEvent
+import com.openlattice.chronicle.auditing.AuditingComponent
+import com.openlattice.chronicle.auditing.AuditingManager
+import com.openlattice.chronicle.authorization.AclKey
+import com.openlattice.chronicle.authorization.principals.Principals
+import com.openlattice.chronicle.ids.IdConstants
 import com.openlattice.chronicle.util.LogSanitizer
-import org.slf4j.LoggerFactory
-import java.time.Instant
+import jakarta.servlet.http.HttpServletRequest
 import java.util.UUID
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import jakarta.annotation.PostConstruct
-import jakarta.annotation.PreDestroy
 
 /**
- * Service for comprehensive audit logging that writes to BOTH database and log files.
- * This is critical for HIPAA compliance - all PHI access must be tracked with who, what, when, and outcome.
- *
- * Features:
- * - Dual-write: Every audit event goes to both database (for querying/retention) and log file (for SIEM)
- * - Async processing: Non-blocking to avoid impacting request performance
- * - Batch processing: Efficient database writes using batching
- * - Fail-safe: If database write fails, log file still captures the event
- *
- * The log file output is JSON formatted and suitable for SIEM integration tools like:
- * - Splunk
- * - ELK Stack (Elasticsearch, Logstash, Kibana)
- * - local structured audit logs
- * - DataDog
+ * Request-level audit records (who did what to which resource, from where, with what outcome, and whether PHI
+ * was touched). They are rows of the one append-only `audit` table and the SIEM file, written by
+ * [AuditingManager]: a success joins the transaction that owns it, a failure is committed on its own so a
+ * rollback cannot erase it.
  */
-public open class AuditService(
-    private val auditLogRepository: AuditLogRepository,
-    private val objectMapper: ObjectMapper
-) {
+public open class AuditService(override val auditingManager: AuditingManager) : AuditingComponent {
     internal companion object {
-        private val logger = LoggerFactory.getLogger(AuditService::class.java)
-
-        // Dedicated audit logger for file output (configured in logback)
-        private val auditLogger = LoggerFactory.getLogger("AUDIT")
-
-        // Configuration
-        private const val BATCH_SIZE = 100
-        private const val FLUSH_INTERVAL_MS = 2000L // 2 seconds (L-4: reduced from 5s to minimize DB write lag)
-        private const val THREAD_POOL_SIZE = 1
-        private const val MAX_FLUSH_RETRIES = 3
-        private const val MAX_QUEUED_EVENTS = 10_000
         private const val MAX_AUDIT_STRING_LENGTH = 500
+        private const val MAX_COLLECTION_ITEMS = 50
         private val redactedAdditionalDataKeyParts = setOf("token", "secret", "password", "apikey", "api_key")
         private val fingerprintedAdditionalDataKeys = setOf(
             "participantid",
             "participantids",
-            "deviceid",
-            "deviceids",
-            "sourcedeviceid",
+            "randomdeviceid",
+            "randomdeviceids",
+            "sourcerandomdeviceid",
             "datasourceid",
             "principalid",
             "targetprincipalid",
@@ -81,24 +54,8 @@ public open class AuditService(
         internal fun participantReference(participantId: String): String =
             sanitizeAdditionalDataValue("participantId", participantId).toString()
 
-        internal fun sanitizeForPersistence(entry: AuditLogEntry): AuditLogEntry {
-            return entry.copy(
-                ipAddress = entry.ipAddress.takeIf(ClientIpRecord::isReference) ?: ClientIpRecord.WITHHELD,
-                userAgent = entry.userAgent?.let { LogSanitizer.sanitize(it, MAX_AUDIT_STRING_LENGTH) },
-                errorMessage = sanitizeAuditErrorMessage(entry.errorMessage),
-                requestPath = entry.requestPath?.let { LogSanitizer.sanitizeRequestPath(it) },
-                requestMethod = entry.requestMethod?.let { LogSanitizer.sanitize(it, 32) },
-                additionalData = sanitizeAdditionalData(entry.additionalData)
-            )
-        }
-
-        private fun sanitizeAuditErrorMessage(message: String?): String? {
-            return message?.let { "Operation failed" }
-        }
-
-        private fun sanitizeAdditionalData(data: Map<String, Any>?): Map<String, Any>? {
-            return data?.mapValues { (key, value) -> sanitizeAdditionalDataValue(key, value) }
-        }
+        internal fun sanitizeAdditionalData(data: Map<String, Any>): Map<String, Any> =
+            data.mapValues { (key, value) -> sanitizeAdditionalDataValue(key, value) }
 
         private fun sanitizeAdditionalDataValue(key: String, value: Any?): Any {
             val normalizedKey = key.lowercase().replace(Regex("[^a-z0-9]"), "")
@@ -108,10 +65,10 @@ public open class AuditService(
                 value == null -> "[null]"
                 value is String -> LogSanitizer.sanitize(value, MAX_AUDIT_STRING_LENGTH)
                 value is Number || value is Boolean -> value
-                value is Collection<*> -> value.take(50).map { item ->
+                value is Collection<*> -> value.take(MAX_COLLECTION_ITEMS).map { item ->
                     item?.toString()?.let { LogSanitizer.sanitize(it, MAX_AUDIT_STRING_LENGTH) } ?: "[null]"
                 }
-                value is Map<*, *> -> value.entries.take(50).associate { (nestedKey, nestedValue) ->
+                value is Map<*, *> -> value.entries.take(MAX_COLLECTION_ITEMS).associate { (nestedKey, nestedValue) ->
                     val nestedKeyString = nestedKey?.toString() ?: "[null]"
                     LogSanitizer.sanitize(nestedKeyString, 100) to sanitizeAdditionalDataValue(nestedKeyString, nestedValue)
                 }
@@ -119,456 +76,85 @@ public open class AuditService(
             }
         }
 
-        private fun fingerprintAuditValue(value: Any?, prefix: String): Any {
-            return when (value) {
-                null -> "$prefix:[null]"
-                is Collection<*> -> value.take(50).map { item ->
-                    LogSanitizer.stableFingerprint(item?.toString(), prefix = prefix)
-                }
-                else -> LogSanitizer.stableFingerprint(value.toString(), prefix = prefix)
+        private fun fingerprintAuditValue(value: Any?, prefix: String): Any = when (value) {
+            null -> "$prefix:[null]"
+            is Collection<*> -> value.take(MAX_COLLECTION_ITEMS).map { item ->
+                LogSanitizer.stableFingerprint(item?.toString(), prefix = prefix)
             }
+            else -> LogSanitizer.stableFingerprint(value.toString(), prefix = prefix)
         }
 
-        private fun prefixForKey(normalizedKey: String): String {
-            return when {
-                normalizedKey.contains("participant") -> "participant"
-                normalizedKey.contains("device") || normalizedKey.contains("datasource") -> "device"
-                normalizedKey.contains("principal") || normalizedKey == "userid" -> "principal"
-                else -> "id"
-            }
-        }
-    }
-
-    private val eventQueue: ArrayBlockingQueue<AuditLogEntry> = ArrayBlockingQueue(MAX_QUEUED_EVENTS)
-    private val executor: ScheduledExecutorService = Executors.newScheduledThreadPool(THREAD_POOL_SIZE)
-    private val isRunning = AtomicBoolean(true)
-    private val flushTaskScheduled = AtomicBoolean(false)
-    private val flushInProgress = AtomicBoolean(false)
-    private val consecutiveFlushFailures = AtomicInteger(0)
-
-    @PostConstruct
-    public fun init() {
-        // Schedule periodic batch flushing
-        executor.scheduleAtFixedRate(
-            { flushBatch() },
-            FLUSH_INTERVAL_MS,
-            FLUSH_INTERVAL_MS,
-            TimeUnit.MILLISECONDS
-        )
-        logger.info("AuditService initialized with batch size {} and flush interval {}ms", BATCH_SIZE, FLUSH_INTERVAL_MS)
-    }
-
-    @PreDestroy
-    public fun shutdown() {
-        isRunning.set(false)
-        executor.shutdown()
-        try {
-            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
-                executor.shutdownNow()
-            }
-        } catch (e: InterruptedException) {
-            executor.shutdownNow()
-            Thread.currentThread().interrupt()
-        }
-
-        // Drain every remaining batch synchronously after scheduled work has
-        // stopped. Failed batches are retried by flushBatch and eventually fall
-        // back to the already-written audit file rather than looping forever.
-        var attempts = 0
-        val maxDrainAttempts = (MAX_QUEUED_EVENTS / BATCH_SIZE) + MAX_FLUSH_RETRIES
-        while (eventQueue.isNotEmpty() && attempts < maxDrainAttempts) {
-            flushBatch()
-            attempts++
-        }
-        logger.info("AuditService shutdown complete")
-    }
-
-    /**
-     * Logs a single audit event asynchronously.
-     * This method returns immediately and processes the event in the background.
-     */
-    public fun log(entry: AuditLogEntry) {
-        val sanitizedEntry = sanitizeForPersistence(entry)
-        if (entry.success && auditLogRepository.saveInActiveTransaction(sanitizedEntry) {
-                writeToLogFile(sanitizedEntry)
-            }) return
-        // Always write to log file immediately (synchronous) for SIEM
-        writeToLogFile(sanitizedEntry)
-
-        // Queue for async database write
-        if (!eventQueue.offer(sanitizedEntry)) {
-            logger.error(
-                "Audit database queue is full ({} events); retaining the event only in the audit log file",
-                MAX_QUEUED_EVENTS,
-            )
-            return
-        }
-
-        // Trigger batch processing if queue is large enough
-        if (eventQueue.size >= BATCH_SIZE) {
-            requestFlush()
+        private fun prefixForKey(normalizedKey: String): String = when {
+            normalizedKey.contains("participant") -> "participant"
+            normalizedKey.contains("device") || normalizedKey.contains("datasource") -> "device"
+            normalizedKey.contains("principal") || normalizedKey == "userid" -> "principal"
+            else -> "id"
         }
     }
 
-    private fun requestFlush() {
-        if (!flushTaskScheduled.compareAndSet(false, true)) return
-        executor.execute {
-            try {
-                flushBatch()
-            } finally {
-                flushTaskScheduled.set(false)
-                if (eventQueue.size >= BATCH_SIZE && isRunning.get()) {
-                    requestFlush()
-                }
-            }
-        }
-    }
-
-    /**
-     * Logs an audit event using the builder pattern.
-     */
-    public fun log(builder: AuditLogEntryBuilder.() -> Unit) {
-        val entry = AuditLogEntryBuilder().apply(builder).build()
-        log(entry)
-    }
-
-    /**
-     * Logs a data access event.
-     */
-    // reason: public audit API signature — params map 1:1 to AuditLogEntry fields, must not change
-    @Suppress("LongParameterList")
-    public fun logAccess(
-        userId: UUID?,
-        userRole: String?,
-        ipAddress: String,
-        action: AuditAction,
-        resourceType: String,
-        resourceId: UUID?,
-        studyId: UUID? = null,
-        success: Boolean = true,
-        errorMessage: String? = null,
-        phiFields: List<String>? = null,
-        additionalData: Map<String, Any>? = null
-    ) {
-        val entry = AuditLogEntry(
-            userId = userId,
-            userRole = userRole,
-            ipAddress = ipAddress,
-            action = action,
-            resourceType = resourceType,
-            resourceId = resourceId,
-            studyId = studyId,
-            success = success,
-            errorMessage = errorMessage,
-            accessedPHI = phiFields?.isNotEmpty() ?: false,
-            phiFields = phiFields,
-            additionalData = additionalData
-        )
-        log(entry)
-    }
-
-    /**
-     * Logs a data export event with detailed tracking.
-     */
-    // reason: public audit API signature — params map 1:1 to AuditLogEntry fields, must not change
-    @Suppress("LongParameterList")
-    public fun logDataExport(
-        userId: UUID?,
-        userRole: String?,
-        ipAddress: String,
-        studyId: UUID,
-        exportType: String,
-        recordCount: Int,
-        participantIds: Set<String>? = null,
-        phiFields: List<String>? = null
-    ) {
-        val additionalData = mutableMapOf<String, Any>(
-            "exportType" to exportType,
-            "recordCount" to recordCount
-        )
-        participantIds?.let { additionalData["participantCount"] = it.size }
-
-        val entry = AuditLogEntry(
-            userId = userId,
-            userRole = userRole,
-            ipAddress = ipAddress,
-            action = AuditAction.EXPORT,
-            resourceType = "StudyData",
-            studyId = studyId,
-            success = true,
-            accessedPHI = true, // Data exports always involve PHI
-            phiFields = phiFields ?: listOf("participant_data", "usage_data", "sensor_data"),
-            additionalData = additionalData
-        )
-        log(entry)
-    }
-
-    /**
-     * Logs an authentication event.
-     */
-    // reason: public audit API signature — params map 1:1 to AuditLogEntry fields, must not change
-    @Suppress("LongParameterList")
-    public fun logAuthEvent(
-        userId: UUID?,
-        userRole: String?,
-        ipAddress: String,
-        userAgent: String?,
-        eventType: AuditAction,
-        success: Boolean,
-        errorMessage: String? = null,
-        additionalData: Map<String, Any>? = null
-    ) {
-        check(eventType in setOf(
-            AuditAction.LOGIN,
-            AuditAction.LOGOUT,
-            AuditAction.LOGIN_FAILED,
-            AuditAction.TOKEN_REFRESH,
-            AuditAction.SESSION_EXPIRED
-        )) { "Invalid auth event type: $eventType" }
-
-        val entry = AuditLogEntry(
-            userId = userId,
-            userRole = userRole,
-            ipAddress = ipAddress,
-            userAgent = userAgent,
-            action = eventType,
-            resourceType = "Authentication",
-            success = success,
-            errorMessage = errorMessage,
-            additionalData = additionalData
-        )
-        log(entry)
-    }
-
-    /**
-     * Logs an unauthorized access attempt.
-     */
-    // reason: public audit API signature — params map 1:1 to AuditLogEntry fields, must not change
-    @Suppress("LongParameterList")
-    public fun logUnauthorizedAccess(
-        userId: UUID?,
-        userRole: String?,
-        ipAddress: String,
-        userAgent: String?,
-        resourceType: String,
-        resourceId: UUID?,
-        studyId: UUID? = null,
-        attemptedAction: AuditAction,
-        reason: String
-    ) {
-        val entry = AuditLogEntry(
-            userId = userId,
-            userRole = userRole,
-            ipAddress = ipAddress,
-            userAgent = userAgent,
-            action = AuditAction.UNAUTHORIZED_ACCESS,
-            resourceType = resourceType,
-            resourceId = resourceId,
-            studyId = studyId,
-            success = false,
-            errorMessage = reason,
-            additionalData = mapOf(
-                "attemptedAction" to attemptedAction.name,
-                "securityEvent" to true
-            )
-        )
-        log(entry)
-    }
-
-    /**
-     * Logs a participant data access event (specifically for PHI).
-     */
-    // reason: public audit API signature — params map 1:1 to AuditLogEntry fields, must not change
-    @Suppress("LongParameterList")
-    public fun logParticipantDataAccess(
-        userId: UUID?,
-        userRole: String?,
-        ipAddress: String,
-        studyId: UUID,
-        participantId: String,
-        action: AuditAction,
-        phiFields: List<String>,
-        success: Boolean = true,
-        errorMessage: String? = null
-    ) {
-        val entry = AuditLogEntry(
-            userId = userId,
-            userRole = userRole,
-            ipAddress = ipAddress,
-            action = action,
-            resourceType = "Participant",
-            studyId = studyId,
-            success = success,
-            errorMessage = errorMessage,
-            accessedPHI = true,
-            phiFields = phiFields,
-            additionalData = mapOf("participantId" to participantId)
-        )
-        log(entry)
-    }
-
-    /**
-     * Logs sensor data upload from mobile devices.
-     */
-    // reason: public audit API signature — params map 1:1 to AuditLogEntry fields, must not change
-    @Suppress("LongParameterList")
-    public fun logSensorDataUpload(
-        studyId: UUID,
-        participantId: String,
-        deviceId: String,
-        ipAddress: String,
-        sensorTypes: List<String>,
-        recordCount: Int,
-        success: Boolean = true,
-        errorMessage: String? = null
-    ) {
-        val entry = AuditLogEntry(
-            ipAddress = ipAddress,
-            action = AuditAction.SENSOR_DATA_UPLOAD,
-            resourceType = "SensorData",
-            studyId = studyId,
-            success = success,
-            errorMessage = errorMessage,
-            accessedPHI = true,
-            phiFields = listOf("sensor_data"),
-            additionalData = mapOf(
-                "participantId" to participantId,
-                "deviceId" to deviceId,
-                "sensorTypes" to sensorTypes,
-                "recordCount" to recordCount
-            )
-        )
-        log(entry)
-    }
-
-    /**
-     * Logs study modification events.
-     */
-    // reason: public audit API signature — params map 1:1 to AuditLogEntry fields, must not change
-    @Suppress("LongParameterList")
-    public fun logStudyModification(
-        userId: UUID?,
-        userRole: String?,
-        ipAddress: String,
-        studyId: UUID,
-        action: AuditAction,
-        changes: Map<String, Any>? = null,
-        success: Boolean = true,
-        errorMessage: String? = null
-    ) {
-        val entry = AuditLogEntry(
-            userId = userId,
-            userRole = userRole,
-            ipAddress = ipAddress,
-            action = action,
-            resourceType = "Study",
-            resourceId = studyId,
-            studyId = studyId,
-            success = success,
-            errorMessage = errorMessage,
-            additionalData = changes
-        )
-        log(entry)
-    }
-
-    /**
-     * Query methods for compliance reporting - delegate to repository
-     */
-    public fun findByUserId(userId: UUID, limit: Int = 100): List<AuditLogEntry> =
-        auditLogRepository.findByUserId(userId, limit)
-    public fun findByStudyId(studyId: UUID, limit: Int = 100): List<AuditLogEntry> =
-        auditLogRepository.findByStudyId(studyId, limit)
-    public fun findByDateRange(start: Instant, end: Instant, limit: Int = 1000): List<AuditLogEntry> =
-        auditLogRepository.findByDateRange(start, end, limit)
-    public fun findPhiAccessEvents(start: Instant, end: Instant, limit: Int = 1000): List<AuditLogEntry> =
-        auditLogRepository.findPhiAccessEvents(start, end, limit)
-    public fun findFailedOperations(start: Instant, end: Instant, limit: Int = 1000): List<AuditLogEntry> =
-        auditLogRepository.findFailedOperations(start, end, limit)
-    public fun findSecurityEvents(start: Instant, end: Instant, limit: Int = 1000): List<AuditLogEntry> =
-        auditLogRepository.findSecurityEvents(start, end, limit)
-    public fun getActionCounts(start: Instant, end: Instant): Map<AuditAction, Long> =
-        auditLogRepository.getActionCounts(start, end)
-
-    /**
-     * Writes the audit entry to the log file in JSON format for SIEM integration.
-     * This is done synchronously to ensure no audit events are lost.
-     */
-    // reason: boundary catch — audit log-file write must not leak any failure type past this point
-    @Suppress("TooGenericExceptionCaught")
-    private fun writeToLogFile(entry: AuditLogEntry) {
-        try {
-            val jsonString = objectMapper.writeValueAsString(entry)
-            auditLogger.info(jsonString)
-        } catch (e: Exception) {
-            logger.error("Failed to write audit entry to log file: ${entry.id}", e)
-        }
-    }
-
-    /**
-     * Flushes queued events to the database in batches.
-     */
-    // reason: boundary catch — async DB flush must not propagate any failure type to the scheduler
-    @Suppress("TooGenericExceptionCaught", "NestedBlockDepth")
-    internal fun flushBatch() {
-        if (!flushInProgress.compareAndSet(false, true)) return
-        try {
-            flushOneBatch()
-        } finally {
-            flushInProgress.set(false)
-        }
-    }
-
-    private fun flushOneBatch() {
-        if (eventQueue.isEmpty()) return
-
-        val batch = mutableListOf<AuditLogEntry>()
-        while (batch.size < BATCH_SIZE && eventQueue.isNotEmpty()) {
-            eventQueue.poll()?.let { batch.add(it) }
-        }
-
-        if (batch.isNotEmpty()) {
-            try {
-                val saved = auditLogRepository.saveBatch(batch)
-                if (saved != batch.size) {
-                    error("Only saved $saved/${batch.size} audit entries to database")
-                }
-                consecutiveFlushFailures.set(0)
-            } catch (e: Exception) {
-                val failures = consecutiveFlushFailures.incrementAndGet()
-                // Never discard dequeued PHI audit entries on a retry budget: a database outage
-                // spanning a few flush attempts would otherwise leave successful PHI operations
-                // permanently absent from audit_logs. Entries are retained until the insert
-                // succeeds or the bounded queue itself overflows (which is logged per entry).
-                logger.error(
-                    "Failed to flush {} audit entries to database — re-queuing for retry " +
-                        "(consecutive failure {}, alert threshold {})",
-                    batch.size,
-                    failures,
-                    MAX_FLUSH_RETRIES,
-                    e
-                )
-                batch.forEach { entry ->
-                    if (!eventQueue.offer(entry)) {
-                        logger.error(
-                            "Audit database queue filled while re-queuing a failed batch; " +
-                                "event {} remains only in the audit log file",
-                            entry.id,
-                        )
-                    }
-                }
-            }
-        }
+    public fun log(entry: AuditEntryBuilder) {
+        val event = entry.build()
+        if (entry.succeeded) recordCommittedEvent(event) else recordIntentEvent(event)
     }
 }
 
-/**
- * Interface for components that need audit logging capabilities.
- * Similar to the existing AuditingComponent but for the new comprehensive audit system.
- */
-public interface AuditingCapable {
-    public val auditService: AuditService
+/** Records a request-level audit entry in the current request's context. */
+internal fun AuditService.logWithContext(block: AuditEntryBuilder.() -> Unit) = log(AuditEntryBuilder().apply(block))
 
-    public fun audit(builder: AuditLogEntryBuilder.() -> Unit) {
-        auditService.log(builder)
+/** One request-level audit entry; [action], [resourceType] and [success] are required. */
+public class AuditEntryBuilder {
+    private var action: AuditEventType? = null
+    private var resourceType: String? = null
+    private var resourceId: UUID? = null
+    private var studyId: UUID? = null
+    private var organizationId: UUID? = null
+    private var success: Boolean? = null
+    private var accessedPHI = false
+    private val phiFields = mutableListOf<String>()
+    private var responseCode: Int? = null
+    private var request: AuditRequest? = AuditRequest.current()
+    private val additionalData = mutableMapOf<String, Any>()
+
+    internal val succeeded: Boolean get() = requireNotNull(success) { "success must be set for an audit entry" }
+
+    public fun action(action: AuditEventType): AuditEntryBuilder = apply { this.action = action }
+    public fun resourceType(resourceType: String): AuditEntryBuilder = apply { this.resourceType = resourceType }
+    public fun resourceId(resourceId: UUID?): AuditEntryBuilder = apply { this.resourceId = resourceId }
+    public fun studyId(studyId: UUID?): AuditEntryBuilder = apply { this.studyId = studyId }
+    public fun organizationId(organizationId: UUID?): AuditEntryBuilder = apply { this.organizationId = organizationId }
+    public fun success(success: Boolean): AuditEntryBuilder = apply { this.success = success }
+    public fun accessedPHI(accessedPHI: Boolean): AuditEntryBuilder = apply { this.accessedPHI = accessedPHI }
+    public fun phiFields(fields: List<String>): AuditEntryBuilder = apply {
+        phiFields.addAll(fields)
+        if (fields.isNotEmpty()) accessedPHI = true
+    }
+    public fun responseCode(code: Int?): AuditEntryBuilder = apply { this.responseCode = code }
+    public fun additionalData(data: Map<String, Any>): AuditEntryBuilder = apply { additionalData.putAll(data) }
+
+    /** Sets the request explicitly, for filters and surfaces whose client IP policy differs from the default. */
+    public fun request(request: HttpServletRequest?, clientIpRef: String): AuditEntryBuilder =
+        apply { this.request = request?.let { AuditRequest.of(it, clientIpRef) } }
+
+    internal fun build(): AuditableEvent {
+        // An unauthenticated caller is the anonymous role; the request columns say where it came from.
+        val principal = if (AuditRequestContext.isAuthenticated()) Principals.getCurrentSecurablePrincipal() else null
+        val data = AuditService.sanitizeAdditionalData(additionalData) + listOfNotNull(
+            "success" to succeeded,
+            "accessedPHI" to accessedPHI,
+            phiFields.takeIf { it.isNotEmpty() }?.let { "phiFields" to it.toList() },
+            resourceId?.let { "resourceId" to it.toString() },
+            responseCode?.let { "responseCode" to it },
+        )
+        return AuditableEvent(
+            aclKey = AclKey(resourceId ?: studyId ?: organizationId ?: IdConstants.UNINITIALIZED.id),
+            securablePrincipalId = principal?.id ?: IdConstants.UNINITIALIZED.id,
+            principal = principal?.principal ?: Principals.getAnonymousUser(),
+            eventType = requireNotNull(action) { "action must be set for an audit entry" },
+            description = requireNotNull(resourceType) { "resourceType must be set for an audit entry" },
+            study = studyId ?: IdConstants.UNINITIALIZED.id,
+            organization = organizationId ?: IdConstants.UNINITIALIZED.id,
+            data = data,
+            request = request,
+        )
     }
 }

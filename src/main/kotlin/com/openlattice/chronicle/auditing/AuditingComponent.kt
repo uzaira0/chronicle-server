@@ -22,6 +22,8 @@
 package com.openlattice.chronicle.auditing
 
 import com.codahale.metrics.annotation.Timed
+import java.sql.Connection
+import org.slf4j.LoggerFactory
 
 /**
  *
@@ -33,15 +35,41 @@ public interface AuditingComponent {
 
     public companion object {
         public const val MAX_ENTITY_KEY_IDS_PER_EVENT: Int = 100
+        private val logger = LoggerFactory.getLogger(AuditingComponent::class.java)
     }
 
     public val auditingManager: AuditingManager
 
 
+    /** Failure to record a diagnostic event must not replace the original response. */
+    public fun recordEventBestEffort(event: () -> AuditableEvent): Boolean = try {
+        recordEvent(event())
+        true
+    } catch (expected: Exception) {
+        logger.warn("Failed to record best-effort audit event: {}", expected.javaClass.name)
+        false
+    }
+
     @Timed
     public fun recordEvent(event: AuditableEvent): Int {
         return recordEvents(listOf(event))
     }
+
+    public fun recordEvent(connection: Connection, event: AuditableEvent): Int =
+        auditingManager.recordEvents(connection, listOf(event))
+
+    public fun recordReadEvent(event: AuditableEvent): Int = recordReadEvents(listOf(event))
+
+    public fun recordReadEvents(events: List<AuditableEvent>): Int =
+        auditingManager.recordObservations(AuditObservation.Read(events))
+
+    public fun recordCommittedEvent(event: AuditableEvent): Int = recordCommittedEvents(listOf(event))
+
+    public fun recordCommittedEvents(events: List<AuditableEvent>): Int =
+        auditingManager.recordObservations(AuditObservation.CommittedEffect(events))
+
+    public fun recordIntentEvent(event: AuditableEvent): Int =
+        auditingManager.recordObservations(AuditObservation.Intent(listOf(event)))
 
     @Timed
     public fun recordEvents(events: List<AuditableEvent>): Int {

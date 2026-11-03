@@ -1,127 +1,78 @@
 package com.openlattice.chronicle.audit
 
-import com.fasterxml.jackson.databind.ObjectMapper
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.auditing.AuditObservation
+import com.openlattice.chronicle.authorization.principals.Principals
+import com.openlattice.chronicle.util.ClientIpRecord
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import org.mockito.ArgumentMatchers.anyList
-import org.mockito.Mockito
-import org.mockito.Mockito.times
-import org.mockito.Mockito.verify
+import org.springframework.mock.web.MockHttpServletRequest
+import org.springframework.web.context.request.RequestContextHolder
+import org.springframework.web.context.request.ServletRequestAttributes
+import java.util.UUID
 
 class AuditServiceTest {
+    private val manager = RecordingAuditingManager()
+    private val auditService = AuditService(manager)
+
+    @After
+    fun clearRequest() = RequestContextHolder.resetRequestAttributes()
 
     @Test
-    fun `database batch exception is requeued and retried`() {
-        val repository = Mockito.mock(AuditLogRepository::class.java)
-        Mockito.`when`(repository.saveBatch(anyList()))
-            .thenThrow(IllegalStateException("database unavailable"))
-            .thenAnswer { invocation -> invocation.getArgument<List<AuditLogEntry>>(0).size }
-        val service = AuditService(repository, ObjectMapper())
-        service.log(testEntry())
+    fun `a success follows its transaction and a failure is committed on its own`() {
+        auditService.logWithContext { action(AuditEventType.VIEW); resourceType("Study"); success(true) }
+        auditService.logWithContext { action(AuditEventType.VIEW); resourceType("Study"); success(false) }
 
-        service.flushBatch()
-        service.flushBatch()
-
-        verify(repository, times(2)).saveBatch(anyList())
-        service.shutdown()
+        assertTrue(manager.observations[0] is AuditObservation.CommittedEffect)
+        assertTrue(manager.observations[1] is AuditObservation.Intent)
+        assertEquals(listOf(true, false), manager.events.map { it.data["success"] })
     }
 
     @Test
-    fun `partial database batch result is requeued and retried`() {
-        val repository = Mockito.mock(AuditLogRepository::class.java)
-        Mockito.`when`(repository.saveBatch(anyList()))
-            .thenReturn(0)
-            .thenAnswer { invocation -> invocation.getArgument<List<AuditLogEntry>>(0).size }
-        val service = AuditService(repository, ObjectMapper())
-        service.log(testEntry())
-
-        service.flushBatch()
-        service.flushBatch()
-
-        verify(repository, times(2)).saveBatch(anyList())
-        service.shutdown()
-    }
-
-    @Test
-    fun `a prolonged database outage does not discard dequeued audit entries`() {
-        val repository = Mockito.mock(AuditLogRepository::class.java)
-        // More consecutive failures than the old three-strike retry budget, which dropped the
-        // batch and left the PHI operation absent from audit_logs after recovery.
-        Mockito.`when`(repository.saveBatch(anyList()))
-            .thenThrow(
-                IllegalStateException("database unavailable"),
-                IllegalStateException("database unavailable"),
-                IllegalStateException("database unavailable"),
-                IllegalStateException("database unavailable"),
-                IllegalStateException("database unavailable"),
-            )
-            .thenAnswer { invocation -> invocation.getArgument<List<AuditLogEntry>>(0).size }
-
-        val service = AuditService(repository, ObjectMapper())
-        service.log(testEntry())
-
-        repeat(6) { service.flushBatch() }
-
-        // The sixth flush is the first that could succeed; it can only do so if the entry was
-        // still queued after five failures.
-        verify(repository, times(6)).saveBatch(anyList())
-        Mockito.clearInvocations(repository)
-        service.flushBatch()
-        verify(repository, Mockito.never()).saveBatch(anyList())
-        service.shutdown()
-    }
-
-    private fun testEntry(): AuditLogEntry = AuditLogEntry(
-        ipAddress = "127.0.0.1",
-        action = AuditAction.VIEW,
-        resourceType = "Test",
-        success = true,
-    )
-
-    @Test
-    fun `sanitizeForPersistence route-shapes paths and redacts audit identifiers`() {
+    fun `request context is recorded with route-shaped paths and redacted identifiers`() {
         val studyId = "550e8400-e29b-41d4-a716-446655440000"
         val participantId = "u15-device-owner"
-        val deviceId = "iphone-idfv"
-        val entry = AuditLogEntry(
-            ipAddress = "203.0.113.99",
-            userAgent = "ChronicleTest/1.0",
-            action = AuditAction.SENSOR_DATA_UPLOAD,
-            resourceType = "SensorData",
-            success = false,
-            errorMessage = "SELECT * FROM secret_table WHERE token=SUPER-SECRET",
-            requestPath = "/chronicle/v3/study/$studyId/participant/$participantId/ios/$deviceId/upload?token=SUPER-SECRET",
-            requestMethod = "POST",
-            additionalData = mapOf(
-                "participantId" to participantId,
-                "deviceId" to deviceId,
-                "recordCount" to 3,
-                "apiKey" to "ck_live_secret"
-            )
-        )
+        val randomDeviceId = "iphone-idfv"
+        val request = MockHttpServletRequest(
+            "POST", "/chronicle/v4/study/$studyId/participant/$participantId/ios/screen-time",
+        ).apply {
+            remoteAddr = "203.0.113.99"
+            addHeader("User-Agent", "ChronicleTest/1.0")
+        }
+        RequestContextHolder.setRequestAttributes(ServletRequestAttributes(request))
 
-        val sanitized = AuditService.sanitizeForPersistence(entry)
+        auditService.logWithContext {
+            action(AuditEventType.SENSOR_DATA_UPLOAD)
+            resourceType("SensorData")
+            studyId(UUID.fromString(studyId))
+            success(true)
+            phiFields(listOf("sensor_data"))
+            additionalData(mapOf("participantId" to participantId, "randomDeviceId" to randomDeviceId, "recordCount" to 3,
+                "apiKey" to "ck_live_secret"))
+        }
 
-        assertTrue(sanitized.ipAddress.startsWith("ip:"))
-        assertFalse(sanitized.ipAddress.contains("203.0.113.99"))
-        assertEquals(
-            "/chronicle/v3/study/{studyId}/participant/{participantId}/ios/{sourceDeviceId}/upload",
-            sanitized.requestPath
-        )
-        assertFalse(sanitized.requestPath?.contains(studyId) == true)
-        assertFalse(sanitized.requestPath?.contains(participantId) == true)
-        assertFalse(sanitized.requestPath?.contains(deviceId) == true)
-        assertFalse(sanitized.errorMessage?.contains("secret_table") == true)
-        assertFalse(sanitized.errorMessage?.contains("SUPER-SECRET") == true)
+        val event = manager.events.single()
+        val recorded = requireNotNull(event.request)
+        assertEquals("participant requests never record an address", ClientIpRecord.WITHHELD, recorded.clientIpRef)
+        assertEquals("/chronicle/v4/study/{studyId}/participant/{participantId}/ios/screen-time", recorded.path)
+        assertEquals("POST", recorded.method)
+        assertEquals("ChronicleTest/1.0", recorded.userAgent)
+        assertEquals(true, event.data["accessedPHI"])
+        assertEquals(listOf("sensor_data"), event.data["phiFields"])
+        assertTrue((event.data["participantId"] as String).startsWith("participant:"))
+        assertTrue((event.data["randomDeviceId"] as String).startsWith("device:"))
+        assertEquals(3, event.data["recordCount"])
+        assertEquals("[REDACTED]", event.data["apiKey"])
+        assertFalse(event.data.values.joinToString().contains(participantId))
+    }
 
-        val additionalData = sanitized.additionalData!!
-        assertTrue((additionalData["participantId"] as String).startsWith("participant:"))
-        assertTrue((additionalData["deviceId"] as String).startsWith("device:"))
-        assertEquals(3, additionalData["recordCount"])
-        assertEquals("[REDACTED]", additionalData["apiKey"])
-        assertFalse(additionalData.values.joinToString().contains(participantId))
-        assertFalse(additionalData.values.joinToString().contains(deviceId))
+    @Test
+    fun `an unauthenticated caller is recorded as the anonymous role`() {
+        auditService.logWithContext { action(AuditEventType.LOGIN_FAILED); resourceType("Authentication"); success(false) }
+
+        assertEquals(Principals.getAnonymousUser(), manager.events.single().principal)
     }
 }

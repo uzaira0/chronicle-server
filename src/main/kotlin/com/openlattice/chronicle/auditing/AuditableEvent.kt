@@ -63,4 +63,8 @@ public data class AuditableEvent(
     @param:JsonProperty(ORGANIZATION_ID) val organization: UUID = IdConstants.UNINITIALIZED.id,
     @param:JsonProperty(DATA) val data: Map<String, Any> = mapOf(),
     @param:JsonProperty(TIMESTAMP) val timestamp: OffsetDateTime = OffsetDateTime.now(),
+    /** Identifies this record; a retried insert of the same event is a no-op. */
+    @param:JsonProperty("eventId") val eventId: UUID = UUID.randomUUID(),
+    /** Where the event came from, when an HTTP request caused it. */
+    @param:JsonProperty("request") val request: AuditRequest? = AuditRequest.current(),
 )

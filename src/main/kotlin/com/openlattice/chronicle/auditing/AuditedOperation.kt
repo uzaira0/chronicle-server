@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.auditing
 
+import com.openlattice.chronicle.storage.withTransaction
 import java.sql.Connection
 
 /** Business writes and success audits share the caller's transaction. */
@@ -10,24 +11,15 @@ public open class AuditedOperation<R>(
     override val auditingManager: AuditingManager
 ) : AuditingComponent {
 
-    // reason: boundary catch — execute() must roll back and rethrow any failure type from op/audit/commit
-    @Suppress("TooGenericExceptionCaught")
     public fun execute(): R {
-        val previousAutoCommit = connection.autoCommit
-        val result: R
-        try {
-            connection.autoCommit = false
-            result = op(connection)
-            auditingManager.recordEvents(connection, auditOp(result))
-            connection.commit()
-        } catch (ex: Exception) {
-            runCatching { connection.rollback() }.exceptionOrNull()?.let(ex::addSuppressed)
-            throw ex
-        } finally {
-            connection.autoCommit = previousAutoCommit
+        return connection.withTransaction {
+            val operation = {
+                op(connection).also { auditingManager.recordEvents(connection, auditOp(it)) }
+            }
+            val storage = auditingManager.transactionStorage
+            if (storage == null) operation().also { connection.commit() }
+            else com.openlattice.chronicle.storage.PinnedPlatformConnection.committing(storage, connection, block = operation)
         }
-
-        return result
     }
 }
 
