@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.fuzz
 
+import com.code_intelligence.jazzer.api.FuzzedDataProvider
 import com.code_intelligence.jazzer.junit.FuzzTest
 import com.openlattice.chronicle.util.SqlIdentifierValidator
 
@@ -9,7 +10,6 @@ import com.openlattice.chronicle.util.SqlIdentifierValidator
  * Goals:
  * - validateIdentifier never allows SQL keywords or special characters
  * - validateTempTableName enforces prefix allowlist and character constraints
- * - validateImportTableName enforces its pattern
  * - quoteIdentifier never produces unbalanced quotes
  * - No unexpected exceptions escape (only InvalidSqlIdentifierException / IllegalArgumentException)
  */
@@ -18,7 +18,8 @@ class SqlIdentifierValidatorFuzzTest {
     private val validIdentifierPattern = Regex("^[a-zA-Z_][a-zA-Z0-9_]*$")
 
     @FuzzTest(maxDuration = "5m")
-    fun fuzzValidateIdentifier(input: String) {
+    fun fuzzValidateIdentifier(data: FuzzedDataProvider) {
+        val input = data.consumeRemainingAsString()
         try {
             val result = SqlIdentifierValidator.validateIdentifier(input)
             // If validation passed, verify structural invariants
@@ -33,7 +34,8 @@ class SqlIdentifierValidatorFuzzTest {
     }
 
     @FuzzTest(maxDuration = "5m")
-    fun fuzzValidateTempTableName(input: String) {
+    fun fuzzValidateTempTableName(data: FuzzedDataProvider) {
+        val input = data.consumeRemainingAsString()
         try {
             val result = SqlIdentifierValidator.validateTempTableName(input)
             assert(result == input) { "validateTempTableName mutated input" }
@@ -52,22 +54,7 @@ class SqlIdentifierValidatorFuzzTest {
         }
     }
 
-    @FuzzTest(maxDuration = "5m")
-    fun fuzzValidateImportTableName(input: String) {
-        val importPattern = Regex("^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*)?$")
-        try {
-            val result = SqlIdentifierValidator.validateImportTableName(input)
-            assert(result == input) { "validateImportTableName mutated input" }
-            assert(result.length <= 255) { "Accepted import table name exceeding 255 chars" }
-            assert(result.matches(importPattern)) {
-                "Accepted import table name with invalid pattern: $result"
-            }
-        } catch (expected: SqlIdentifierValidator.InvalidSqlIdentifierException) {
-            // Expected for invalid input
-        } catch (expected: SecurityException) {
-            // Expected
-        }
-    }
+    
 
 
     @FuzzTest(maxDuration = "5m")

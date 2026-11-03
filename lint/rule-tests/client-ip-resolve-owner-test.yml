@@ -1,0 +1,9 @@
+id: client-ip-resolve-owner
+valid:
+- 'fun f(r: HttpServletRequest) = ClientIpRecord.staffReference(r)
+
+  '
+invalid:
+- 'fun f(r: HttpServletRequest) = ClientIpResolver.resolve(r, proxies)
+
+  '

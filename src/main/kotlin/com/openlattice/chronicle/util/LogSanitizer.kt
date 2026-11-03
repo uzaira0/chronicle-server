@@ -16,10 +16,9 @@
  */
 package com.openlattice.chronicle.util
 
+import com.openlattice.chronicle.study.StudyApi
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import java.security.SecureRandom
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Utility object for sanitizing user input before logging.
@@ -102,7 +101,6 @@ public object LogSanitizer {
 
     private const val DEFAULT_FINGERPRINT_PREFIX = "id"
     private const val FINGERPRINT_HEX_LENGTH = 12
-    private const val FINGERPRINT_ALGORITHM = "HmacSHA256"
     private const val FINGERPRINT_KEY_LABEL = "chronicle-log-fingerprint-v1"
 
     /** Environment variable the fingerprint key is derived from; every deployment sets it. */
@@ -125,18 +123,14 @@ public object LogSanitizer {
         if (secret.isNullOrBlank()) {
             ByteArray(32).also { SecureRandom().nextBytes(it) }
         } else {
-            hmac(secret.toByteArray(Charsets.UTF_8), FINGERPRINT_KEY_LABEL)
+            hmacSha256(secret.toByteArray(Charsets.UTF_8), FINGERPRINT_KEY_LABEL)
         }
 
-    private fun hmac(key: ByteArray, input: String): ByteArray =
-        Mac.getInstance(FINGERPRINT_ALGORITHM)
-            .apply { init(SecretKeySpec(key, FINGERPRINT_ALGORITHM)) }
-            .doFinal(input.toByteArray(Charsets.UTF_8))
     private val uuidPathSegmentPattern = Regex(
         "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
     )
     private val studyIdParentSegments = setOf("study", "survey", "time-use-diary")
-    private val staticPlatformSegments = setOf("availability", "data", "sensors", "status", "upload")
+    private val staticPlatformSegments = StudyApi.PLATFORM_DATA_PATHS.mapTo(HashSet()) { it.removePrefix("/") }
 
     /**
      * Sanitizes a string for safe logging.
@@ -208,7 +202,7 @@ public object LogSanitizer {
     }
 
     /**
-     * Returns a stable, one-way identifier for logs. Use this for participant IDs, device IDs,
+     * Returns a stable, one-way identifier for logs. Use this for participant IDs, random device IDs,
      * external message IDs, and other values that are useful for correlation but should not be
      * written to application logs in plaintext.
      */
@@ -223,7 +217,7 @@ public object LogSanitizer {
     }
 
     internal fun keyedFingerprint(key: ByteArray, input: String, prefix: String): String {
-        val digest = hmac(key, input)
+        val digest = hmacSha256(key, input)
             .joinToString("") { byte -> "%02x".format(byte) }
             .take(FINGERPRINT_HEX_LENGTH)
         return "${sanitize(prefix, 32)}:$digest"
@@ -360,7 +354,7 @@ public object LogSanitizer {
      *
      * [sanitizeUri] prevents log injection. This method additionally removes query strings and
      * replaces sensitive or high-cardinality route values with parameter names so logs, MDC fields,
-     * and metrics do not store participant IDs, study UUIDs, source-device IDs, export IDs, or
+     * and metrics do not store participant IDs, study UUIDs, source-random device IDs or
      * webhook IDs in plaintext.
      *
      * NOTE ON THE OUTPUT SHAPE: the `{studyId}` / `{participantId}` / `{uuid}` segments this
@@ -411,9 +405,8 @@ public object LogSanitizer {
             previous == "participant" -> "{participantId}"
             previous == "participants" && segment !in setOf("data", "stats", "android", "ios", "purge") -> "{participantId}"
             previous == "questionnaire" -> "{questionnaireId}"
-            previous in setOf("exports", "export") -> "{exportId}"
             previous == "webhooks" -> "{webhookId}"
-            isSourceDeviceSegment(previous, previousPreviousPrevious, segment) -> "{sourceDeviceId}"
+            isSourceDeviceSegment(previous, previousPreviousPrevious, segment) -> "{sourceRandomDeviceId}"
             uuidPathSegmentPattern.matches(rawSegment) -> "{uuid}"
             else -> sanitize(rawSegment, 120)
         }

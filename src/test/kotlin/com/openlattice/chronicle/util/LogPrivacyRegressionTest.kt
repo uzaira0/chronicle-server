@@ -2,20 +2,20 @@ package com.openlattice.chronicle.util
 
 import com.geekbeast.rhizome.pods.ConfigurationLoader
 import com.geekbeast.postgres.streams.StatementHolder
+import com.openlattice.chronicle.ScopedLogCapture
 import com.openlattice.chronicle.authorization.mapstores.UserMapstore
+import com.openlattice.chronicle.mapstores.stats.ParticipantKey
+import com.openlattice.chronicle.mapstores.stats.ParticipantStatsMapstore
+import com.openlattice.chronicle.participants.ParticipantStats
 import com.openlattice.chronicle.users.ChronicleUserProfile
-import com.openlattice.chronicle.services.upload.SensorDataUploadService
-import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.storage.StorageResolver
 import com.zaxxer.hikari.HikariDataSource
 import org.apache.logging.log4j.LogManager
 import org.apache.logging.log4j.Level
 import org.apache.logging.log4j.core.Logger
-import org.apache.logging.log4j.core.LogEvent
-import org.apache.logging.log4j.core.appender.AbstractAppender
-import org.apache.logging.log4j.core.config.Property
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -23,12 +23,43 @@ import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import java.sql.Connection
+import java.sql.BatchUpdateException
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.util.UUID
+import java.time.OffsetDateTime
+import java.sql.Statement
+import com.openlattice.chronicle.services.upload.UsageEventQueueEntry
+import com.openlattice.chronicle.storage.UsageEventStorageWriter
+import org.slf4j.LoggerFactory
 
 class LogPrivacyRegressionTest {
     private class Credential { override fun toString() = "credential-sentinel" }
+
+    @Test fun duplicateTableLogsOnlyKeyedParticipantReferences() {
+        val pool = mock<HikariDataSource>()
+        val connection = mock<Connection>()
+        val prepared = mock<PreparedStatement>()
+        val statement = mock<Statement>()
+        val permitted = mock<ResultSet>()
+        whenever(pool.connection).thenReturn(connection)
+        whenever(connection.prepareStatement(any())).thenReturn(prepared)
+        whenever(connection.createStatement()).thenReturn(statement)
+        whenever(connection.createArrayOf(any(), any())).thenReturn(mock())
+        whenever(prepared.executeUpdate()).thenReturn(1)
+        whenever(prepared.executeQuery()).thenReturn(permitted)
+        whenever(permitted.next()).thenReturn(false)
+        whenever(permitted.getInt(1)).thenReturn(1)
+        val participant = "duplicate-table-participant-sentinel"
+        val entry = UsageEventQueueEntry(UUID.randomUUID(), participant, emptyMap(), OffsetDateTime.now())
+        val logs = capture(UsageEventStorageWriter::class.java) {
+            assertEquals(1, UsageEventStorageWriter.write(pool, listOf(entry),
+                LoggerFactory.getLogger(UsageEventStorageWriter::class.java)) {})
+        }
+        assertTrue(logs.contains("Creating duplicates table"))
+        assertTrue(logs.contains(LogSanitizer.stableFingerprints(setOf(participant), "participant")))
+        assertFalse(logs.contains(participant))
+    }
 
     @Test fun startupLogsOnlyConfigurationIdentity() {
         val loader = object : ConfigurationLoader {
@@ -68,28 +99,41 @@ class LogPrivacyRegressionTest {
         verify(statement).execute()
     }
 
-    @Test fun uploadInfoOmitsRawStudyAndSubjectIds() {
-        val study = UUID.randomUUID()
-        val participant = "upload-subject-sentinel"
-        val logs = capture(SensorDataUploadService::class.java) {
-            runCatching { SensorDataUploadService(mock<StorageResolver>(), mock<StudyService>())
-                .upload(study, participant, UUID.randomUUID(), emptyList()) }
+    @Test fun participantStatsBatchFailureNeverRendersBoundSql() {
+        val pool = mock<HikariDataSource>()
+        val connection = mock<Connection>()
+        val statement = mock<PreparedStatement>()
+        val key = ParticipantKey(UUID.randomUUID(), "batch-participant-sentinel")
+        val sqlState = "08006"
+        val sqlFailure = BatchUpdateException(
+            "INSERT INTO participant_stats (participant_id) VALUES ('${key.participantId}')",
+            sqlState, intArrayOf(),
+        )
+        sqlFailure.setNextException(java.sql.SQLException("bound-detail-sentinel", sqlState))
+        whenever(pool.connection).thenReturn(connection)
+        whenever(connection.prepareStatement(any())).thenReturn(statement)
+        whenever(statement.connection).thenReturn(connection)
+        whenever(connection.createArrayOf(any(), any())).thenReturn(mock())
+        whenever(statement.executeBatch()).thenThrow(sqlFailure)
+        val logs = capture(ParticipantStatsMapstore::class.java) {
+            assertThrows(IllegalStateException::class.java) {
+                ParticipantStatsMapstore(pool).storeAll(mapOf(key to ParticipantStats(key.studyId, key.participantId)))
+            }
         }
-        assertTrue(logs.contains("upload buffer"))
-        assertFalse(logs.contains(participant))
-        assertFalse(logs.contains(study.toString()))
+        assertTrue(logs.contains("category=BatchUpdateException"))
+        assertTrue(logs.contains("sqlState=$sqlState"))
+        assertFalse(logs.contains(key.participantId))
+        assertFalse(logs.contains("bound-detail-sentinel"))
+        assertFalse(logs.contains("INSERT INTO"))
+        verify(statement).executeBatch()
     }
 
-    private fun capture(type: Class<*>, action: () -> Unit): String {
-        val messages = mutableListOf<String>()
-        val appender = object : AbstractAppender("privacy-${UUID.randomUUID()}", null, null, true, Property.EMPTY_ARRAY) {
-            override fun append(event: LogEvent) { messages.add(event.message.formattedMessage) }
-        }
+    private fun capture(type: Class<*>, action: () -> Unit): String = ScopedLogCapture(type).use { capture ->
         val logger = LogManager.getLogger(type) as Logger
         val previous = logger.level
-        appender.start(); logger.addAppender(appender); logger.level = Level.DEBUG
-        try { action() } finally { logger.removeAppender(appender); logger.level = previous; appender.stop() }
-        return messages.joinToString("\n")
+        logger.level = Level.DEBUG
+        try { action() } finally { logger.level = previous }
+        capture.messages.joinToString("\n")
     }
 
     @Test fun complianceTriggerLogsCountsWithoutViolationsOrRawSubjects() {

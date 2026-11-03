@@ -7,6 +7,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.sql.BatchUpdateException
+import javax.xml.parsers.DocumentBuilderFactory
+import org.apache.logging.log4j.core.layout.PatternLayout
+import com.openlattice.chronicle.observability.productionLoggingConfiguration
 
 class SensitiveDataRewritePolicyTest {
 
@@ -169,6 +173,28 @@ class SensitiveDataRewritePolicyTest {
         assertEquals("{\"error\":\"No endpoint POST /chronicle/{unmapped}\"}", rewritten.message.formattedMessage)
         assertFalse(rewritten.message.formattedMessage.contains("patient-jane-doe"))
         assertNull(rewritten.thrown)
+    }
+
+    @Test
+    fun testProductionLayoutsNeverAppendSqlThrowableMessages() {
+        val sentinel = "SQL-BOUND-PARTICIPANT-7c"
+        val failure = IllegalStateException("batch failed", BatchUpdateException("INSERT participant_id='$sentinel'", "23514", 0, intArrayOf()))
+        val event = Log4jLogEvent.newBuilder().setMessage(SimpleMessage("Persistence retry"))
+            .setThrown(failure).build()
+        val document = javaClass.getResourceAsStream("/log4j2.xml").use { resource ->
+            DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(requireNotNull(resource))
+        }
+        val patterns = document.getElementsByTagName("PatternLayout")
+        val configuration = productionLoggingConfiguration(document)
+        assertTrue(patterns.length > 0)
+        for (index in 0 until patterns.length) {
+            val attributes = patterns.item(index).attributes
+            val layout = PatternLayout.newBuilder().withConfiguration(configuration)
+                .withPattern(configuration.strSubstitutor.replace(attributes.getNamedItem("pattern").nodeValue))
+                .withAlwaysWriteExceptions(attributes.getNamedItem("alwaysWriteExceptions")?.nodeValue?.toBoolean() ?: true).build()
+            assertFalse("Every shipped layout must keep SQL details private", layout.toSerializable(event).contains(sentinel))
+            assertTrue(layout.toSerializable(event).contains("Persistence retry"))
+        }
     }
 
     @Test

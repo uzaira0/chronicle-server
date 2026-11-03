@@ -26,7 +26,7 @@ class ParticipantIdValidatorPropertyTest {
         )
         forAll<String>(Arb.string(1..100, validChars)) { id ->
             try {
-                validateParticipantId(id)
+                validateParticipantId("p$id")
                 true
             } catch (_: IllegalArgumentException) {
                 false

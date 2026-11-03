@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.fuzz
 
+import com.code_intelligence.jazzer.api.FuzzedDataProvider
 import com.code_intelligence.jazzer.junit.FuzzTest
 import com.openlattice.chronicle.util.LogSanitizer
 
@@ -28,7 +29,8 @@ class LogSanitizerFuzzTest {
     private val unicodeControlPattern = Regex("[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]")
 
     @FuzzTest(maxDuration = "5m")
-    fun fuzzSanitize(input: String) {
+    fun fuzzSanitize(data: FuzzedDataProvider) {
+        val input = data.consumeRemainingAsString()
         val result = LogSanitizer.sanitize(input)
 
         // Must never contain raw dangerous characters
@@ -66,7 +68,8 @@ class LogSanitizerFuzzTest {
     }
 
     @FuzzTest(maxDuration = "5m")
-    fun fuzzSanitizeQuoted(input: String) {
+    fun fuzzSanitizeQuoted(data: FuzzedDataProvider) {
+        val input = data.consumeRemainingAsString()
         val result = LogSanitizer.sanitizeQuoted(input)
 
         // Must be wrapped in double quotes
@@ -82,7 +85,8 @@ class LogSanitizerFuzzTest {
     }
 
     @FuzzTest(maxDuration = "5m")
-    fun fuzzSanitizeUri(input: String) {
+    fun fuzzSanitizeUri(data: FuzzedDataProvider) {
+        val input = data.consumeRemainingAsString()
         val result = LogSanitizer.sanitizeUri(input)
 
         // Must not contain raw newlines or null bytes

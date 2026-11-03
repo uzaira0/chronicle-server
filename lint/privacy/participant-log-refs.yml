@@ -1,0 +1,10 @@
+id: participant-log-raw-ids
+language: Kotlin
+note: |
+  Blind spots: Only the participants = {} literal matches; alternative log text and values passed through helper functions are not traced.
+severity: error
+message: Log participants by keyed reference (participantRefs = {} with LogSanitizer.stableFingerprints), never by raw id.
+files: ["src/main/**"]
+rule:
+  kind: string_literal
+  regex: participants = \{\}

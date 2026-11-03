@@ -1,0 +1,12 @@
+id: client-ip-remote-address-owner
+valid:
+- 'fun f(r: HttpServletRequest) = r.requestURI
+
+  '
+invalid:
+- 'fun f(r: HttpServletRequest) = r.remoteAddr
+
+  '
+- 'fun f(r: HttpServletRequest) = r.getRemoteHost()
+
+  '

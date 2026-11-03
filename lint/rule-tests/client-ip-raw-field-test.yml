@@ -1,0 +1,9 @@
+id: client-ip-raw-field
+valid:
+- 'val fields = mapOf("participantRef" to ref)
+
+  '
+invalid:
+- 'val fields = mapOf("clientIp" to ip)
+
+  '

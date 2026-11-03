@@ -1,0 +1,9 @@
+id: client-ip-remote-address-owner-java
+valid:
+- 'class A { String f(HttpServletRequest r) { return r.getRequestURI(); } }
+
+  '
+invalid:
+- 'class A { String f(HttpServletRequest r) { return r.getRemoteAddr(); } }
+
+  '

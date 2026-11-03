@@ -1,0 +1,63 @@
+# Participants' IP addresses are never logged or stored; staff IPs only as keyed references
+# through ClientIpRecord. These rules keep every client-address read inside its owner.
+id: client-ip-resolve-owner
+language: Kotlin
+note: |
+  Blind spots: Only the listed API spellings and configured paths match; type aliases, reflection and calls hidden behind wrappers are not resolved.
+severity: error
+message: Resolve client addresses through ClientIpRecord, not ClientIpResolver.resolve.
+files: ["src/main/**"]
+ignores: ["**/ClientIpResolver.kt", "**/ClientIpRecord.kt", "**/RateLimitFilter.kt"]
+rule:
+  pattern: ClientIpResolver.resolve($$$ARGS)
+---
+id: client-ip-remote-address-owner
+language: Kotlin
+note: |
+  Blind spots: Only the listed API spellings and configured paths match; type aliases, reflection and calls hidden behind wrappers are not resolved.
+severity: error
+message: Only ClientIpResolver reads the socket peer address; use ClientIpRecord.staffReference.
+files: ["src/main/**"]
+ignores: ["**/ClientIpResolver.kt"]
+rule:
+  any:
+    - pattern: $R.remoteAddr
+    - pattern: $R.remoteHost
+    - pattern: $R.getRemoteAddr()
+    - pattern: $R.getRemoteHost()
+---
+id: client-ip-remote-address-owner-java
+language: Java
+note: |
+  Blind spots: Only the listed API spellings and configured paths match; type aliases, reflection and calls hidden behind wrappers are not resolved.
+severity: error
+message: Only ClientIpResolver reads the socket peer address; use ClientIpRecord.staffReference.
+files: ["src/main/**"]
+rule:
+  any:
+    - pattern: $R.getRemoteAddr()
+    - pattern: $R.getRemoteHost()
+---
+id: client-ip-staff-surface-owner
+language: Kotlin
+note: |
+  Blind spots: Only the listed API spellings and configured paths match; type aliases, reflection and calls hidden behind wrappers are not resolved.
+severity: error
+message: Staff surface references are issued only by ClientIpRecord for login and API-key audit.
+files: ["src/main/**"]
+ignores: ["**/ClientIpRecord.kt", "**/AuthTokenController.kt", "**/ApiKeyAuthenticationFilter.kt"]
+rule:
+  any:
+    - pattern: $X.staffSurfaceReference($$$ARGS)
+    - pattern: staffSurfaceReference($$$ARGS)
+---
+id: client-ip-raw-field
+language: Kotlin
+note: |
+  Blind spots: Only the exact clientIp string field matches; alternative keys and computed strings are not resolved.
+severity: error
+message: Do not carry a raw "clientIp" field; record ClientIpRecord.staffReference instead.
+files: ["src/main/**"]
+rule:
+  kind: string_literal
+  regex: ^"clientIp"$

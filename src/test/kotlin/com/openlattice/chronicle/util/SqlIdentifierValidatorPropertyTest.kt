@@ -160,73 +160,14 @@ class SqlIdentifierValidatorPropertyTest {
         }
     }
 
-    // --- validateImportTableName ---
 
-    @Test
-    fun `unqualified and schema-qualified import table names with valid segments pass`() { runBlocking {
-        val startChar = Arb.element(('a'..'z') + ('A'..'Z') + listOf('_'))
-        val restChars = Arb.codepoints(('a'..'z') + ('A'..'Z') + ('0'..'9') + listOf('_'))
-        forAll<Char, String>(startChar, Arb.string(0..20, restChars)) { first, rest ->
-            val table = "$first$rest"
-            val lower = table.lowercase()
-            // pg_-prefixed / information_schema segments are intentionally rejected
-            if (lower.startsWith("pg_") || lower == "information_schema") {
-                true
-            } else {
-                try {
-                    SqlIdentifierValidator.validateImportTableName(table) == table &&
-                        SqlIdentifierValidator.validateImportTableName("src.$table") == "src.$table"
-                } catch (_: SqlIdentifierValidator.InvalidSqlIdentifierException) {
-                    false
-                }
-            }
-        }
-    } }
+    
 
-    @Test
-    fun `known schema-qualified import sources are accepted`() {
-        listOf("src.system_apps", "src.tud", "src.users", "public.foo", "system_apps").forEach {
-            assert(SqlIdentifierValidator.validateImportTableName(it) == it) { "expected $it to be accepted" }
-        }
-    }
+    
 
-    @Test
-    fun `unsafe import table names with dots, hyphens, system catalogs, or injection are rejected`() { runBlocking {
-        forAll(Arb.element(
-            "information_schema.columns",
-            "pg_catalog.pg_authid",
-            "pg_class",
-            "src.tud.extra",
-            "1src.table",
-            "src.1table",
-            "src..table",
-            ".table",
-            "table.",
-            "src-staging.table",
-            "foo-bar",
-            "src.system_apps; DROP TABLE studies--",
-            "src.system_apps--"
-        )) { name ->
-            try {
-                SqlIdentifierValidator.validateImportTableName(name)
-                false
-            } catch (_: SqlIdentifierValidator.InvalidSqlIdentifierException) {
-                true
-            }
-        }
-    } }
+    
 
-    @Test
-    fun `import table names exceeding 255 chars are rejected`() { runBlocking {
-        forAll(Arb.string(256..300, Codepoint.az())) { name ->
-            try {
-                SqlIdentifierValidator.validateImportTableName(name)
-                false
-            } catch (e: SqlIdentifierValidator.InvalidSqlIdentifierException) {
-                e.message?.contains("maximum length") == true
-            }
-        }
-    } }
+    
 
     // --- validateTimeout ---
 

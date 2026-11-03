@@ -16,6 +16,7 @@
  */
 package com.openlattice.chronicle.util
 
+import com.openlattice.chronicle.generated.ChronicleHeaders
 import org.apache.logging.log4j.core.LogEvent
 import org.apache.logging.log4j.core.appender.rewrite.RewritePolicy
 import org.apache.logging.log4j.core.config.plugins.Plugin
@@ -124,8 +125,8 @@ public class SensitiveDataRewritePolicy private constructor() : RewritePolicy {
         private val FAST_CHECK_KEYWORDS = arrayOf(
             "Bearer", "Basic", "password", "passwd", "secret", "token",
             "api_key", "apiKey", "api-key", "access_token", "refresh_token",
-            "client_secret", "private_key", "jdbc:", "X-Chronicle-Enrollment-Code",
-            "X-Chronicle-Proposed-Api-Key", "X-Chronicle-Reviewer-Secret",
+            "client_secret", "private_key", "jdbc:", ChronicleHeaders.ENROLLMENT_CODE_HEADER,
+            ChronicleHeaders.PROPOSED_API_KEY_HEADER, ChronicleHeaders.REVIEWER_SECRET_HEADER,
         )
 
         /**

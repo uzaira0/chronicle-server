@@ -112,45 +112,20 @@ class SqlIdentifierValidatorMutationTest {
         assertEquals("selection", SqlIdentifierValidator.validateIdentifier("selection"))
     }
 
-    // ---- validateImportTableName ----
 
-    @Test
-    fun `validateImportTableName accepts bare and schema-qualified names`() {
-        assertEquals("system_apps", SqlIdentifierValidator.validateImportTableName("system_apps"))
-        assertEquals("src.system_apps", SqlIdentifierValidator.validateImportTableName("src.system_apps"))
-    }
+    
 
-    @Test
-    fun `validateImportTableName rejects blank`() {
-        expectInvalid { SqlIdentifierValidator.validateImportTableName("   ") }
-    }
+    
 
-    @Test
-    fun `validateImportTableName at exactly 255 chars is accepted`() {
-        val name = "a".repeat(255)
-        assertEquals(name, SqlIdentifierValidator.validateImportTableName(name))
-    }
+    
 
-    @Test
-    fun `validateImportTableName over 255 chars is rejected`() {
-        expectInvalid { SqlIdentifierValidator.validateImportTableName("a".repeat(256)) }
-    }
+    
 
-    @Test
-    fun `validateImportTableName rejects more than one qualifier`() {
-        expectInvalid { SqlIdentifierValidator.validateImportTableName("a.b.c") }
-    }
+    
 
-    @Test
-    fun `validateImportTableName rejects invalid segment`() {
-        expectInvalid { SqlIdentifierValidator.validateImportTableName("src.bad-name") }
-    }
+    
 
-    @Test
-    fun `validateImportTableName rejects reserved system catalogs`() {
-        expectInvalid { SqlIdentifierValidator.validateImportTableName("information_schema.columns") }
-        expectInvalid { SqlIdentifierValidator.validateImportTableName("pg_catalog") }
-    }
+    
 
     // ---- quoteIdentifier ----
 

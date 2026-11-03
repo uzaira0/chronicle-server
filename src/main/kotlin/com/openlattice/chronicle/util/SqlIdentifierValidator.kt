@@ -53,7 +53,6 @@ public object SqlIdentifierValidator {
             add(ChroniclePostgresTables.CANDIDATES.name)
             add(ChroniclePostgresTables.STUDY_PARTICIPANTS.name)
             add(ChroniclePostgresTables.PARTICIPANT_STATS.name)
-            add(ChroniclePostgresTables.LEGACY_STUDY_IDS.name)
             add(ChroniclePostgresTables.ORGANIZATIONS.name)
             add(ChroniclePostgresTables.APP_USAGE_SURVEY.name)
             add(ChroniclePostgresTables.QUESTIONNAIRES.name)
@@ -73,8 +72,6 @@ public object SqlIdentifierValidator {
             // Add Postgres event storage tables
             add(PostgresEventTables.CHRONICLE_USAGE_EVENTS.name)
             add(PostgresEventTables.CHRONICLE_USAGE_STATS.name)
-            add(PostgresEventTables.IOS_SENSOR_DATA.name)
-            add(PostgresEventTables.PREPROCESSED_USAGE_EVENTS.name)
         }
     }
 
@@ -227,71 +224,6 @@ public object SqlIdentifierValidator {
                 identifier,
                 ValidationType.IDENTIFIER
             )
-        }
-
-        return identifier
-    }
-
-    /**
-     * Validates an identifier for use in import operations where table names
-     * come from external configuration. These must match the validation pattern
-     * used in ImportStudiesConfiguration.
-     *
-     * @param identifier The identifier to validate
-     * @return The validated identifier (unchanged if valid)
-     * @throws InvalidSqlIdentifierException if the identifier is invalid
-     */
-    // reason: security validator — each throw is a distinct rejection reason/message; merging would lose injection-audit detail
-    @Suppress("ThrowsCount")
-    @JvmStatic
-    public fun validateImportTableName(identifier: String): String {
-        if (identifier.isBlank()) {
-            throw InvalidSqlIdentifierException(
-                "Import table name cannot be blank",
-                identifier,
-                ValidationType.TABLE_NAME
-            )
-        }
-
-        if (identifier.length > 255) {
-            throw InvalidSqlIdentifierException(
-                "Import table name exceeds maximum length of 255 characters",
-                identifier,
-                ValidationType.TABLE_NAME
-            )
-        }
-
-        // Import sources may be schema-qualified (e.g. "src.system_apps", per
-        // ImportStudiesConfiguration). The value is interpolated into raw SQL (it cannot be
-        // parameterized), so validate each dot-separated segment as a strict SQL identifier:
-        // this rejects injection metacharacters, hyphens, leading digits, empty segments, and
-        // more than one qualifier — and rejects the system catalogs (information_schema / pg_*)
-        // that a qualified name could otherwise reach (e.g. "information_schema.columns").
-        val segments = identifier.split('.')
-        if (segments.size > 2) {
-            throw InvalidSqlIdentifierException(
-                "Import table name '$identifier' has too many qualifiers; expected 'table' or 'schema.table'.",
-                identifier,
-                ValidationType.TABLE_NAME
-            )
-        }
-        segments.forEach { segment ->
-            if (!VALID_IDENTIFIER_PATTERN.matches(segment)) {
-                throw InvalidSqlIdentifierException(
-                    "Import table name '$identifier' contains an invalid identifier segment '$segment'. " +
-                        "Each segment must start with a letter or underscore and contain only letters, digits, and underscores.",
-                    identifier,
-                    ValidationType.TABLE_NAME
-                )
-            }
-            val lowerSegment = segment.lowercase()
-            if (lowerSegment.startsWith("pg_") || lowerSegment == "information_schema") {
-                throw InvalidSqlIdentifierException(
-                    "Import table name '$identifier' references reserved system catalog '$segment'.",
-                    identifier,
-                    ValidationType.TABLE_NAME
-                )
-            }
         }
 
         return identifier

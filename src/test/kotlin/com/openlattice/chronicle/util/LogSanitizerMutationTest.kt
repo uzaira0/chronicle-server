@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.util
 
+import com.openlattice.chronicle.study.StudyApi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -175,12 +176,12 @@ class LogSanitizerMutationTest {
     }
 
     @Test
-    fun `sanitizeRequestPath redacts study participant and mobile device path values`() {
-        val path = "/chronicle/v3/study/550e8400-e29b-41d4-a716-446655440000" +
-                "/participant/u15-device-owner/android/iphone-identifier/upload?token=secret"
+    fun `sanitizeRequestPath redacts current mobile study and participant path values`() {
+        val path = "/chronicle/v4/study/550e8400-e29b-41d4-a716-446655440000" +
+                "/participant/u15-device-owner/android?token=secret"
 
         assertEquals(
-            "/chronicle/v3/study/{studyId}/participant/{participantId}/android/{sourceDeviceId}/upload",
+            "/chronicle/v4/study/{studyId}/participant/{participantId}/android",
             LogSanitizer.sanitizeRequestPath(path)
         )
     }
@@ -199,24 +200,30 @@ class LogSanitizerMutationTest {
 
     @Test
     fun `sanitizeRequestPath keeps static platform routes and redacts query strings`() {
-        val path = "/chronicle/v3/study/550e8400-e29b-41d4-a716-446655440000/android/sensors/availability" +
+        val path = "/chronicle/v4/study/550e8400-e29b-41d4-a716-446655440000/android/sensors/availability" +
                 "?participantId=u15"
 
         assertEquals(
-            "/chronicle/v3/study/{studyId}/android/sensors/availability",
+            "/chronicle/v4/study/{studyId}/android/sensors/availability",
             LogSanitizer.sanitizeRequestPath(path)
         )
     }
 
     @Test
-    fun `sanitizeRequestPath redacts export webhook and questionnaire identifiers`() {
-        assertEquals(
-            "/chronicle/v3/study/{studyId}/exports/{exportId}/download",
-            LogSanitizer.sanitizeRequestPath(
-                "/chronicle/v3/study/550e8400-e29b-41d4-a716-446655440000" +
-                        "/exports/11111111-2222-3333-4444-555555555555/download"
-            )
-        )
+    fun `current iOS static resources are kept while unknown values are redacted`() {
+        val base = "/chronicle/v4/study/study-one/participant/participant-one/ios/"
+        val shaped = "/chronicle/v4/study/{studyId}/participant/{participantId}/ios/"
+        for (path in listOf(
+            StudyApi.SCREEN_TIME_PATH, StudyApi.HEALTH_CONNECT_PATH,
+            StudyApi.COLLECTION_ACK_PATH,
+        ).map { it.removePrefix("/") }) {
+            assertEquals(shaped + path, LogSanitizer.sanitizeRequestPath(base + path))
+        }
+        assertEquals(shaped + "{sourceRandomDeviceId}", LogSanitizer.sanitizeRequestPath(base + "unrecognized-value"))
+    }
+
+    @Test
+    fun `sanitizeRequestPath redacts webhook and questionnaire identifiers`() {
         assertEquals(
             "/chronicle/v3/study/{studyId}/webhooks/{webhookId}",
             LogSanitizer.sanitizeRequestPath(

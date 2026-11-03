@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.fuzz
 
+import com.code_intelligence.jazzer.api.FuzzedDataProvider
 import com.code_intelligence.jazzer.junit.FuzzTest
 import com.openlattice.chronicle.util.validateParticipantId
 
@@ -19,7 +20,8 @@ class ParticipantIdValidatorFuzzTest {
     private val validPattern = Regex("^[a-zA-Z0-9_.-]+$")
 
     @FuzzTest(maxDuration = "5m")
-    fun fuzzValidateParticipantId(input: String) {
+    fun fuzzValidateParticipantId(data: FuzzedDataProvider) {
+        val input = data.consumeRemainingAsString()
         try {
             validateParticipantId(input)
             // If validation passed, the input must conform to the constraints

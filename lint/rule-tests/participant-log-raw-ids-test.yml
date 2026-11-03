@@ -1,0 +1,9 @@
+id: participant-log-raw-ids
+valid:
+- 'fun f() { logger.info("erased participantRefs = {}", refs) }
+
+  '
+invalid:
+- 'fun f() { logger.info("erased participants = {}", ids) }
+
+  '

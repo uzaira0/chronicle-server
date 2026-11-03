@@ -1,0 +1,9 @@
+id: client-ip-staff-surface-owner
+valid:
+- 'fun f(r: HttpServletRequest) = ClientIpRecord.staffReference(r)
+
+  '
+invalid:
+- 'fun f(r: HttpServletRequest) = ClientIpRecord.staffSurfaceReference(r)
+
+  '

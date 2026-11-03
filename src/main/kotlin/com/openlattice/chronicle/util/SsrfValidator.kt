@@ -417,7 +417,7 @@ public object SsrfValidator {
     }
 
     /**
-     * M-4: Creates an OkHttp Dns implementation that pins the resolved IP address.
+     * Creates an OkHttp Dns implementation that pins the resolved IP address.
      *
      * This prevents DNS rebinding TOCTOU attacks where:
      * 1. validateAndResolve() resolves hostname → safe public IP

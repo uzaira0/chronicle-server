@@ -9,7 +9,7 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
  *
  * Participants' IP addresses are never recorded: the app, enrollment, form links and the reviewer
  * bootstrap all reach the server without a dashboard token, and every such request gets nothing.
- * Staff IPs are recorded only when the operator sets [RECORD_STAFF_IP_ENV]=true, and then as a keyed
+ * Staff IPs are recorded by default unless the operator sets [RECORD_STAFF_IP_ENV]=false, as a keyed
  * fingerprint that cannot be reversed without the deployment secret. ClientIpPrivacyGuardTest fails
  * the build on any other path.
  */
@@ -17,12 +17,12 @@ public object ClientIpRecord {
     /** Written wherever an IP is not recorded. */
     public const val WITHHELD: String = "ip:[withheld]"
 
-    /** Operator switch for staff IP references; off by default. */
+    /** Operator switch for staff IP references; on by default. */
     public const val RECORD_STAFF_IP_ENV: String = "CHRONICLE_RECORD_STAFF_IP"
 
     @JvmStatic
     @Volatile
-    internal var recordStaffIp: Boolean = System.getenv(RECORD_STAFF_IP_ENV).equals("true", ignoreCase = true)
+    internal var recordStaffIp: Boolean = !System.getenv(RECORD_STAFF_IP_ENV).equals("false", ignoreCase = true)
 
     private val reference = Regex("^ip:[0-9a-f]{12}$")
 

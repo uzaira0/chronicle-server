@@ -1,8 +1,8 @@
 package com.openlattice.chronicle.util
 
-import com.openlattice.chronicle.configuration.CidrRange
 import jakarta.servlet.http.HttpServletRequest
 import org.slf4j.LoggerFactory
+import org.springframework.security.web.util.matcher.IpAddressMatcher
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 
@@ -15,14 +15,23 @@ import java.util.concurrent.ConcurrentHashMap
 public object ClientIpResolver {
     private val log = LoggerFactory.getLogger(ClientIpResolver::class.java)
     private val ipLiteralPattern = Regex("^[0-9a-fA-F:.]+$")
-    private val trustedProxyRangeCache = ConcurrentHashMap<String, List<CidrRange>>()
+    private val trustedProxyRangeCache = ConcurrentHashMap<String, List<IpAddressMatcher>>()
 
-    private val defaultTrustedProxyCidrs: List<String> =
-        deploymentTrustedProxyCidrs(listOf("172.16.0.0/12", "127.0.0.0/8", "::1/128"))
+    /** The deployment's proxy subnets, comma separated; the selfhost bundle always sets it to its Compose subnet. */
+    public const val TRUSTED_PROXY_CIDRS_ENV: String = "CHRONICLE_TRUSTED_PROXY_CIDRS"
+
+    /**
+     * Trusted when the deployment names no proxy: only a reverse proxy on this host. The one owner of that
+     * default; `RateLimitConfiguration` and the shipped rate-limit.yaml use it too, so the rate limiter and every
+     * audit or log IP reference believe the same forwarded headers.
+     */
+    public val LOOPBACK_PROXY_CIDRS: List<String> = listOf("127.0.0.0/8", "::1/128")
+
+    private val defaultTrustedProxyCidrs: List<String> = deploymentTrustedProxyCidrs(LOOPBACK_PROXY_CIDRS)
 
     public fun deploymentTrustedProxyCidrs(
         fallback: List<String>,
-        deployment: String? = System.getenv("CHRONICLE_TRUSTED_PROXY_CIDRS"),
+        deployment: String? = System.getenv(TRUSTED_PROXY_CIDRS_ENV),
     ): List<String> = deployment?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: fallback
 
     public fun resolve(
@@ -47,17 +56,17 @@ public object ClientIpResolver {
     @Suppress("ReturnCount", "LoopWithTooManyJumpStatements")
     public fun resolveWithTrustedRanges(
         request: HttpServletRequest,
-        trustProxyHeaders: Boolean = true,
-        clientIpHeader: String = "X-Forwarded-For",
-        clientIpHeaderFallback: String = "X-Real-IP",
-        trustedProxyRanges: List<CidrRange>,
+        trustProxyHeaders: Boolean,
+        clientIpHeader: String,
+        clientIpHeaderFallback: String,
+        trustedProxyRanges: List<IpAddressMatcher>,
     ): String {
         val remoteAddr = request.remoteAddr ?: UNKNOWN_CLIENT_IP
         if (!trustProxyHeaders) {
             return remoteAddr
         }
 
-        if (trustedProxyRanges.none { it.contains(remoteAddr) }) {
+        if (!trustedProxyRanges.matchesAny(remoteAddr)) {
             return remoteAddr
         }
 
@@ -73,7 +82,7 @@ public object ClientIpResolver {
                     log.warn("Rejected proxy client IP entry with invalid characters")
                     continue
                 }
-                if (trustedProxyRanges.any { it.contains(ip) }) {
+                if (trustedProxyRanges.matchesAny(ip)) {
                     continue
                 }
                 return ip
@@ -83,7 +92,7 @@ public object ClientIpResolver {
         val fallback = request.getHeader(clientIpHeaderFallback)?.trim()
         if (!fallback.isNullOrBlank() &&
             isValidIpLiteral(fallback) &&
-            trustedProxyRanges.none { it.contains(fallback) }
+            !trustedProxyRanges.matchesAny(fallback)
         ) {
             return fallback
         }
@@ -91,24 +100,24 @@ public object ClientIpResolver {
         return remoteAddr
     }
 
-    public fun parseTrustedProxyCidrs(cidrs: List<String>): List<CidrRange> {
+    public fun parseTrustedProxyCidrs(cidrs: List<String>): List<IpAddressMatcher> {
         val cacheKey = cidrs.joinToString(",")
         return trustedProxyRangeCache.computeIfAbsent(cacheKey) {
             cidrs.mapNotNull(::parseTrustedProxyCidr)
         }
     }
 
-    // reason: boundary catch — CidrRange.parse can throw IllegalArgumentException /
-    // NumberFormatException / UnknownHostException; any malformed CIDR is logged and skipped
-    @Suppress("TooGenericExceptionCaught")
-    private fun parseTrustedProxyCidr(cidr: String): CidrRange? {
+    private fun parseTrustedProxyCidr(cidr: String): IpAddressMatcher? {
         return try {
-            CidrRange.parse(cidr)
-        } catch (e: Exception) {
+            IpAddressMatcher(cidr)
+        } catch (e: IllegalArgumentException) {
             log.warn("Ignoring invalid trusted proxy CIDR: {}", cidr, e)
             null
         }
     }
+
+    /** The matcher rejects anything but an address literal, so non-literals simply match no range. */
+    private fun List<IpAddressMatcher>.matchesAny(ip: String): Boolean = isValidIpLiteral(ip) && any { it.matches(ip) }
 
     private fun isValidIpLiteral(value: String): Boolean {
         if (value.length > MAX_IP_LITERAL_LENGTH || !ipLiteralPattern.matches(value)) {

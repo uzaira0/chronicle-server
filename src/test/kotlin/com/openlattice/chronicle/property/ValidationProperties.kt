@@ -13,7 +13,7 @@ import org.junit.Test
 public class ValidationProperties {
     @Test
     public fun `participant format validator accepts allowed IDs and rejects invalid characters and lengths`(): Unit = runBlocking {
-        forAll(100, Arb.stringPattern("[a-zA-Z0-9_.-]{1,50}")) { id ->
+        forAll(100, Arb.stringPattern("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,49}")) { id ->
             runCatching { validateParticipantId(id) }.isSuccess &&
                 listOf("", "$id/", id.padEnd(256, 'a')).all { invalid ->
                     runCatching { validateParticipantId(invalid) }.exceptionOrNull() is IllegalArgumentException

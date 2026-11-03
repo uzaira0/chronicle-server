@@ -1,8 +1,5 @@
 package com.openlattice.chronicle.util
 
-import com.openlattice.chronicle.audit.AuditAction
-import com.openlattice.chronicle.audit.AuditLogEntry
-import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.controllers.TestSecurityUtils
 import com.openlattice.chronicle.filters.MobileApiHmacAuthenticationToken
 import org.junit.After
@@ -14,13 +11,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.security.core.context.SecurityContextHolder
-import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 
 /**
  * Participants' IP addresses are never logged or stored; staff IPs only as keyed references.
- * The source scan fails the build when new code reads a client address outside [ClientIpRecord].
+ * lint/privacy (ast-grep) keeps every client-address read inside [ClientIpRecord] and its resolver.
  */
 class ClientIpPrivacyGuardTest {
     private val ip = "198.51.100.23"
@@ -43,7 +39,8 @@ class ClientIpPrivacyGuardTest {
     }
 
     @Test
-    fun `staff ip is withheld unless the operator turns recording on`() {
+    fun `staff ip is withheld when the operator turns recording off`() {
+        ClientIpRecord.recordStaffIp = false
         TestSecurityUtils.setupSecurityContext()
         assertNull(ClientIpRecord.staffReference(request()))
         assertEquals(ClientIpRecord.WITHHELD, ClientIpRecord.staffSurfaceReference(request()))
@@ -76,36 +73,12 @@ class ClientIpPrivacyGuardTest {
 
     @Test
     fun `audit persistence keeps only keyed references`() {
-        fun persisted(ipAddress: String) = AuditService.sanitizeForPersistence(
-            AuditLogEntry(ipAddress = ipAddress, action = AuditAction.VIEW, resourceType = "Test", success = true)
-        ).ipAddress
+        fun persisted(ipAddress: String) = com.openlattice.chronicle.auditing.AuditRequest.of(
+            MockHttpServletRequest("GET", "/chronicle/v3/study"), ipAddress,
+        ).clientIpRef
 
         assertEquals(ClientIpRecord.WITHHELD, persisted(ip))
         assertEquals(ClientIpRecord.WITHHELD, persisted("ip:[withheld]"))
         assertEquals("ip:0123456789ab", persisted("ip:0123456789ab"))
-    }
-
-    @Test
-    fun `client addresses are read only through ClientIpRecord`() {
-        val rules = mapOf(
-            Regex("""ClientIpResolver\.resolve""") to setOf("ClientIpResolver.kt", "ClientIpRecord.kt", "RateLimitFilter.kt"),
-            Regex("""\bremoteAddr\b|getRemoteAddr|getRemoteHost|\bremoteHost\b""") to setOf("ClientIpResolver.kt"),
-            Regex("""staffSurfaceReference\(""") to
-                setOf("ClientIpRecord.kt", "AuthTokenController.kt", "ApiKeyAuthenticationFilter.kt"),
-            Regex(""""clientIp"""") to emptySet(),
-        )
-        val violations = listOf(File("src/main/kotlin"), File("src/main/java"), File("src/main/resources"))
-            .filter { it.isDirectory }
-            .flatMap { root -> root.walkTopDown().filter { it.isFile } }
-            .flatMap { file ->
-                val text = file.readText()
-                rules.filter { (pattern, allowed) -> file.name !in allowed && pattern.containsMatchIn(text) }
-                    .map { (pattern, _) -> "${file.path}: ${pattern.pattern}" }
-            }
-        assertTrue(
-            "Client IP read outside ClientIpRecord; route it through ClientIpRecord.staffReference:\n" +
-                violations.joinToString("\n"),
-            violations.isEmpty(),
-        )
     }
 }

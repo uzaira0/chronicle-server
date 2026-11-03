@@ -12,6 +12,7 @@ import io.kotest.property.arbitrary.long
 import io.kotest.property.arbitrary.string
 import io.kotest.property.forAll
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.springframework.web.server.ResponseStatusException
 
@@ -138,9 +139,9 @@ class ParticipantIdValidatorPropertyTest {
     } }
     @Test
     fun `short numeric and unformatted identifiers are not national IDs`() {
-        listOf("20261008", "10000001", "1234567K", "12.345.678-K", "10000013-X").forEach {
-            validateParticipantIdNotPii(it)
-        }
+        val refused = listOf("20261008", "10000001", "1234567K", "12.345.678-K", "10000013-X")
+            .filter { runCatching { validateParticipantIdNotPii(it) }.isFailure }
+        assertEquals(emptyList<String>(), refused)
     }
 
 }

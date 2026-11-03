@@ -41,10 +41,7 @@ class SqlIdentifierValidatorKillTest {
         assertTrue(message { SqlIdentifierValidator.validateIdentifier("") }.contains("cannot be blank"))
     }
 
-    @Test
-    fun `validateImportTableName blank rejected with blank-specific message`() {
-        assertTrue(message { SqlIdentifierValidator.validateImportTableName("") }.contains("cannot be blank"))
-    }
+    
 
     // ---- case normalization (kills VoidMethodCall on uppercase()/lowercase()) ----
 
@@ -55,15 +52,7 @@ class SqlIdentifierValidatorKillTest {
         assertTrue(message { SqlIdentifierValidator.validateIdentifier("select") }.contains("reserved SQL keyword"))
     }
 
-    @Test
-    fun `validateImportTableName rejects an upper-case system catalog - lowercase normalization must run`() {
-        // "PG_catalog" matches the identifier pattern, then only trips the "pg_" system-catalog
-        // guard after .lowercase(); drop that call and it is accepted -> assertion fails -> mutant killed.
-        assertTrue(
-            message { SqlIdentifierValidator.validateImportTableName("PG_catalog") }
-                .contains("reserved system catalog")
-        )
-    }
+    
 
     // ---- happy paths (pin the accepted-identifier return value) ----
 
@@ -72,8 +61,5 @@ class SqlIdentifierValidatorKillTest {
         assertEquals("study_participants", SqlIdentifierValidator.validateIdentifier("study_participants"))
     }
 
-    @Test
-    fun `validateImportTableName accepts a schema-qualified name unchanged`() {
-        assertEquals("src.system_apps", SqlIdentifierValidator.validateImportTableName("src.system_apps"))
-    }
+    
 }
