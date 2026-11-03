@@ -45,7 +45,6 @@ open class StudyListSerBench {
                 "lon" to -122.1697 + (i * 0.001),
                 "storage" to "chronicle",
                 "version" to "1.0",
-                "notificationsEnabled" to (i % 2 == 0),
                 "organizationIds" to listOf(java.util.UUID.randomUUID().toString())
             )
         }
