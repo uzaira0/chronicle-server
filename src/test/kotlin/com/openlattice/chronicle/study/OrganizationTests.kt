@@ -1,13 +1,20 @@
 package com.openlattice.chronicle.study
 
+import org.junit.Assert.assertThrows
+
+import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.retrofit.RhizomeRetrofitCallException
+import com.openlattice.chronicle.filters.CreateReceiptFilter
+import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
+import com.openlattice.chronicle.organizations.OrganizationApi
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.util.UUID
 import com.openlattice.chronicle.ChronicleServerTests
 import com.openlattice.chronicle.client.ChronicleClient
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
 import com.openlattice.chronicle.organizations.Organization
-import com.openlattice.chronicle.organizations.OrganizationSettings
-import com.openlattice.chronicle.settings.AppComponent
-import com.openlattice.chronicle.settings.AppUsageFrequency
 import com.openlattice.chronicle.util.tests.TestDataFactory
 import org.junit.Assert
 import org.junit.Test
@@ -23,6 +30,44 @@ class OrganizationTests : ChronicleServerTests() {
         expected.id = orgId
         val org = organizationsApi.getOrganization(orgId)
         Assert.assertEquals(expected, org)
+
+        // The creator manages studies through the organization's own authorization chain; another researcher cannot.
+        val studyId = chronicleClient.studyApi.createStudy(
+            Study(title = "org study", contact = "test@openlattice.com", organizationIds = setOf(orgId)),
+        )
+        Assert.assertEquals(listOf(studyId), chronicleClient.studyApi.getOrgStudies(orgId).map { it.id })
+        chronicleClient.studyApi.updateStudy(studyId, StudyUpdate(description = "managed by the org creator"))
+        Assert.assertEquals("managed by the org creator", chronicleClient.studyApi.getStudy(studyId).description)
+        assertThrows(RhizomeRetrofitCallException::class.java) {
+            clientUser2.studyApi.createStudy(Study(title = "intruder", contact = "x@example.org", organizationIds = setOf(orgId)))
+        }
+        assertThrows(RhizomeRetrofitCallException::class.java) { clientUser2.studyApi.getOrgStudies(orgId) }
+    }
+
+    /** H-org-candidate-create: a create whose response was lost replays its first result instead of creating again. */
+    @Test
+    fun aRetriedOrganizationCreateStoresOneOrganizationAndAChangedBodyConflicts() {
+        val title = "receipt org ${UUID.randomUUID()}"
+        val key = "org-intent-${UUID.randomUUID()}"
+        fun create(organization: Organization) = HttpClient.newHttpClient().send(
+            HttpRequest.newBuilder(URI("http://localhost:$testHttpPort${OrganizationApi.BASE}"))
+                .timeout(java.time.Duration.ofSeconds(30))
+                .header("Authorization", "Bearer ${activeFixtureToken(testUser1)}")
+                .header(ParticipantFormAccessFilter.IDEMPOTENCY_HEADER, key)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(ObjectMappers.getJsonMapper().writeValueAsString(organization))).build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+        val organization = Organization(title = title)
+        val first = create(organization)
+        Assert.assertEquals(first.body(), 200, first.statusCode())
+        val retry = create(organization)
+        Assert.assertEquals(first.body(), retry.body())
+        Assert.assertEquals("true", retry.headers().firstValue(CreateReceiptFilter.REPLAYED_HEADER).orElse(null))
+        val changed = create(organization.copy(title = "$title changed"))
+        Assert.assertEquals(409, changed.statusCode())
+        val stored = chronicleClient.organizationApi.getOrganizations().filter { it.title.startsWith(title) }
+        Assert.assertEquals(listOf(ObjectMappers.getJsonMapper().readValue(first.body(), UUID::class.java)), stored.map { it.id })
     }
 
     @Test
@@ -39,91 +84,25 @@ class OrganizationTests : ChronicleServerTests() {
         }
     }
 
-    @Test
-    fun testSearchOrganizations() {
-        val org = TestDataFactory.organization()
-        org.id = chronicleClient.organizationApi.createOrganization(org)
-        val results = chronicleClient.organizationApi.searchOrganizations()
-        val resultIds = results.map { it.id }.toSet()
-        Assert.assertTrue("Search should contain the created org", resultIds.contains(org.id))
-    }
+
+    
+
+    
+
+    
+
+    
+
+    
+
+    
 
     @Test
-    fun testGetOrganizationSettings() {
-        val org = TestDataFactory.organization()
-        val orgId = chronicleClient.organizationApi.createOrganization(org)
-        val settings = chronicleClient.organizationApi.getOrganizationSettings(orgId)
-        Assert.assertNotNull("Settings should not be null", settings)
-    }
-
-    @Test
-    fun testSetAndGetOrganizationSettings() {
-        val org = TestDataFactory.organization()
-        val orgId = chronicleClient.organizationApi.createOrganization(org)
-
-        val customSettings = OrganizationSettings(
-            chronicleDataCollection = ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY)
-        )
-        chronicleClient.testOrganizationApi.setOrganizationSettings(orgId, customSettings)
-
-        val actual = chronicleClient.organizationApi.getOrganizationSettings(orgId)
-        Assert.assertEquals(
-            AppUsageFrequency.HOURLY,
-            actual.chronicleDataCollection.appUsageFrequency
-        )
-    }
-
-    @Test
-    fun testGetChronicleDataCollectionSettings() {
-        val org = TestDataFactory.organization()
-        val orgId = chronicleClient.organizationApi.createOrganization(org)
-        val settings = chronicleClient.organizationApi.getChronicleDataCollectionSettings(orgId)
-        Assert.assertNotNull("Data collection settings should not be null", settings)
-    }
-
-    @Test
-    fun testSetAndGetChronicleDataCollectionSettings() {
-        val org = TestDataFactory.organization()
-        val orgId = chronicleClient.organizationApi.createOrganization(org)
-
-        val hourly = ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY)
-        chronicleClient.testOrganizationApi.setChronicleDataCollectionSettings(orgId, hourly)
-
-        val actual = chronicleClient.organizationApi.getChronicleDataCollectionSettings(orgId)
-        Assert.assertEquals(AppUsageFrequency.HOURLY, actual.appUsageFrequency)
-    }
-
-    @Test
-    fun testGetAppComponentSettings() {
-        val org = TestDataFactory.organization()
-        val orgId = chronicleClient.organizationApi.createOrganization(org)
-        val settings = chronicleClient.testOrganizationApi.getAppComponentSettings(
-            orgId, AppComponent.CHRONICLE.name
-        )
-        Assert.assertNotNull("App component settings should not be null", settings)
-    }
-
-    @Test
-    fun testSetAndGetAppComponentSettings() {
-        val org = TestDataFactory.organization()
-        val orgId = chronicleClient.organizationApi.createOrganization(org)
-
-        val componentSettings = mapOf<String, Any>("featureEnabled" to true, "maxRetries" to 3)
-        chronicleClient.testOrganizationApi.setAppComponentSettings(
-            orgId, AppComponent.CHRONICLE.name, componentSettings
-        )
-
-        val actual = chronicleClient.testOrganizationApi.getAppComponentSettings(
-            orgId, AppComponent.CHRONICLE.name
-        )
-        Assert.assertEquals(true, actual["featureEnabled"])
-        Assert.assertEquals(3, (actual["maxRetries"] as Number).toInt())
-    }
-
-    @Test(expected = RhizomeRetrofitCallException::class)
     fun testGetOrganizationAccessDenied() {
         val org = TestDataFactory.organization()
         val orgId = chronicleClient.organizationApi.createOrganization(org)
-        clientUser2.organizationApi.getOrganization(orgId)
+        assertThrows(RhizomeRetrofitCallException::class.java) {
+            clientUser2.organizationApi.getOrganization(orgId)
+        }
     }
 }

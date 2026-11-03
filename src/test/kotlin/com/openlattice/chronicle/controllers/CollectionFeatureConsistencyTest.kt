@@ -1,5 +1,8 @@
 package com.openlattice.chronicle.controllers
 
+import com.openlattice.chronicle.services.studies.stampInitialDataCollectionSettings
+import com.openlattice.chronicle.services.studies.mergeAndStampDataCollectionSettingsVersionLocked
+
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionDefaults
 import com.openlattice.chronicle.collection.CollectionModuleId
@@ -11,7 +14,6 @@ import com.openlattice.chronicle.study.StudyFeature
 import com.openlattice.chronicle.study.StudyUpdate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -24,35 +26,31 @@ import java.util.UUID
 import com.geekbeast.mappers.mappers.ObjectMappers
 
 class CollectionFeatureConsistencyTest {
-    @Test fun sparseSettingsStaySparseWhileFeatureOffStopsEffectiveDefaults() {
+    @Test fun sparseSettingsBecomeCompleteWhileFeatureOffStopsEffectiveDefaults() {
         val sparse = AndroidDataCollectionSetting(modules = mapOf(
             CollectionModuleId.USAGE_EVENTS to CollectionDefaults.moduleSetting(CollectionModuleId.USAGE_EVENTS, enabled = true),
         ))
         val settings = StudySettings(mapOf(StudySettingType.DataCollection to sparse))
         val active = collectionSettingsForFeatures(settings, setOf(StudyFeature.CHRONICLE_DATA_COLLECTION.name))[
             StudySettingType.DataCollection] as AndroidDataCollectionSetting
-        assertSame(sparse, active)
-        assertEquals(sparse.modules, active.modules)
+        assertEquals(CollectionModuleId.activeModules, active.modules.keys)
+        assertEquals(sparse.modules.getValue(CollectionModuleId.USAGE_EVENTS), active.modules.getValue(CollectionModuleId.USAGE_EVENTS))
         assertTrue(active.effectiveModules().getValue(CollectionModuleId.DEVICE_LIFECYCLE).enabled)
         val stopped = collectionSettingsForFeatures(settings, emptySet())[StudySettingType.DataCollection] as AndroidDataCollectionSetting
         assertFalse(stopped.modules.getValue(CollectionModuleId.DEVICE_LIFECYCLE).enabled)
     }
 
-    @Test fun featureOffStopsCollectionOnCreateAndOnLockedPartialUpdates() {
+    @Test fun featureOffRetainsChoicesOnCreateAndOnLockedPartialUpdates() {
         val settings = StudySettings(mapOf(StudySettingType.DataCollection to CollectionDefaults.androidDataCollectionSetting()))
         val initial = stampInitialDataCollectionSettings(Study(title = "No collection", contact = "research@example.org", settings = settings))
-        fun assertStopped(actual: StudySettings) {
-            val collection = actual[StudySettingType.DataCollection] as AndroidDataCollectionSetting
-            assertEquals(setOf(CollectionModuleId.UPLOAD_TELEMETRY), collection.effectiveEnabledModuleIds())
-        }
-        assertStopped(initial.settings)
+        assertEquals(settings, initial.settings)
         val connection: Connection = mock(); val statement: PreparedStatement = mock(); val rows: ResultSet = mock()
         whenever(connection.prepareStatement(any())).thenReturn(statement)
         whenever(statement.executeQuery()).thenReturn(rows); whenever(rows.next()).thenReturn(true)
         whenever(rows.getString("settings")).thenReturn(ObjectMappers.getJsonMapper().writeValueAsString(settings))
         whenever(rows.getString("modules")).thenReturn("{\"CHRONICLE_DATA_COLLECTION\":{}}")
-        val stopped = stampDataCollectionSettingsVersionLocked(connection, UUID.randomUUID(), StudyUpdate(modules = emptyMap()))
-        assertStopped(stopped.stampedStudy.settings!!)
+        val stopped = mergeAndStampDataCollectionSettingsVersionLocked(connection, UUID.randomUUID(), StudyUpdate(modules = emptyMap()))
+        assertEquals(settings.androidDataCollection().modules, stopped.stampedStudy.settings!!.androidDataCollection().modules)
         assertEquals(2, (stopped.stampedStudy.settings!![StudySettingType.DataCollection] as AndroidDataCollectionSetting).settingsVersion)
         assertEquals(settings, collectionSettingsForFeatures(settings, setOf(StudyFeature.CHRONICLE_DATA_COLLECTION.name)))
     }

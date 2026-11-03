@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.services.studies.tasks
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.tasks.HazelcastFixedRateTask
 import com.geekbeast.tasks.HazelcastTaskDependencies
 import com.geekbeast.tasks.Task
@@ -67,7 +69,7 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
 
     override fun getTimeUnit(): TimeUnit = TimeUnit.MINUTES
 
-    override fun runTask() {
+    override fun runTask(): Unit = runCatching {
         RLSRequestContext.withSystemContext {
             logger.info("Running study compliance task.")
             StopWatch("Processing notification for non-compliant study participants").run {
@@ -75,7 +77,9 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
                 notifyNonCompliantStudies(nonCompliantStudies)
             }
         }
-    }
+    }.onFailure {
+        ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.COMPLIANCE)
+    }.getOrThrow()
 
     // Persistence failures propagate to both manual trigger endpoints.
     @Suppress("TooGenericExceptionCaught")
@@ -92,15 +96,14 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
                 studyId,
                 complianceLogSummary(participantViolations),
             )
-            val studyEmails = study.contact.split(",").toSet()
             val phoneNumbers = (study.settings[StudySettingType.Notifications] as? StudyNotificationSettings)
                 ?.researcherPhoneNumbers?.split(",")?.toSet() ?: emptySet()
             val researcherNotifications = participantViolations.map { (participantId, violations) ->
                 ResearcherNotification(
-                studyEmails,
+                emptySet(),
                 phoneNumbers,
                 NotificationType.PASSIVE_DATA_COLLECTION_COMPLIANCE,
-                EnumSet.of(DeliveryType.EMAIL),
+                EnumSet.of(DeliveryType.SMS),
                 "Compliance violations for ${study.title} ($studyId)",
                 buildMessage(
                     studyId,
@@ -112,19 +115,18 @@ public open class StudyComplianceHazelcastTask : HazelcastFixedRateTask<StudyCom
             }
             storageResolver.getPlatformStorage().connection.use { connection ->
                 try {
-                    connection.autoCommit = false
-                    notificationService.sendResearcherNotifications(
-                        connection,
-                        studyId,
-                        researcherNotifications,
-                        true,
-                        Principals.getChroniclePrincipal()
-                    )
-                    connection.commit()
-                    connection.autoCommit = true
+                    connection.withTransaction {
+                        notificationService.sendResearcherNotifications(
+                            connection,
+                            studyId,
+                            researcherNotifications,
+                            true,
+                            Principals.getChroniclePrincipal()
+                        )
+                        connection.commit()
+                    }
                 } catch (ex: Exception) {
                     logger.info("Unable to send notifications.", ex)
-                    connection.rollback()
                     throw ex
                 }
             }

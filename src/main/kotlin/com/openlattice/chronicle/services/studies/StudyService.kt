@@ -7,8 +7,8 @@ import com.geekbeast.postgres.PostgresArrays
 import com.geekbeast.postgres.PostgresDatatype
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
-import com.geekbeast.postgres.streams.StatementHolderSupplier
 import com.hazelcast.core.HazelcastInstance
+import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
@@ -17,11 +17,19 @@ import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.Permission
-import com.openlattice.chronicle.authorization.SecurableObjectType
 import com.openlattice.chronicle.authorization.Permission.READ
+import com.openlattice.chronicle.authorization.SecurableObjectType
+import com.openlattice.chronicle.authorization.SystemUser
 import com.openlattice.chronicle.authorization.principals.Principals
+import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
+import com.openlattice.chronicle.collection.withoutConsentEpochs
+import com.openlattice.chronicle.collection.CollectionCadence
+import com.openlattice.chronicle.collection.CollectionCadenceModules
+import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.exceptions.StudyNotFoundException
 import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.ids.IdConstants
 import com.openlattice.chronicle.mapstores.stats.ParticipantStatsCache
@@ -32,38 +40,33 @@ import com.openlattice.chronicle.notifications.StudyNotificationSettings
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.participants.ParticipantStats
 import com.openlattice.chronicle.postgres.ResultSetAdapters
-import com.openlattice.chronicle.sensorkit.SensorSetting
-import com.openlattice.chronicle.sensorkit.SensorType
 import com.openlattice.chronicle.services.candidates.CandidateManager
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.notifications.NotificationService
+import com.openlattice.chronicle.services.participantaccess.EnrollmentAccessCodeRepository
 import com.openlattice.chronicle.services.surveys.SurveysManager
+import com.openlattice.chronicle.services.webhooks.ParticipantRef
+import com.openlattice.chronicle.services.webhooks.WebhookPayload
 import com.openlattice.chronicle.services.webhooks.WebhookService
-import com.openlattice.chronicle.sources.AndroidDevice
-import com.openlattice.chronicle.sources.IOSDevice
-import com.openlattice.chronicle.sources.SourceDevice
-import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.LEGACY_STUDY_IDS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ORGANIZATION_STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.PARTICIPANT_STATS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.PERMISSIONS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS_WITH_WITHDRAWALS
+import com.openlattice.chronicle.storage.DeletionStudyFence
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACL_KEY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CONTACT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CREATED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DESCRIPTION
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LAT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.LEGACY_STUDY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LON
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.MODULES
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.NOTIFICATIONS_ENABLED
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ORGANIZATION_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ORGANIZATION_IDS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_NOTES
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_TAGS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPATION_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PRINCIPAL_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SETTINGS
@@ -76,26 +79,282 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.TITLE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPDATED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.USER_ID
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.storage.PinnedPlatformConnection
+import com.openlattice.chronicle.storage.StreamingReadTransaction
+import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
+import com.openlattice.chronicle.study.ParticipantAnnotationsUpdate
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudySetting
 import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.study.StudyUpdate
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.ensureVanilla
+import com.openlattice.chronicle.util.validateParticipantId
+import com.openlattice.chronicle.validation.validateParticipantIdNotPii
 import com.openlattice.chronicle.webhooks.WebhookEventType
+import jakarta.inject.Inject
 import org.slf4j.LoggerFactory
+import org.springframework.http.HttpStatus
 import org.springframework.stereotype.Service
+import org.springframework.web.server.ResponseStatusException
 import java.sql.Connection
 import java.time.OffsetDateTime
 import java.util.*
-import jakarta.inject.Inject
+
+/** Assigns the authoritative revision for DataCollection settings, ignoring client-supplied revisions. */
+internal fun stampDataCollectionSettingsVersion(
+    priorSettings: StudySettings?,
+    requestedUpdate: StudyUpdate,
+    priorFeatures: Set<String>,
+    requestedFeatures: Set<String>,
+): StudyUpdate {
+    val requestedSettings = requestedUpdate.settings ?: return requestedUpdate
+    val requested = (requestedSettings[StudySettingType.DataCollection] as? AndroidDataCollectionSetting
+        ?: return requestedUpdate).withoutConsentEpochs()
+    validateClientSupportedCollectionPolicy(requested)
+    val normalizedSettings = StudySettings(requestedSettings + (StudySettingType.DataCollection to requested))
+    val prior = priorSettings?.get(StudySettingType.DataCollection) as? AndroidDataCollectionSetting
+    // Compare effective choices: the settings read answers the complete map, storage keeps it sparse.
+    val unchangedChoices = prior != null && requested.copy(
+        modules = requested.effectiveModules(CollectionModuleId.activeModules),
+        settingsVersion = prior.settingsVersion,
+    ) == prior.copy(modules = prior.effectiveModules(CollectionModuleId.activeModules))
+    val unchangedEffective = priorSettings != null &&
+        collectionSettingsForFeatures(priorSettings, priorFeatures).androidDataCollection() ==
+        collectionSettingsForFeatures(normalizedSettings, requestedFeatures).androidDataCollection()
+            .copy(settingsVersion = prior?.settingsVersion ?: requested.settingsVersion)
+    val stampedVersion = when {
+        prior == null -> AndroidDataCollectionSetting.INITIAL_SETTINGS_VERSION
+        unchangedChoices && unchangedEffective -> prior.settingsVersion
+        else -> prior.settingsVersion + 1
+    }
+    // Preserve stored set order when choices compare equal; revision evidence is immutable.
+    val authoritative = (if (unchangedChoices) prior else requested).copy(settingsVersion = stampedVersion)
+    return requestedUpdate.copy(settings = StudySettings(
+        requestedSettings + mapOf(StudySettingType.DataCollection to authoritative),
+    ))
+}
+
+/** Ignores caller-supplied collection revisions when a study is first created. */
+internal fun stampInitialDataCollectionSettings(study: Study): Study {
+    val initialSettings = StudySettings(
+        study.settings + (StudySettingType.DataCollection to study.settings.androidDataCollection()),
+    )
+    val stampedSettings = checkNotNull(
+        stampDataCollectionSettingsVersion(
+            priorSettings = null,
+            requestedUpdate = StudyUpdate(settings = initialSettings),
+            priorFeatures = emptySet(),
+            requestedFeatures = study.modules.keys.map { it.name }.toSet(),
+        ).settings,
+    )
+    if (stampedSettings == study.settings) return study
+    return Study(
+        studyId = study.id,
+        title = study.title,
+        description = study.description,
+        createdAt = study.createdAt,
+        updatedAt = study.updatedAt,
+        startedAt = study.startedAt,
+        endedAt = study.endedAt,
+        lat = study.lat,
+        lon = study.lon,
+        group = study.group,
+        version = study.version,
+        contact = study.contact,
+        organizationIds = study.organizationIds,
+        storage = study.storage,
+        settings = stampedSettings,
+        modules = study.modules,
+        phoneNumber = study.phoneNumber,
+    )
+}
+
+internal data class LockedStudyUpdate(
+    val priorSettings: StudySettings?,
+    val stampedStudy: StudyUpdate,
+    /** Settings revision after the write, for the response `ETag`. */
+    val settingsRevision: Long = 0L,
+)
+
+internal class EnrollmentDisclosurePendingException(val blockingParticipantIds: List<String>) : ResponseStatusException(
+    HttpStatus.CONFLICT,
+    Messages.format("error.study.enrollmentDisclosurePending", blockingParticipantIds.joinToString(", ")),
+)
+
+/** Raised when an `If-Match` settings precondition does not match the row-locked revision. */
+public class StudySettingsRevisionMismatchException(
+    public val currentRevision: Long,
+    public val currentSettings: StudySettings,
+) : RuntimeException("Study settings were modified by another client")
+
+/** Merges the settings patch over the row-locked prior settings, then stamps the collection version. */
+internal fun mergeAndStampDataCollectionSettingsVersionLocked(
+    connection: Connection,
+    studyId: UUID,
+    requestedUpdate: StudyUpdate,
+): LockedStudyUpdate {
+    if (requestedUpdate.settings == null && requestedUpdate.modules == null) return LockedStudyUpdate(null, requestedUpdate)
+    val priorSettings = loadLockedStudySettings(connection, studyId)
+    val priorFeatures = StudySnapshotRepository(connection).loadLockedStudyFeatures(studyId)
+    val features = requestedUpdate.modules?.keys?.mapTo(mutableSetOf()) { it.name } ?: priorFeatures
+    val settings = StudySettings(priorSettings + requestedUpdate.settings.orEmpty())
+    return LockedStudyUpdate(
+        priorSettings,
+        stampDataCollectionSettingsVersion(
+            priorSettings, requestedUpdate.copy(settings = settings),
+            priorFeatures = priorFeatures, requestedFeatures = features,
+        ),
+    )
+}
+
+internal fun loadLockedStudySettings(
+    connection: Connection,
+    studyId: UUID,
+): StudySettings = StudySnapshotRepository(connection).loadLockedStudySettings(studyId)
+    ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.study.notFound"))
+
+internal fun checkLockedStudyRevision(
+    connection: Connection,
+    studyId: UUID,
+    expectedRevision: Long?,
+) {
+    if (expectedRevision == null) return
+    val settings = loadLockedStudySettings(connection, studyId)
+    requireSettingsRevision(expectedRevision, StudySnapshotRepository(connection).settingsRevision(studyId), settings)
+}
+
+/** The one `If-Match` comparison: a supplied revision must equal the row-locked one; absent means no precondition. */
+private fun requireSettingsRevision(expectedRevision: Long?, currentRevision: Long, lockedSettings: StudySettings) {
+    if (expectedRevision != null && expectedRevision != currentRevision) {
+        throw StudySettingsRevisionMismatchException(currentRevision, lockedSettings)
+    }
+}
+
+/**
+ * The row-locked body of a settings write: read the authoritative map, check the optional
+ * `If-Match` precondition, apply the per-type delta, persist, and report the new revision.
+ *
+ * The mutation only ever sees the row-locked map, so a write of one setting type can never rewrite
+ * another type from a client-supplied merge. Everything happens on [transaction], which holds the
+ * `FOR UPDATE` lock taken by [loadLockedStudySettings], so a concurrent write of a different type
+ * is serialized behind this one rather than clobbering it.
+ */
+internal fun applyLockedSettingsMutation(
+    transaction: Connection,
+    studyId: UUID,
+    expectedRevision: Long?,
+    studyService: StudyManager,
+    mutation: (StudySettings) -> StudySettings,
+): LockedStudyUpdate {
+    val priorSettings = loadLockedStudySettings(transaction, studyId)
+    requireSettingsRevision(expectedRevision, studyService.getStudySettingsRevision(transaction, studyId), priorSettings)
+    val features = StudySnapshotRepository(transaction).loadLockedStudyFeatures(studyId)
+    val requestedStudy = StudyUpdate(settings = mutation(priorSettings))
+    val lockedUpdate = LockedStudyUpdate(
+        priorSettings,
+        stampDataCollectionSettingsVersion(
+            priorSettings, requestedStudy, priorFeatures = features, requestedFeatures = features,
+        ),
+    )
+    ensureParticipantPolicyMutable(
+        transaction,
+        studyId,
+        priorSettings,
+        checkNotNull(lockedUpdate.stampedStudy.settings),
+    )
+    studyService.updateStudy(transaction, studyId, lockedUpdate.stampedStudy)
+    return lockedUpdate.copy(settingsRevision = studyService.getStudySettingsRevision(transaction, studyId))
+}
+
+/** Applies a single-setting endpoint delta to the authoritative row-locked settings map. */
+internal fun mergeStudySetting(
+    priorSettings: StudySettings,
+    settingType: StudySettingType,
+    setting: StudySetting,
+): StudySettings = StudySettings(priorSettings + (settingType to setting))
+
+
+/** Keeps the signed manifest within the policy controls the Android app actually enforces. */
+internal fun validateClientSupportedCollectionPolicy(setting: AndroidDataCollectionSetting) {
+    // The Play and Amazon clients refuse to enroll (requireSupportedCollectionPolicies) when
+    // upload diagnostics are not disclosed; the participant only sees a generic enrollment
+    // failure. Reject the setting here, where the researcher can read the reason.
+    require(setting.effectiveModules().getValue(CollectionModuleId.UPLOAD_TELEMETRY).enabled) {
+        "upload_telemetry cannot be disabled: Play and Amazon builds refuse to enroll a study " +
+            "that does not disclose upload diagnostics"
+    }
+    setting.modules.forEach { (moduleId, moduleSetting) ->
+        require(!moduleSetting.required || moduleId.consentGated) {
+            "${moduleId.id} cannot be required: this module has no per-module consent decision"
+        }
+        if (moduleId in CollectionCadenceModules.intervalGated) {
+            require(moduleSetting.collectionCadence.jitterSeconds == 0L) {
+                "${moduleId.id}.collectionCadence.jitterSeconds is not supported by the Android app"
+            }
+        } else {
+            require(
+                moduleSetting.collectionCadence ==
+                    CollectionCadence.DEFAULT_COLLECTION,
+            ) {
+                "${moduleId.id}.collectionCadence is not supported by the Android app"
+            }
+        }
+        require(
+            moduleId == CollectionModuleId.HEALTH_CONNECT || moduleSetting.healthConnectRecordTypes.isEmpty(),
+        ) {
+            "healthConnectRecordTypes may only be configured for the health_connect module"
+        }
+    }
+
+    val healthConnect = setting.modules[CollectionModuleId.HEALTH_CONNECT]
+    require(healthConnect == null || !healthConnect.enabled || healthConnect.healthConnectRecordTypes.isNotEmpty()) {
+        "An enabled health_connect module requires at least one healthConnectRecordType"
+    }
+}
+
+/** Prevents changing the legal disclosure after a participant or device has entered the study. */
+internal fun ensureParticipantPolicyMutable(
+    connection: Connection,
+    studyId: UUID,
+    priorSettings: StudySettings?,
+    requestedSettings: StudySettings,
+) {
+    rejectDataCollectionRemoval(priorSettings, requestedSettings)
+    val policyChanged = StudySettingType.entries.any { type ->
+        type.lockedAfterEnrollment && priorSettings?.get(type) != requestedSettings[type]
+    }
+    val collectionChanged = priorSettings?.get(StudySettingType.DataCollection) !=
+        requestedSettings[StudySettingType.DataCollection]
+    if (!policyChanged && !collectionChanged) return
+
+    val activity = EnrollmentAccessCodeRepository(connection).lockActivity(studyId)
+    if (activity.pendingParticipantIds.isNotEmpty()) throw EnrollmentDisclosurePendingException(activity.pendingParticipantIds)
+    if (policyChanged && activity.hasActiveEnrollment) {
+        throw ResponseStatusException(HttpStatus.CONFLICT, Messages.get("error.study.participantPolicyLocked"))
+    }
+}
+
+private fun rejectDataCollectionRemoval(
+    priorSettings: StudySettings?,
+    requestedSettings: StudySettings,
+) {
+    val hadVersionedSettings = priorSettings?.get(StudySettingType.DataCollection) is AndroidDataCollectionSetting
+    val retainsVersionedSettings = requestedSettings[StudySettingType.DataCollection] is AndroidDataCollectionSetting
+    if (hadVersionedSettings && !retainsVersionedSettings) {
+        throw ResponseStatusException(
+            HttpStatus.CONFLICT,
+            Messages.get("error.study.versionedSettingsRemoval"),
+        )
+    }
+}
+
+
+
 
 /**
  * @author Solomon Tang <solomon@openlattice.com>
  */
-// reason: central study-domain service implementing a broad manager interface; splitting risks behavior
-@Suppress("TooManyFunctions")
 @Service
 public open class StudyService(
     private val storageResolver: StorageResolver,
@@ -121,26 +380,6 @@ public open class StudyService(
         private val logger = LoggerFactory.getLogger(StudyService::class.java)
         private val mapper = ObjectMappers.newJsonMapper()
 
-        /** The caller holds the studies row lock, shared with manifest validation and every settings writer. */
-        internal fun loadLockedStudyFeatures(connection: Connection, studyId: UUID): Set<String> =
-            connection.prepareStatement("SELECT modules FROM studies WHERE study_id = ? FOR UPDATE").use { statement ->
-                statement.setObject(1, studyId)
-                statement.executeQuery().use { rows ->
-                    check(rows.next()) { "Study is unavailable" }
-                    val json = rows.getString("modules") ?: "{}"
-                    ObjectMappers.getJsonMapper().readTree(json).fieldNames().asSequence().toSet()
-                }
-            }
-
-        internal fun loadLockedParticipantAnnotations(connection: Connection, studyId: UUID, participantId: String): String? =
-            connection.prepareStatement(
-                "SELECT jsonb_build_object('participantNotes', participant_notes, 'participantTags', participant_tags)::text " +
-                    "FROM study_participants WHERE study_id = ? AND participant_id = ? FOR UPDATE"
-            ).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participantId)
-                statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-            }
         private val STUDY_COLUMNS_LIST = listOf(
             STUDY_ID,
             TITLE,
@@ -150,7 +389,6 @@ public open class StudyService(
             STUDY_GROUP,
             STUDY_VERSION,
             CONTACT,
-            NOTIFICATIONS_ENABLED,
             STORAGE,
             SETTINGS,
             MODULES,
@@ -170,7 +408,6 @@ public open class StudyService(
             STUDY_GROUP,
             STUDY_VERSION,
             CONTACT,
-            NOTIFICATIONS_ENABLED,
             STORAGE,
             SETTINGS,
             MODULES
@@ -179,8 +416,10 @@ public open class StudyService(
         private val UPDATE_STUDY_COLUMNS = UPDATE_STUDY_COLUMNS_LIST.joinToString(",") { it.name }
         private val COALESCED_STUDY_COLUMNS_BIND = UPDATE_STUDY_COLUMNS_LIST
             .joinToString(",") {
-                "coalesce(?${if (it.datatype == PostgresDatatype.JSONB) "::jsonb" else ""}, ${it.name})"
+                "coalesce(?${if (it.datatype == PostgresDatatype.JSONB) "::jsonb" else ""}, stored.${it.name}) AS ${it.name}"
             }
+        // The study content an update can change; updated_at only records that it did.
+        private val COMPARED_STUDY_COLUMNS = UPDATE_STUDY_COLUMNS_LIST - UPDATED_AT
 
         private val ORG_STUDIES_COLS = listOf(
             ORGANIZATION_ID,
@@ -198,9 +437,10 @@ public open class StudyService(
          * 6. study group
          * 7. study version
          * 8. contact
-         * 9. notifications enabled
-         * 10. storage
-         * 11. settings
+         * 9. storage
+         * 10. settings
+         * 11. modules
+         * 12. phone number
          */
         internal val INSERT_STUDY_SQL = """
             INSERT INTO ${STUDIES.name} ($STUDY_COLUMNS) VALUES ($STUDY_COLUMNS_BIND)
@@ -259,30 +499,24 @@ public open class StudyService(
          * 6. study_group,
          * 7. study_version,
          * 8. contact,
-         * 9. notifications enabled
-         * 10. storage
-         * 11. settings
-         * 12. modules
+         * 9. storage
+         * 10. settings
+         * 11. modules
+         * 12. study_id
          * 13. study_id
+         * An update equal to the stored study matches no row, so it keeps updated_at and the revision.
          */
 
         private val UPDATE_STUDY_SQL = """
             UPDATE ${STUDIES.name}
-            SET (${UPDATE_STUDY_COLUMNS}) = (${COALESCED_STUDY_COLUMNS_BIND})
-            WHERE ${STUDY_ID.name} = ?
+            SET (${UPDATE_STUDY_COLUMNS}) = (${UPDATE_STUDY_COLUMNS_LIST.joinToString(",") { "requested.${it.name}" }})
+            FROM (
+                SELECT ${COALESCED_STUDY_COLUMNS_BIND} FROM ${STUDIES.name} stored WHERE stored.${STUDY_ID.name} = ?
+            ) requested
+            WHERE ${STUDIES.name}.${STUDY_ID.name} = ?
+                AND (${COMPARED_STUDY_COLUMNS.joinToString(",") { "${STUDIES.name}.${it.name}" }})
+                    IS DISTINCT FROM (${COMPARED_STUDY_COLUMNS.joinToString(",") { "requested.${it.name}" }})
         """.trimIndent()
-
-        /**
-         * Retrieves the organization id for a given study.
-         * 1. study id
-         */
-        private val GET_ORGANIZATION_ID = """
-            SELECT ${ORGANIZATION_ID.name} FROM ${ORGANIZATION_STUDIES.name} WHERE ${STUDY_ID.name} = ? LIMIT 1 
-        """.trimIndent()
-
-        private val GET_NOTIFICATION_STATUS_SQL = """
-            SELECT ${NOTIFICATIONS_ENABLED.name} FROM ${STUDIES.name} WHERE ${STUDY_ID.name} = ?
-        """
 
         /**
          * get studies that belong to the provided organizationId where the
@@ -292,7 +526,8 @@ public open class StudyService(
          * 1. current user principal id
          * 2. organization id
          */
-        private val GET_ORG_STUDIES_SQL = """
+        // Erased studies are excluded before LIMIT/OFFSET so every page holds `limit` visible studies.
+        internal val GET_ORG_STUDIES_SQL = """
             SELECT ${STUDIES.name}.*, org_studies.${ORGANIZATION_IDS.name}
             FROM ${STUDIES.name}
                 INNER JOIN ${PERMISSIONS.name}
@@ -310,10 +545,10 @@ public open class StudyService(
                 SELECT ${STUDY_ID.name} FROM ${ORGANIZATION_STUDIES.name}
                 WHERE ${ORGANIZATION_ID.name} = ?
             )
+            AND NOT ${StudyDeletionGuard.blockedStudySql("${STUDIES.name}.${STUDY_ID.name}")}
             ORDER BY ${CREATED_AT.name} DESC
             LIMIT ? OFFSET ?
         """.trimIndent()
-
 
         /**
          * PreparedStatement bind order:
@@ -323,20 +558,6 @@ public open class StudyService(
             SELECT ${SETTINGS.name}
             FROM ${STUDIES.name}
             WHERE ${STUDY_ID.name} = ?
-        """.trimIndent()
-
-        /** Optimistic-concurrency token for the study's settings map (V103). */
-        private val GET_STUDY_SETTINGS_REVISION_SQL = """
-            SELECT settings_revision
-            FROM ${STUDIES.name}
-            WHERE ${STUDY_ID.name} = ?
-        """.trimIndent()
-
-        private val BUMP_STUDY_SETTINGS_REVISION_SQL = """
-            UPDATE ${STUDIES.name}
-            SET settings_revision = settings_revision + 1
-            WHERE ${STUDY_ID.name} = ?
-            RETURNING settings_revision
         """.trimIndent()
 
         /**
@@ -355,26 +576,9 @@ public open class StudyService(
             LIMIT ? OFFSET ?
         """.trimIndent()
 
-        private fun selectStudyIdSql(table: String): String {
-            return when (table) {
-                LEGACY_STUDY_IDS.name -> """
-                    SELECT ${STUDY_ID.name} FROM ${LEGACY_STUDY_IDS.name} WHERE ${LEGACY_STUDY_ID.name} = ?                    
-                """.trimIndent()
-
-                STUDIES.name -> """
-                    SELECT ${STUDY_ID.name} FROM ${STUDIES.name} WHERE ${STUDY_ID.name} = ?
-                """.trimIndent()
-
-                else -> ""
-            }
-        }
+        private val SELECT_STUDY_ID_SQL = "SELECT ${STUDY_ID.name} FROM ${STUDIES.name} WHERE ${STUDY_ID.name} = ?"
 
         private val PARTICIPANT_STATS_COLUMNS = PARTICIPANT_STATS.columns.joinToString { it.name }
-        private val PARTICIPANT_STATS_PARAMS = PARTICIPANT_STATS.columns.joinToString { "?" }
-
-        //On insertion conflict we should only update non-null values.
-        private val PARTICIPANT_STATS_UPDATE_PARAMS = (PARTICIPANT_STATS.columns - PARTICIPANT_STATS.primaryKey)
-            .joinToString { "${it.name} = COALESCE(EXCLUDED.${it.name},${PARTICIPANT_STATS.name}.${it.name})" }
 
         /**
          * PreparedStatement bind order
@@ -386,13 +590,6 @@ public open class StudyService(
             WHERE ${STUDY_ID.name} = ?
             ORDER BY ${PARTICIPANT_ID.name}
             LIMIT ? OFFSET ?
-        """.trimIndent()
-
-        internal val INSERT_OR_UPDATE_PARTICIPANT_STATS = """
-            INSERT INTO ${PARTICIPANT_STATS.name} ($PARTICIPANT_STATS_COLUMNS)
-            VALUES ($PARTICIPANT_STATS_PARAMS)
-            ON CONFLICT (${STUDY_ID.name}, ${PARTICIPANT_ID.name}) 
-            DO UPDATE SET $PARTICIPANT_STATS_UPDATE_PARAMS
         """.trimIndent()
 
         /**
@@ -407,31 +604,52 @@ public open class StudyService(
             WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ?
         """.trimIndent()
 
+        /** The record_capture_cutoff trigger advances status_revision on every status change, whoever writes it. */
+        private val LOCK_PARTICIPATION_STATUS_SQL = """
+            SELECT ${PARTICIPATION_STATUS.name}, status_revision FROM ${STUDY_PARTICIPANTS.name}
+            WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ?
+            FOR UPDATE
+        """.trimIndent()
+
         private val PAUSE_ENROLLED_PARTICIPANTS_SQL = """
             UPDATE ${STUDY_PARTICIPANTS.name}
             SET ${PARTICIPATION_STATUS.name} = '${ParticipationStatus.PAUSED.name}'
             WHERE ${STUDY_ID.name} = ? AND ${PARTICIPATION_STATUS.name} = '${ParticipationStatus.ENROLLED.name}'
         """.trimIndent()
 
-        /**
-         * PreparedStatement bind order
-         * 1) participantNotes
-         * 2) participantTags (text array)
-         * 3) studyId
-         * 4) participantId
-         */
-        internal val SET_PARTICIPANT_ANNOTATIONS_SQL = """
-            UPDATE ${STUDY_PARTICIPANTS.name}
-            SET ${PARTICIPANT_NOTES.name} = ?, ${PARTICIPANT_TAGS.name} = ?::text[], ${UPDATED_AT.name} = now()
-            WHERE ${STUDY_ID.name} = ? AND ${PARTICIPANT_ID.name} = ?
-        """.trimIndent()
+    }
+
+    internal fun persistLockedStudySettingsMutation(
+        studyId: UUID,
+        expectedRevision: Long?,
+        settingsAudit: StudySettingsAuditService,
+        mutation: (StudySettings) -> StudySettings,
+    ): LockedStudyUpdate = storageResolver.getPlatformStorage().connection.use { connection ->
+        AuditedTransactionBuilder<LockedStudyUpdate>(connection, auditingManager)
+            .transaction { transaction ->
+                applyLockedSettingsMutation(transaction, studyId, expectedRevision, this, mutation).also { update ->
+                    settingsAudit.recordSettingsDiff(studyId, checkNotNull(update.priorSettings),
+                        checkNotNull(update.stampedStudy.settings), transaction)
+                }
+            }
+            .audit { _ ->
+                listOf(
+                    AuditableEvent(
+                        aclKey = AclKey(studyId),
+                        eventType = AuditEventType.UPDATE_STUDY_SETTINGS,
+                    ),
+                )
+            }
+            .buildAndRun()
     }
 
     override fun createStudy(study: Study): UUID = createStudy(study) { _, _ -> }
 
     internal fun createStudy(study: Study, beforeCommit: (Connection, UUID) -> Unit): UUID {
-        val (flavor, baseStorage) = storageResolver.getDefaultPlatformStorage()
-        val hds = com.openlattice.chronicle.storage.PinnedPlatformConnection.resolve(baseStorage)
+        val storage = storageResolver.getDefaultPlatformStorage()
+        val flavor = storage.flavor
+        val baseStorage = storage.dataSource
+        val hds = PinnedPlatformConnection.resolve(baseStorage)
         check(flavor == PostgresFlavor.VANILLA) { "Only vanilla postgres supported for studies." }
         val creator = Principals.getCurrentUser()
         val adminRole = Principals.getAdminRole()
@@ -485,13 +703,12 @@ public open class StudyService(
             }
         }
         }
-        if (com.openlattice.chronicle.storage.PinnedPlatformConnection.owningConnection(baseStorage) != null) {
-            com.openlattice.chronicle.storage.PinnedPlatformConnection.afterCommit(baseStorage, aclKey, warmCaches)
-        } else warmCaches()
+        PinnedPlatformConnection.afterCommitOrNow(baseStorage, aclKey, warmCaches)
         return study.id
     }
 
     override fun createStudy(connection: Connection, study: Study) {
+        RLSConnectionCustomizer.authorizeCreatedStudy(connection, study.id)
         insertStudy(connection, study)
         insertOrgStudy(connection, study)
         studyLimitsMgr.initializeStudyLimits(connection, study.id)
@@ -526,11 +743,10 @@ public open class StudyService(
             ps.setObject(6, study.group)
             ps.setObject(7, study.version)
             ps.setObject(8, study.contact)
-            ps.setObject(9, study.notificationsEnabled)
-            ps.setObject(10, study.storage)
-            ps.setString(11, mapper.writeValueAsString(study.settings))
-            ps.setString(12, mapper.writeValueAsString(study.modules))
-            ps.setString(13, study.phoneNumber)
+            ps.setObject(9, study.storage)
+            ps.setString(10, mapper.writeValueAsString(study.settings))
+            ps.setString(11, mapper.writeValueAsString(study.modules))
+            ps.setString(12, study.phoneNumber)
             return ps.executeUpdate()
         }
     }
@@ -568,18 +784,15 @@ public open class StudyService(
 //        ) { ResultSetAdapters.study(it) }
     }
 
-    override fun getOrgStudies(organizationId: UUID, limit: Int, offset: Int): List<Study> {
-        val candidates = BasePostgresIterable(
-            PreparedStatementHolderSupplier(storageResolver.getPlatformStorage(), GET_ORG_STUDIES_SQL, 256) { ps ->
+    override fun getOrgStudies(organizationId: UUID, limit: Int, offset: Int): List<Study> =
+        BasePostgresIterable(
+            StreamingReadTransaction(storageResolver.getPlatformStorage(), GET_ORG_STUDIES_SQL, 256) { ps ->
                 ps.setObject(1, Principals.getCurrentUser().id)
                 ps.setObject(2, organizationId)
                 ps.setInt(3, limit)
                 ps.setInt(4, offset)
-                ps.executeQuery()
             }
         ) { ResultSetAdapters.study(it) }.toList()
-        return quarantineAwareStudies.filterVisible(candidates)
-    }
 
     override fun updateStudy(connection: Connection, studyId: UUID, study: StudyUpdate) {
         connection.prepareStatement(UPDATE_STUDY_SQL).use { ps ->
@@ -591,52 +804,35 @@ public open class StudyService(
             ps.setString(6, study.group)
             ps.setString(7, study.version)
             ps.setString(8, study.contact)
-            ps.setObject(9, study.notificationsEnabled)
-            ps.setString(10, study.storage)
-            ps.setObject(11, if (study.settings == null) null else mapper.writeValueAsString(study.settings))
-            ps.setString(12, if (study.modules == null) null else mapper.writeValueAsString(study.modules))
+            ps.setString(9, study.storage)
+            ps.setObject(10, if (study.settings == null) null else mapper.writeValueAsString(study.settings))
+            ps.setString(11, if (study.modules == null) null else mapper.writeValueAsString(study.modules))
+            ps.setObject(12, studyId)
             ps.setObject(13, studyId)
-            ps.executeUpdate()
+            // Details and settings share one revision, so a stale dashboard edit cannot overwrite either.
+            if (ps.executeUpdate() > 0) bumpStudySettingsRevision(connection, studyId)
         }
-        // Details and settings share one revision, so a stale dashboard edit cannot overwrite either.
-        bumpStudySettingsRevision(connection, studyId)
     }
 
     override fun bumpStudySettingsRevision(connection: Connection, studyId: UUID): Long =
-        connection.prepareStatement(BUMP_STUDY_SETTINGS_REVISION_SQL).use { ps ->
-            ps.setObject(1, studyId)
-            ps.executeQuery().use { rs ->
-                check(rs.next()) { "No study with id $studyId" }
-                rs.getLong(1)
-            }
-        }
+        StudySnapshotRepository(connection).bumpSettingsRevision(studyId)
 
     override fun getStudySettingsRevision(connection: Connection, studyId: UUID): Long =
-        connection.prepareStatement(GET_STUDY_SETTINGS_REVISION_SQL).use { ps ->
-            ps.setObject(1, studyId)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
-        }
-
-    override fun getStudySettingsRevision(studyId: UUID): Long =
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            getStudySettingsRevision(connection, studyId)
-        }
-
+        StudySnapshotRepository(connection).settingsRevision(studyId)
     override fun getStudyPhoneNumber(studyId: UUID): String? {
-        val realStudyId = getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
+        val realStudyId = requireStudyId(studyId)
         return getStudy(realStudyId).phoneNumber
     }
 
     /** Job runners already own a connection; bypass cold Hazelcast mapstore borrowing. */
     internal fun getStudyPhoneNumber(connection: Connection, studyId: UUID): String? =
         PinnedPlatformConnection.pinning(storageResolver.getPlatformStorage(), connection) {
-            val resolvedStudyId = checkNotNull(getStudyId(studyId)) { "invalid study id" }
+            val resolvedStudyId = requireStudyId(studyId)
             connection.prepareStatement("SELECT ${STUDY_PHONE_NUMBER.name} FROM ${STUDIES.name} WHERE ${STUDY_ID.name} = ?")
                 .use { statement ->
                     statement.setObject(1, resolvedStudyId)
                     statement.executeQuery().use { rows ->
-                        check(rows.next()) { "invalid study id" }
+                        if (!rows.next()) throw StudyNotFoundException(studyId)
                         rows.getString(1)
                     }
                 }
@@ -646,7 +842,9 @@ public open class StudyService(
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Int>(connection, auditingManager)
                 .transaction { conn ->
-                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
+                    DeletionStudyFence.shared(conn, studyId)
+                    loadLockedStudySettings(conn, studyId)
+                    if (!studyHasExpired(conn, studyId)) return@transaction 0
                     conn.prepareStatement(PAUSE_ENROLLED_PARTICIPANTS_SQL).use { statement ->
                         statement.setObject(1, studyId)
                         statement.executeUpdate()
@@ -657,7 +855,7 @@ public open class StudyService(
                         AuditableEvent(
                             aclKey = AclKey(studyId),
                             securablePrincipalId = IdConstants.CHRONICLE.id,
-                            principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
+                            principal = SystemUser.CHRONICLE.principal,
                             eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
                             description = "Paused $count enrolled participants after study duration elapsed",
                             study = studyId,
@@ -668,32 +866,62 @@ public open class StudyService(
                 .buildAndRun()
         }
 
+    /**
+     * A researcher's status change applies only to the status revision their dashboard showed; a stale tab or a
+     * retried request gets 412 instead of undoing a later change. Re-sending the status already in force is a no-op.
+     */
     override fun updateParticipationStatus(
         studyId: UUID,
         participantId: String,
         participationStatus: ParticipationStatus,
-    ) {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            AuditedTransactionBuilder<AuditableEvent>(connection, auditingManager)
-                .transaction { conn -> updateParticipationStatus(conn, studyId, participantId, participationStatus) }
-                .audit { listOf(it) }
-                .buildAndRun()
-        }
+        expectedRevision: Long,
+    ): Boolean = storageResolver.getPlatformStorage().connection.use { connection ->
+        AuditedTransactionBuilder<AuditableEvent?>(connection, auditingManager)
+            .transaction { conn ->
+                DeletionStudyFence.shared(conn, studyId)
+                val (current, revision) = conn.prepareStatement(LOCK_PARTICIPATION_STATUS_SQL).use { ps ->
+                    ps.setObject(1, studyId)
+                    ps.setString(2, participantId)
+                    ps.executeQuery().use { rs ->
+                        if (!rs.next()) {
+                            throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.participant.unavailable"))
+                        }
+                        rs.getString(1) to rs.getLong(2)
+                    }
+                }
+                when {
+                    // Already in force: an identical replay or a second tab; nothing is written or audited.
+                    current == participationStatus.name -> null
+                    revision != expectedRevision -> throw ResponseStatusException(
+                        HttpStatus.PRECONDITION_FAILED,
+                        Messages.get("error.participant.statusChanged"),
+                    )
+                    else -> updateParticipationStatus(conn, studyId, participantId, participationStatus, current).let { event ->
+                        // Mark not enrolled is the researcher's withdrawal; every other change is a status update.
+                        if (participationStatus == ParticipationStatus.NOT_ENROLLED) {
+                            event.copy(eventType = AuditEventType.PARTICIPANT_WITHDRAW)
+                        } else event
+                    }
+                }
+            }
+            .audit { listOfNotNull(it) }
+            .buildAndRun() != null
     }
 
-    /** Uses the caller's transaction and returns its audit event without publishing it. */
+    /** Unconditional: only for callers that own the participant outright (deletion). Uses the caller's transaction. */
     internal fun updateParticipationStatus(
         connection: Connection,
         studyId: UUID,
         participantId: String,
         participationStatus: ParticipationStatus,
+        previousStatus: String? = null,
     ): AuditableEvent {
         logger.info(
             "Updating participation status for study {} and {}",
             studyId,
             LogSanitizer.stableFingerprint(participantId, "participant"),
         )
-        com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, studyId)
+        DeletionStudyFence.shared(connection, studyId)
         connection.prepareStatement(SET_PARTICIPATION_STATUS_SQL).use { ps ->
             ps.setString(1, participationStatus.name)
             ps.setObject(2, studyId)
@@ -704,42 +932,40 @@ public open class StudyService(
             aclKey = AclKey(studyId),
             eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
             description =
-                "Set participation status of participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId to $participationStatus"
+                "Set participation status of participant ${AuditService.participantReference(participantId)} " +
+                    "in study $studyId to $participationStatus",
+            study = studyId,
+            data = listOfNotNull(previousStatus?.let { "oldStatus" to it }, "newStatus" to participationStatus.name).toMap(),
         )
     }
 
-    @Suppress("UNCHECKED_CAST")
+    override fun getParticipantAnnotations(studyId: UUID, participantId: String): String? =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            StudySnapshotRepository(connection).loadLockedParticipantAnnotations(studyId, participantId)
+        }
+
     override fun updateParticipantAnnotations(
         studyId: UUID,
         participantId: String,
-        annotations: Map<String, Any?>,
+        annotations: ParticipantAnnotationsUpdate,
     ) {
         logger.info(
             "Updating participant annotations for study {} and {}",
             studyId,
             LogSanitizer.stableFingerprint(participantId, "participant"),
         )
-        val notes = annotations["participantNotes"] as? String
-        val tags = (annotations["participantTags"] as? List<String>)?.toTypedArray() ?: emptyArray()
 
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
                 .transaction { conn ->
-                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
-                    conn.prepareStatement(SET_PARTICIPANT_ANNOTATIONS_SQL).use { ps ->
-                        ps.setString(1, notes)
-                        ps.setArray(2, conn.createArrayOf("text", tags))
-                        ps.setObject(3, studyId)
-                        ps.setString(4, participantId)
-                        ps.executeUpdate()
-                    }
+                    StudySnapshotRepository(conn).updateParticipantAnnotations(studyId, participantId, annotations)
                 }.audit {
                     listOf(
                         AuditableEvent(
                             aclKey = AclKey(studyId),
                             eventType = AuditEventType.UPDATE_PARTICIPANT_ANNOTATIONS,
                             description =
-                                "Updated annotations for participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} in study $studyId"
+                                "Updated annotations for participant ${AuditService.participantReference(participantId)} in study $studyId"
                         )
                     )
                 }.buildAndRun()
@@ -766,10 +992,9 @@ public open class StudyService(
     }
 
     override fun registerParticipant(connection: Connection, studyId: UUID, participant: Participant): UUID {
-        com.openlattice.chronicle.validation.validateParticipantIdNotPii(participant.participantId)
+        validateParticipantIdNotPii(participant.participantId)
         // Enrollment codes, form links and uploads all require this format; reject it here, not after registration.
-        com.openlattice.chronicle.util.validateParticipantId(participant.participantId)
-        studyLimitsMgr.reserveEnrollmentCapacity(connection, studyId)
+        validateParticipantId(participant.participantId)
         val candidateId = candidateService.registerCandidate(connection, participant.candidate)
         enrollmentService.registerParticipant(
             connection,
@@ -828,47 +1053,12 @@ public open class StudyService(
                 connection,
                 studyId,
                 WebhookEventType.PARTICIPANT_ENROLLED,
-                mapOf(
-                    "participantId" to participant.participantId,
-                    "participationStatus" to participant.participationStatus.name,
+                WebhookPayload.ParticipantEnrolled(
+                    ParticipantRef.fromParticipantId(participant.participantId), participant.participationStatus.name,
                 ),
             )
         }
         return candidateId
-    }
-
-    // reason: nesting is the JDBC connection.use/prepareStatement.use/executeQuery.use resource idiom
-    @Suppress("NestedBlockDepth")
-    override fun isNotificationsEnabled(studyId: UUID): Boolean {
-        logger.info("Checking notifications enabled on studyId = {}", studyId)
-
-        val notificationsEnabled = storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(GET_NOTIFICATION_STATUS_SQL).use { ps ->
-                ps.setObject(1, studyId)
-                ps.executeQuery().use { rs ->
-                    if (rs.next()) rs.getBoolean(NOTIFICATIONS_ENABLED.name)
-                    else false
-                }
-            }
-        }
-        return notificationsEnabled && quarantineAwareStudies.isVisible(studyId)
-    }
-
-    // reason: nesting is the JDBC connection.use/prepareStatement.use/executeQuery.use resource idiom
-    @Suppress("NestedBlockDepth")
-    override fun getOrganizationIdForLegacyStudy(studyId: UUID): UUID {
-        val organizationId = storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(GET_ORGANIZATION_ID).use { ps ->
-                ps.setObject(1, studyId)
-                ps.executeQuery().use { rs ->
-                    if (rs.next()) rs.getObject(ORGANIZATION_ID.name, UUID::class.java)
-                    else IdConstants.SYSTEM_ORGANIZATION.id
-                }
-            }
-
-        }
-        requireStudyVisible(studyId)
-        return organizationId
     }
 
     override fun refreshStudyCache(studyIds: Set<UUID>) {
@@ -915,8 +1105,6 @@ public open class StudyService(
         }
     }
 
-    // reason: nesting is the JDBC connection.use/prepareStatement.use/executeQuery.use resource idiom
-    @Suppress("NestedBlockDepth")
     override fun getStudySettings(studyId: UUID): Map<StudySettingType, StudySetting> {
         val settings: Map<StudySettingType, StudySetting> =
             storageResolver.getPlatformStorage().connection.use { connection ->
@@ -935,7 +1123,7 @@ public open class StudyService(
     }
 
     override fun getStudySettings(studyIds: Collection<UUID>): Map<UUID, Map<StudySettingType, StudySetting>> {
-        val settings = BasePostgresIterable(PreparedStatementHolderSupplier(
+        val settings = BasePostgresIterable(StreamingReadTransaction(
             storageResolver.getPlatformStorage(),
             GET_STUDIES_SETTINGS_SQL,
             1024
@@ -947,12 +1135,6 @@ public open class StudyService(
         }.toMap()
         val visibleStudyIds = quarantineAwareStudies.filterVisibleStudyIds(settings.keys).toSet()
         return settings.filterKeys { it in visibleStudyIds }
-    }
-
-
-    override fun getStudySensors(studyId: UUID): Set<SensorType> {
-        val settings = getStudySettings(studyId)
-        return settings[StudySettingType.Sensor] as? SensorSetting ?: SensorSetting.NO_SENSORS
     }
 
     override fun getStudyParticipantStats(studyId: UUID, limit: Int, offset: Int): Map<String, ParticipantStats> {
@@ -986,37 +1168,6 @@ public open class StudyService(
 
     override fun insertOrUpdateParticipantStats(stats: ParticipantStats) {
         participantStatsCache.merge(stats)
-//        storageResolver.getPlatformStorage().connection.use { connection ->
-//            connection.prepareStatement(INSERT_OR_UPDATE_PARTICIPANT_STATS).use { ps ->
-//                val androidDatesArr =
-//                    connection.createArrayOf(PostgresDatatype.DATE.sql(), stats.androidUniqueDates.toTypedArray())
-//                val iosDatesArr =
-//                    connection.createArrayOf(PostgresDatatype.DATE.sql(), stats.iosUniqueDates.toTypedArray())
-//                val tudDatesArr =
-//                    connection.createArrayOf(PostgresDatatype.DATE.sql(), stats.tudUniqueDates.toTypedArray())
-//
-//                var index = 0
-//
-//                ps.setObject(++index, stats.studyId)
-//                ps.setString(++index, stats.participantId)
-//
-//                ps.setObject(++index, stats.androidLastPing)
-//                ps.setObject(++index, stats.androidFirstDate)
-//                ps.setObject(++index, stats.androidLastDate)
-//                ps.setArray(++index, androidDatesArr)
-//                ps.setObject(++index, stats.iosLastPing)
-//                ps.setObject(++index, stats.iosFirstDate)
-//                ps.setObject(++index, stats.iosLastDate)
-//                ps.setArray(++index, iosDatesArr)
-//
-//                ps.setObject(++index, stats.tudFirstDate)
-//                ps.setObject(++index, stats.tudLastDate)
-//                ps.setObject(++index, tudDatesArr)
-//
-//                ps.executeUpdate()
-//            }
-//        }
-
     }
 
     override fun getStudyParticipants(studyId: UUID, limit: Int, offset: Int): Iterable<Participant> {
@@ -1035,47 +1186,10 @@ public open class StudyService(
         return studyLimitsMgr.countStudyParticipants(studyIds)
     }
 
-    override fun updateLastDevicePing(studyId: UUID, participantId: String, sourceDevice: SourceDevice) {
-        val participantStats = when (sourceDevice) {
-            is AndroidDevice -> ParticipantStats(
-                studyId = studyId,
-                participantId = participantId,
-                androidLastPing = OffsetDateTime.now()
-            )
-
-            is IOSDevice -> ParticipantStats(
-                studyId = studyId,
-                participantId = participantId,
-                iosLastPing = OffsetDateTime.now()
-            )
-
-            else -> throw UnsupportedOperationException("${sourceDevice.javaClass.name} is not a supported datasource.")
-        }
-
-        insertOrUpdateParticipantStats(participantStats)
-    }
-
-    override fun updateLastDevicePing(studyId: UUID, participantId: String) {
-        //If device hasn't enrolled yet, we should just return without updating last ping.
-        val participantStats = getParticipantStats(studyId, participantId) ?: return
-
-        if (participantStats.androidLastPing != null) {
-            insertOrUpdateParticipantStats(
-                ParticipantStats(
-                    studyId,
-                    participantId,
-                    androidLastPing = OffsetDateTime.now()
-                )
-            )
-        }
-
-        if (participantStats.iosLastPing != null) {
-            insertOrUpdateParticipantStats(ParticipantStats(studyId, participantId, iosLastPing = OffsetDateTime.now()))
-        }
-    }
-
-    private fun selectStudyParticipants(studyId: UUID, limit: Int = Int.MAX_VALUE, offset: Int = 0): Iterable<Participant> {
-        val (flavor, hds) = storageResolver.getDefaultPlatformStorage()
+    private fun selectStudyParticipants(studyId: UUID, limit: Int, offset: Int): Iterable<Participant> {
+        val storage = storageResolver.getDefaultPlatformStorage()
+        val flavor = storage.flavor
+        val hds = storage.dataSource
         ensureVanilla(flavor)
         return BasePostgresIterable(
             PreparedStatementHolderSupplier(hds, SELECT_STUDY_PARTICIPANTS_SQL) { ps ->
@@ -1086,34 +1200,20 @@ public open class StudyService(
         ) { ResultSetAdapters.participant(it) }
     }
 
-
-    // reason: nesting is the JDBC connection.use/prepareStatement.use/executeQuery.use resource idiom
-    @Suppress("NestedBlockDepth")
-    override fun getStudyId(maybeLegacyMaybeRealStudyId: UUID): UUID? {
+    override fun getStudyId(studyId: UUID): UUID? {
         val resolvedStudyId = storageResolver.getPlatformStorage().connection.use { connection ->
-            var maybeStudyId = connection.prepareStatement(selectStudyIdSql(LEGACY_STUDY_IDS.name)).use { ps ->
-                ps.setObject(1, maybeLegacyMaybeRealStudyId)
-                ps.executeQuery().use { rs ->
-                    if (rs.next()) ResultSetAdapters.studyId(rs) else null
-                }
+            connection.prepareStatement(SELECT_STUDY_ID_SQL).use { statement ->
+                statement.setObject(1, studyId)
+                statement.executeQuery().use { rows -> if (rows.next()) ResultSetAdapters.studyId(rows) else null }
             }
-            if (maybeStudyId == null) {
-                maybeStudyId = connection.prepareStatement(selectStudyIdSql(STUDIES.name)).use { ps ->
-                    ps.setObject(1, maybeLegacyMaybeRealStudyId)
-                    ps.executeQuery().use { rs ->
-                        if (rs.next()) ResultSetAdapters.studyId(rs) else null
-                    }
-                }
-            }
-            maybeStudyId
         }
         return resolvedStudyId?.takeIf(quarantineAwareStudies::isVisible)
     }
 
     override fun getAllStudyIds(): Iterable<UUID> {
-        val (_, hds) = storageResolver.getDefaultPlatformStorage()
+        val hds = storageResolver.getDefaultPlatformStorage().dataSource
         val studyIds = BasePostgresIterable(
-            StatementHolderSupplier(
+            StreamingReadTransaction(
                 hds,
                 LOAD_STUDY_IDS,
                 fetchSize = 65536
@@ -1133,36 +1233,5 @@ public open class StudyService(
     }
 }
 
-/** Serialize disclosure and recipient changes with enrollment manifest validation. */
-internal fun loadEnrollmentDisclosureActivity(connection: Connection, studyId: UUID): Pair<Boolean, Boolean> {
-    connection.prepareStatement("SELECT 1 FROM studies WHERE study_id = ? FOR UPDATE").use { statement ->
-        statement.setObject(1, studyId)
-        statement.executeQuery().use { rows ->
-            if (!rows.next()) throw org.springframework.web.server.ResponseStatusException(
-                org.springframework.http.HttpStatus.NOT_FOUND,
-                com.openlattice.chronicle.i18n.Messages.get("error.study.notFound"),
-            )
-        }
-    }
-    return connection.prepareStatement(
-        """
-        SELECT
-            (EXISTS (SELECT 1 FROM study_participants WHERE study_id = ? AND participation_status = 'ENROLLED')
-             OR EXISTS (SELECT 1 FROM devices WHERE study_id = ?)) AS active_enrollment,
-            EXISTS (
-                SELECT 1 FROM participant_form_access_codes
-                WHERE study_id = ? AND form_kind = 'ENROLLMENT'
-                  AND enrollment_attempt_id IS NOT NULL
-                  AND enrollment_replay_expires_at > now() AND revoked_at IS NULL
-            ) AS pending_enrollment
-        """.trimIndent(),
-    ).use { statement ->
-        statement.setObject(1, studyId)
-        statement.setObject(2, studyId)
-        statement.setObject(3, studyId)
-        statement.executeQuery().use { rows ->
-            check(rows.next()) { "Participant-policy activity query returned no row" }
-            rows.getBoolean(1) to rows.getBoolean(2)
-        }
-    }
-}
+internal fun StudyService.requireStudyId(studyId: UUID): UUID =
+    getStudyId(studyId) ?: throw StudyNotFoundException(studyId)

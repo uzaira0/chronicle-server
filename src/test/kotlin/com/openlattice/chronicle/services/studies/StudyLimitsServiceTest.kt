@@ -1,10 +1,10 @@
 package com.openlattice.chronicle.services.studies
 
+import com.geekbeast.mappers.mappers.ObjectMappers
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.StudyDuration
-import com.openlattice.chronicle.study.StudyFeature
 import com.openlattice.chronicle.study.StudyLimits
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
@@ -68,12 +68,12 @@ class StudyLimitsServiceTest {
     @Test
     fun testGetStudyLimitsReturnsFromCache() {
         val studyId = UUID.randomUUID()
-        val limits = StudyLimits(participantLimit = 100)
+        val limits = StudyLimits(studyDuration = StudyDuration(days = 100))
         `when`(studyLimitsMap.get(studyId)).thenReturn(limits)
 
         val result = service.getStudyLimits(studyId)
 
-        assertEquals(100, result.participantLimit)
+        assertEquals(StudyDuration(days = 100), result.studyDuration)
         verify(studyLimitsMap).get(studyId)
     }
 
@@ -85,21 +85,25 @@ class StudyLimitsServiceTest {
 
         val result = service.getStudyLimits(studyId)
 
-        assertEquals(25, result.participantLimit)
-        assertEquals(StudyDuration(years = 1), result.studyDuration)
+        assertEquals(null, result.studyDuration)
+        assertEquals(null, result.studyEnds)
         assertEquals(StudyDuration(days = 90), result.dataRetentionDuration)
     }
 
     // --- setStudyLimits tests ---
 
     @Test
-    fun testSetStudyLimitsWritesToCache() {
+    fun testSetStudyLimitsWritesThroughTheTransaction() {
         val studyId = UUID.randomUUID()
-        val limits = StudyLimits(participantLimit = 200)
+        val limits = StudyLimits(studyDuration = StudyDuration(days = 200))
 
-        service.setStudyLimits(studyId, limits)
+        com.openlattice.chronicle.storage.PinnedPlatformConnection.committing(mockHds, mockConnection) {
+            service.setStudyLimits(mockConnection, studyId, limits)
+            Mockito.verify(studyLimitsMap, Mockito.never()).evict(studyId)
+        }
 
-        verify(studyLimitsMap).set(studyId, limits)
+        verify(mockPs).executeUpdate()
+        Mockito.verify(studyLimitsMap, Mockito.never()).set(studyId, limits)
     }
 
     @Test
@@ -107,89 +111,14 @@ class StudyLimitsServiceTest {
         val studyId = UUID.randomUUID()
         val limits = StudyLimits(
             studyDuration = StudyDuration(years = 5, months = 6),
-            participantLimit = 500
         )
 
-        service.setStudyLimits(studyId, limits)
+        com.openlattice.chronicle.storage.PinnedPlatformConnection.committing(mockHds, mockConnection) {
+            service.setStudyLimits(mockConnection, studyId, limits)
+            Mockito.verify(studyLimitsMap, Mockito.never()).evict(studyId)
+        }
 
-        verify(studyLimitsMap).set(studyId, limits)
-    }
-
-    // --- getEnrollmentCapacity tests ---
-
-    @Test
-    fun testGetEnrollmentCapacityReturnsLimit() {
-        val studyId = UUID.randomUUID()
-        `when`(studyLimitsMap.get(studyId)).thenReturn(StudyLimits(participantLimit = 50))
-
-        val result = service.getEnrollmentCapacity(studyId)
-
-        assertEquals(50, result)
-    }
-
-    @Test
-    fun testGetEnrollmentCapacityReturnsDefault() {
-        val studyId = UUID.randomUUID()
-        `when`(studyLimitsMap.get(studyId)).thenReturn(StudyLimits())
-
-        val result = service.getEnrollmentCapacity(studyId)
-
-        assertEquals(25, result)
-    }
-
-    // --- getStudyDuration tests ---
-
-    @Test
-    fun testGetStudyDurationReturnsFromCache() {
-        val studyId = UUID.randomUUID()
-        val duration = StudyDuration(years = 3, months = 2, days = 15)
-        `when`(studyLimitsMap.get(studyId)).thenReturn(StudyLimits(studyDuration = duration))
-
-        val result = service.getStudyDuration(studyId)
-
-        assertEquals(3, result.years.toInt())
-        assertEquals(2, result.months.toInt())
-        assertEquals(15, result.days.toInt())
-    }
-
-    // --- getDataRetentionPeriod tests ---
-
-    @Test
-    fun testGetDataRetentionPeriodReturnsFromCache() {
-        val studyId = UUID.randomUUID()
-        val retention = StudyDuration(days = 180)
-        `when`(studyLimitsMap.get(studyId)).thenReturn(StudyLimits(dataRetentionDuration = retention))
-
-        val result = service.getDataRetentionPeriod(studyId)
-
-        assertEquals(180, result.days.toInt())
-    }
-
-    // --- getStudyFeatures tests ---
-
-    @Test
-    fun testGetStudyFeaturesReturnsFromCache() {
-        val studyId = UUID.randomUUID()
-        val features = EnumSet.of(StudyFeature.CHRONICLE, StudyFeature.CHRONICLE_SURVEYS)
-        `when`(studyLimitsMap.get(studyId)).thenReturn(StudyLimits(features = features))
-
-        val result = service.getStudyFeatures(studyId)
-
-        assertTrue(result.contains(StudyFeature.CHRONICLE))
-        assertTrue(result.contains(StudyFeature.CHRONICLE_SURVEYS))
-        assertEquals(2, result.size)
-    }
-
-    @Test
-    fun testGetStudyFeaturesReturnsDefaultFeatures() {
-        val studyId = UUID.randomUUID()
-        `when`(studyLimitsMap.get(studyId)).thenReturn(StudyLimits())
-
-        val result = service.getStudyFeatures(studyId)
-
-        assertTrue(result.contains(StudyFeature.CHRONICLE))
-        assertTrue(result.contains(StudyFeature.CHRONICLE_DATA_COLLECTION))
-        assertTrue(result.contains(StudyFeature.CHRONICLE_SURVEYS))
+        verify(studyLimitsMap).evict(studyId)
     }
 
     // --- initializeStudyLimits tests ---
@@ -197,13 +126,13 @@ class StudyLimitsServiceTest {
     @Test
     fun testInitializeStudyLimitsExecutesInsert() {
         val studyId = UUID.randomUUID()
-        val limits = StudyLimits(participantLimit = 75)
+        val limits = StudyLimits(studyDuration = StudyDuration(days = 75))
         `when`(mockPs.executeUpdate()).thenReturn(1)
 
         service.initializeStudyLimits(mockConnection, studyId, limits)
 
         verify(mockPs).setObject(1, studyId)
-        verify(mockPs).setInt(2, 75)
+        verify(mockPs).setString(2, ObjectMappers.newJsonMapper().writeValueAsString(StudyDuration(days = 75)))
         verify(mockPs).executeUpdate()
     }
 
@@ -215,7 +144,7 @@ class StudyLimitsServiceTest {
         service.initializeStudyLimits(mockConnection, studyId)
 
         verify(mockPs).setObject(1, studyId)
-        verify(mockPs).setInt(2, 25) // default participant limit
+        verify(mockPs).setString(2, null) // no end set by the researcher
     }
 
     // --- countStudyParticipants tests ---
@@ -244,36 +173,5 @@ class StudyLimitsServiceTest {
         val result = service.countStudyParticipants(mockConnection, setOf(UUID.randomUUID()))
 
         assertTrue(result.isEmpty())
-    }
-
-    // --- setEnrollmentCapacity tests ---
-
-    @Test
-    fun testSetEnrollmentCapacityUpdatesDb() {
-        val studyId = UUID.randomUUID()
-        `when`(mockPs.executeUpdate()).thenReturn(1)
-
-        service.setEnrollmentCapacity(studyId, 100)
-
-        verify(mockPs).setInt(1, 100)
-        verify(mockPs).setObject(2, studyId)
-        verify(mockPs).executeUpdate()
-        verify(studyLimitsMap).loadAll(setOf(studyId), true)
-    }
-
-    // --- lockStudyForEnrollments test ---
-
-    @Test
-    fun testLockStudyForEnrollmentsExecutesLockAndReturnsCapacity() {
-        val studyId = UUID.randomUUID()
-        `when`(mockRs.next()).thenReturn(true)
-        `when`(mockRs.getInt("participant_limit")).thenReturn(25)
-
-        val capacity = service.lockStudyForEnrollments(mockConnection, studyId)
-
-        assertEquals(25, capacity)
-        verify(mockConnection).prepareStatement(kAnyString())
-        verify(mockPs).setObject(1, studyId)
-        verify(mockPs).executeQuery()
     }
 }

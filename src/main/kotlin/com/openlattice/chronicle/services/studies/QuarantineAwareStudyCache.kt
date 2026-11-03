@@ -96,17 +96,22 @@ internal class StudyDeletionGuard(
     }
 
     internal companion object {
-        internal val FIND_BLOCKED_STUDIES_SQL = """
-            SELECT candidate.study_id
-            FROM unnest(?::uuid[]) AS candidate(study_id)
-            WHERE NOT public.chronicle_participant_data_visible(candidate.study_id, '')
+        /** SQL that is true when the study named by [studyIdSql] is quarantined or erased. */
+        internal fun blockedStudySql(studyIdSql: String): String = """
+            (NOT public.chronicle_participant_data_visible($studyIdSql, '')
                OR EXISTS (
                     SELECT 1
                     FROM data_deletion_operations operation
-                    WHERE operation.study_id = candidate.study_id
+                    WHERE operation.study_id = $studyIdSql
                       AND operation.mode = 'STUDY_ERASURE'
                       AND operation.status = 'COMPLETED'
-               )
+               ))
+        """.trimIndent()
+
+        internal val FIND_BLOCKED_STUDIES_SQL = """
+            SELECT candidate.study_id
+            FROM unnest(?::uuid[]) AS candidate(study_id)
+            WHERE ${blockedStudySql("candidate.study_id")}
         """.trimIndent()
     }
 }

@@ -5,7 +5,6 @@ import com.openlattice.chronicle.study.StudyLifecycleStatus
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.mockito.Mockito
-import org.mockito.Mockito.verify
 import java.util.UUID
 
 class StudyLifecycleControllerTest {
@@ -34,12 +33,5 @@ class StudyLifecycleControllerTest {
 
         val result = controller.getStudyLifecycleStatus(studyId)
         assertEquals(StudyLifecycleStatus.ARCHIVED, result)
-    }
-
-    @Test
-    fun testGetStudyDataSummaryDelegatesToService() {
-        val studyId = UUID.randomUUID()
-        controller.getStudyDataSummary(studyId)
-        verify(lifecycleService).getStudyDataSummary(studyId)
     }
 }

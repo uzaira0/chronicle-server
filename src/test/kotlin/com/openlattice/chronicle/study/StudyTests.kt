@@ -1,31 +1,51 @@
 package com.openlattice.chronicle.study
 
+import com.openlattice.chronicle.client.updateParticipationStatusAsRead
+import com.openlattice.chronicle.settings.AppUsageFrequency
+import com.openlattice.chronicle.timeusediary.TimeUseDiarySettings
+import com.openlattice.chronicle.collection.SensorCollectionModules
+import com.openlattice.chronicle.survey.SurveySettings
 import com.geekbeast.retrofit.RhizomeRetrofitCallException
 import com.openlattice.chronicle.ChronicleServerTests
+import com.openlattice.chronicle.UsageEnrollmentFixtures.acknowledgeUsageFixture
+import com.openlattice.chronicle.UsageEnrollmentFixtures.beginUsageEnrollmentFixture
+import com.openlattice.chronicle.UsageEnrollmentFixtures.enrollUsageFixture
+import com.openlattice.chronicle.UsageEnrollmentFixtures.newUsageEnrollment
+import com.openlattice.chronicle.UsageEnrollmentFixtures.prepareUsageFixture
+import com.openlattice.chronicle.UsageEnrollmentFixtures.storedUsageEventIds
+import com.openlattice.chronicle.UsageEnrollmentFixtures.storedUsageTimestamps
+import com.openlattice.chronicle.UsageEnrollmentFixtures.submitUsageEnrollment
+import com.openlattice.chronicle.UsageEnrollmentFixtures.usageSettingsWithoutUserIdentification
 import com.openlattice.chronicle.android.AndroidSensorSetting
 import com.openlattice.chronicle.android.AndroidSensorType
 import com.openlattice.chronicle.android.ChronicleData
 import com.openlattice.chronicle.android.ChronicleUsageEvent
 import com.openlattice.chronicle.android.ChronicleUsageEventType
 import com.openlattice.chronicle.candidates.Candidate
-import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
-import com.openlattice.chronicle.collection.CollectionDefaults
-import com.openlattice.chronicle.collection.CollectionModuleId
-import com.openlattice.chronicle.collection.CollectionModuleSetting
 import com.openlattice.chronicle.client.ChronicleClient
 import com.openlattice.chronicle.client.Environment
 import com.openlattice.chronicle.client.RetrofitClientFactory
+import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
+import com.openlattice.chronicle.collection.withoutConsentEpochs
+import com.openlattice.chronicle.collection.CollectionDefaults
+import com.openlattice.chronicle.collection.CollectionModuleId
+import com.openlattice.chronicle.collection.CollectionModuleSetting
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.organizations.Organization
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.util.tests.TestDataFactory
-import com.openlattice.chronicle.util.tests.TestSourceDevice
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert
 import org.junit.Before
+import com.openlattice.chronicle.client.assertHttpStatus
 import org.junit.Test
 import org.springframework.http.HttpStatus
-import java.util.UUID
 
 /**
  *
@@ -63,6 +83,63 @@ class StudyTests : ChronicleServerTests() {
     }
 
     @Test
+    fun longStudyMetadataSurvivesCreateUpdateAndReread() {
+        val api = chronicleClient.studyApi
+        val original = Study(
+            title = "t".repeat(256), description = "d".repeat(4001),
+            group = "g".repeat(256), version = "v".repeat(51), contact = "test@openlattice.com",
+        )
+        val id = api.createStudy(original)
+        val created = api.getStudy(id)
+        Assert.assertEquals(original.title, created.title)
+        Assert.assertEquals(original.description, created.description)
+        Assert.assertEquals(original.group, created.group)
+        Assert.assertEquals(original.version, created.version)
+
+        val update = StudyUpdate(
+            title = original.title.uppercase(), description = original.description.uppercase(),
+            group = original.group.uppercase(), version = original.version.uppercase(),
+        )
+        api.updateStudy(id, update)
+        val updated = api.getStudy(id)
+        Assert.assertEquals(update.title, updated.title)
+        Assert.assertEquals(update.description, updated.description)
+        Assert.assertEquals(update.group, updated.group)
+        Assert.assertEquals(update.version, updated.version)
+    }
+
+    @Test
+    fun concurrentFirstEnrollmentOfOneAttemptBindsOneDeviceAndOneCredential() {
+        val studyApi = chronicleClient.studyApi
+        val studyId = studyApi.createStudy(Study(title = "Concurrent first enrollment", contact = "test@openlattice.com"))
+        prepareUsageFixture(chronicleClient, studyId)
+        val participant = TestDataFactory.participant(ParticipationStatus.ENROLLED)
+        studyApi.registerParticipant(studyId, participant)
+        val (replay, _) = newUsageEnrollment(studyId, participant.participantId, TestDataFactory.androidDevice())
+        val attempts = 4
+        val start = CountDownLatch(1)
+        val pool = Executors.newFixedThreadPool(attempts)
+        val responses = try {
+            List(attempts) { pool.submit<EnrollmentResponse> { start.await(); submitUsageEnrollment(replay) } }
+                .also { start.countDown() }
+                .map { it.get(1, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdownNow()
+        }
+
+        Assert.assertEquals(setOf(replay.proposedApiKey), responses.map { it.apiKey }.toSet())
+        Assert.assertEquals(1, responses.map { it.chronicleId to it.enrollmentId }.toSet().size)
+        val devices = hds.connection.use { connection ->
+            connection.prepareStatement("SELECT count(*) FROM devices WHERE study_id = ? AND participant_id = ?").use {
+                it.setObject(1, studyId)
+                it.setString(2, participant.participantId)
+                it.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
+            }
+        }
+        Assert.assertEquals(1, devices)
+    }
+
+    @Test
     fun testGetAllStudies() {
         val studyApi = chronicleClient.studyApi
         val studies = (0 until 5).map {
@@ -71,9 +148,15 @@ class StudyTests : ChronicleServerTests() {
 
         studies.forEach { it.id = studyApi.createStudy(it) }
 
-        val all = studyApi.getAllStudies().map { it.id }.toSet()
+        // The suite's other tests also create studies for this user, so read every page, not just the first.
+        val all = generateSequence(0) { it + 100 }
+            .map { offset -> studyApi.getAllStudies(limit = 100, offset = offset).map { it.id } }
+            .takeWhile { it.isNotEmpty() }
+            .flatten()
+            .toList()
         val expected = studies.map { it.id }.toSet()
 
+        Assert.assertEquals("a study repeated across pages", all.size, all.toSet().size)
         Assert.assertTrue(all.containsAll(expected))
     }
 
@@ -90,7 +173,6 @@ class StudyTests : ChronicleServerTests() {
         studyApi.updateStudy(
             studyId, StudyUpdate(
                 description = desc,
-                notificationsEnabled = false
             )
         )
 
@@ -98,46 +180,82 @@ class StudyTests : ChronicleServerTests() {
 
         Assert.assertEquals(studyId, study.id)
         Assert.assertEquals(desc, updatedStudy1.description)
-        Assert.assertFalse(updatedStudy1.notificationsEnabled)
 
         val updatedStudy2 = studyApi.updateStudy(
             studyId, StudyUpdate(
-                notificationsEnabled = true
+                contact = "updated@openlattice.com"
             ), true
         )!!
 
         Assert.assertEquals(studyId, study.id)
         Assert.assertEquals(desc, updatedStudy2.description)
-        Assert.assertTrue(updatedStudy2.notificationsEnabled)
+        Assert.assertEquals("updated@openlattice.com", updatedStudy2.contact)
 
     }
 
+    /** An unknown module key fails the whole request as a 400 before StudyService runs: no field is applied. */
     @Test
-    fun studyEncryptionSettingIsMobileReadableAndFailsClosedDisabled() {
-        // Encrypted payloads cannot yet be decrypted into the participant export contract.
-        // The mobile-readable default remains disabled and the server rejects attempts to
-        // select the unexportable data sink.
-        val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(Study(title = "enc test", contact = "test@openlattice.com"))
+    fun updateStudyRefusesAnUnknownModuleBeforeAnyChange() {
+        val studyId = createCollectionStudy()
+        val before = chronicleClient.studyApi.getStudy(studyId)
+        val response = java.net.http.HttpClient.newHttpClient().send(
+            java.net.http.HttpRequest.newBuilder(java.net.URI("http://localhost:$testHttpPort${StudyApi.BASE}/$studyId"))
+                .timeout(java.time.Duration.ofSeconds(30))
+                .header("Authorization", "Bearer ${activeFixtureToken(testUser1)}")
+                .header("Content-Type", "application/json")
+                .method("PATCH", java.net.http.HttpRequest.BodyPublishers.ofString(
+                    """{"title":"renamed","modules":{"CHRONICLE_DATA_COLLECTION":{},"NOT_A_FEATURE":{}}}""",
+                )).build(),
+            java.net.http.HttpResponse.BodyHandlers.ofString(),
+        )
+        Assert.assertEquals(response.body(), 400, response.statusCode())
+        Assert.assertEquals(before, chronicleClient.studyApi.getStudy(studyId))
+    }
 
-        val absent = studyApi.getStudySetting(studyId, StudySettingType.Encryption) as StudyEncryptionSetting
-        Assert.assertFalse("un-provisioned study must default to disabled", absent.enabled)
+    @Test
+    fun studySurveyFrequencyIsIndependentAndRoundTrips() {
+        val api = chronicleClient.studyApi
+        val id = api.createStudy(Study(title = "frequency", contact = "test@example.org"))
+        Assert.assertEquals(AppUsageSurveySetting(), api.getStudySetting(id, StudySettingType.AppUsageSurvey))
+        val collection = api.getStudySetting(id, StudySettingType.DataCollection)
+        api.updateStudySettings(id, StudySettingType.AppUsageSurvey, AppUsageSurveySetting(AppUsageFrequency.HOURLY))
+        Assert.assertEquals(AppUsageFrequency.HOURLY, chronicleClient.surveyApi.getAppUsageFrequency(id).appUsageFrequency)
+        Assert.assertEquals(collection, api.getStudySetting(id, StudySettingType.DataCollection))
+        api.updateStudySettings(id, StudySettingType.AppUsageSurvey, AppUsageSurveySetting())
+        Assert.assertEquals(AppUsageFrequency.DAILY, chronicleClient.surveyApi.getAppUsageFrequency(id).appUsageFrequency)
+    }
 
-        Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
-            studyApi.updateStudySettings(
-                studyId,
-                StudySettingType.Encryption,
-                StudyEncryptionSetting(
-                    enabled = true,
-                    keyId = "unsupported-key",
-                    publicKeyPem = "unsupported-public-key",
-                    mlkemPublicKey = "unsupported-mlkem-public-key",
-                ),
-            )
+    @Test
+    fun partialAndAbsentSettingsPreserveOtherKeysAfterEnrollment() {
+        val api = chronicleClient.studyApi
+        val initial = StudySettings(mapOf(
+            StudySettingType.DataCollection to CollectionDefaults.androidDataCollectionSetting(),
+            StudySettingType.ParticipantPolicy to TestDataFactory.participantPolicy(),
+            StudySettingType.Withdrawal to StudyWithdrawalSetting(),
+            StudySettingType.TimeUseDiary to TimeUseDiarySettings(),
+        ))
+        val id = api.createStudy(Study(title = "settings patch", contact = "test@example.org", settings = initial))
+        val before = api.getStudy(id).settings
+        api.updateStudy(id, StudyUpdate(settings = StudySettings(mapOf(
+            StudySettingType.DataCollection to before.getValue(StudySettingType.DataCollection),
+        ))))
+        Assert.assertEquals(before, api.getStudy(id).settings)
+        api.updateStudy(id, StudyUpdate(description = "partial", settings = StudySettings(mapOf(
+            StudySettingType.TimeUseDiary to TimeUseDiarySettings(timeZone = "America/Chicago"),
+        ))))
+        val patched = api.getStudy(id).settings
+        before.filterKeys { it != StudySettingType.TimeUseDiary }.forEach { (key, setting) ->
+            Assert.assertEquals("omitted $key must survive", setting, patched[key])
         }
-
-        val read = studyApi.getStudySetting(studyId, StudySettingType.Encryption) as StudyEncryptionSetting
-        Assert.assertFalse("rejected setting must not change the stored default", read.enabled)
+        Assert.assertEquals("America/Chicago", (patched[StudySettingType.TimeUseDiary] as TimeUseDiarySettings).timeZone)
+        api.registerParticipant(id, TestDataFactory.participant(ParticipationStatus.ENROLLED))
+        api.updateStudy(id, StudyUpdate(title = "details only"))
+        Assert.assertEquals(patched, api.getStudy(id).settings)
+        // An enrolled participant locks disclosure; an unrelated per-key patch must still succeed.
+        api.updateStudy(id, StudyUpdate(description = "after enrollment", settings = StudySettings(mapOf(
+            StudySettingType.TimeUseDiary to TimeUseDiarySettings(timeZone = "UTC"),
+        ))))
+        Assert.assertEquals(initial[StudySettingType.ParticipantPolicy], api.getStudy(id).settings[StudySettingType.ParticipantPolicy])
     }
 
     @Test
@@ -205,6 +323,17 @@ class StudyTests : ChronicleServerTests() {
         Assert.assertEquals(study3OrgIds, actualOrg3Studies[0].organizationIds)
     }
 
+    /** RLS INSERT checks are study-scoped; a non-admin clone must still link the new study to its orgs. */
+    @Test
+    fun nonAdminCloneKeepsOrganizationLinksUnderStudyScopedRls() {
+        val orgId = chronicleClient.organizationApi.createOrganization(Organization(title = "clone org"))
+        val sourceId = chronicleClient.studyApi.createStudy(
+            Study(title = "clone source", contact = "test@openlattice.com", organizationIds = setOf(orgId)),
+        )
+        val cloneId = chronicleClient.studyLifecycleApi.cloneStudy(sourceId, StudyCloneRequest(newTitle = "clone copy"))
+        Assert.assertEquals(setOf(orgId), chronicleClient.studyApi.getStudy(cloneId).organizationIds)
+    }
+
     @Test
     fun registerParticipant() {
         val p = Participant("p1", c1!!, ParticipationStatus.ENROLLED)
@@ -220,7 +349,14 @@ class StudyTests : ChronicleServerTests() {
         c1!!.id = candidateId
         val p = Participant("p1", c1!!, ParticipationStatus.ENROLLED)
         val studyId = clientUser1.studyApi.createStudy(s1!!)
-        clientUser1.studyApi.registerParticipant(studyId, p)
+
+        val registered = clientUser1.studyApi.registerParticipant(studyId, p)
+
+        // The existing candidate is reused, not copied: the participant row links the same candidate id.
+        Assert.assertEquals(candidateId, registered)
+        val stored = clientUser1.studyApi.getStudyParticipants(studyId).single { it.participantId == "p1" }
+        Assert.assertEquals(ParticipationStatus.ENROLLED, stored.participationStatus)
+        Assert.assertEquals(candidateId, stored.candidate.id)
     }
 
     @Test
@@ -263,40 +399,18 @@ class StudyTests : ChronicleServerTests() {
         Assert.assertEquals(a.candidate.id, b.candidate.id)
     }
 
-    @Test(expected = RhizomeRetrofitCallException::class)
-    fun testStudyLimits() {
-        val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(TestDataFactory.study())
-        val partcipantCount = 25
-        //Will be one more participant than allowed and should fail on the last
-        repeat(partcipantCount + 1) {
-            val participant = TestDataFactory.participant(ParticipationStatus.ENROLLED)
-            studyApi.registerParticipant(studyId, participant)
-        }
-    }
-
     @Test
-    fun testLegacyUsageEventUpload() {
+    fun enrollmentHasNoParticipantCountLimit() {
         val studyApi = chronicleClient.studyApi
         val studyId = studyApi.createStudy(TestDataFactory.study())
-        prepareUsageFixture(chronicleClient, studyId)
-        val chroniclev2Api = chronicleClient.chronicleApi
-        val participant = TestDataFactory.participant(ParticipationStatus.ENROLLED)
-        studyApi.registerParticipant(studyId, participant)
-
-        val sourceDevice = TestDataFactory.androidDevice()
-        enrollUsageFixture(studyId, participant.participantId, sourceDevice.deviceId, sourceDevice)
-
-        val chronicleData = TestDataFactory.legacyChronicleUsageEvents()
-        chroniclev2Api.upload(
-            UUID.randomUUID(),
-            studyId,
-            participant.participantId,
-            sourceDevice.deviceId,
-            chronicleData
-        )
-
+        // The removed default cap was 25; enrolling past it must still succeed.
+        repeat(26) {
+            studyApi.registerParticipant(studyId, TestDataFactory.participant(ParticipationStatus.ENROLLED))
+        }
+        Assert.assertEquals(26, studyApi.getStudyParticipants(studyId).count())
     }
+
+
 
     @Test
     fun testUsageEventUpload() {
@@ -318,15 +432,15 @@ class StudyTests : ChronicleServerTests() {
         studyApi.registerParticipant(studyId, participant)
 
         val sourceDevice = TestDataFactory.androidDevice()
-        val mobileApi = enrollUsageFixture(studyId, participant.participantId, sourceDevice.deviceId, sourceDevice)
+        val mobileApi = enrollUsageFixture(studyId, participant.participantId, sourceDevice).mobileApi
 
         val chronicleData = TestDataFactory.chronicleUsageEvents(studyId, participant.participantId)
         Assert.assertEquals(chronicleData.size, mobileApi.uploadAndroidUsageEventDataV4(
             studyId,
             participant.participantId,
-            sourceDevice.deviceId,
+            sourceDevice.randomDeviceId,
             chronicleData
-        ))
+        ).acceptedIds.size)
     }
 
     @Test
@@ -339,28 +453,40 @@ class StudyTests : ChronicleServerTests() {
         val device = TestDataFactory.androidDevice()
         val data = TestDataFactory.chronicleUsageEvents(studyId, participant.participantId, count = 1)
         val anonymousApi = RetrofitClientFactory.newClient(Environment.TESTING_CHRONICLE).create(StudyApi::class.java)
-        val unauthenticated = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
-            anonymousApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.deviceId, data)
+        Assert.assertEquals(HttpStatus.UNAUTHORIZED.value(), Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
+            anonymousApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.randomDeviceId, data)
+        }.code)
+        val enrollment = beginUsageEnrollmentFixture(studyId, participant.participantId, device)
+        val mobileApi = enrollment.mobileApi
+        val unconsented = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
+            mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.randomDeviceId, data)
         }
-        Assert.assertEquals(HttpStatus.UNAUTHORIZED.value(), unauthenticated.code)
-        val mobileApi = enrollUsageFixture(studyId, participant.participantId, device.deviceId, device) { issuedApi ->
-            val unconsented = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
-                issuedApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.deviceId, data)
-            }
-            Assert.assertEquals(HttpStatus.FORBIDDEN.value(), unconsented.code)
+        Assert.assertEquals(HttpStatus.FORBIDDEN.value(), unconsented.code)
+        // Until the device acknowledges its enrollment receipt, the disclosure it reviewed is frozen.
+        val revised = usageSettingsWithoutUserIdentification(studyApi, studyId)
+        // Another device's later enrollment acknowledgment cannot finish this pending attempt.
+        val otherDevice = TestDataFactory.androidDevice()
+        enrollUsageFixture(studyId, participant.participantId, otherDevice)
+        val frozen = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
+            studyApi.updateStudySettings(studyId, StudySettingType.DataCollection, revised)
         }
-        Assert.assertEquals(1, mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.deviceId, data))
+        Assert.assertEquals(HttpStatus.CONFLICT.value(), frozen.code)
+        acknowledgeUsageFixture(enrollment)
+        Assert.assertEquals(1, mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.randomDeviceId, data)
+            .acceptedIds.size)
 
         val lifecycle = (data.single() as ChronicleUsageEvent).copy(
             appPackageName = "android", interactionType = "Battery Low",
-            eventType = ChronicleUsageEventType.BATTERY_LOW.value,
+            eventType = ChronicleUsageEventType.BATTERY_LOW.value, clientEventId = UUID.randomUUID(),
         )
-        val optionalOnly = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
-            mobileApi.uploadAndroidUsageEventDataV4(
-                studyId, participant.participantId, device.deviceId, ChronicleData(listOf(lifecycle)),
-            )
-        }
-        Assert.assertEquals(HttpStatus.FORBIDDEN.value(), optionalOnly.code)
+        // A batch of only unauthorized rows is answered discarded, not refused, so the phone moves past them.
+        val optionalOnly = mobileApi.uploadAndroidUsageEventDataV4(
+            studyId, participant.participantId, device.randomDeviceId, ChronicleData(listOf(lifecycle)),
+        )
+        Assert.assertEquals(setOf(lifecycle.clientEventId), optionalOnly.discardedIds)
+        Assert.assertEquals(emptySet<UUID>(), optionalOnly.acceptedIds)
+        val usageId = checkNotNull((data.single() as ChronicleUsageEvent).clientEventId)
+        Assert.assertEquals("a discarded row is not stored", setOf(usageId), storedUsageEventIds(studyId, participant.participantId))
 
         // A server-side stop can precede the phone's next settings sync. Its queued batch
         // must still deliver accepted usage, without the stopped optional fields or lifecycle row.
@@ -368,82 +494,65 @@ class StudyTests : ChronicleServerTests() {
         val stopped = settings.copy(modules = settings.modules +
             setOf(CollectionModuleId.IN_APP_ACTIVITY_CLASS, CollectionModuleId.USER_IDENTIFICATION)
                 .associateWith { settings.modules.getValue(it).copy(enabled = false) })
-        // Model a later settings sync: disclosure changes are locked during enrollment replay.
-        hds.connection.use { connection ->
-            connection.prepareStatement("""
-                UPDATE participant_form_access_codes SET enrollment_replay_expires_at = now()
-                WHERE study_id = ? AND participant_id = ? AND enrollment_attempt_id IS NOT NULL
-            """.trimIndent()).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setString(2, participant.participantId)
-                Assert.assertEquals(1, statement.executeUpdate())
-            }
-        }
+        // The enrollment is acknowledged, so the researcher may revise settings inside the replay window.
         studyApi.updateStudySettings(studyId, StudySettingType.DataCollection, stopped)
-        Assert.assertEquals(1, mobileApi.uploadAndroidUsageEventDataV4(
-            studyId, participant.participantId, device.deviceId, ChronicleData(data + lifecycle),
-        ))
+        val queued = (data.single() as ChronicleUsageEvent).copy(clientEventId = UUID.randomUUID())
+        val mixed = mobileApi.uploadAndroidUsageEventDataV4(
+            studyId, participant.participantId, device.randomDeviceId, ChronicleData(listOf(queued, lifecycle)),
+        )
+        Assert.assertEquals(setOf(queued.clientEventId), mixed.acceptedIds)
+        Assert.assertEquals(setOf(lifecycle.clientEventId), mixed.discardedIds)
+        Assert.assertEquals("the receipt and the table agree", setOf(usageId, queued.clientEventId),
+            storedUsageEventIds(studyId, participant.participantId))
 
-        // Making a module required changes its policy and must still halt all uploads
-        // until the participant accepts that revision.
+        // A requiredness-only edit preserves the participant's standing acceptance.
         studyApi.updateStudySettings(studyId, StudySettingType.DataCollection, stopped.copy(
             modules = stopped.modules + (CollectionModuleId.USAGE_EVENTS to
                 stopped.modules.getValue(CollectionModuleId.USAGE_EVENTS).copy(required = true)),
         ))
-        val requiredConsent = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
-            mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.deviceId, data)
-        }
-        Assert.assertEquals(HttpStatus.FORBIDDEN.value(), requiredConsent.code)
+        Assert.assertEquals(setOf((data.single() as ChronicleUsageEvent).clientEventId),
+            mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, device.randomDeviceId, data).acceptedIds)
     }
 
+    /**
+     * The server never compares a phone capture time with its own cutoff.
+     * A skewed phone stamps a pre-pause row after the server's cutoff; the server stores both rows the phone sends,
+     * because which rows fall inside a closed window is the phone's decision on its own clock.
+     */
     @Test
-    fun mixedCutoffUsageUploadAcknowledgesEveryRowAndStoresOnlyPreStopCaptures() {
+    fun pausedAndCompletedUploadsStoreEveryQueuedRowWhateverItsPhoneStamp() {
         val studyApi = chronicleClient.studyApi
         val studyId = studyApi.createStudy(Study(title = "Cutoff batch", contact = "test@openlattice.com"))
         prepareUsageFixture(chronicleClient, studyId)
         val participant = TestDataFactory.participant(ParticipationStatus.ENROLLED)
         studyApi.registerParticipant(studyId, participant)
         val device = TestDataFactory.androidDevice()
-        val mobileApi = enrollUsageFixture(studyId, participant.participantId, device.deviceId, device)
+        val mobileApi = enrollUsageFixture(studyId, participant.participantId, device).mobileApi
         val template = TestDataFactory.chronicleUsageEvents(studyId, participant.participantId, count = 1).single() as ChronicleUsageEvent
         val expected = linkedSetOf<java.time.Instant>()
         for ((index, status) in listOf(ParticipationStatus.PAUSED, ParticipationStatus.COLLECTION_COMPLETED).withIndex()) {
-            studyApi.updateParticipationStatus(studyId, participant.participantId, status)
-            val cutoff = hds.connection.use { connection ->
-                connection.prepareStatement("SELECT capture_cutoff FROM study_participants WHERE study_id = ? AND participant_id = ?").use {
-                    it.setObject(1, studyId); it.setString(2, participant.participantId)
-                    it.executeQuery().use { rows -> Assert.assertTrue(rows.next()); rows.getObject(1, java.time.OffsetDateTime::class.java) }
-                }
-            }
-            val before = template.copy(timestamp = cutoff.minusSeconds(index + 1L), collectedAt = cutoff.plusMinutes(10))
-            val after = template.copy(timestamp = cutoff.plusSeconds(index + 1L), collectedAt = cutoff.plusMinutes(10))
-            Assert.assertEquals(2, mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId,
-                device.deviceId, ChronicleData(listOf(before, after))))
-            Assert.assertEquals(1, mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId,
-                device.deviceId, ChronicleData(listOf(after))))
+            studyApi.updateParticipationStatusAsRead(studyId, participant.participantId, status)
+            val cutoff = captureCutoff(studyId, participant.participantId)
+            val before = template.copy(timestamp = cutoff.minusSeconds(index + 1L), clientEventId = UUID.randomUUID())
+            val skewed = template.copy(timestamp = cutoff.plusSeconds(20L + index), clientEventId = UUID.randomUUID())
+            val mixed = mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId,
+                device.randomDeviceId, ChronicleData(listOf(before, skewed)))
+            Assert.assertEquals(setOf(before.clientEventId, skewed.clientEventId), mixed.acceptedIds)
+            Assert.assertEquals("no row is judged by its phone stamp", emptySet<UUID>(), mixed.discardedIds)
             expected += before.timestamp.toInstant()
-            hds.connection.use { connection ->
-                val timestamp = com.openlattice.chronicle.storage.PostgresEventColumns.TIMESTAMP.name
-                connection.prepareStatement("""
-                    SELECT $timestamp FROM chronicle_usage_events WHERE study_id::text = ? AND participant_id = ?
-                    UNION ALL
-                    SELECT (sample -> '$timestamp' ->> 'value')::timestamptz
-                    FROM upload_buffer, jsonb_array_elements(data) sample
-                    WHERE study_id::text = ? AND participant_id = ? AND upload_type = 'Android'
-                """.trimIndent()).use {
-                    for (offset in listOf(0, 2)) {
-                        it.setString(offset + 1, studyId.toString()); it.setString(offset + 2, participant.participantId)
-                    }
-                    it.executeQuery().use { rows ->
-                        val stored = buildSet { while (rows.next()) add(rows.getObject(1, java.time.OffsetDateTime::class.java).toInstant()) }
-                        Assert.assertEquals(expected, stored)
-                    }
-                }
-            }
+            expected += skewed.timestamp.toInstant()
+            Assert.assertEquals(expected, storedUsageTimestamps(studyId, participant.participantId))
         }
     }
 
-    // ===================== Phase 9A: generalized DataCollection settings =====================
+    private fun captureCutoff(studyId: UUID, participantId: String): java.time.OffsetDateTime = hds.connection.use { connection ->
+        connection.prepareStatement("SELECT capture_cutoff FROM study_participants WHERE study_id = ? AND participant_id = ?").use {
+            it.setObject(1, studyId); it.setString(2, participantId)
+            it.executeQuery().use { rows -> Assert.assertTrue(rows.next()); rows.getObject(1, java.time.OffsetDateTime::class.java) }
+        }
+    }
+
+    // ===================== Generalized DataCollection settings =====================
 
     private fun createCollectionStudy(): UUID = chronicleClient.studyApi.createStudy(
         Study(
@@ -454,7 +563,7 @@ class StudyTests : ChronicleServerTests() {
     )
 
     /** New creates publish collection settings; remove them to model an actual legacy study. */
-    private fun createLegacyCollectionStudy(): UUID = createCollectionStudy().also { studyId ->
+    private fun createSensorCollectionStudy(): UUID = createCollectionStudy().also { studyId ->
         hds.connection.use { connection ->
             connection.prepareStatement("UPDATE studies SET settings = settings - 'DataCollection' WHERE study_id = ?").use {
                 it.setObject(1, studyId)
@@ -463,34 +572,9 @@ class StudyTests : ChronicleServerTests() {
         }
     }
 
-    @Test
-    fun testGetAndroidSensorSettingsUnchangedForMissingSetting() {
-        // Regression baseline (compatibility matrix row 1): a current mobile client
-        // reading AndroidSensor on a study with no sensor setting gets NO_SENSORS,
-        // exactly as before — the Phase 9 changes do not touch this path.
-        val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(TestDataFactory.study())
-        Assert.assertEquals(AndroidSensorSetting.NO_SENSORS, studyApi.getAndroidSensorSettings(studyId))
-    }
 
-    @Test
-    fun testAndroidSensorSettingRoundTripStillWorks() {
-        // Regression baseline: write + read of the legacy AndroidSensor setting is
-        // unchanged. Mobile clients that only know AndroidSensor keep working.
-        val studyApi = chronicleClient.studyApi
-        val studyId = studyApi.createStudy(TestDataFactory.study())
-        val sensorSetting = AndroidSensorSetting(
-            sensors = setOf(AndroidSensorType.accelerometer, AndroidSensorType.gyroscope),
-            samplingRateHz = 17,
-        )
-        studyApi.updateStudySettings(studyId, StudySettingType.AndroidSensor, sensorSetting)
 
-        val viaTyped = studyApi.getStudySetting(studyId, StudySettingType.AndroidSensor)
-        Assert.assertTrue(viaTyped is AndroidSensorSetting)
-        Assert.assertEquals(sensorSetting, viaTyped)
-        // The dedicated mobile-facing endpoint also returns the same value.
-        Assert.assertEquals(sensorSetting, studyApi.getAndroidSensorSettings(studyId))
-    }
+
 
     @Test
     fun testDataCollectionSettingStorageRoundTrip() {
@@ -530,12 +614,8 @@ class StudyTests : ChronicleServerTests() {
         val studyApi = chronicleClient.studyApi
         val studyId = createCollectionStudy()
 
-        // First settings write: legacy AndroidSensor.
-        val sensorSetting = AndroidSensorSetting(
-            sensors = setOf(AndroidSensorType.accelerometer),
-            samplingRateHz = 11,
-        )
-        studyApi.updateStudySettings(studyId, StudySettingType.AndroidSensor, sensorSetting)
+        val sensorSetting = SurveySettings(appUsageThresholdInSeconds = 42)
+        studyApi.updateStudySettings(studyId, StudySettingType.Survey, sensorSetting)
 
         // Establish a DataCollection setting, then toggle modules with a second write so the
         // audit summary exercises the module-granular (not first-time) path.
@@ -566,14 +646,14 @@ class StudyTests : ChronicleServerTests() {
         Assert.assertTrue(readDc.modules.getValue(CollectionModuleId.SENSOR_ACCELEROMETER).enabled)
 
         // (b) The AndroidSensor setting survived the DataCollection writes (no clobber).
-        Assert.assertEquals(sensorSetting, studyApi.getStudySetting(studyId, StudySettingType.AndroidSensor))
+        Assert.assertEquals(sensorSetting, studyApi.getStudySetting(studyId, StudySettingType.Survey))
 
         // (c) The audit trail captured the AndroidSensor write and both DataCollection writes,
         // with a module-granular summary for the toggle.
         val audit = studyApi.getStudySettingsAudit(studyId, 50, 0)
         Assert.assertTrue(
             "Audit must include an AndroidSensor entry",
-            audit.any { it.settingKey == StudySettingType.AndroidSensor },
+            audit.any { it.settingKey == StudySettingType.Survey },
         )
         val dataCollectionSummaries = audit
             .filter { it.settingKey == StudySettingType.DataCollection }
@@ -590,43 +670,26 @@ class StudyTests : ChronicleServerTests() {
         )
     }
 
-    @Test
-    fun testDataCollectionSettingFallsBackToLegacyAndroidSensor() {
-        // old -> new fallback (compatibility matrix row 4): a study with only a legacy
-        // AndroidSensor setting and no DataCollection setting derives the named per-sensor module.
-        val studyApi = chronicleClient.studyApi
-        val studyId = createLegacyCollectionStudy()
-        studyApi.updateStudySettings(
-            studyId,
-            StudySettingType.AndroidSensor,
-            AndroidSensorSetting(sensors = setOf(AndroidSensorType.proximity)),
-        )
 
-        val read = studyApi.getStudySetting(studyId, StudySettingType.DataCollection)
-        Assert.assertTrue(read is AndroidDataCollectionSetting)
-        val proximity = (read as AndroidDataCollectionSetting).modules.getValue(CollectionModuleId.SENSOR_PROXIMITY)
-        Assert.assertTrue("legacy sensors must enable the per-sensor module via the bridge", proximity.enabled)
-        Assert.assertEquals(setOf(AndroidSensorType.proximity), proximity.sensorPolicy?.sensors)
-    }
 
     @Test
     fun testDataCollectionSettingMissingYieldsSafeDefault() {
         // Missing-setting fallback: no DataCollection and no AndroidSensor setting
         // yields a safe default — no sensor enabled, never silently enabled.
         val studyApi = chronicleClient.studyApi
-        val studyId = createLegacyCollectionStudy()
+        val studyId = createSensorCollectionStudy()
 
         val read = studyApi.getStudySetting(studyId, StudySettingType.DataCollection)
         Assert.assertTrue(read is AndroidDataCollectionSetting)
         Assert.assertTrue(
             "missing setting must not enable any sensor module",
-            (read as AndroidDataCollectionSetting).modules.values.none { it.enabled },
+            SensorCollectionModules.sensorModuleIds.none { (read as AndroidDataCollectionSetting).modules.getValue(it).enabled },
         )
     }
 
     @Test
     fun testDataCollectionSettingReadIsMobilePublicLikeAndroidSensor() {
-        // Authz contract (Phase 9A design decision): the generalized DataCollection
+        // Authz contract: the generalized DataCollection
         // read is mobile-public — it routes through ensureValidStudy, exactly like
         // AndroidSensor, NOT through ensureReadAccess. The DTO carries no secrets, so
         // a non-owning client may read it just as a mobile client reads AndroidSensor.
@@ -634,7 +697,7 @@ class StudyTests : ChronicleServerTests() {
         val studyId = createCollectionStudy()
         val setting = AndroidDataCollectionSetting(
             modules = mapOf(
-                CollectionModuleId.USAGE_EVENTS to CollectionDefaults.moduleSetting(CollectionModuleId.USAGE_EVENTS),
+                CollectionModuleId.USAGE_EVENTS to CollectionDefaults.moduleSetting(CollectionModuleId.USAGE_EVENTS, enabled = false),
             ),
         )
         chronicleClient.studyApi.updateStudySettings(studyId, StudySettingType.DataCollection, setting)
@@ -643,7 +706,10 @@ class StudyTests : ChronicleServerTests() {
         // exactly the study-scoped value — mirrors getAndroidSensorSettings reachability.
         val readByOther = chronicleClient2.studyApi.getStudySetting(studyId, StudySettingType.DataCollection)
         Assert.assertTrue(readByOther is AndroidDataCollectionSetting)
-        Assert.assertEquals(setting.copy(settingsVersion = 2), readByOther)
+        Assert.assertEquals(
+            setting.copy(modules = setting.effectiveModules(CollectionModuleId.activeModules), settingsVersion = 2),
+            (readByOther as AndroidDataCollectionSetting).withoutConsentEpochs(),
+        )
     }
 
     @Test
@@ -654,9 +720,6 @@ class StudyTests : ChronicleServerTests() {
         val unknownStudyId = UUID.randomUUID()
         listOf(
             StudySettingType.DataCollection,
-            StudySettingType.AndroidSensor,
-            StudySettingType.Sensor,
-            StudySettingType.Encryption,
         ).forEach { type ->
             val error = Assert.assertThrows(RhizomeRetrofitCallException::class.java) {
                 chronicleClient.studyApi.getStudySetting(unknownStudyId, type)
@@ -665,23 +728,23 @@ class StudyTests : ChronicleServerTests() {
         }
     }
 
-    @Test(expected = RhizomeRetrofitCallException::class)
+    @Test
     fun testUsageEventUploadWithUnknownDevice() {
         val studyApi = chronicleClient.studyApi
         val studyId = studyApi.createStudy(TestDataFactory.study())
+        prepareUsageFixture(chronicleClient, studyId)
 
         val participant = TestDataFactory.participant(ParticipationStatus.ENROLLED)
         studyApi.registerParticipant(studyId, participant)
 
-        val sourceDevice = TestSourceDevice()
-        studyApi.enroll(studyId, participant.participantId, sourceDevice.testDeviceLabel, sourceDevice)
-
+        val sourceDevice = TestDataFactory.androidDevice()
+        val mobileApi = enrollUsageFixture(studyId, participant.participantId, sourceDevice).mobileApi
         val chronicleData = TestDataFactory.chronicleUsageEvents(studyId, participant.participantId)
-        studyApi.uploadAndroidUsageEventData(
-            studyId,
-            participant.participantId,
-            sourceDevice.testDeviceLabel,
-            chronicleData
-        )
+        Assert.assertEquals(chronicleData.size, mobileApi.uploadAndroidUsageEventDataV4(
+            studyId, participant.participantId, sourceDevice.randomDeviceId, chronicleData,
+        ).acceptedIds.size)
+        assertHttpStatus(HttpStatus.FORBIDDEN) {
+            mobileApi.uploadAndroidUsageEventDataV4(studyId, participant.participantId, UUID.randomUUID().toString(), chronicleData)
+        }
     }
 }

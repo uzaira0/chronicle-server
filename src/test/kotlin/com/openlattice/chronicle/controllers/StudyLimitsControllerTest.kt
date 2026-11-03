@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.controllers
 
+import org.junit.Assert.assertThrows
+
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.services.studies.StudyLimitsManager
@@ -25,7 +27,7 @@ class StudyLimitsControllerTest {
     fun testGetStudyLimitsReturnsServiceResult() {
         val studyId = UUID.randomUUID()
         val expected = StudyLimits()
-        Mockito.`when`(studyService.isValidStudy(studyId)).thenReturn(true)
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
         Mockito.`when`(studyLimitsMgr.getStudyLimits(studyId)).thenReturn(expected)
         Mockito.`when`(authorizationManager.checkIfHasPermissions(
             kAny(), kAny(), kAny()
@@ -38,23 +40,25 @@ class StudyLimitsControllerTest {
         verify(studyLimitsMgr).getStudyLimits(studyId)
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testGetStudyLimitsRejectsInvalidStudy() {
         val studyId = UUID.randomUUID()
-        Mockito.`when`(studyService.isValidStudy(studyId)).thenReturn(false)
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(null)
         Mockito.`when`(authorizationManager.checkIfHasPermissions(
             kAny(), kAny(), kAny()
         )).thenReturn(true)
 
         TestSecurityUtils.setupSecurityContext()
 
-        controller.getStudyLimits(studyId)
+        assertThrows(com.openlattice.chronicle.exceptions.StudyNotFoundException::class.java) {
+            controller.getStudyLimits(studyId)
+        }
     }
 
     @Test
     fun testGetStudyLimitsVerifiesStudyValidity() {
         val studyId = UUID.randomUUID()
-        Mockito.`when`(studyService.isValidStudy(studyId)).thenReturn(true)
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
         Mockito.`when`(studyLimitsMgr.getStudyLimits(studyId)).thenReturn(StudyLimits())
         Mockito.`when`(authorizationManager.checkIfHasPermissions(
             kAny(), kAny(), kAny()
@@ -63,12 +67,9 @@ class StudyLimitsControllerTest {
         TestSecurityUtils.setupSecurityContext()
 
         controller.getStudyLimits(studyId)
-        verify(studyService).isValidStudy(studyId)
+        verify(studyService).getStudyId(studyId)
     }
 
-    @Test
-    fun testStudyLimitsConstructorAcceptsAllDependencies() {
-        assertNotNull(controller)
-    }
+    
 
 }

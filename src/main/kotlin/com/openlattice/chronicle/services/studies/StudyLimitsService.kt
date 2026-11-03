@@ -11,18 +11,12 @@ import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_LIMITS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DATA_EXPIRES
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.DATA_RETENTION
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.FEATURES
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_LIMIT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_DURATION
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ENDS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.study.StudyDuration
-import com.openlattice.chronicle.study.StudyFeature
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.study.StudyLimits
 import java.sql.Connection
-import java.sql.PreparedStatement
 import java.util.*
 
 /**
@@ -39,36 +33,18 @@ public open class StudyLimitsService(
         private val STUDY_LIMITS_COLS = STUDY_LIMITS.columns.joinToString(",") { it.name }
         /**
          * 1. STUDY_ID
-         * 2. PARTICIPANT_LIMIT
-         * 3. STUDY_DURATION
-         * 4. DATA_RETENTION
-         * 5. STUDY_EXPIRES
-         * 6. STUDY_DATA_EXPIRES
-         * 7. FEATURES
+         * 2. STUDY_DURATION
+         * 3. DATA_RETENTION
+         * 4. STUDY_ENDS
+         * 5. STUDY_DATA_EXPIRES
          */
         private val INSERT_STUDY_LIMITS = """
-            INSERT INTO ${STUDY_LIMITS.name}($STUDY_LIMITS_COLS) VALUES(?,?,?::jsonb,?::jsonb,?,?,?) 
+            INSERT INTO ${STUDY_LIMITS.name}($STUDY_LIMITS_COLS) VALUES(?,?::jsonb,?::jsonb,?,?)
         """.trimIndent()
-        private val LOCK_STUDY = """
-            SELECT ${PARTICIPANT_LIMIT.name} FROM ${STUDY_LIMITS.name} WHERE ${STUDY_ID.name} = ? FOR UPDATE
-         """.trimIndent()
+        private val UPSERT_STUDY_LIMITS = INSERT_STUDY_LIMITS + " ON CONFLICT (${STUDY_ID.name}) DO UPDATE SET " +
+            STUDY_LIMITS.columns.drop(1).joinToString(",") { "${it.name} = EXCLUDED.${it.name}" }
 
-        private val UPDATE_PARTICIPANT_LIMIT = """
-            UPDATE ${STUDY_LIMITS.name} SET ${PARTICIPANT_LIMIT.name} = ? WHERE ${STUDY_ID.name} = ?
-         """.trimIndent()
-
-        private val UPDATE_STUDY_DURATION = """
-            UPDATE ${STUDY_LIMITS.name} SET ${STUDY_DURATION.name} = ?::jsonb WHERE ${STUDY_ID.name} = ?
-         """.trimIndent()
-
-        private val UPDATE_RETENTION_PERIOD = """
-            UPDATE ${STUDY_LIMITS.name} SET ${DATA_RETENTION.name} = ?::jsonb WHERE ${STUDY_ID.name} = ?
-         """.trimIndent()
-
-        private val UPDATE_STUDY_FEATURES = """
-            UPDATE ${STUDY_LIMITS.name} SET ${FEATURES.name} = ? WHERE ${STUDY_ID.name} = ?
-         """.trimIndent()
-
+        // A NULL end (no end set by the researcher) never compares <= now(), so open-ended studies run on.
         private val STUDIES_EXCEEDING_DURATION_LIMIT = """
             SELECT * FROM ${STUDIES.name} INNER JOIN ${STUDY_LIMITS.name} USING (${STUDY_ID.name}) 
             WHERE ${STUDY_ENDS.name} <= now()
@@ -85,72 +61,25 @@ public open class StudyLimitsService(
 
     private val studyLimits = HazelcastMap.STUDY_LIMITS.getMap(hazelcast)
 
-    override fun initializeStudyLimits(connection: Connection, studyId: UUID, studyLimits: StudyLimits) {
-        connection.prepareStatement(INSERT_STUDY_LIMITS).use { ps ->
+    override fun initializeStudyLimits(connection: Connection, studyId: UUID, studyLimits: StudyLimits): Unit =
+        store(connection, studyId, studyLimits, INSERT_STUDY_LIMITS)
+
+    private fun store(connection: Connection, studyId: UUID, studyLimits: StudyLimits, sql: String) {
+        connection.prepareStatement(sql).use { ps ->
             ps.setObject(1, studyId)
-            ps.setInt(2, studyLimits.participantLimit)
-            ps.setString(3, mapper.writeValueAsString(studyLimits.studyDuration))
-            ps.setString(4, mapper.writeValueAsString(studyLimits.dataRetentionDuration))
-            ps.setObject(5, studyLimits.studyEnds)
-            ps.setObject(6, studyLimits.studyDataExpires)
-            ps.setArray(7, PostgresArrays.createTextArray(ps.connection, studyLimits.features.map { it.name }))
+            ps.setString(2, studyLimits.studyDuration?.let(mapper::writeValueAsString))
+            ps.setString(3, mapper.writeValueAsString(studyLimits.dataRetentionDuration))
+            ps.setObject(4, studyLimits.studyEnds)
+            ps.setObject(5, studyLimits.studyDataExpires)
             ps.executeUpdate()
         }
     }
 
-    override fun lockStudyForEnrollments(connection: Connection, studyId: UUID): Int {
-        return connection.prepareStatement(LOCK_STUDY).use { ps ->
-            ps.setObject(1, studyId)
-            ps.executeQuery().use { rs ->
-                check(rs.next()) { "Study limits do not exist for study $studyId" }
-                rs.getInt(PARTICIPANT_LIMIT.name)
-            }
+    override fun setStudyLimits(connection: Connection, studyId: UUID, studyLimits: StudyLimits) {
+        store(connection, studyId, studyLimits, UPSERT_STUDY_LIMITS)
+        PinnedPlatformConnection.afterCommit(storageResolver.getPlatformStorage(), StudyLimitsService::class.java to studyId) {
+            this.studyLimits.evict(studyId)
         }
-    }
-
-    override fun getEnrollmentCapacity(studyId: UUID): Int {
-        return studyLimits.getValue(studyId).participantLimit
-    }
-
-    override fun setEnrollmentCapacity(studyId: UUID, capacity: Int) {
-        require(capacity > 0) { "Enrollment capacity must be positive" }
-        updateSingleStudyLimit(studyId, UPDATE_PARTICIPANT_LIMIT) { ps ->
-            ps.setInt(1, capacity)
-        }
-    }
-
-    override fun setStudyDuration(studyId: UUID, studyDuration: StudyDuration) {
-        updateSingleStudyLimit(studyId, UPDATE_STUDY_DURATION) { ps ->
-            ps.setString(1, mapper.writeValueAsString(studyDuration))
-        }
-    }
-
-    override fun getStudyDuration(studyId: UUID): StudyDuration {
-        return studyLimits.getValue(studyId).studyDuration
-    }
-
-    override fun setDataRetentionPeriod(studyId: UUID, dataRetentionPeriod: StudyDuration) {
-        updateSingleStudyLimit(studyId, UPDATE_RETENTION_PERIOD) { ps ->
-            ps.setString(1, mapper.writeValueAsString(dataRetentionPeriod))
-        }
-    }
-
-    override fun getDataRetentionPeriod(studyId: UUID): StudyDuration {
-        return studyLimits.getValue(studyId).dataRetentionDuration
-    }
-
-    override fun getStudyFeatures(studyId: UUID): Set<StudyFeature> {
-        return studyLimits.getValue(studyId).features
-    }
-
-    override fun setStudyFeatures(studyId: UUID, studyFeatures: Set<StudyFeature>) {
-        updateSingleStudyLimit(studyId, UPDATE_STUDY_FEATURES) { ps ->
-            ps.setArray(1, PostgresArrays.createTextArray(ps.connection, studyFeatures.map { it.name }))
-        }
-    }
-
-    override fun setStudyLimits(studyId: UUID, studyLimits: StudyLimits) {
-        this.studyLimits[studyId] = studyLimits
     }
 
     override fun getStudyLimits(studyId: UUID): StudyLimits {
@@ -201,19 +130,12 @@ public open class StudyLimitsService(
         }
         return studyCounts
     }
+}
 
-    private fun updateSingleStudyLimit(
-        studyId: UUID,
-        sql: String,
-        bindValue: (PreparedStatement) -> Unit,
-    ) {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(sql).use { ps ->
-                bindValue(ps)
-                ps.setObject(2, studyId)
-                check(ps.executeUpdate() == 1) { "Study limits do not exist for study $studyId" }
-            }
-        }
-        studyLimits.loadAll(setOf(studyId), true)
-    }
+/** Call after locking the study row, so a concurrent settings edit cannot change the deadline. */
+internal fun studyHasExpired(connection: Connection, studyId: UUID): Boolean = connection.prepareStatement(
+    "SELECT ${STUDY_ENDS.name} <= now() FROM ${STUDY_LIMITS.name} WHERE ${STUDY_ID.name} = ?",
+).use { statement ->
+    statement.setObject(1, studyId)
+    statement.executeQuery().use { it.next() && it.getBoolean(1) }
 }

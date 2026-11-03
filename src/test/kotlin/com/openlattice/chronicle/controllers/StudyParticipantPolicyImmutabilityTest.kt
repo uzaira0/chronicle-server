@@ -1,13 +1,22 @@
 package com.openlattice.chronicle.controllers
 
-import com.openlattice.chronicle.android.AndroidSensorSetting
-import com.openlattice.chronicle.android.AndroidSensorType
+import com.openlattice.chronicle.services.studies.ensureParticipantPolicyMutable
+
+import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
+import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.services.participantaccess.EnrollmentDisclosureActivity
 import com.openlattice.chronicle.study.StudyParticipantPolicy
 import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudySettings
-import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
-import com.openlattice.chronicle.settings.AppUsageFrequency
+import com.openlattice.chronicle.study.StudyWithdrawalSetting
+import com.openlattice.chronicle.study.WithdrawalMode
+import com.openlattice.chronicle.util.tests.EnrollmentDisclosureActivityResultFixture
+import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
+import java.time.OffsetDateTime
+import java.util.UUID
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -16,11 +25,6 @@ import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import org.springframework.web.server.ResponseStatusException
-import java.sql.Connection
-import java.sql.PreparedStatement
-import java.sql.ResultSet
-import java.time.OffsetDateTime
-import java.util.UUID
 
 class StudyParticipantPolicyImmutabilityTest {
     private val studyId = UUID.fromString("00000000-0000-0000-0000-000000000765")
@@ -29,16 +33,16 @@ class StudyParticipantPolicyImmutabilityTest {
 
     @Test
     fun withdrawalModeCannotChangeAfterEnrollment() {
-        val prior = StudySettings(mapOf(StudySettingType.Withdrawal to com.openlattice.chronicle.study.StudyWithdrawalSetting()))
-        val changed = StudySettings(mapOf(StudySettingType.Withdrawal to com.openlattice.chronicle.study.StudyWithdrawalSetting(
-            com.openlattice.chronicle.study.WithdrawalMode.KEEP_PRIOR_DATA,
+        val prior = StudySettings(mapOf(StudySettingType.Withdrawal to StudyWithdrawalSetting(WithdrawalMode.ERASE)))
+        val changed = StudySettings(mapOf(StudySettingType.Withdrawal to StudyWithdrawalSetting(
+            WithdrawalMode.KEEP_PRIOR_DATA,
         )))
         for (pending in listOf(false, true)) {
             val fixture = databaseFixture(hasActiveEnrollment = !pending, hasPendingEnrollment = pending)
             val exception = assertThrows(ResponseStatusException::class.java) {
                 ensureParticipantPolicyMutable(fixture.connection, studyId, prior, changed)
             }
-            org.junit.Assert.assertEquals(409, exception.statusCode.value())
+            assertEquals(409, exception.statusCode.value())
         }
         ensureParticipantPolicyMutable(databaseFixture(hasActiveEnrollment = false).connection, studyId, prior, changed)
     }
@@ -58,8 +62,9 @@ class StudyParticipantPolicyImmutabilityTest {
 
         verify(fixture.lockStatement).setObject(1, studyId)
         verify(fixture.activityStatement).setObject(1, studyId)
-        verify(fixture.activityStatement).setObject(2, studyId)
+        verify(fixture.activityStatement).setString(2, ParticipationStatus.ENROLLED.name)
         verify(fixture.activityStatement).setObject(3, studyId)
+        verify(fixture.activityStatement).setObject(4, studyId)
     }
 
     @Test
@@ -97,76 +102,21 @@ class StudyParticipantPolicyImmutabilityTest {
     }
 
     @Test
-    fun `legacy AndroidSensor mutation is rejected once a participant or device is active`() {
-        val fixture = databaseFixture(hasActiveEnrollment = true)
-        val prior = settings(priorPolicy, legacy = AndroidSensorSetting.NO_SENSORS)
-        val changed = settings(
-            priorPolicy,
-            legacy = AndroidSensorSetting(sensors = setOf(AndroidSensorType.accelerometer)),
-        )
-
-        val exception = assertThrows(ResponseStatusException::class.java) {
-            ensureParticipantPolicyMutable(fixture.connection, studyId, prior, changed)
-        }
-
-        org.junit.Assert.assertEquals(409, exception.statusCode.value())
-    }
-
-    @Test
-    fun `legacy AndroidSensor may be migrated before enrollment`() {
-        val fixture = databaseFixture(hasActiveEnrollment = false)
-        val prior = settings(priorPolicy, legacy = AndroidSensorSetting.NO_SENSORS)
-        val changed = settings(
-            priorPolicy,
-            legacy = AndroidSensorSetting(sensors = setOf(AndroidSensorType.accelerometer)),
-        )
-
-        ensureParticipantPolicyMutable(fixture.connection, studyId, prior, changed)
-
-        verify(fixture.activityStatement).executeQuery()
-    }
-
-    @Test
-    fun `legacy data collection mutation is rejected once a participant or device is active`() {
-        val fixture = databaseFixture(hasActiveEnrollment = true)
-        val prior = StudySettings(
-            mapOf(
-                StudySettingType.ParticipantPolicy to priorPolicy,
-                StudySettingType.DataCollection to ChronicleDataCollectionSettings(AppUsageFrequency.DAILY),
-            ),
-        )
-        val changed = StudySettings(
-            mapOf(
-                StudySettingType.ParticipantPolicy to priorPolicy,
-                StudySettingType.DataCollection to ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY),
-            ),
-        )
-
-        val exception = assertThrows(ResponseStatusException::class.java) {
-            ensureParticipantPolicyMutable(fixture.connection, studyId, prior, changed)
-        }
-
-        org.junit.Assert.assertEquals(409, exception.statusCode.value())
-    }
-
-    @Test
-    fun `versioned DataCollection cannot be omitted to reactivate a different legacy policy`() {
+    fun `versioned DataCollection cannot be omitted`() {
         val connection = mock<Connection>()
         val prior = settings(
             priorPolicy,
             collection = AndroidDataCollectionSetting(settingsVersion = 4),
-            legacy = AndroidSensorSetting.NO_SENSORS,
         )
         val downgraded = settings(
             priorPolicy,
-            legacy = AndroidSensorSetting(sensors = setOf(AndroidSensorType.gyroscope)),
         )
 
         val exception = assertThrows(ResponseStatusException::class.java) {
             ensureParticipantPolicyMutable(connection, studyId, prior, downgraded)
         }
 
-        org.junit.Assert.assertEquals(409, exception.statusCode.value())
+        assertEquals(409, exception.statusCode.value())
         verify(connection, never()).prepareStatement(any())
     }
 
@@ -178,26 +128,24 @@ class StudyParticipantPolicyImmutabilityTest {
         val lockStatement = mock<PreparedStatement>()
         val lockResult = mock<ResultSet>()
         val activityStatement = mock<PreparedStatement>()
-        val activityResult = mock<ResultSet>()
+        val activityResult = EnrollmentDisclosureActivityResultFixture.resultSet(EnrollmentDisclosureActivity(
+            hasActiveEnrollment = hasActiveEnrollment,
+            pendingParticipantIds = if (hasPendingEnrollment) listOf("pending-participant") else emptyList(),
+        ))
         whenever(connection.prepareStatement(any())).thenReturn(lockStatement, activityStatement)
         whenever(lockStatement.executeQuery()).thenReturn(lockResult)
         whenever(lockResult.next()).thenReturn(true)
         whenever(activityStatement.executeQuery()).thenReturn(activityResult)
-        whenever(activityResult.next()).thenReturn(true)
-        whenever(activityResult.getBoolean(1)).thenReturn(hasActiveEnrollment)
-        whenever(activityResult.getBoolean(2)).thenReturn(hasPendingEnrollment)
         return DatabaseFixture(connection, lockStatement, activityStatement)
     }
 
     private fun settings(
         policy: StudyParticipantPolicy,
         collection: AndroidDataCollectionSetting? = null,
-        legacy: AndroidSensorSetting? = null,
     ): StudySettings = StudySettings(
         buildMap {
             put(StudySettingType.ParticipantPolicy, policy)
             collection?.let { put(StudySettingType.DataCollection, it) }
-            legacy?.let { put(StudySettingType.AndroidSensor, it) }
         },
     )
 

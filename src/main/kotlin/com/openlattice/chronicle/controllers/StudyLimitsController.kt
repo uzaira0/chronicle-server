@@ -1,16 +1,17 @@
 package com.openlattice.chronicle.controllers
 
+import com.openlattice.chronicle.services.studies.checkLockedStudyRevision
+
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
 import com.openlattice.chronicle.services.studies.StudyLimitsManager
 import com.openlattice.chronicle.services.studies.StudyService
+import com.openlattice.chronicle.services.studies.requireStudyId
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.StudyLimits
 import com.openlattice.chronicle.study.StudyLimitsApi
@@ -20,7 +21,6 @@ import com.openlattice.chronicle.study.StudyLimitsApi.Companion.STUDY_ID_PATH
 import jakarta.validation.Valid
 import org.springframework.http.MediaType
 import org.springframework.http.HttpHeaders
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PutMapping
@@ -38,8 +38,6 @@ import jakarta.inject.Inject
  */
 @RestController
 @RequestMapping(path = [StudyLimitsApi.CONTROLLER, "/v3/limits"])
-@Validated
-@RateLimit(type = RateLimitType.ADMIN)
 public open class StudyLimitsController @Inject constructor(
     private val studyLimitsMgr: StudyLimitsManager,
     private val studyService: StudyService,
@@ -60,8 +58,8 @@ public open class StudyLimitsController @Inject constructor(
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
                 .transaction { transaction ->
-                    checkLockedStudyRevision(transaction, studyId, expectedRevision, studyService)
-                    studyLimitsMgr.setStudyLimits(studyId, studyLimits)
+                    checkLockedStudyRevision(transaction, studyId, expectedRevision)
+                    studyLimitsMgr.setStudyLimits(transaction, studyId, studyLimits)
                     nextRevision = studyService.bumpStudySettingsRevision(transaction, studyId)
                 }.audit {
                     listOf(
@@ -73,6 +71,7 @@ public open class StudyLimitsController @Inject constructor(
                     )
                 }.buildAndRun()
         }
+        studyService.refreshStudyCache(setOf(studyId))
         nextRevision?.let { request?.response?.setHeader(HttpHeaders.ETAG, "\"$it\"") }
     }
 
@@ -82,7 +81,7 @@ public open class StudyLimitsController @Inject constructor(
     )
     override fun getStudyLimits(@PathVariable(STUDY_ID) studyId: UUID): StudyLimits {
         ensureReadAccess(AclKey(studyId))
-        check( studyService.isValidStudy(studyId) ) { "$studyId is not valid." }
+        studyService.requireStudyId(studyId)
         return studyLimitsMgr.getStudyLimits(studyId)
     }
 }

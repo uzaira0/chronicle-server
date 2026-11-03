@@ -1,150 +1,130 @@
 package com.openlattice.chronicle.controllers
 
+
 import com.codahale.metrics.annotation.Timed
-import com.geekbeast.controllers.exceptions.ForbiddenException
-import com.google.common.base.MoreObjects
+import com.geekbeast.mappers.mappers.ObjectMappers
 import com.hazelcast.core.HazelcastInstance
+import com.openlattice.chronicle.EditRevisionApi
+import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
+import com.openlattice.chronicle.android.AndroidSensorSample
 import com.openlattice.chronicle.android.ChronicleData
 import com.openlattice.chronicle.android.ChronicleUsageEvent
 import com.openlattice.chronicle.android.ChronicleUsageEventType
+import com.openlattice.chronicle.android.UploadReceipt
 import com.openlattice.chronicle.android.fromInteractionType
 import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.geekbeast.mappers.mappers.ObjectMappers
-import com.openlattice.chronicle.audit.AuditAction
-import com.openlattice.chronicle.audit.AuditService
-import com.openlattice.chronicle.audit.logWithContext
-import com.openlattice.chronicle.services.studies.loadEnrollmentDisclosureActivity
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
 import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.authorization.SecurableObjectType
+import com.openlattice.chronicle.authorization.SecurablePrincipal
 import com.openlattice.chronicle.authorization.principals.Principals
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.base.OK
 import com.openlattice.chronicle.base.OK.Companion.ok
-import com.openlattice.chronicle.constants.CustomMediaType
-import com.openlattice.chronicle.data.FileType
-import com.openlattice.chronicle.data.ParticipationStatus
-import com.openlattice.chronicle.deletion.DeleteStudyTableData
-import com.openlattice.chronicle.deletion.StudyDeletionStorage
-import com.openlattice.chronicle.deletion.StudyDeletionTable
-import com.openlattice.chronicle.hazelcast.HazelcastMap
-import com.openlattice.chronicle.i18n.Messages
-import com.openlattice.chronicle.ids.HazelcastIdGenerationService
-import com.openlattice.chronicle.ids.IdConstants
-import com.openlattice.chronicle.filters.MobileApiHmacAuthenticationToken
-import com.openlattice.chronicle.filters.MobileEnrollmentAuthenticationToken
-import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
-import com.openlattice.chronicle.participants.Participant
-import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
-import com.openlattice.chronicle.android.SensorUploadReceipt
-import com.openlattice.chronicle.android.AndroidSensorSample
-import com.openlattice.chronicle.android.AndroidSensorSetting
-import com.openlattice.chronicle.android.AndroidSensorType
-import com.openlattice.chronicle.android.InteractionPointerCaptureCapability
-import com.openlattice.chronicle.collection.AmbientAudioClassificationEvent
+import com.openlattice.chronicle.collection.AndroidActivityRecognitionEvent
+import com.openlattice.chronicle.collection.AndroidAppNetworkUsageEvent
 import com.openlattice.chronicle.collection.AndroidAudioActivityEvent
 import com.openlattice.chronicle.collection.AndroidAudioContentEvent
-import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
+import com.openlattice.chronicle.collection.AndroidConnectivityStateEvent
+import com.openlattice.chronicle.collection.AndroidDeviceSettingsEvent
+import com.openlattice.chronicle.collection.AndroidHealthMetricEvent
 import com.openlattice.chronicle.collection.AndroidInteractionEvent
 import com.openlattice.chronicle.collection.AndroidNotificationActivityEvent
 import com.openlattice.chronicle.collection.AndroidSleepEvent
-import com.openlattice.chronicle.collection.AndroidActivityRecognitionEvent
-import com.openlattice.chronicle.collection.AndroidHealthMetricEvent
-import com.openlattice.chronicle.collection.AndroidConnectivityStateEvent
-import com.openlattice.chronicle.collection.AndroidAppNetworkUsageEvent
-import com.openlattice.chronicle.collection.AndroidDeviceSettingsEvent
 import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
 import com.openlattice.chronicle.collection.BatterySample
-import com.openlattice.chronicle.collection.IosBatterySample
 import com.openlattice.chronicle.collection.CollectionAcknowledgment
 import com.openlattice.chronicle.collection.CollectionAcknowledgmentEntry
-import com.openlattice.chronicle.collection.CollectionDefaults
-import com.openlattice.chronicle.collection.CollectionUploadEvidence
 import com.openlattice.chronicle.collection.CollectionModuleId
+import com.openlattice.chronicle.collection.CollectionUploadEvidence
+import com.openlattice.chronicle.collection.IosBatterySample
 import com.openlattice.chronicle.collection.SensorCollectionModules
-import com.openlattice.chronicle.sensorkit.SensorDataSample
-import com.openlattice.chronicle.sensorkit.SensorSetting
-import com.openlattice.chronicle.sensorkit.SensorType
-import com.openlattice.chronicle.services.upload.AndroidSensorDataUploadService
-import com.openlattice.chronicle.services.upload.BatteryTelemetryUploadService
-import com.openlattice.chronicle.services.upload.InteractionEventsUploadService
-import com.openlattice.chronicle.services.upload.AmbientAudioUploadService
-import com.openlattice.chronicle.services.upload.AppAudioActivityUploadService
-import com.openlattice.chronicle.services.upload.AppAudioContentUploadService
-import com.openlattice.chronicle.services.upload.NotificationActivityUploadService
-import com.openlattice.chronicle.services.upload.SleepEventsUploadService
-import com.openlattice.chronicle.services.upload.ActivityRecognitionEventsUploadService
-import com.openlattice.chronicle.services.upload.HealthMetricsUploadService
-import com.openlattice.chronicle.services.upload.ConnectivityStateEventsUploadService
-import com.openlattice.chronicle.services.upload.AppNetworkUsageUploadService
-import com.openlattice.chronicle.services.upload.DeviceSettingsUploadService
-import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
-import com.openlattice.chronicle.services.upload.UploadDiagnosticsQueryService
-import com.openlattice.chronicle.services.upload.EncryptedPayloadUploadService
-import com.openlattice.chronicle.services.delete.ParticipantDeletionPlan
+import com.openlattice.chronicle.constants.CustomMediaType
+import com.openlattice.chronicle.data.FileType
+import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.exceptions.OrganizationNotFoundException
+import com.openlattice.chronicle.exceptions.StudyNotFoundException
+import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
+import com.openlattice.chronicle.filters.MobileEnrollmentAuthenticationToken
+import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.generated.EnrollmentAttemptContracts
+import com.openlattice.chronicle.i18n.Messages
+import com.openlattice.chronicle.ids.IdConstants
+import com.openlattice.chronicle.participants.Participant
+import com.openlattice.chronicle.participants.ParticipantStats
+import com.openlattice.chronicle.services.apikeys.ApiKeyService
+import com.openlattice.chronicle.services.apikeys.InvalidEnrollmentAttemptException
 import com.openlattice.chronicle.services.delete.DataDeletionMode
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
 import com.openlattice.chronicle.services.delete.ParticipantQuarantineDecision
-import com.openlattice.chronicle.services.upload.ScreenTimeUsageEnvelope
-import com.openlattice.chronicle.services.upload.ScreenTimeUsageUploadService
-import com.openlattice.chronicle.services.upload.UserIdentificationEnvelope
-import com.openlattice.chronicle.services.upload.UserIdentificationUploadService
-import com.openlattice.chronicle.services.crypto.StudyEncryptionKeyService
-import com.openlattice.chronicle.crypto.EncryptedEnvelope
-import com.openlattice.chronicle.study.StudyEncryptionSetting
 import com.openlattice.chronicle.services.download.DataDownloadService
+import com.openlattice.chronicle.services.enrollment.EnrollmentAttemptEndedException
+import com.openlattice.chronicle.services.enrollment.EnrollmentAuthorization
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
-import com.openlattice.chronicle.services.apikeys.InvalidEnrollmentAttemptException
 import com.openlattice.chronicle.services.enrollment.EnrollmentManifestService
 import com.openlattice.chronicle.services.enrollment.EnrollmentService
-import com.openlattice.chronicle.services.jobs.ChronicleJob
-import com.openlattice.chronicle.services.jobs.JobService
 import com.openlattice.chronicle.services.studies.CollectionHaltedException
+import com.openlattice.chronicle.services.studies.CollectionUploadRequest
+import com.openlattice.chronicle.services.studies.LockedStudyUpdate
 import com.openlattice.chronicle.services.studies.ParticipantCollectionAcknowledgmentService
 import com.openlattice.chronicle.services.studies.StudyLifecycleService
-import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.services.studies.StudyService
-import com.openlattice.chronicle.services.studies.StudyService.Companion.loadLockedStudyFeatures
-import com.openlattice.chronicle.services.studies.collectionSettingsForFeatures
+import com.openlattice.chronicle.services.studies.requireStudyId
 import com.openlattice.chronicle.services.studies.StudySettingsAuditService
 import com.openlattice.chronicle.services.studies.StudySettingsNotificationService
+import com.openlattice.chronicle.services.studies.checkLockedStudyRevision
+import com.openlattice.chronicle.services.studies.collectionSettingsForFeatures
+import com.openlattice.chronicle.services.studies.ensureParticipantPolicyMutable
+import com.openlattice.chronicle.services.studies.mergeAndStampDataCollectionSettingsVersionLocked
+import com.openlattice.chronicle.services.studies.mergeStudySetting
+import com.openlattice.chronicle.services.studies.stampInitialDataCollectionSettings
+import com.openlattice.chronicle.services.upload.ActivityRecognitionEventsUploadService
+import com.openlattice.chronicle.services.upload.AndroidSensorDataUploadService
+import com.openlattice.chronicle.services.upload.AppAudioActivityUploadService
+import com.openlattice.chronicle.services.upload.AppAudioContentUploadService
 import com.openlattice.chronicle.services.upload.AppDataUploadService
-import com.openlattice.chronicle.services.upload.SensorDataUploadService
+import com.openlattice.chronicle.services.upload.AppNetworkUsageUploadService
+import com.openlattice.chronicle.services.upload.BatteryTelemetryUploadService
+import com.openlattice.chronicle.services.upload.ConnectivityStateEventsUploadService
+import com.openlattice.chronicle.services.upload.DeviceSettingsUploadService
+import com.openlattice.chronicle.services.upload.HealthMetricsUploadService
+import com.openlattice.chronicle.services.upload.InteractionEventsUploadService
+import com.openlattice.chronicle.services.upload.NotificationActivityUploadService
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageEnvelope
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageUploadService
+import com.openlattice.chronicle.services.upload.SleepEventsUploadService
+import com.openlattice.chronicle.services.upload.UploadDiagnosticsQueryService
+import com.openlattice.chronicle.services.upload.UploadDiagnosticsUploadService
+import com.openlattice.chronicle.services.upload.UploadRowRejectedException
+import com.openlattice.chronicle.services.upload.requireUploadRow
 import com.openlattice.chronicle.services.webhooks.WebhookService
 import com.openlattice.chronicle.sources.SourceDevice
+import com.openlattice.chronicle.storage.AndroidSensorAvailabilityRepository
+import com.openlattice.chronicle.storage.ChroniclePostgresTables
+import com.openlattice.chronicle.storage.PostgresColumns
+import com.openlattice.chronicle.mapstores.stats.ParticipantStatsMapstore
+import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.study.EnrollmentResponse
-import com.openlattice.chronicle.study.EnrollmentPreviewResponse
-import com.openlattice.chronicle.study.IosUploadStatus
 import com.openlattice.chronicle.study.AndroidDiagnosticsPage
+import com.openlattice.chronicle.study.EnrollmentPreviewResponse
+import com.openlattice.chronicle.study.EnrollmentResponse
+import com.openlattice.chronicle.study.IosUploadStatus
+import com.openlattice.chronicle.study.ParticipantAnnotationsUpdate
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudyApi
-import com.openlattice.chronicle.study.StudySetting
-import com.openlattice.chronicle.study.StudySettingType
-import com.openlattice.chronicle.study.StudySettings
-import com.openlattice.chronicle.study.StudySettingsAuditEntry
-import com.openlattice.chronicle.study.StudyUpdate
 import com.openlattice.chronicle.study.StudyApi.Companion.ANDROID_PATH
-import com.openlattice.chronicle.study.StudyApi.Companion.BATTERY_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.AVAILABILITY_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.CONTROLLER
-import com.openlattice.chronicle.study.StudyApi.Companion.DATA_COLLECTION
 import com.openlattice.chronicle.study.StudyApi.Companion.DATA_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.DEVICES_PATH
-import com.openlattice.chronicle.study.StudyApi.Companion.DATA_TYPE
-import com.openlattice.chronicle.study.StudyApi.Companion.END_DATE
-import com.openlattice.chronicle.study.StudyApi.Companion.ENROLL_PATH
-import com.openlattice.chronicle.study.StudyApi.Companion.FILE_NAME
+import com.openlattice.chronicle.study.StudyApi.Companion.DIAGNOSTICS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.IOS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.ORGANIZATION_ID
 import com.openlattice.chronicle.study.StudyApi.Companion.ORGANIZATION_ID_PATH
@@ -154,426 +134,88 @@ import com.openlattice.chronicle.study.StudyApi.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.study.StudyApi.Companion.PARTICIPANT_ID_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.PARTICIPANT_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.PARTICIPATION_STATUS
-import com.openlattice.chronicle.study.StudyApi.Companion.RESPONSE_TYPE
 import com.openlattice.chronicle.study.StudyApi.Companion.RETRIEVE
 import com.openlattice.chronicle.study.StudyApi.Companion.SENSORS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.SETTINGS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.SETTING_TYPE
 import com.openlattice.chronicle.study.StudyApi.Companion.SETTING_TYPE_PATH
-import com.openlattice.chronicle.study.StudyApi.Companion.SOURCE_DEVICE_ID
-import com.openlattice.chronicle.study.StudyApi.Companion.SOURCE_DEVICE_ID_PATH
-import com.openlattice.chronicle.study.StudyApi.Companion.START_DATE
-import com.openlattice.chronicle.util.DeviceIdUtils
 import com.openlattice.chronicle.study.StudyApi.Companion.STATS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.STATUS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID
 import com.openlattice.chronicle.study.StudyApi.Companion.STUDY_ID_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.UPLOAD_STATUS_PATH
-import com.openlattice.chronicle.study.StudyApi.Companion.DIAGNOSTICS_PATH
 import com.openlattice.chronicle.study.StudyApi.Companion.VERIFY_PATH
+import com.openlattice.chronicle.study.StudySetting
+import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.study.StudySettings
+import com.openlattice.chronicle.study.StudySettingsAuditEntry
+import com.openlattice.chronicle.study.StudyUpdate
 import com.openlattice.chronicle.util.ChronicleServerUtil
+import com.openlattice.chronicle.util.RandomDeviceIdUtils
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.PaginationDefaults
 import com.openlattice.chronicle.util.normalizeEntityTag
 import com.openlattice.chronicle.util.validateParticipantId
-import com.openlattice.chronicle.webhooks.WebhookEventType
-import org.slf4j.LoggerFactory
+import com.openlattice.chronicle.services.upload.MAX_UPLOAD_ROWS
+import jakarta.inject.Inject
+import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Size
+import org.slf4j.LoggerFactory
 import org.springframework.format.annotation.DateTimeFormat
 import org.springframework.http.HttpHeaders
-import org.springframework.web.context.request.RequestContextHolder
-import org.springframework.web.context.request.ServletRequestAttributes
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
-import org.springframework.validation.annotation.Validated
 import org.springframework.security.core.Authentication
-import org.springframework.security.authentication.AnonymousAuthenticationToken
 import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.ModelAttribute
 import org.springframework.web.bind.annotation.PatchMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
-import org.springframework.web.bind.annotation.PutMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.context.request.RequestContextHolder
+import org.springframework.web.context.request.ServletRequestAttributes
 import org.springframework.web.server.ResponseStatusException
 import java.time.LocalDate
-import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.*
-import jakarta.inject.Inject
-import jakarta.servlet.http.HttpServletResponse
 
-/** Assigns the authoritative revision for DataCollection settings, ignoring client-supplied revisions. */
-internal fun stampDataCollectionSettingsVersion(
-    priorSettings: StudySettings?,
-    requestedUpdate: StudyUpdate,
-): StudyUpdate {
-    val requestedSettings = requestedUpdate.settings ?: return requestedUpdate
-    requireExportableStudyEncryption(requestedSettings)
-    val requested = requestedSettings[StudySettingType.DataCollection] as? AndroidDataCollectionSetting
-        ?: return requestedUpdate
-    validatePlayCollectionPolicy(requested)
-    val prior = priorSettings?.get(StudySettingType.DataCollection) as? AndroidDataCollectionSetting
-    val stampedVersion = when {
-        prior == null -> AndroidDataCollectionSetting.INITIAL_SETTINGS_VERSION
-        requested.copy(settingsVersion = prior.settingsVersion) == prior -> prior.settingsVersion
-        else -> prior.settingsVersion + 1
-    }
-    return requestedUpdate.copy(
-        settings = StudySettings(
-            requestedSettings.mapValues { (type, setting) ->
-                if (type == StudySettingType.DataCollection) {
-                    // Unchanged: keep the stored value. The same sets in another order would
-                    // serialize differently and conflict with the immutable revision evidence.
-                    if (prior != null && stampedVersion == prior.settingsVersion) {
-                        prior
-                    } else {
-                        requested.copy(settingsVersion = stampedVersion)
-                    }
-                } else {
-                    setting
-                }
-            },
-        ),
-    )
-}
 
-/** Ignores caller-supplied collection revisions when a study is first created. */
-internal fun stampInitialDataCollectionSettings(study: Study): Study {
-    val initialSettings = if (study.settings.containsKey(StudySettingType.DataCollection)) {
-        study.settings
-    } else {
-        StudySettings(
-            study.settings + (StudySettingType.DataCollection to CollectionDefaults.androidDataCollectionSetting()),
-        )
-    }
-    val stampedSettings = checkNotNull(
-        stampDataCollectionSettingsVersion(
-            priorSettings = null,
-            requestedUpdate = StudyUpdate(settings = collectionSettingsForFeatures(initialSettings, study.modules.keys.map { it.name }.toSet())),
-        ).settings,
-    )
-    if (stampedSettings == study.settings) return study
-    return Study(
-        studyId = study.id,
-        title = study.title,
-        description = study.description,
-        createdAt = study.createdAt,
-        updatedAt = study.updatedAt,
-        startedAt = study.startedAt,
-        endedAt = study.endedAt,
-        lat = study.lat,
-        lon = study.lon,
-        group = study.group,
-        version = study.version,
-        contact = study.contact,
-        organizationIds = study.organizationIds,
-        notificationsEnabled = study.notificationsEnabled,
-        storage = study.storage,
-        settings = stampedSettings,
-        modules = study.modules,
-        phoneNumber = study.phoneNumber,
-    )
-}
-
-internal data class LockedStudyUpdate(
-    val priorSettings: StudySettings?,
-    val stampedStudy: StudyUpdate,
-    /** Settings revision after the write, for the response `ETag`. */
-    val settingsRevision: Long = 0L,
-)
-
-/** Raised when an `If-Match` settings precondition does not match the row-locked revision. */
-public class StudySettingsRevisionMismatchException(
-    public val currentRevision: Long,
-    public val currentSettings: StudySettings,
-) : RuntimeException("Study settings were modified by another client")
 
 private val SETTINGS_REVISION_ETAG = Regex("""\d+""")
 
 /**
- * Parses an `If-Match` settings precondition. Returns null when absent or `*` (no check, which
- * preserves the behaviour older mobile/iOS clients depend on).
+ * Settings writes require a revision read by the caller; an unconditional wildcard cannot protect a draft.
  */
-internal fun parseSettingsRevisionPrecondition(header: String?): Long? {
-    val value = header?.trim()?.takeUnless { it.isEmpty() || it == "*" } ?: return null
+internal fun parseSettingsRevisionPrecondition(header: String?): Long =
+    parseRevisionPrecondition(header, "error.study.invalidSettingsRevision")
+
+/** A numeric If-Match revision the caller read; missing or wildcard is 428, anything else non-numeric is 400. */
+internal fun parseRevisionPrecondition(header: String?, invalidMessageKey: String): Long {
+    val value = header?.trim()?.takeUnless { it.isEmpty() || it == "*" }
+        ?: throw ResponseStatusException(HttpStatus.PRECONDITION_REQUIRED, Messages.get("error.study.settingsRevisionRequired"))
     val revision = SETTINGS_REVISION_ETAG.matchEntire(normalizeEntityTag(value))?.value?.toLongOrNull()
-    // ast-grep-ignore: server-i18n-response-literal
-    return revision ?: throw ResponseStatusException(
-        HttpStatus.BAD_REQUEST,
-        "If-Match must be a study settings revision, for example: \"7\"",
-    )
+    return revision ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get(invalidMessageKey))
 }
 
-/** Reads and stamps settings only after serializing on the authoritative study row. */
-internal fun stampDataCollectionSettingsVersionLocked(
-    connection: java.sql.Connection,
-    studyId: UUID,
-    requestedUpdate: StudyUpdate,
-): LockedStudyUpdate {
-    if (requestedUpdate.settings == null && requestedUpdate.modules == null) return LockedStudyUpdate(null, requestedUpdate)
-    val priorSettings = loadLockedStudySettings(connection, studyId)
-    val features = requestedUpdate.modules?.keys ?: loadLockedStudyFeatures(connection, studyId)
-    val settings = collectionSettingsForFeatures(requestedUpdate.settings ?: priorSettings, features)
-    return LockedStudyUpdate(
-        priorSettings,
-        stampDataCollectionSettingsVersion(priorSettings, requestedUpdate.copy(settings = settings)),
-    )
-}
-
-internal fun loadLockedStudySettings(
-    connection: java.sql.Connection,
-    studyId: UUID,
-): StudySettings = connection.prepareStatement(
-        "SELECT settings FROM studies WHERE study_id = ? FOR UPDATE",
-    ).use { statement ->
-        statement.setObject(1, studyId)
-        statement.executeQuery().use { resultSet ->
-            if (!resultSet.next()) {
-                throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.study.notFound"))
-            }
-            resultSet.getString("settings")
-                ?.let { ObjectMappers.getJsonMapper().readValue(it, StudySettings::class.java) }
-                ?: StudySettings(emptyMap())
-        }
-    }
-
-internal fun checkLockedStudyRevision(
-    connection: java.sql.Connection,
-    studyId: UUID,
-    expectedRevision: Long?,
-    studyService: com.openlattice.chronicle.services.studies.StudyManager,
-) {
-    if (expectedRevision == null) return
-    val settings = loadLockedStudySettings(connection, studyId)
-    val currentRevision = studyService.getStudySettingsRevision(connection, studyId)
-    if (expectedRevision != currentRevision) {
-        throw StudySettingsRevisionMismatchException(currentRevision, settings)
-    }
-}
-
-internal fun mergeLegacyDataCollectionSettings(
-    priorSettings: StudySettings,
-    legacySetting: ChronicleDataCollectionSettings,
-): StudySettings {
-    if (priorSettings[StudySettingType.DataCollection] is AndroidDataCollectionSetting) {
-        throw ResponseStatusException(
-            HttpStatus.CONFLICT,
-            Messages.get("error.study.legacyCollectionSettings"),
-        )
-    }
-    return StudySettings(priorSettings + (StudySettingType.DataCollection to legacySetting))
-}
-
-/**
- * The row-locked body of a settings write: read the authoritative map, check the optional
- * `If-Match` precondition, apply the per-type delta, persist, and report the new revision.
- *
- * The mutation only ever sees the row-locked map, so a write of one setting type can never rewrite
- * another type from a client-supplied merge. Everything happens on [transaction], which holds the
- * `FOR UPDATE` lock taken by [loadLockedStudySettings], so a concurrent write of a different type
- * is serialized behind this one rather than clobbering it.
- */
-internal fun applyLockedSettingsMutation(
-    transaction: java.sql.Connection,
-    studyId: UUID,
-    expectedRevision: Long?,
-    studyService: StudyManager,
-    mutation: (StudySettings) -> StudySettings,
-): LockedStudyUpdate {
-    val priorSettings = loadLockedStudySettings(transaction, studyId)
-    val currentRevision = studyService.getStudySettingsRevision(transaction, studyId)
-    if (expectedRevision != null && expectedRevision != currentRevision) {
-        throw StudySettingsRevisionMismatchException(currentRevision, priorSettings)
-    }
-    val requestedStudy = StudyUpdate(settings = collectionSettingsForFeatures(mutation(priorSettings), loadLockedStudyFeatures(transaction, studyId)))
-    val lockedUpdate = LockedStudyUpdate(
-        priorSettings,
-        stampDataCollectionSettingsVersion(priorSettings, requestedStudy),
-    )
-    ensureParticipantPolicyMutable(
-        transaction,
-        studyId,
-        priorSettings,
-        checkNotNull(lockedUpdate.stampedStudy.settings),
-    )
-    studyService.updateStudy(transaction, studyId, lockedUpdate.stampedStudy)
-    return lockedUpdate.copy(settingsRevision = studyService.getStudySettingsRevision(transaction, studyId))
-}
-
-/** Applies a single-setting endpoint delta to the authoritative row-locked settings map. */
-internal fun mergeStudySetting(
-    priorSettings: StudySettings,
-    settingType: StudySettingType,
-    setting: StudySetting,
-): StudySettings = StudySettings(priorSettings + (settingType to setting)).also(::requireExportableStudyEncryption)
-
-/** Encrypted payload export is not yet implemented; never allow a study to select a data sink it cannot export. */
-internal fun requireExportableStudyEncryption(settings: StudySettings) {
-    val encryption = settings[StudySettingType.Encryption] as? StudyEncryptionSetting
-    require(encryption?.enabled != true) {
-        "Study payload encryption cannot be enabled until encrypted participant export is supported"
-    }
-}
-
-private val PLAY_CUSTOM_COLLECTION_CADENCE_MODULES = setOf(
-    CollectionModuleId.CONNECTIVITY_STATE,
-    CollectionModuleId.DEVICE_SETTINGS,
-    CollectionModuleId.APP_NETWORK_USAGE,
-    CollectionModuleId.HEALTH_CONNECT,
-    CollectionModuleId.BATTERY_TELEMETRY,
-)
-
-/** Keeps the signed manifest within policy controls the Play client actually enforces. */
-internal fun validatePlayCollectionPolicy(setting: AndroidDataCollectionSetting) {
-    // The Play and Amazon clients refuse to enroll (requireSupportedCollectionPolicies) when
-    // upload diagnostics are not disclosed; the participant only sees a generic enrollment
-    // failure. Reject the setting here, where the researcher can read the reason.
-    require(setting.effectiveModules().getValue(CollectionModuleId.UPLOAD_TELEMETRY).enabled) {
-        "upload_telemetry cannot be disabled: Play and Amazon builds refuse to enroll a study " +
-            "that does not disclose upload diagnostics"
-    }
-    setting.modules.forEach { (moduleId, moduleSetting) ->
-        if (moduleId in PLAY_CUSTOM_COLLECTION_CADENCE_MODULES) {
-            require(moduleSetting.collectionCadence.jitterSeconds == 0L) {
-                "${moduleId.id}.collectionCadence.jitterSeconds is not supported by the Play build"
-            }
-        } else {
-            require(
-                moduleSetting.collectionCadence ==
-                    com.openlattice.chronicle.collection.CollectionCadence.DEFAULT_COLLECTION,
-            ) {
-                "${moduleId.id}.collectionCadence is not supported by the Play build"
-            }
-        }
-        require(moduleSetting.uploadCadence == com.openlattice.chronicle.collection.CollectionCadence.DEFAULT_UPLOAD) {
-            "${moduleId.id}.uploadCadence is not supported by the Play build"
-        }
-        require(moduleSetting.batteryPolicy == com.openlattice.chronicle.collection.BatteryPolicy.DEFAULT) {
-            "${moduleId.id}.batteryPolicy is not supported by the Play build"
-        }
-        require(moduleSetting.networkPolicy == com.openlattice.chronicle.collection.NetworkPolicy.DEFAULT) {
-            "${moduleId.id}.networkPolicy is not supported by the Play build"
-        }
-        require(
-            moduleId == CollectionModuleId.HEALTH_CONNECT || moduleSetting.healthConnectRecordTypes.isEmpty(),
-        ) {
-            "healthConnectRecordTypes may only be configured for the health_connect module"
-        }
-    }
-
-    val healthConnect = setting.modules[CollectionModuleId.HEALTH_CONNECT]
-    require(healthConnect == null || !healthConnect.enabled || healthConnect.healthConnectRecordTypes.isNotEmpty()) {
-        "An enabled health_connect module requires at least one healthConnectRecordType"
-    }
-}
-
-/** Prevents changing the legal disclosure after a participant or device has entered the study. */
-internal fun ensureParticipantPolicyMutable(
-    connection: java.sql.Connection,
-    studyId: UUID,
-    priorSettings: StudySettings?,
-    requestedSettings: StudySettings,
-) {
-    val priorPolicy = priorSettings?.get(StudySettingType.ParticipantPolicy)
-    val requestedPolicy = requestedSettings[StudySettingType.ParticipantPolicy]
-    rejectDataCollectionRemoval(priorSettings, requestedSettings)
-    val policyChanged = priorPolicy != requestedPolicy ||
-        priorSettings?.get(StudySettingType.Withdrawal) != requestedSettings[StudySettingType.Withdrawal]
-    val collectionChanged = priorSettings?.get(StudySettingType.DataCollection) !=
-        requestedSettings[StudySettingType.DataCollection]
-    val requestedCollection = requestedSettings[StudySettingType.DataCollection]
-    val unversionedCollectionChanged = collectionChanged && requestedCollection !is AndroidDataCollectionSetting
-    val legacyAndroidSensorChanged = priorSettings?.get(StudySettingType.AndroidSensor) !=
-        requestedSettings[StudySettingType.AndroidSensor]
-    if (!policyChanged && !collectionChanged && !legacyAndroidSensorChanged) return
-
-    val (hasActiveEnrollment, hasPendingEnrollment) = loadEnrollmentDisclosureActivity(connection, studyId)
-    if (hasPendingEnrollment) {
-        throw ResponseStatusException(
-            HttpStatus.CONFLICT,
-            Messages.get("error.study.enrollmentDisclosurePending"),
-        )
-    }
-    rejectImmutableActiveDisclosureChanges(
-        policyChanged,
-        legacyAndroidSensorChanged,
-        unversionedCollectionChanged,
-        hasActiveEnrollment,
-    )
-}
-
-private fun rejectDataCollectionRemoval(
-    priorSettings: StudySettings?,
-    requestedSettings: StudySettings,
-) {
-    val hadVersionedSettings = priorSettings?.get(StudySettingType.DataCollection) is AndroidDataCollectionSetting
-    val retainsVersionedSettings = requestedSettings[StudySettingType.DataCollection] is AndroidDataCollectionSetting
-    if (hadVersionedSettings && !retainsVersionedSettings) {
-        throw ResponseStatusException(
-            HttpStatus.CONFLICT,
-            Messages.get("error.study.versionedSettingsRemoval"),
-        )
-    }
-}
-
-private fun rejectImmutableActiveDisclosureChanges(
-    policyChanged: Boolean,
-    legacyAndroidSensorChanged: Boolean,
-    unversionedCollectionChanged: Boolean,
-    hasActiveEnrollment: Boolean,
-) {
-    if (policyChanged && hasActiveEnrollment) {
-        throw ResponseStatusException(
-            HttpStatus.CONFLICT,
-            Messages.get("error.study.participantPolicyLocked"),
-        )
-    }
-    if (legacyAndroidSensorChanged && hasActiveEnrollment) {
-        throw ResponseStatusException(
-            HttpStatus.CONFLICT,
-            Messages.get("error.study.androidSensorSettingsLocked"),
-        )
-    }
-    if (unversionedCollectionChanged && hasActiveEnrollment) {
-        throw ResponseStatusException(
-            HttpStatus.CONFLICT,
-            Messages.get("error.study.unversionedSettingsLocked"),
-        )
-    }
-}
-
-internal enum class V4EnrollmentCredentialMode {
-    ONE_TIME_CODE,
-    LEGACY_SIGNED_REQUEST,
-}
-
-/** Distinguishes public invitation enrollment from the controlled legacy HMAC compatibility path. */
-internal fun requireV4EnrollmentCredentialMode(
+/** Public enrollment always presents one complete, replay-safe invitation credential. */
+internal fun requireV4EnrollmentCredentials(
     authentication: Authentication?,
     enrollmentCode: String?,
     manifestDigest: String?,
     enrollmentAttemptId: String?,
     proposedApiKey: String?,
-): V4EnrollmentCredentialMode {
-    val publicHeaders = listOf(enrollmentCode, manifestDigest, enrollmentAttemptId, proposedApiKey)
-    val hasCompletePublicCredential = publicHeaders.all { !it.isNullOrBlank() }
-    val hasNoPublicCredential = publicHeaders.all { it.isNullOrBlank() }
-    return when {
-        hasCompletePublicCredential && authentication is MobileEnrollmentAuthenticationToken ->
-            V4EnrollmentCredentialMode.ONE_TIME_CODE
-        hasNoPublicCredential && authentication is MobileApiHmacAuthenticationToken ->
-            V4EnrollmentCredentialMode.LEGACY_SIGNED_REQUEST
-        else -> throw ResponseStatusException(
-            HttpStatus.UNAUTHORIZED,
-            Messages.get("error.enrollment.credentialOrDigestInvalid"),
-        )
+) {
+    if (authentication !is MobileEnrollmentAuthenticationToken ||
+        listOf(enrollmentCode, manifestDigest, enrollmentAttemptId, proposedApiKey).any { it.isNullOrBlank() }) {
+        throw ResponseStatusException(HttpStatus.UNAUTHORIZED, Messages.get("error.enrollment.credentialOrDigestInvalid"))
     }
 }
 
@@ -587,20 +229,16 @@ internal fun requireV4EnrollmentCredentialMode(
 @Suppress("LargeClass", "TooManyFunctions", "LongParameterList", "TooGenericExceptionCaught")
 @RestController
 @RequestMapping(CONTROLLER)
-@Validated
-@RateLimit(type = RateLimitType.READ, keyStrategy = RateLimitKeyStrategy.STUDY)
 public open class StudyController @Inject constructor(
     hazelcastInstance: HazelcastInstance,
     public val storageResolver: StorageResolver,
-    public val idGenerationService: HazelcastIdGenerationService,
     public val enrollmentService: EnrollmentService,
     public val studyService: StudyService,
-    public val sensorDataUploadService: SensorDataUploadService,
+    public val screenTimeUsageUploadService: ScreenTimeUsageUploadService,
     public val androidSensorDataUploadService: AndroidSensorDataUploadService,
     public val batteryTelemetryUploadService: BatteryTelemetryUploadService,
     public val interactionEventsUploadService: InteractionEventsUploadService,
     public val appAudioActivityUploadService: AppAudioActivityUploadService,
-    public val ambientAudioUploadService: AmbientAudioUploadService,
     public val appAudioContentUploadService: AppAudioContentUploadService,
     public val notificationActivityUploadService: NotificationActivityUploadService,
     public val sleepEventsUploadService: SleepEventsUploadService,
@@ -610,59 +248,35 @@ public open class StudyController @Inject constructor(
     public val appNetworkUsageUploadService: AppNetworkUsageUploadService,
     public val deviceSettingsUploadService: DeviceSettingsUploadService,
     public val uploadDiagnosticsUploadService: UploadDiagnosticsUploadService,
-    public val encryptedPayloadUploadService: EncryptedPayloadUploadService,
-    public val studyEncryptionKeyService: StudyEncryptionKeyService,
     public val appDataUploadService: AppDataUploadService,
     public val downloadService: DataDownloadService,
     public val enrollmentManager: EnrollmentManager,
     override val authorizationManager: AuthorizationManager,
     override val auditingManager: AuditingManager,
-    public val chronicleJobService: JobService,
     public val auditService: AuditService,
     public val studySettingsAuditService: StudySettingsAuditService,
     public val participantCollectionAcknowledgmentService: ParticipantCollectionAcknowledgmentService,
     public val studySettingsNotificationService: StudySettingsNotificationService,
-    public val apiKeyService: com.openlattice.chronicle.services.apikeys.ApiKeyService,
+    public val apiKeyService: ApiKeyService,
     public val dataDeletionOrchestrator: DataDeletionOrchestrator,
     public val studyLifecycleService: StudyLifecycleService,
     public val webhookService: WebhookService,
+    private val enrollmentManifestService: EnrollmentManifestService,
 //    private val managementApi: ManagementAPI,
 ) : StudyApi, AuthorizingComponent {
 
     private val studies = HazelcastMap.STUDIES.getMap(hazelcastInstance)
     private val uploadDiagnosticsQueryService by lazy { UploadDiagnosticsQueryService(storageResolver) }
 
-    @Inject
-    private lateinit var enrollmentManifestService: EnrollmentManifestService
-
-    private fun fireDataSubmitted(
-        studyId: UUID,
-        participantId: String,
-        dataType: String,
-        recordCount: Int,
-    ) {
-        if (recordCount <= 0) return
-        webhookService.fireEvent(
-            studyId,
-            WebhookEventType.DATA_SUBMITTED,
-            mapOf(
-                "participantId" to participantId,
-                "dataType" to dataType,
-                "recordCount" to recordCount,
-            ),
-        )
-    }
-
     private fun mobileUploadEnrollmentGate(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         operation: String,
         allowCollectionHaltResolution: Boolean = false,
-        allowQueuedCaptures: Boolean = true,
     ) {
         if (SecurityContextHolder.getContext().authentication is ApiKeyAuthenticationToken) {
-            requireAcknowledgmentApiKey(studyId, participantId, deviceId)
+            requireAcknowledgmentApiKey(studyId, participantId, randomDeviceId)
         } else {
             ensureWriteAccess(AclKey(studyId))
         }
@@ -670,59 +284,45 @@ public open class StudyController @Inject constructor(
         val participationStatus = enrollmentManager.getDeviceParticipationStatus(studyId, participantId)
         var responseReasonKey = "error.enrollment.notEnrolled"
         val (rejectionLog, logAsError) = when {
-            participationStatus != ParticipationStatus.ENROLLED &&
-                (!allowQueuedCaptures || participationStatus !in setOf(ParticipationStatus.PAUSED, ParticipationStatus.COLLECTION_COMPLETED)) ->
+            participationStatus !in setOf(ParticipationStatus.ENROLLED, ParticipationStatus.PAUSED, ParticipationStatus.COLLECTION_COMPLETED) ->
                 "participant is not actively enrolled (status=$participationStatus)" to false
-            !enrollmentManager.isKnownDatasource(studyId, participantId, deviceId) ->
+            !enrollmentManager.isKnownDatasource(studyId, participantId, randomDeviceId) ->
                 "data source not found" to true
-            participationStatus == ParticipationStatus.ENROLLED && !allowCollectionHaltResolution && uploadSettingsVersion() == null &&
+            participationStatus == ParticipationStatus.ENROLLED && !allowCollectionHaltResolution &&
                 participantCollectionAcknowledgmentService.isCollectionHalted(
                 studyId,
                 participantId,
-                deviceId,
+                randomDeviceId,
             ) -> {
                 responseReasonKey = "error.enrollment.collectionHalted"
                 "required collection consent is unresolved" to false
             }
             else -> return
         }
-        rejectMobileUpload(studyId, participantId, deviceId, operation, responseReasonKey, rejectionLog, logAsError)
+        rejectMobileUpload(studyId, participantId, randomDeviceId, operation, responseReasonKey, rejectionLog, logAsError)
     }
 
     /**
-     * Runs a device-data write atomically with the collection-halt predicate.
-     *
-     * [mobileUploadEnrollmentGate] stays as the cheap fast-fail; this closes the window between it
-     * and the write, during which a consent DECLINE or a required-settings revision could land and
-     * still leave the batch persisted. The write runs inside the recheck's transaction (see
-     * [ParticipantCollectionAcknowledgmentService.withCollectionHaltRecheck]) and is rolled back
-     * with the same 403 the gate returns when the recheck finds a halt.
+     * Runs a device-data write atomically with the collection-halt predicate, judged by the batch's settings version
+     * and decision sequence headers. [mobileUploadEnrollmentGate] stays as the cheap fast-fail; the write runs inside
+     * the recheck's transaction and is rolled back with the same 403 the gate returns when the recheck refuses it.
      */
     private fun <T> guardedDeviceWrite(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         operation: String,
         uploadModules: Set<CollectionModuleId> = emptySet(),
-        latestCapturedAt: Instant? = null,
         allowQueuedCaptures: Boolean = true,
         write: (Set<CollectionModuleId>) -> T,
-    ): T = collectionWriteOrReject(studyId, participantId, deviceId, operation) {
-        val version = uploadSettingsVersion()
-        if (version == null) {
-            participantCollectionAcknowledgmentService.withCollectionHaltRecheck(studyId, participantId, deviceId, uploadModules, latestCapturedAt,
-                allowQueuedCaptures = allowQueuedCaptures, write = write)
-        } else {
-            participantCollectionAcknowledgmentService.withCollectionUploadRecheck(
-                studyId, participantId, deviceId, uploadModules, version, allowPartial = false,
-                latestCapturedAt = latestCapturedAt,
-                allowQueuedCaptures = allowQueuedCaptures,
-            ) { authorization -> write(authorization.acceptedModules) }
-        }
+    ): T = collectionWriteOrReject(studyId, participantId, randomDeviceId, operation) {
+        participantCollectionAcknowledgmentService.withCollectionUploadRecheck(
+            uploadRequest(studyId, participantId, randomDeviceId), uploadModules, allowPartial = false, allowQueuedCaptures = allowQueuedCaptures,
+        ) { authorization -> write(authorization.acceptedModules) }
     }
 
     private fun <T> collectionWriteOrReject(
-        studyId: UUID, participantId: String, deviceId: UUID, operation: String, write: () -> T,
+        studyId: UUID, participantId: String, randomDeviceId: UUID, operation: String, write: () -> T,
     ): T = try {
         write()
     } catch (halted: CollectionHaltedException) {
@@ -730,7 +330,7 @@ public open class StudyController @Inject constructor(
         rejectMobileUpload(
             studyId,
             participantId,
-            deviceId,
+            randomDeviceId,
             operation,
             "error.enrollment.collectionHalted",
             "required collection consent became unresolved before the write committed",
@@ -741,14 +341,14 @@ public open class StudyController @Inject constructor(
     private fun rejectMobileUpload(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         operation: String,
         responseReasonKey: String,
         rejectionLog: String,
         logAsError: Boolean,
     ): Nothing {
         val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
-        val dataSourceRef = LogSanitizer.stableFingerprint(deviceId.toString(), "device")
+        val dataSourceRef = LogSanitizer.stableFingerprint(randomDeviceId.toString(), "device")
         if (logAsError) {
             logger.error(
                 "{}, rejecting {} - studyId = {}, participantRef = {}, dataSourceRef = {}",
@@ -769,15 +369,16 @@ public open class StudyController @Inject constructor(
             )
         }
         auditService.logWithContext {
-            action(AuditAction.DATA_SUBMISSION)
+            action(AuditEventType.DATA_SUBMISSION)
             resourceType("MobileUpload")
             studyId(studyId)
-            failed(Messages.en(responseReasonKey))
+            success(false)
             additionalData(
                 mapOf(
                     "participantId" to participantId,
-                    "deviceId" to deviceId.toString(),
+                    "randomDeviceId" to randomDeviceId.toString(),
                     "operation" to operation,
+                    "reason" to responseReasonKey,
                 )
             )
         }
@@ -787,11 +388,22 @@ public open class StudyController @Inject constructor(
         )
     }
 
+    /** The upload's identity and the settings version and decision sequence its rows were captured under (headers). */
+    private fun uploadRequest(
+        studyId: UUID, participantId: String, randomDeviceId: UUID, settingsVersion: Int? = null, decisionSeq: Long? = null,
+    ) = CollectionUploadRequest(studyId, participantId, randomDeviceId, uploadSettingsVersion(settingsVersion), uploadDecisionSeq(decisionSeq))
+
     private fun uploadSettingsVersion(version: Int? = null): Int? =
         (version?.toString() ?: requestHeader(CollectionUploadEvidence.SETTINGS_VERSION_HEADER))?.let { raw ->
         raw.toIntOrNull()?.takeIf { it > 0 }
             ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.study.invalidCollectionSettingsVersion"))
     }
+
+    private fun uploadDecisionSeq(seq: Long? = null): Long? =
+        (seq?.toString() ?: requestHeader(CollectionUploadEvidence.DECISION_SEQ_HEADER))?.let { raw ->
+            raw.toLongOrNull()?.takeIf { it > 0 }
+                ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.study.invalidCollectionDecisionSeq"))
+        }
 
     private fun requestHeader(name: String): String? =
         (RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes)?.request?.getHeader(name)
@@ -803,14 +415,18 @@ public open class StudyController @Inject constructor(
             ?.setHeader(HttpHeaders.ETAG, "\"$revision\"")
     }
 
+    private fun getStudyWithEtag(studyId: UUID): Study = studyService.getStudy(studyId).also {
+        setSettingsRevisionEtag(it.settingsRevision)
+    }
+
     private fun requireAcknowledgmentApiKey(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
     ): ApiKeyAuthenticationToken {
         val mobileKey = SecurityContextHolder.getContext().authentication as? ApiKeyAuthenticationToken
             ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, Messages.get("error.enrollment.apiKeyRequired"))
-        if (mobileKey.studyId != studyId || mobileKey.participantId != participantId || mobileKey.deviceId != deviceId) {
+        if (mobileKey.studyId != studyId || mobileKey.participantId != participantId || mobileKey.randomDeviceId != randomDeviceId) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, Messages.get("error.enrollment.apiKeyMismatch"))
         }
         return mobileKey
@@ -825,7 +441,6 @@ public open class StudyController @Inject constructor(
 
     internal companion object {
         private val logger = LoggerFactory.getLogger(StudyController::class.java)!!
-        private val settingsAuditMapper = ObjectMappers.getJsonMapper()
         private val lifecycleEventTypes = setOf(
             ChronicleUsageEventType.BATTERY_LOW,
             ChronicleUsageEventType.BATTERY_OKAY,
@@ -838,167 +453,47 @@ public open class StudyController @Inject constructor(
             ChronicleUsageEventType.LOW_MEMORY,
         ).mapTo(hashSetOf()) { it.value }
 
-        private val UPSERT_SENSOR_AVAILABILITY_SQL = """
-            INSERT INTO android_device_sensor_availability
-                (study_id, participant_id, device_id, available_sensors, unavailable_sensors,
-                 screen_width_pixels, screen_height_pixels, screen_density_dpi, display_rotation,
-                 interaction_pointer_capture_capability, reported_at)
-            VALUES (?, ?, ?::uuid, ?, ?, ?, ?, ?, ?, ?, now())
-            ON CONFLICT (study_id, participant_id, device_id)
-            DO UPDATE SET
-                available_sensors = EXCLUDED.available_sensors,
-                unavailable_sensors = EXCLUDED.unavailable_sensors,
-                screen_width_pixels = EXCLUDED.screen_width_pixels,
-                screen_height_pixels = EXCLUDED.screen_height_pixels,
-                screen_density_dpi = EXCLUDED.screen_density_dpi,
-                display_rotation = EXCLUDED.display_rotation,
-                interaction_pointer_capture_capability = EXCLUDED.interaction_pointer_capture_capability,
-                reported_at = EXCLUDED.reported_at
-        """.trimIndent()
-
         private val GET_STUDY_DEVICES_SQL = """
-            SELECT participant_id, device_id, device_type, source_device
+            SELECT participant_id, random_device_id, device_type, source_device
             FROM devices
             WHERE study_id = ?
-        """.trimIndent()
-
-        private val GET_STUDY_SENSOR_AVAILABILITY_SQL = """
-            SELECT participant_id, device_id, available_sensors, unavailable_sensors,
-                   screen_width_pixels, screen_height_pixels, screen_density_dpi, display_rotation,
-                   interaction_pointer_capture_capability, reported_at
-            FROM android_device_sensor_availability
-            WHERE study_id = ?
+            ORDER BY participant_id, random_device_id
+            LIMIT ? OFFSET ?
         """.trimIndent()
 
         private val GET_IOS_UPLOAD_STATUS_SQL = """
-            WITH committed AS (
-                SELECT participant_id,
-                       count(*)::bigint AS committed_rows,
-                       max(exact_recordeddate) AS last_committed_at,
-                       max(datetimeend) AS last_observation_end_at
-                FROM sensor_data
-                WHERE study_id = ?
-                GROUP BY participant_id
-            ),
-            buffered AS (
-                SELECT participant_id,
-                       count(*)::bigint AS buffered_batches,
-                       coalesce(sum(jsonb_array_length(data)), 0)::bigint AS buffered_records,
-                       max(uploaded_at) AS last_buffered_upload_at
-                FROM upload_buffer
-                WHERE study_id = ?
-                  AND upload_type = 'Ios'
-                GROUP BY participant_id
-            )
-            SELECT coalesce(committed.participant_id, buffered.participant_id) AS participant_id,
-                   coalesce(committed.committed_rows, 0) AS committed_rows,
-                   committed.last_committed_at,
-                   committed.last_observation_end_at,
-                   coalesce(buffered.buffered_batches, 0) AS buffered_batches,
-                   coalesce(buffered.buffered_records, 0) AS buffered_records,
-                   buffered.last_buffered_upload_at
-            FROM committed
-            FULL OUTER JOIN buffered USING (participant_id)
-            ORDER BY participant_id
+            SELECT ${PostgresColumns.PARTICIPANT_ID.name},
+                   count(*)::bigint AS committed_rows,
+                   max(${PostgresColumns.UPLOADED_AT.name}) AS last_committed_at,
+                   max(${PostgresColumns.SCREEN_TIME_OBSERVATION_END.name}) AS last_observation_end_at
+            FROM ${ChroniclePostgresTables.IOS_SCREEN_TIME_USAGE.name}
+            WHERE ${PostgresColumns.STUDY_ID.name} = ?
+            GROUP BY ${PostgresColumns.PARTICIPANT_ID.name}
+            ORDER BY ${PostgresColumns.PARTICIPANT_ID.name}
+            LIMIT ? OFFSET ?
         """.trimIndent()
 
-        /** Binds a nullable Int to an INTEGER parameter, setting SQL NULL when the value is null. */
-        private fun setNullableInt(ps: java.sql.PreparedStatement, index: Int, value: Int?) {
-            if (value != null) ps.setInt(index, value) else ps.setNull(index, java.sql.Types.INTEGER)
-        }
-    }
-
-    internal fun createStudyDeletionJobs(studyId: UUID, contact: String): List<ChronicleJob> {
-        val eventDataSourceName = storageResolver.resolveDataSourceName(studyId)
-        return StudyDeletionStorage.values().mapNotNull { storage ->
-            val tables = StudyDeletionTable.values()
-                .filter { it.storage == storage }
-                .toSet()
-                .takeIf { it.isNotEmpty() }
-                ?: return@mapNotNull null
-
-            ChronicleJob(
-                id = idGenerationService.getNextId(),
-                contact = contact,
-                definition = DeleteStudyTableData(
-                    studyId = studyId,
-                    tables = tables,
-                    eventDataSourceName = eventDataSourceName.takeIf { storage == StudyDeletionStorage.EVENT },
-                ),
-            )
-        }
-    }
-
-    /**
-     * This call needs to be efficient as it is invoked at enrollment and everytime a phone attempts to upload data.
-     *
-     * Note: getStudyId could be sped up using an in-memory cache of legacy studies instead of postgres lookup
-     * every time. See CHRONICLE-2.
-     */
-    @Timed
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + SOURCE_DEVICE_ID_PATH + ENROLL_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE],
-    )
-    @Deprecated("Use v4 enrollV4 instead, which accepts device ID via header")
-    override fun enroll(
-        @PathVariable(STUDY_ID) studyId: UUID,
-        @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
-        @Valid @RequestBody sourceDevice: SourceDevice,
-    ): EnrollmentResponse {
-        val authentication = SecurityContextHolder.getContext().authentication
-        val unauthorized = when (authentication) {
-            is MobileApiHmacAuthenticationToken -> authentication.studyId != studyId
-            is MobileEnrollmentAuthenticationToken -> authentication.studyId != studyId
-            else -> authentication == null || authentication is AnonymousAuthenticationToken || !authentication.isAuthenticated
-        }
-        if (unauthorized) {
-            throw ResponseStatusException(HttpStatus.UNAUTHORIZED, Messages.get("error.enrollment.credentialOrDigestInvalid"))
-        }
-        if (authentication !is MobileApiHmacAuthenticationToken && authentication !is MobileEnrollmentAuthenticationToken) {
-            ensureWriteAccess(AclKey(studyId))
-        }
-        warnParticipantAction(
-            "Deprecated v3 enroll called with sourceDeviceId in path",
-            studyId,
-            participantId
-        )
-        return enrollDevice(
-            studyId,
-            participantId,
-            sourceDeviceId,
-            sourceDevice,
-            proposedApiKey = null,
-            enrollmentAttemptId = null,
-        )
     }
 
     private fun enrollDevice(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         sourceDevice: SourceDevice,
-        proposedApiKey: String?,
-        enrollmentAttemptId: UUID?,
+        proposedApiKey: String,
+        enrollmentAttemptId: UUID,
     ): EnrollmentResponse {
-        check((proposedApiKey == null) == (enrollmentAttemptId == null)) {
-            "Enrollment attempt and proposed key must be supplied together"
-        }
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
+        val realStudyId = studyService.requireStudyId(studyId)
 
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
         return try {
-            val id = enrollmentService.registerDevice(realStudyId, participantId, deviceId, sourceDevice)
-            studyService.updateLastDevicePing(realStudyId, participantId, sourceDevice)
+            val id = enrollmentService.registerDevice(realStudyId, participantId, randomDeviceId, sourceDevice)
 
-            // Comprehensive audit logging for device enrollment (HIPAA: PHI access tracking)
+            // Audit every device enrollment.
             auditService.logWithContext {
-                action(AuditAction.DEVICE_ENROLLMENT)
+                action(AuditEventType.DEVICE_ENROLLMENT)
                 resourceType("Device")
                 resourceId(id)
                 studyId(realStudyId)
@@ -1007,7 +502,7 @@ public open class StudyController @Inject constructor(
                 phiFields(listOf("participantId", "deviceInfo"))
                 additionalData(mapOf(
                     "participantId" to participantId,
-                    "deviceId" to id.toString(),
+                    "randomDeviceId" to id.toString(),
                     "deviceType" to (sourceDevice.javaClass.simpleName)
                 ))
             }
@@ -1021,33 +516,26 @@ public open class StudyController @Inject constructor(
             // uploads, so silently returning apiKey=null would leave the client persisting
             // an unworkable enrollment that 403s on every upload. Better to fail enrollment
             // visibly and let the client retry.
-            val apiKey = if (proposedApiKey == null) {
-                apiKeyService.createMobileApiKey(
-                    studyId = realStudyId,
-                    participantId = participantId,
-                    deviceId = id,
-                )
-            } else {
-                apiKeyService.installMobileApiKey(
-                    studyId = realStudyId,
-                    participantId = participantId,
-                    deviceId = id,
-                    enrollmentAttemptId = checkNotNull(enrollmentAttemptId),
-                    proposedApiKey = proposedApiKey,
-                )
-            }.rawKey
+            val apiKey = apiKeyService.installMobileApiKey(
+                studyId = realStudyId,
+                participantId = participantId,
+                randomDeviceId = id,
+                enrollmentAttemptId = enrollmentAttemptId,
+                proposedApiKey = proposedApiKey,
+            ).rawKey
 
-            EnrollmentResponse(chronicleId = id, apiKey = apiKey)
+            EnrollmentResponse(chronicleId = id, apiKey = apiKey,
+                hardStopGeneration = enrollmentService.getDeviceCollectionStatus(realStudyId, participantId).hardStop?.generation ?: 0)
         } catch (ex: Exception) {
             // Log failed enrollment attempts for security monitoring
             auditService.logWithContext {
-                action(AuditAction.DEVICE_ENROLLMENT)
+                action(AuditEventType.DEVICE_ENROLLMENT)
                 resourceType("Device")
                 studyId(realStudyId)
-                failed(ex.message ?: "Enrollment failed")
+                success(false)
                 additionalData(mapOf(
                     "participantId" to participantId,
-                    "deviceId" to deviceId.toString()
+                    "randomDeviceId" to randomDeviceId.toString()
                 ))
             }
             throw ex
@@ -1064,66 +552,64 @@ public open class StudyController @Inject constructor(
     override fun enrollV4(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         datasource: SourceDevice,
         enrollmentCode: String?,
         manifestDigest: String?,
         enrollmentAttemptId: String?,
         proposedApiKey: String?,
     ): EnrollmentResponse {
-        val mode = requireV4EnrollmentCredentialMode(
+        requireV4EnrollmentCredentials(
             SecurityContextHolder.getContext().authentication,
             enrollmentCode,
             manifestDigest,
             enrollmentAttemptId,
             proposedApiKey,
         )
-        if (mode == V4EnrollmentCredentialMode.ONE_TIME_CODE) {
-            checkNotNull(enrollmentCode)
-            checkNotNull(manifestDigest)
-            checkNotNull(enrollmentAttemptId)
-            checkNotNull(proposedApiKey)
-            if (!enrollmentManifestService.authorizeEnrollmentAttempt(
-                    studyId,
-                    participantId,
-                    enrollmentCode,
-                    manifestDigest,
-                    enrollmentAttemptId,
-                    sourceDeviceId,
-                    datasource,
-                    proposedApiKey,
-                )
-            ) {
-                throw ResponseStatusException(
-                    HttpStatus.UNAUTHORIZED,
-                    Messages.get("error.enrollment.credentialOrDigestInvalid"),
-                )
-            }
-            return try {
-                enrollDevice(
-                    studyId,
-                    participantId,
-                    sourceDeviceId,
-                    datasource,
-                    proposedApiKey,
-                    UUID.fromString(enrollmentAttemptId),
-                )
-            } catch (_: InvalidEnrollmentAttemptException) {
-                throw ResponseStatusException(
-                    HttpStatus.UNAUTHORIZED,
-                    Messages.get("error.enrollment.credentialOrDigestInvalid"),
-                )
-            }
-        }
-        return enrollDevice(
+        checkNotNull(enrollmentCode)
+        checkNotNull(manifestDigest)
+        checkNotNull(enrollmentAttemptId)
+        checkNotNull(proposedApiKey)
+        when (enrollmentManifestService.authorizeEnrollmentAttempt(
             studyId,
             participantId,
-            sourceDeviceId,
+            enrollmentCode,
+            manifestDigest,
+            enrollmentAttemptId,
+            sourceRandomDeviceId,
             datasource,
-            proposedApiKey = null,
-            enrollmentAttemptId = null,
-        )
+            proposedApiKey,
+        )) {
+            EnrollmentAuthorization.AUTHORIZED -> Unit
+            EnrollmentAuthorization.STUDY_CHANGED -> throw EnrollmentAttemptEndedException(HttpStatus.CONFLICT,
+                Messages.get("error.enrollment.studyChanged"), EnrollmentAttemptContracts.ENROLLMENT_STUDY_CHANGED_CODE)
+            EnrollmentAuthorization.CANCELLED -> throw enrollmentCancelled()
+            EnrollmentAuthorization.REFUSED -> throw ResponseStatusException(
+                HttpStatus.UNAUTHORIZED,
+                Messages.get("error.enrollment.credentialOrDigestInvalid"),
+            )
+        }
+        return try {
+            enrollDevice(
+                studyId,
+                participantId,
+                sourceRandomDeviceId,
+                datasource,
+                proposedApiKey,
+                UUID.fromString(enrollmentAttemptId),
+            )
+        } catch (_: InvalidEnrollmentAttemptException) {
+            // A cancel that won the device lock after the bind committed ends this attempt as cancelled.
+            if (apiKeyService.isCancelledEnrollmentKey(proposedApiKey)) throw enrollmentCancelled()
+            throw ResponseStatusException(
+                HttpStatus.UNAUTHORIZED,
+                Messages.get("error.enrollment.credentialOrDigestInvalid"),
+            )
+        }
     }
+
+    private fun enrollmentCancelled() = EnrollmentAttemptEndedException(HttpStatus.GONE,
+        Messages.get("error.enrollment.cancelled"), EnrollmentAttemptContracts.ENROLLMENT_CANCELLED_CODE)
 
     @Timed
     @PostMapping(
@@ -1133,17 +619,14 @@ public open class StudyController @Inject constructor(
     override fun createStudy(@Valid @RequestBody study: Study): UUID {
         ensureAuthenticated()
         val stampedStudy = stampInitialDataCollectionSettings(study)
-        if (stampedStudy.settings.containsKey(StudySettingType.Sensor) && !isAdmin()) {
-            throw ForbiddenException("Only admins can modify sensor types.")
-        }
         stampedStudy.organizationIds.forEach { organizationId -> ensureOwnerAccess(AclKey(organizationId)) }
         logger.info("Creating study associated with organizations ${stampedStudy.organizationIds}")
         return try {
             val id = studyService.createStudy(stampedStudy) { connection, createdId ->
-                recordSettingsAuditDiff(createdId, emptyMap(), stampedStudy.settings, connection)
+                studySettingsAuditService.recordSettingsDiff(createdId, emptyMap(), stampedStudy.settings, connection)
             }
             auditService.logWithContext {
-                action(AuditAction.STUDY_CREATE)
+                action(AuditEventType.STUDY_CREATE)
                 resourceType("Study")
                 resourceId(id)
                 success(true)
@@ -1152,9 +635,9 @@ public open class StudyController @Inject constructor(
             id
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.STUDY_CREATE)
+                action(AuditEventType.STUDY_CREATE)
                 resourceType("Study")
-                failed(ex.message ?: "Study creation failed")
+                success(false)
             }
             throw ex
         }
@@ -1170,8 +653,8 @@ public open class StudyController @Inject constructor(
         logger.info("Retrieving study with id $studyId")
 
         return try {
-            val study = studyService.getStudy(studyId)
-            recordEvent(
+            val study = getStudyWithEtag(studyId)
+            recordReadEvent(
                 AuditableEvent(
                     AclKey(studyId),
                     eventType = AuditEventType.GET_STUDY,
@@ -1182,7 +665,7 @@ public open class StudyController @Inject constructor(
                 )
             )
             auditService.logWithContext {
-                action(AuditAction.VIEW)
+                action(AuditEventType.VIEW)
                 resourceType("Study")
                 resourceId(studyId)
                 studyId(studyId)
@@ -1191,12 +674,12 @@ public open class StudyController @Inject constructor(
             study
         } catch (ex: NoSuchElementException) {
             auditService.logWithContext {
-                action(AuditAction.VIEW)
+                action(AuditEventType.VIEW)
                 resourceType("Study")
                 studyId(studyId)
-                failed(ex.message ?: "Study not found")
+                success(false)
             }
-            throw StudyNotFoundException(studyId, "No study with id $studyId found.")
+            throw StudyNotFoundException(studyId, "No study with id $studyId found.", ex)
         }
 
     }
@@ -1220,8 +703,7 @@ public open class StudyController @Inject constructor(
 
         return try {
             val studies = studyService.getOrgStudies(organizationId, safeLimit, safeOffset)
-            studies.forEach { study ->
-                recordEvent(
+            recordReadEvents(studies.map { study ->
                     AuditableEvent(
                         AclKey(study.id),
                         currentUser.id,
@@ -1230,10 +712,9 @@ public open class StudyController @Inject constructor(
                         study = study.id,
                         organization = organizationId,
                     )
-                )
-            }
+            })
             auditService.logWithContext {
-                action(AuditAction.LIST)
+                action(AuditEventType.LIST)
                 resourceType("Study")
                 organizationId(organizationId)
                 success(true)
@@ -1243,18 +724,17 @@ public open class StudyController @Inject constructor(
             studies
         } catch (ex: NoSuchElementException) {
             auditService.logWithContext {
-                action(AuditAction.LIST)
+                action(AuditEventType.LIST)
                 resourceType("Study")
                 organizationId(organizationId)
-                failed(ex.message ?: "Organization not found")
+                success(false)
             }
-            throw OrganizationNotFoundException(organizationId, "No organization with id $organizationId found.")
+            throw OrganizationNotFoundException(organizationId, "No organization with id $organizationId found.", ex)
         }
 
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.SENSITIVE)
     @PatchMapping(
         path = [STUDY_ID_PATH + SETTINGS_PATH + SETTING_TYPE_PATH],
         consumes = [MediaType.APPLICATION_JSON_VALUE]
@@ -1265,7 +745,6 @@ public open class StudyController @Inject constructor(
         @Valid @RequestBody settings: StudySetting,
     ): OK {
         when (settingType) {
-            StudySettingType.Sensor -> ensureAdminAccess()
             else -> ensureWriteAccess(AclKey(studyId))
         }
 
@@ -1279,7 +758,7 @@ public open class StudyController @Inject constructor(
             studyService.refreshStudyCache(setOf(studyId))
 
             auditService.logWithContext {
-                action(AuditAction.SETTINGS_CHANGE)
+                action(AuditEventType.SETTINGS_CHANGE)
                 resourceType("StudySettings")
                 resourceId(studyId)
                 studyId(studyId)
@@ -1292,10 +771,10 @@ public open class StudyController @Inject constructor(
             ok
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.SETTINGS_CHANGE)
+                action(AuditEventType.SETTINGS_CHANGE)
                 resourceType("StudySettings")
                 studyId(studyId)
-                failed(ex.message ?: "Settings update failed")
+                success(false)
             }
             throw ex
         }
@@ -1330,12 +809,12 @@ public open class StudyController @Inject constructor(
             studyId, limit.coerceIn(1, 200), offset.coerceAtLeast(0)
         )
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
             resourceType("CollectionAcknowledgments")
             studyId(studyId)
             success(true)
             accessedPHI(true)
-            phiFields(listOf("participantId", "sourceDeviceId", "collectionDecisions"))
+            phiFields(listOf("participantId", "sourceRandomDeviceId", "collectionDecisions"))
             additionalData(mapOf("participantCount" to acknowledgments.map { it.participantId }.distinct().size))
         }
         return acknowledgments
@@ -1355,39 +834,7 @@ public open class StudyController @Inject constructor(
      * practice. Audit failures roll back the settings transaction.
      */
     // reason: the two continues (skip-unchanged, skip-absent-after) are the clearest expression of the diff scan; restructuring loop control is risky
-    @Suppress("LoopWithTooManyJumpStatements")
-    private fun recordSettingsAuditDiff(
-        studyId: UUID,
-        before: Map<StudySettingType, StudySetting>,
-        after: Map<StudySettingType, StudySetting>,
-        connection: java.sql.Connection,
-    ) {
-        val changedBy = Principals.getCurrentUser().id
-        val sourceIp = com.openlattice.chronicle.audit.AuditRequestContext.getStaffClientIpReference()
-        for (settingType in (before.keys + after.keys)) {
-            val beforeValue = before[settingType]
-            val afterValue = after[settingType] ?: continue
-            if (beforeValue != null &&
-                settingsAuditMapper.writeValueAsString(beforeValue) ==
-                settingsAuditMapper.writeValueAsString(afterValue)
-            ) {
-                continue
-            }
-            val changeSummary = studySettingsAuditService.generateChangeSummary(
-                settingType, beforeValue, afterValue
-            )
-            studySettingsAuditService.recordSettingsChange(
-                studyId = studyId,
-                changedBy = changedBy,
-                sourceIp = sourceIp,
-                settingKey = settingType,
-                beforeValue = beforeValue,
-                afterValue = afterValue,
-                changeSummary = changeSummary,
-                connection = connection,
-            )
-        }
-    }
+    
 
 
 
@@ -1404,9 +851,6 @@ public open class StudyController @Inject constructor(
         val expectedRevision = parseSettingsRevisionPrecondition(requestHeader(HttpHeaders.IF_MATCH))
         val studyAclKey = AclKey(studyId)
         ensureOwnerAccess(studyAclKey)
-        if (study.settings?.containsKey(StudySettingType.Sensor) == true && !isAdmin()) {
-            throw ForbiddenException("Only admins can modify sensor types.")
-        }
         val currentUser = Principals.getCurrentSecurablePrincipal()
         logger.info("Updating study with id $studyId on behalf of ${currentUser.principal.id}")
         return try {
@@ -1414,19 +858,19 @@ public open class StudyController @Inject constructor(
             setSettingsRevisionEtag(persistedUpdate.settingsRevision)
             studyService.refreshStudyCache(setOf(studyId))
             auditService.logWithContext {
-                action(AuditAction.STUDY_UPDATE)
+                action(AuditEventType.STUDY_UPDATE)
                 resourceType("Study")
                 resourceId(studyId)
                 studyId(studyId)
                 success(true)
             }
-            if (retrieve) studyService.getStudy(studyId) else null
+            if (retrieve) getStudyWithEtag(studyId) else null
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.STUDY_UPDATE)
+                action(AuditEventType.STUDY_UPDATE)
                 resourceType("Study")
                 studyId(studyId)
-                failed(ex.message ?: "Study update failed")
+                success(false)
             }
             throw ex
         }
@@ -1436,14 +880,14 @@ public open class StudyController @Inject constructor(
         studyId: UUID,
         requestedStudy: StudyUpdate,
         studyAclKey: AclKey,
-        currentUser: com.openlattice.chronicle.authorization.SecurablePrincipal,
+        currentUser: SecurablePrincipal,
         expectedRevision: Long?,
     ): LockedStudyUpdate =
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<LockedStudyUpdate>(connection, auditingManager)
                 .transaction { transaction ->
-                    checkLockedStudyRevision(transaction, studyId, expectedRevision, studyService)
-                    val lockedUpdate = stampDataCollectionSettingsVersionLocked(
+                    checkLockedStudyRevision(transaction, studyId, expectedRevision)
+                    val lockedUpdate = mergeAndStampDataCollectionSettingsVersionLocked(
                         transaction,
                         studyId,
                         requestedStudy,
@@ -1458,7 +902,7 @@ public open class StudyController @Inject constructor(
                     }
                     studyService.updateStudy(transaction, studyId, lockedUpdate.stampedStudy)
                     lockedUpdate.stampedStudy.settings?.let { settings ->
-                        recordSettingsAuditDiff(studyId, lockedUpdate.priorSettings ?: emptyMap(), settings, transaction)
+                        studySettingsAuditService.recordSettingsDiff(studyId, lockedUpdate.priorSettings ?: emptyMap(), settings, transaction)
                     }
                     lockedUpdate.copy(settingsRevision = studyService.getStudySettingsRevision(transaction, studyId))
                 }
@@ -1487,23 +931,23 @@ public open class StudyController @Inject constructor(
         val currentUser = Principals.getCurrentSecurablePrincipal()
         logger.info("Quarantining study {} for verified deletion", studyId)
         return try {
-            val operationId = studyLifecycleService.scheduleImmediateStudyDeletion(
+            val operationId = studyLifecycleService.requestStudyDeletion(
                 studyId = studyId,
                 userId = currentUser.id.toString(),
             )
-            recordEvent(
+            recordCommittedEvent(
                 AuditableEvent(
                     aclKey = AclKey(operationId),
                     securablePrincipalId = currentUser.id,
                     principal = currentUser.principal,
                     eventType = AuditEventType.DELETE_STUDY,
-                    description = "Study entered inaccessible seven-day deletion quarantine",
+                    description = "Study deletion requested; data is blocked until an owner runs the erasure",
                     study = studyId,
                     data = mapOf("operationId" to operationId.toString()),
                 )
             )
             auditService.logWithContext {
-                action(AuditAction.STUDY_DELETE)
+                action(AuditEventType.STUDY_DELETE)
                 resourceType("Study")
                 resourceId(studyId)
                 studyId(studyId)
@@ -1514,50 +958,13 @@ public open class StudyController @Inject constructor(
             listOf(operationId)
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.STUDY_DELETE)
+                action(AuditEventType.STUDY_DELETE)
                 resourceType("Study")
                 studyId(studyId)
-                failed(ex.message ?: "Study deletion failed")
+                success(false)
             }
             throw ex
         }
-    }
-
-    private fun buildStudyDeletionAuditEvents(
-        studyId: UUID,
-        currentUser: com.openlattice.chronicle.authorization.SecurablePrincipal,
-        jobIds: Iterable<UUID>,
-    ): List<AuditableEvent> {
-        return listOf(
-            AuditableEvent(
-                AclKey(studyId),
-                currentUser.id,
-                currentUser.principal,
-                AuditEventType.DELETE_STUDY,
-                "",
-                studyId,
-                UUID(0, 0),
-                mapOf()
-            )
-        ) + jobIds.map {
-            AuditableEvent(
-                AclKey(it),
-                currentUser.id,
-                currentUser.principal,
-                AuditEventType.CREATE_JOB,
-                "",
-                studyId
-            )
-        }
-    }
-
-    private fun buildParticipantDeletionJobs(studyId: UUID, participantIds: Set<String>): List<ChronicleJob> {
-        return ParticipantDeletionPlan.jobs(
-            studyId = studyId,
-            participantIds = participantIds,
-            contact = Principals.getCurrentUser().id,
-            nextJobId = idGenerationService::getNextId,
-        )
     }
 
     @Timed
@@ -1595,18 +1002,18 @@ public open class StudyController @Inject constructor(
                 }
                 checkNotNull(transaction.operationId)
             }
-            recordEvent(
+            recordCommittedEvent(
                 AuditableEvent(
                     AclKey(studyId),
                     eventType = AuditEventType.DELETE_PARTICIPANTS,
                     description = "Participant refs ${LogSanitizer.stableFingerprints(participantIds, "participant")} " +
-                        "entered inaccessible seven-day deletion quarantine",
+                        "are blocked pending an owner-run erasure",
                     study = studyId,
                     data = mapOf("operationIds" to operationIds.map(UUID::toString)),
                 )
             )
             auditService.logWithContext {
-                action(AuditAction.DATA_DELETION)
+                action(AuditEventType.DATA_DELETION)
                 resourceType("Participant")
                 studyId(studyId)
                 success(true)
@@ -1617,10 +1024,10 @@ public open class StudyController @Inject constructor(
             operationIds
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_DELETION)
+                action(AuditEventType.DATA_DELETION)
                 resourceType("Participant")
                 studyId(studyId)
-                failed(ex.message ?: "Participant deletion failed")
+                success(false)
             }
             throw ex
         }
@@ -1641,7 +1048,7 @@ public open class StudyController @Inject constructor(
         return try {
             val id = studyService.registerParticipant(studyId, participant)
             auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_ENROLL)
+                action(AuditEventType.PARTICIPANT_ENROLL)
                 resourceType("Participant")
                 resourceId(id)
                 studyId(studyId)
@@ -1652,97 +1059,43 @@ public open class StudyController @Inject constructor(
             id
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_ENROLL)
+                action(AuditEventType.PARTICIPANT_ENROLL)
                 resourceType("Participant")
                 studyId(studyId)
-                failed(ex.message ?: "Participant registration failed")
+                success(false)
             }
             throw ex
         }
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + SOURCE_DEVICE_ID_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    @Deprecated("Use v4 uploadSensorDataV4 instead")
-    override fun uploadSensorData(
-        @PathVariable(STUDY_ID) studyId: UUID,
-        @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<SensorDataSample>,
-    ): Int {
-        warnParticipantAction(
-            "Deprecated v3 uploadSensorData called with sourceDeviceId in path",
-            studyId,
-            participantId
-        )
-        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        mobileUploadEnrollmentGate(studyId, participantId, deviceId, "sensor data upload")
-        return try {
-            val count = guardedDeviceWrite(studyId, participantId, deviceId, "sensor data upload",
-                latestCapturedAt = data.maxOfOrNull { it.dateRecorded.toInstant() }) {
-                sensorDataUploadService.upload(studyId, participantId, deviceId, data)
-            }
-            auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
-                resourceType("SensorData")
-                studyId(studyId)
-                success(true)
-                accessedPHI(true)
-                phiFields(listOf("participantId", "sensorData"))
-                additionalData(mapOf("participantId" to participantId, "recordCount" to count))
-            }
-            fireDataSubmitted(studyId, participantId, "ios_sensor", count)
-            count
-        } catch (ex: Exception) {
-            auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
-                resourceType("SensorData")
-                studyId(studyId)
-                failed(ex.message ?: "Sensor data upload failed")
-                additionalData(mapOf("participantId" to participantId))
-            }
-            throw ex
-        }
-    }
-
-    @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + SOURCE_DEVICE_ID_PATH + "/screen-time"],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
     public fun uploadScreenTimeData(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         @Valid @RequestBody envelope: ScreenTimeUsageEnvelope,
     ): Int {
         validateUploadEnvelopeIdentity(
             requestStudyId = studyId,
             requestParticipantId = participantId,
-            requestSourceDeviceId = sourceDeviceId,
+            requestSourceRandomDeviceId = sourceRandomDeviceId,
             envelopeStudyId = envelope.studyId,
             envelopeParticipantId = envelope.participantId,
-            envelopeDeviceId = envelope.deviceId,
+            envelopeRandomDeviceId = envelope.randomDeviceId,
         )
         logParticipantAction("iOS Screen Time upload received", studyId, participantId)
-        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        mobileUploadEnrollmentGate(studyId, participantId, deviceId, "iOS Screen Time upload")
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(studyId, participantId, sourceRandomDeviceId)
+        mobileUploadEnrollmentGate(studyId, participantId, randomDeviceId, "iOS Screen Time upload")
 
         return try {
-            val samples = ScreenTimeUsageUploadService.toSensorDataSamples(envelope, sourceDeviceId)
-            val count = guardedDeviceWrite(studyId, participantId, deviceId, "iOS Screen Time upload",
-                latestCapturedAt = samples.maxOfOrNull { it.dateRecorded.toInstant() }) {
-                sensorDataUploadService.upload(studyId, participantId, deviceId, samples)
+            val count = guardedDeviceWrite(
+                studyId, participantId, randomDeviceId, "iOS Screen Time upload", setOf(CollectionModuleId.USAGE_EVENTS)) {
+                webhookService.withDataSubmission(studyId, participantId, ParticipantDataType.IOSScreenTime) {
+                    screenTimeUsageUploadService.upload(studyId, participantId, randomDeviceId, envelope)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
+                action(AuditEventType.SCREEN_TIME_UPLOAD)
                 resourceType("ScreenTimeData")
                 studyId(studyId)
                 success(true)
@@ -1750,14 +1103,13 @@ public open class StudyController @Inject constructor(
                 phiFields(listOf("participantId", "screenTimeData"))
                 additionalData(mapOf("participantId" to participantId, "recordCount" to count, "platform" to "ios"))
             }
-            fireDataSubmitted(studyId, participantId, "ios_screen_time", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
+                action(AuditEventType.SCREEN_TIME_UPLOAD)
                 resourceType("ScreenTimeData")
                 studyId(studyId)
-                failed(ex.message ?: "iOS Screen Time upload failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
@@ -1765,89 +1117,29 @@ public open class StudyController @Inject constructor(
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + IOS_PATH + SOURCE_DEVICE_ID_PATH + "/user-identification"],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    public fun uploadUserIdentificationData(
+    override fun uploadAndroidSensorDataV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
-        @Valid @RequestBody envelope: UserIdentificationEnvelope,
-    ): Int {
-        validateUploadEnvelopeIdentity(
-            requestStudyId = studyId,
-            requestParticipantId = participantId,
-            requestSourceDeviceId = sourceDeviceId,
-            envelopeStudyId = envelope.studyId,
-            envelopeParticipantId = envelope.participantId,
-            envelopeDeviceId = envelope.deviceId,
-        )
-        logParticipantAction("iOS user identification upload received", studyId, participantId)
-        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        mobileUploadEnrollmentGate(studyId, participantId, deviceId, "iOS user identification upload")
-
-        return try {
-            val samples = UserIdentificationUploadService.toSensorDataSamples(envelope, sourceDeviceId)
-            val count = guardedDeviceWrite(studyId, participantId, deviceId, "iOS user identification upload",
-                latestCapturedAt = samples.maxOfOrNull { it.dateRecorded.toInstant() }) {
-                sensorDataUploadService.upload(studyId, participantId, deviceId, samples)
-            }
-            auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
-                resourceType("UserIdentificationData")
-                studyId(studyId)
-                success(true)
-                accessedPHI(true)
-                phiFields(listOf("participantId", "userIdentificationData"))
-                additionalData(mapOf("participantId" to participantId, "recordCount" to count, "platform" to "ios"))
-            }
-            fireDataSubmitted(studyId, participantId, "ios_user_identification", count)
-            count
-        } catch (ex: Exception) {
-            auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
-                resourceType("UserIdentificationData")
-                studyId(studyId)
-                failed(ex.message ?: "iOS user identification upload failed")
-                additionalData(mapOf("participantId" to participantId))
-            }
-            throw ex
-        }
-    }
-
-    @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SOURCE_DEVICE_ID_PATH + SENSORS_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    @Deprecated("Use v4 uploadAndroidSensorDataV4 instead")
-    override fun uploadAndroidSensorData(
-        @PathVariable(STUDY_ID) studyId: UUID,
-        @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidSensorSample>,
+        sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidSensorSample>,
     ): Int {
         logParticipantAction("Android sensor data upload received", studyId, participantId)
-        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        mobileUploadEnrollmentGate(studyId, participantId, deviceId, "android sensor data upload")
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(studyId, participantId, sourceRandomDeviceId)
+        mobileUploadEnrollmentGate(studyId, participantId, randomDeviceId, "android sensor data upload")
         return try {
             val count = guardedDeviceWrite(
-                studyId, participantId, deviceId, "android sensor data upload",
+                studyId, participantId, randomDeviceId, "android sensor data upload",
                 data.mapTo(linkedSetOf()) { SensorCollectionModules.moduleFor(it.sensor) },
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() },
             ) { consentedModules ->
-                if (data.any { SensorCollectionModules.moduleFor(it.sensor) !in consentedModules }) {
-                    throw CollectionHaltedException(studyId, participantId, deviceId)
+                webhookService.withDataSubmission(studyId, participantId, ParticipantDataType.AndroidSensor) {
+                    if (data.any { SensorCollectionModules.moduleFor(it.sensor) !in consentedModules }) {
+                        throw CollectionHaltedException(studyId, participantId, randomDeviceId)
+                    }
+                    androidSensorDataUploadService.upload(studyId, participantId, randomDeviceId, data)
                 }
-                androidSensorDataUploadService.upload(studyId, participantId, deviceId, data)
             }
             auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
+                action(AuditEventType.SENSOR_DATA_UPLOAD)
                 resourceType("SensorData")
                 studyId(studyId)
                 success(true)
@@ -1855,14 +1147,13 @@ public open class StudyController @Inject constructor(
                 phiFields(listOf("participantId", "sensorData"))
                 additionalData(mapOf("participantId" to participantId, "recordCount" to count, "platform" to "android"))
             }
-            fireDataSubmitted(studyId, participantId, "android_sensor", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
+                action(AuditEventType.SENSOR_DATA_UPLOAD)
                 resourceType("SensorData")
                 studyId(studyId)
-                failed(ex.message ?: "Android sensor data upload failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
@@ -1870,36 +1161,42 @@ public open class StudyController @Inject constructor(
     }
 
     @Timed
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SOURCE_DEVICE_ID_PATH + BATTERY_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    @Deprecated("Use v4 uploadBatteryTelemetryV4 instead")
-    override fun uploadBatteryTelemetry(
+    override fun uploadBatteryTelemetryV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<BatterySample>,
-    ): Int {
+        sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<BatterySample>,
+        settingsVersion: Int?,
+        decisionSeq: Long?,
+    ): UploadReceipt {
         logParticipantAction("Battery telemetry upload received", studyId, participantId)
         validateParticipantId(participantId)
         // Legacy study ID resolution is needed as long as there are enrolled participants in legacy studies.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "battery telemetry upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "battery telemetry upload")
 
+        val ids = data.mapTo(linkedSetOf()) { sample ->
+            runCatching { UUID.fromString(sample.id) }.getOrNull()
+                ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, Messages.get("error.request.invalidParameters"))
+        }
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "battery telemetry upload", setOf(
-                CollectionModuleId.BATTERY_TELEMETRY),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                batteryTelemetryUploadService.upload(realStudyId, participantId, data)
+            // A batch the participant's decisions refuse is reported discarded, never re-sent.
+            val (count, receipt) = collectionWriteOrReject(realStudyId, participantId, randomDeviceId, "battery telemetry upload") {
+                participantCollectionAcknowledgmentService.withCollectionUploadRecheck(
+                    uploadRequest(realStudyId, participantId, randomDeviceId, settingsVersion, decisionSeq),
+                    setOf(CollectionModuleId.BATTERY_TELEMETRY), allowPartial = true,
+                ) { authorization ->
+                    if (CollectionModuleId.BATTERY_TELEMETRY !in authorization.acceptedModules) {
+                        0 to UploadReceipt(emptySet(), ids, authorization.settingsVersion)
+                    } else webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.BatteryTelemetry) {
+                        batteryTelemetryUploadService.upload(realStudyId, participantId, randomDeviceId, data)
+                    } to UploadReceipt(ids, emptySet(), authorization.settingsVersion)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.BATTERY_TELEMETRY_UPLOAD)
+                action(AuditEventType.BATTERY_TELEMETRY_UPLOAD)
                 resourceType("BatteryTelemetry")
                 studyId(realStudyId)
                 success(true)
@@ -1913,14 +1210,13 @@ public open class StudyController @Inject constructor(
                     )
                 )
             }
-            fireDataSubmitted(realStudyId, participantId, "battery_telemetry", count)
-            count
+            receipt
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.BATTERY_TELEMETRY_UPLOAD)
+                action(AuditEventType.BATTERY_TELEMETRY_UPLOAD)
                 resourceType("BatteryTelemetry")
                 studyId(realStudyId)
-                failed(ex.message ?: "Battery telemetry upload failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
@@ -1936,24 +1232,23 @@ public open class StudyController @Inject constructor(
     public fun uploadIosBatteryTelemetry(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<IosBatterySample>,
     ): Int {
         logParticipantAction("iOS battery telemetry upload received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "iOS battery telemetry upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "iOS battery telemetry upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "iOS battery telemetry upload",
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                batteryTelemetryUploadService.uploadIos(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(
+                realStudyId, participantId, randomDeviceId, "iOS battery telemetry upload") {
+                batteryTelemetryUploadService.uploadIos(realStudyId, participantId, randomDeviceId, data)
             }
             auditService.logWithContext {
-                action(AuditAction.BATTERY_TELEMETRY_UPLOAD)
+                action(AuditEventType.BATTERY_TELEMETRY_UPLOAD)
                 resourceType("BatteryTelemetry")
                 studyId(realStudyId)
                 success(true)
@@ -1970,40 +1265,39 @@ public open class StudyController @Inject constructor(
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.BATTERY_TELEMETRY_UPLOAD)
+                action(AuditEventType.BATTERY_TELEMETRY_UPLOAD)
                 resourceType("BatteryTelemetry")
                 studyId(realStudyId)
-                failed(ex.message ?: "iOS battery telemetry upload failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
         }
     }
 
-    @Deprecated("Use v4 uploadInteractionEventsV4 instead")
-    override fun uploadInteractionEvents(
+    override fun uploadInteractionEventsV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidInteractionEvent>,
+        sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidInteractionEvent>,
     ): Int {
         logParticipantAction("Interaction events upload received", studyId, participantId)
         validateParticipantId(participantId)
         // Legacy study ID resolution is needed as long as there are enrolled participants in legacy studies.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "interaction events upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "interaction events upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "interaction events upload", setOf(
-                CollectionModuleId.INTERACTION_EVENTS),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                interactionEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, randomDeviceId, "interaction events upload", setOf(
+                CollectionModuleId.INTERACTION_EVENTS)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.InteractionEvents) {
+                    interactionEventsUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.INTERACTION_EVENTS_UPLOAD)
+                action(AuditEventType.INTERACTION_EVENTS_UPLOAD)
                 resourceType("InteractionEvents")
                 studyId(realStudyId)
                 success(true)
@@ -2017,14 +1311,13 @@ public open class StudyController @Inject constructor(
                     )
                 )
             }
-            fireDataSubmitted(realStudyId, participantId, "interaction_events", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.INTERACTION_EVENTS_UPLOAD)
+                action(AuditEventType.INTERACTION_EVENTS_UPLOAD)
                 resourceType("InteractionEvents")
                 studyId(realStudyId)
-                failed(ex.message ?: "Interaction events upload failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
@@ -2040,25 +1333,26 @@ public open class StudyController @Inject constructor(
     public fun uploadAudioActivity(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidAudioActivityEvent>,
     ): Int {
         logParticipantAction("Audio activity upload received", studyId, participantId)
         validateParticipantId(participantId)
         // Legacy study ID resolution is needed as long as there are enrolled participants in legacy studies.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "audio activity upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "audio activity upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "audio activity upload", setOf(CollectionModuleId.AUDIO_ACTIVITY),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                appAudioActivityUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(
+                realStudyId, participantId, randomDeviceId, "audio activity upload", setOf(CollectionModuleId.AUDIO_ACTIVITY)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.AudioActivity) {
+                    appAudioActivityUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("AudioActivity")
                 studyId(realStudyId)
                 success(true)
@@ -2069,77 +1363,18 @@ public open class StudyController @Inject constructor(
                         "participantId" to participantId,
                         "recordCount" to count,
                         "platform" to "android",
-                        "module" to "audio_activity"
+                        "module" to CollectionModuleId.AUDIO_ACTIVITY.id
                     )
                 )
             }
-            fireDataSubmitted(realStudyId, participantId, "audio_activity", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("AudioActivity")
                 studyId(realStudyId)
-                failed(ex.message ?: "Audio activity upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "audio_activity"))
-            }
-            throw ex
-        }
-    }
-
-    /**
-     * Persists on-device sound-classification labels uploaded by the `ambient_audio` module
-     * (currently iOS SoundAnalysis). The logic method; the v4 HTTP path is mapped by
-     * [StudyV4Controller] (mirroring the collection-ack / interaction split), so this method
-     * carries no Spring `@PostMapping`. Gated on enrollment + known datasource like the other
-     * participant writes.
-     */
-    public fun uploadAmbientAudio(
-        studyId: UUID,
-        participantId: String,
-        sourceDeviceId: String,
-        data: List<AmbientAudioClassificationEvent>,
-        platform: String = "ios",
-    ): Int {
-        logParticipantAction("Ambient audio upload received", studyId, participantId)
-        validateParticipantId(participantId)
-        // Legacy study ID resolution is needed as long as there are enrolled participants in legacy studies.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
-
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "ambient audio upload")
-
-        return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "ambient audio upload", setOf(CollectionModuleId.AMBIENT_AUDIO),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                ambientAudioUploadService.upload(realStudyId, participantId, data)
-            }
-            auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
-                resourceType("AmbientAudio")
-                studyId(realStudyId)
-                success(true)
-                // Ambient audio is AMBIENT_AUDIO_CONTEXT-class data — labels-only by
-                // construction (sound classified on device, audio discarded at the classifier
-                // boundary; see AmbientAudioClassificationEvent doc) — so accessedPHI stays false.
-                additionalData(
-                    mapOf(
-                        "participantId" to participantId,
-                        "recordCount" to count,
-                        "platform" to platform,
-                        "module" to "ambient_audio"
-                    )
-                )
-            }
-            count
-        } catch (ex: Exception) {
-            auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
-                resourceType("AmbientAudio")
-                studyId(realStudyId)
-                failed(ex.message ?: "Ambient audio upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "ambient_audio"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.AUDIO_ACTIVITY.id))
             }
             throw ex
         }
@@ -2154,25 +1389,26 @@ public open class StudyController @Inject constructor(
     public fun uploadAudioContent(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidAudioContentEvent>,
     ): Int {
         logParticipantAction("Audio content upload received", studyId, participantId)
         validateParticipantId(participantId)
         // Legacy study ID resolution is needed as long as there are enrolled participants in legacy studies.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "audio content upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "audio content upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "audio content upload", setOf(CollectionModuleId.AUDIO_CONTENT),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                appAudioContentUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(
+                realStudyId, participantId, randomDeviceId, "audio content upload", setOf(CollectionModuleId.AUDIO_CONTENT)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.AudioContent) {
+                    appAudioContentUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("AudioContent")
                 studyId(realStudyId)
                 success(true)
@@ -2184,19 +1420,18 @@ public open class StudyController @Inject constructor(
                         "participantId" to participantId,
                         "recordCount" to count,
                         "platform" to "android",
-                        "module" to "audio_content"
+                        "module" to CollectionModuleId.AUDIO_CONTENT.id
                     )
                 )
             }
-            fireDataSubmitted(realStudyId, participantId, "audio_content", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("AudioContent")
                 studyId(realStudyId)
-                failed(ex.message ?: "Audio content upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "audio_content"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.AUDIO_CONTENT.id))
             }
             throw ex
         }
@@ -2211,26 +1446,26 @@ public open class StudyController @Inject constructor(
     public fun uploadNotificationActivity(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidNotificationActivityEvent>,
     ): Int {
         logParticipantAction("Notification activity upload received", studyId, participantId)
         validateParticipantId(participantId)
         // Legacy study ID resolution is needed as long as there are enrolled participants in legacy studies.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "notification activity upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "notification activity upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "notification activity upload", setOf(
-                CollectionModuleId.NOTIFICATION_ACTIVITY),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                notificationActivityUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, randomDeviceId, "notification activity upload", setOf(
+                CollectionModuleId.NOTIFICATION_ACTIVITY)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.NotificationActivity) {
+                    notificationActivityUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("NotificationActivity")
                 studyId(realStudyId)
                 success(true)
@@ -2241,19 +1476,18 @@ public open class StudyController @Inject constructor(
                         "participantId" to participantId,
                         "recordCount" to count,
                         "platform" to "android",
-                        "module" to "notification_activity"
+                        "module" to CollectionModuleId.NOTIFICATION_ACTIVITY.id
                     )
                 )
             }
-            fireDataSubmitted(realStudyId, participantId, "notification_activity", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("NotificationActivity")
                 studyId(realStudyId)
-                failed(ex.message ?: "Notification activity upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "notification_activity"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.NOTIFICATION_ACTIVITY.id))
             }
             throw ex
         }
@@ -2268,38 +1502,39 @@ public open class StudyController @Inject constructor(
     public fun uploadSleepEvents(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidSleepEvent>,
     ): Int {
         logParticipantAction("Sleep events upload received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "sleep events upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "sleep events upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "sleep events upload", setOf(CollectionModuleId.SLEEP),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                sleepEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(
+                realStudyId, participantId, randomDeviceId, "sleep events upload", setOf(CollectionModuleId.SLEEP)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.SleepEvents) {
+                    sleepEventsUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("SleepEvents")
                 studyId(realStudyId)
                 success(true)
-                additionalData(mapOf("participantId" to participantId, "recordCount" to count, "platform" to "android", "module" to "sleep"))
+                additionalData(mapOf("participantId" to participantId, "recordCount" to count, "platform" to "android",
+                    "module" to CollectionModuleId.SLEEP.id))
             }
-            fireDataSubmitted(realStudyId, participantId, "sleep_events", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("SleepEvents")
                 studyId(realStudyId)
-                failed(ex.message ?: "Sleep events upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "sleep"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.SLEEP.id))
             }
             throw ex
         }
@@ -2312,42 +1547,41 @@ public open class StudyController @Inject constructor(
     public fun uploadActivityRecognitionEvents(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidActivityRecognitionEvent>,
     ): Int {
         logParticipantAction("Activity recognition events upload received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "activity recognition events upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "activity recognition events upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "activity recognition events upload", setOf(
-                CollectionModuleId.ACTIVITY_RECOGNITION),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                activityRecognitionEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, randomDeviceId, "activity recognition events upload", setOf(
+                CollectionModuleId.ACTIVITY_RECOGNITION)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.ActivityRecognition) {
+                    activityRecognitionEventsUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("ActivityRecognitionEvents")
                 studyId(realStudyId)
                 success(true)
                 additionalData(mapOf(
                     "participantId" to participantId, "recordCount" to count,
-                    "platform" to "android", "module" to "activity_recognition"
+                    "platform" to "android", "module" to CollectionModuleId.ACTIVITY_RECOGNITION.id
                 ))
             }
-            fireDataSubmitted(realStudyId, participantId, "activity_recognition", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("ActivityRecognitionEvents")
                 studyId(realStudyId)
-                failed(ex.message ?: "Activity recognition events upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "activity_recognition"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.ACTIVITY_RECOGNITION.id))
             }
             throw ex
         }
@@ -2359,39 +1593,44 @@ public open class StudyController @Inject constructor(
     public fun uploadHealthMetrics(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidHealthMetricEvent>,
         platform: String = "android",
     ): Int {
         logParticipantAction("Health metrics upload received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "health metrics upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "health metrics upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "health metrics upload", setOf(CollectionModuleId.HEALTH_CONNECT),
-                latestCapturedAt = data.maxOfOrNull { Instant.ofEpochMilli(it.endMillis) }) {
-                healthMetricsUploadService.upload(realStudyId, participantId, data)
+            val count = collectionWriteOrReject(realStudyId, participantId, randomDeviceId, "health metrics upload") {
+                participantCollectionAcknowledgmentService.withHealthUploadRecheck(CollectionUploadRequest(
+                    studyId = realStudyId, participantId = participantId, randomDeviceId = randomDeviceId,
+                    settingsVersion = uploadSettingsVersion(), decisionSeq = uploadDecisionSeq(),
+                )) { scope ->
+                    webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.HealthMetrics) {
+                        healthMetricsUploadService.upload(scope, data)
+                    }
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("HealthMetrics")
                 studyId(realStudyId)
                 success(true)
-                additionalData(mapOf("participantId" to participantId, "recordCount" to count, "platform" to platform, "module" to "health_connect"))
+                additionalData(mapOf("participantId" to participantId, "recordCount" to count, "platform" to platform,
+                    "module" to CollectionModuleId.HEALTH_CONNECT.id))
             }
-            fireDataSubmitted(realStudyId, participantId, "health_metrics", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("HealthMetrics")
                 studyId(realStudyId)
-                failed(ex.message ?: "Health metrics upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "health_connect"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.HEALTH_CONNECT.id))
             }
             throw ex
         }
@@ -2404,43 +1643,42 @@ public open class StudyController @Inject constructor(
     public fun uploadConnectivityStateEvents(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidConnectivityStateEvent>,
         platform: String = "android",
     ): Int {
         logParticipantAction("Connectivity state events upload received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "connectivity state events upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "connectivity state events upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "connectivity state events upload", setOf(
-                CollectionModuleId.CONNECTIVITY_STATE),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                connectivityStateEventsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, randomDeviceId, "connectivity state events upload", setOf(
+                CollectionModuleId.CONNECTIVITY_STATE)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.ConnectivityState) {
+                    connectivityStateEventsUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("ConnectivityStateEvents")
                 studyId(realStudyId)
                 success(true)
                 additionalData(mapOf(
                     "participantId" to participantId, "recordCount" to count,
-                    "platform" to platform, "module" to "connectivity_state"
+                    "platform" to platform, "module" to CollectionModuleId.CONNECTIVITY_STATE.id
                 ))
             }
-            fireDataSubmitted(realStudyId, participantId, "connectivity_state", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("ConnectivityStateEvents")
                 studyId(realStudyId)
-                failed(ex.message ?: "Connectivity state events upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "connectivity_state"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.CONNECTIVITY_STATE.id))
             }
             throw ex
         }
@@ -2453,42 +1691,41 @@ public open class StudyController @Inject constructor(
     public fun uploadAppNetworkUsage(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidAppNetworkUsageEvent>,
     ): Int {
         logParticipantAction("App network usage upload received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "app network usage upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "app network usage upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "app network usage upload", setOf(
-                CollectionModuleId.APP_NETWORK_USAGE),
-                latestCapturedAt = data.maxOfOrNull { Instant.ofEpochMilli(it.bucketEndMillis) }) {
-                appNetworkUsageUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(realStudyId, participantId, randomDeviceId, "app network usage upload", setOf(
+                CollectionModuleId.APP_NETWORK_USAGE)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.AppNetworkUsage) {
+                    appNetworkUsageUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("AppNetworkUsage")
                 studyId(realStudyId)
                 success(true)
                 additionalData(mapOf(
                     "participantId" to participantId, "recordCount" to count,
-                    "platform" to "android", "module" to "app_network_usage"
+                    "platform" to "android", "module" to CollectionModuleId.APP_NETWORK_USAGE.id
                 ))
             }
-            fireDataSubmitted(realStudyId, participantId, "app_network_usage", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("AppNetworkUsage")
                 studyId(realStudyId)
-                failed(ex.message ?: "App network usage upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "app_network_usage"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.APP_NETWORK_USAGE.id))
             }
             throw ex
         }
@@ -2501,108 +1738,104 @@ public open class StudyController @Inject constructor(
     public fun uploadDeviceSettings(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidDeviceSettingsEvent>,
     ): Int {
         logParticipantAction("Device settings upload received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "device settings upload")
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "device settings upload")
 
         return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "device settings upload", setOf(CollectionModuleId.DEVICE_SETTINGS),
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() }) {
-                deviceSettingsUploadService.upload(realStudyId, participantId, data)
+            val count = guardedDeviceWrite(
+                realStudyId, participantId, randomDeviceId, "device settings upload", setOf(CollectionModuleId.DEVICE_SETTINGS)) {
+                webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.DeviceSettings) {
+                    deviceSettingsUploadService.upload(realStudyId, participantId, data)
+                }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("DeviceSettings")
                 studyId(realStudyId)
                 success(true)
                 additionalData(mapOf(
                     "participantId" to participantId, "recordCount" to count,
-                    "platform" to "android", "module" to "device_settings"
+                    "platform" to "android", "module" to CollectionModuleId.DEVICE_SETTINGS.id
                 ))
             }
-            fireDataSubmitted(realStudyId, participantId, "device_settings", count)
             count
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("DeviceSettings")
                 studyId(realStudyId)
-                failed(ex.message ?: "Device settings upload failed")
-                additionalData(mapOf("participantId" to participantId, "module" to "device_settings"))
+                success(false)
+                additionalData(mapOf("participantId" to participantId, "module" to CollectionModuleId.DEVICE_SETTINGS.id))
             }
             throw ex
         }
     }
 
-    /** Stores bounded, redacted upload failures after the exact enrolled server recovers. */
+    /** Stores bounded, redacted diagnostic occurrences; the receipt names exactly the stored and the refused events. */
     public fun uploadDiagnostics(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         data: List<AndroidUploadDiagnosticEvent>,
-    ): List<String> {
+    ): UploadReceipt {
         logParticipantAction("Upload diagnostics received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "upload diagnostics")
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "upload diagnostics")
 
-        return guardedDeviceWrite(realStudyId, participantId, deviceId, "upload diagnostics",
-            latestCapturedAt = data.maxOfOrNull { it.lastOccurredAt.toInstant() }) {
-            uploadDiagnosticsUploadService.upload(realStudyId, participantId, deviceId, data)
+        return guardedDeviceWrite(realStudyId, participantId, randomDeviceId, "upload diagnostics") {
+            uploadDiagnosticsUploadService.upload(realStudyId, participantId, randomDeviceId, data)
         }
     }
 
     /**
      * Records a participant's on-device acknowledgment of one or more newly-enabled
-     * collection modules (collection loop closure design §5.2). This is the logic
+     * collection modules. This is the logic
      * method; the v4 HTTP path is mapped by [StudyV4Controller] (mirroring the
      * enroll / enrollV4 split), so this method carries no Spring `@PostMapping`.
      *
      * Gated on enrollment + known datasource like the other android writes; the
      * `X-Api-Key` device auth is already enforced by the mobile API filter. The
-     * acknowledgment trail is append-only (V26) and the server stamps its own
+     * acknowledgment trail is append-only and the server stamps its own
      * authoritative receipt time — the body's `acknowledgedAt` is advisory.
      */
     override fun reportCollectionAcknowledgmentV4(
         studyId: UUID,
         participantId: String,
-        sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         acknowledgment: CollectionAcknowledgment,
     ): OK {
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
 
         mobileUploadEnrollmentGate(
             realStudyId,
             participantId,
-            deviceId,
+            randomDeviceId,
             "collection acknowledgment",
             allowCollectionHaltResolution = true,
-            allowQueuedCaptures = false,
         )
-        val mobileKey = requireAcknowledgmentApiKey(realStudyId, participantId, deviceId)
+        val mobileKey = requireAcknowledgmentApiKey(realStudyId, participantId, randomDeviceId)
 
         return try {
             val entry = participantCollectionAcknowledgmentService.recordAcknowledgment(
                 studyId = realStudyId,
                 participantId = participantId,
-                sourceDeviceId = sourceDeviceId,
+                sourceRandomDeviceId = sourceRandomDeviceId,
                 apiKeyId = mobileKey.keyId,
                 acknowledgment = acknowledgment,
             )
             auditService.logWithContext {
-                action(AuditAction.COLLECTION_ACKNOWLEDGMENT)
+                action(AuditEventType.COLLECTION_ACKNOWLEDGMENT)
                 resourceType("CollectionAcknowledgment")
                 studyId(realStudyId)
                 success(true)
@@ -2616,182 +1849,69 @@ public open class StudyController @Inject constructor(
                         "settingsVersion" to (acknowledgment.settingsVersion ?: "legacy"),
                         "disclosureVersion" to (acknowledgment.disclosureVersion ?: "legacy"),
                         "manifestDigest" to (acknowledgment.manifestDigest ?: "legacy"),
-                        "deviceId" to deviceId.toString(),
+                        "randomDeviceId" to randomDeviceId.toString(),
                     )
                 )
             }
             OK("Recorded collection acknowledgment ${entry.id}")
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.COLLECTION_ACKNOWLEDGMENT)
+                action(AuditEventType.COLLECTION_ACKNOWLEDGMENT)
                 resourceType("CollectionAcknowledgment")
                 studyId(realStudyId)
-                failed(ex.message ?: "Collection acknowledgment failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
         }
     }
 
-    /**
-     * Stores a batch of envelope-encrypted payloads (HIPAA-2028 W2). The logic method;
-     * the v4 HTTP path is mapped by [StudyV4Controller] (mirroring the collection-ack
-     * split), so this method carries no Spring `@PostMapping`. Gated on enrollment +
-     * known datasource like the other android writes; the server stores ciphertext blind.
-     */
-    override fun uploadAndroidEncryptedDataV4(
-        studyId: UUID,
-        participantId: String,
-        sourceDeviceId: String,
-        data: List<EncryptedEnvelope>,
-    ): Int {
-        throw ResponseStatusException(
-            HttpStatus.SERVICE_UNAVAILABLE,
-            Messages.get("error.encryption.uploadDisabled"),
-        )
-        @Suppress("UNREACHABLE_CODE")
-        logParticipantAction("Encrypted payload upload received", studyId, participantId)
-        validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
-
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "encrypted payload upload")
-
-        return try {
-            val count = guardedDeviceWrite(realStudyId, participantId, deviceId, "encrypted payload upload") {
-                encryptedPayloadUploadService.upload(realStudyId, participantId, deviceId, data)
-            }
-            auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
-                resourceType("EncryptedPayload")
-                studyId(realStudyId)
-                success(true)
-                accessedPHI(true)
-                phiFields(listOf("participantId", "encryptedPayload"))
-                additionalData(
-                    mapOf(
-                        "participantId" to participantId,
-                        "recordCount" to count,
-                        "platform" to "android",
-                        "encryption" to "envelope",
-                    )
-                )
-            }
-            fireDataSubmitted(realStudyId, participantId, "encrypted_payload", count)
-            count
-        } catch (ex: Exception) {
-            auditService.logWithContext {
-                action(AuditAction.SENSOR_DATA_UPLOAD)
-                resourceType("EncryptedPayload")
-                studyId(realStudyId)
-                failed(ex.message ?: "Encrypted payload upload failed")
-                additionalData(mapOf("participantId" to participantId))
-            }
-            throw ex
-        }
-    }
-
-    /**
-     * Admin op: provision (or rotate) the study's envelope-encryption keypair. Generates
-     * an RSA-4096 key, stores the private key in the [studyEncryptionKeyService]'s key
-     * store (Vault in production), and persists the public-only [StudyEncryptionSetting]
-     * into the study settings so devices fetch it via the settings-by-type endpoint.
-     * Returns the public setting; the private key is never returned. Backend-only
-     * (operator curl) — not a frontend surface.
-     */
     @Timed
-    @PostMapping(
-        path = [STUDY_ID_PATH + "/encryption/provision"],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    public fun provisionStudyEncryption(
-        @PathVariable(STUDY_ID) studyId: UUID,
-    ): StudyEncryptionSetting {
-        ensureAuthenticated()
-        ensureOwnerAccess(AclKey(studyId))
-
-        throw ResponseStatusException(
-            HttpStatus.SERVICE_UNAVAILABLE,
-            Messages.get("error.encryption.studySettingDisabled"),
-        )
-
-        @Suppress("UNREACHABLE_CODE")
-        val setting = studyEncryptionKeyService.provision(studyId)
-
-        persistLockedStudySettingsMutation(studyId) { priorSettings ->
-            StudySettings(priorSettings + (StudySettingType.Encryption to setting))
-        }
-        studyService.refreshStudyCache(setOf(studyId))
-        return setting
-    }
-
-    @Timed
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH
-            + ANDROID_PATH + SOURCE_DEVICE_ID_PATH + SENSORS_PATH + AVAILABILITY_PATH],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    override fun reportAndroidSensorAvailability(
+    public fun reportAndroidSensorAvailability(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) sourceDeviceId: String,
+        sourceRandomDeviceId: String,
         @Valid @RequestBody availability: AndroidDeviceSensorAvailability,
     ): Int {
         logParticipantAction("Android sensor availability report received", studyId, participantId)
         validateParticipantId(participantId)
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
+        val realStudyId = studyService.requireStudyId(studyId)
 
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, sourceDeviceId)
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "sensor availability report")
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "sensor availability report")
 
         return try {
             val result = guardedDeviceWrite(
                 realStudyId,
                 participantId,
-                deviceId,
+                randomDeviceId,
                 "sensor availability report",
                 setOf(CollectionModuleId.SENSOR_AVAILABILITY),
-                latestCapturedAt = availability.reportedAt?.toInstant(),
                 allowQueuedCaptures = false,
             ) {
                 storageResolver.getPlatformStorage().connection.use { conn ->
-                    conn.prepareStatement(UPSERT_SENSOR_AVAILABILITY_SQL).use { ps ->
-                        var index = 0
-                        ps.setObject(++index, realStudyId)
-                        ps.setString(++index, participantId)
-                        ps.setString(++index, deviceId.toString())
-                        ps.setArray(++index, conn.createArrayOf("text",
-                            availability.availableSensors.map { it.name }.toTypedArray()))
-                        ps.setArray(++index, conn.createArrayOf("text",
-                            availability.unavailableSensors.map { it.name }.toTypedArray()))
-                        setNullableInt(ps, ++index, availability.screenWidthPixels)
-                        setNullableInt(ps, ++index, availability.screenHeightPixels)
-                        setNullableInt(ps, ++index, availability.screenDensityDpi)
-                        setNullableInt(ps, ++index, availability.displayRotation)
-                        ps.setString(++index, availability.interactionPointerCaptureCapability?.name)
-                        ps.executeUpdate()
+                    AndroidSensorAvailabilityRepository(conn).upsert(realStudyId, participantId, randomDeviceId, availability).also {
+                        ParticipantStatsMapstore(storageResolver.getPlatformStorage())
+                            .recordAndroidUploadUsing(conn, realStudyId, participantId)
                     }
                 }
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("SensorData")
                 studyId(realStudyId)
                 success(true)
                 accessedPHI(true)
                 phiFields(listOf("participantId", "sensorAvailability"))
-                additionalData(mapOf("participantId" to participantId, "deviceId" to deviceId.toString()))
+                additionalData(mapOf("participantId" to participantId, "randomDeviceId" to randomDeviceId.toString()))
             }
             result
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("SensorData")
                 studyId(realStudyId)
-                failed(ex.message ?: "Sensor availability report failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
@@ -2803,12 +1923,16 @@ public open class StudyController @Inject constructor(
         path = [STUDY_ID_PATH + DEVICES_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
-    override fun getStudyDevices(@PathVariable(STUDY_ID) studyId: UUID): Map<String, List<Map<String, Any>>> {
+    override fun getStudyDevices(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @RequestParam(defaultValue = "100") limit: Int,
+        @RequestParam(defaultValue = "0") offset: Int,
+    ): Map<String, List<Map<String, Any>>> {
         ensureReadAccess(AclKey(studyId))
         return try {
-            val result = loadStudyDevices(studyId)
+            val result = loadStudyDevices(studyId, PaginationDefaults.clampLimit(limit), PaginationDefaults.clampOffset(offset))
             auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_DATA_ACCESS)
+                action(AuditEventType.PARTICIPANT_DATA_ACCESS)
                 resourceType("Device")
                 studyId(studyId)
                 success(true)
@@ -2819,31 +1943,42 @@ public open class StudyController @Inject constructor(
             result
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_DATA_ACCESS)
+                action(AuditEventType.PARTICIPANT_DATA_ACCESS)
                 resourceType("Device")
                 studyId(studyId)
-                failed(ex.message ?: "Get study devices failed")
+                success(false)
             }
             throw ex
         }
     }
 
-    private fun loadStudyDevices(studyId: UUID): Map<String, List<Map<String, Any>>> {
-        val result = mutableMapOf<String, MutableList<Map<String, Any>>>()
-        storageResolver.getPlatformStorage().connection.use { conn ->
+    private fun loadStudyDevices(studyId: UUID, limit: Int, offset: Int): Map<String, List<Map<String, Any>>> {
+        return storageResolver.getPlatformStorage().connection.use { conn ->
             conn.prepareStatement(GET_STUDY_DEVICES_SQL).use { ps ->
                 ps.setObject(1, studyId)
-                val rs = ps.executeQuery()
-                while (rs.next()) {
-                    val participantId = rs.getString("participant_id")
-                    val deviceInfo = mapOf<String, Any>(
-                        "deviceId" to rs.getObject("device_id", UUID::class.java),
-                        "deviceType" to (rs.getString("device_type") ?: ""),
-                        "sourceDevice" to (rs.getString("source_device") ?: "{}")
-                    )
-                    result.getOrPut(participantId) { mutableListOf() }.add(deviceInfo)
-                }
+                ps.setInt(2, limit + 1)
+                ps.setInt(3, offset)
+                ps.executeQuery().use { readStudyDeviceRows(it, limit, offset) }
             }
+        }
+    }
+
+    private fun readStudyDeviceRows(rs: java.sql.ResultSet, limit: Int, offset: Int): Map<String, List<Map<String, Any>>> {
+        val result = mutableMapOf<String, MutableList<Map<String, Any>>>()
+        var rowsRead = 0
+        while (rs.next()) {
+            if (rowsRead++ == limit) {
+                val request = RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes
+                request?.response?.setHeader("X-Next-Offset", (offset.toLong() + limit).toString())
+                break
+            }
+            val participantId = rs.getString("participant_id")
+            val deviceInfo = mapOf<String, Any>(
+                "randomDeviceId" to rs.getObject("random_device_id", UUID::class.java),
+                "deviceType" to (rs.getString("device_type") ?: ""),
+                "sourceDevice" to ObjectMappers.getJsonMapper().readTree(rs.getString("source_device") ?: "{}")
+            )
+            result.getOrPut(participantId) { mutableListOf() }.add(deviceInfo)
         }
         return result
     }
@@ -2858,7 +1993,7 @@ public open class StudyController @Inject constructor(
         return try {
             val result = loadStudySensorAvailability(studyId)
             auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_DATA_ACCESS)
+                action(AuditEventType.PARTICIPANT_DATA_ACCESS)
                 resourceType("SensorData")
                 studyId(studyId)
                 success(true)
@@ -2869,107 +2004,17 @@ public open class StudyController @Inject constructor(
             result
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_DATA_ACCESS)
+                action(AuditEventType.PARTICIPANT_DATA_ACCESS)
                 resourceType("SensorData")
                 studyId(studyId)
-                failed(ex.message ?: "Get sensor availability failed")
+                success(false)
             }
             throw ex
         }
     }
 
-    private fun loadStudySensorAvailability(studyId: UUID): List<AndroidDeviceSensorAvailability> {
-        val result = mutableListOf<AndroidDeviceSensorAvailability>()
-        storageResolver.getPlatformStorage().connection.use { conn ->
-            conn.prepareStatement(GET_STUDY_SENSOR_AVAILABILITY_SQL).use { ps ->
-                ps.setObject(1, studyId)
-                val rs = ps.executeQuery()
-                while (rs.next()) {
-                    result.add(readSensorAvailabilityRow(rs))
-                }
-            }
-        }
-        return result
-    }
-
-    private fun readSensorAvailabilityRow(rs: java.sql.ResultSet): AndroidDeviceSensorAvailability {
-        val availableArray = rs.getArray("available_sensors")?.array as? Array<*> ?: emptyArray<String>()
-        val unavailableArray = rs.getArray("unavailable_sensors")?.array as? Array<*> ?: emptyArray<String>()
-        return AndroidDeviceSensorAvailability(
-            participantId = rs.getString("participant_id"),
-            deviceId = rs.getString("device_id"),
-            availableSensors = availableArray.mapNotNull { name ->
-                try { AndroidSensorType.valueOf(name.toString()) } catch (_: Exception) { null }
-            }.toSet(),
-            unavailableSensors = unavailableArray.mapNotNull { name ->
-                try { AndroidSensorType.valueOf(name.toString()) } catch (_: Exception) { null }
-            }.toSet(),
-            screenWidthPixels = rs.getObject("screen_width_pixels") as? Int,
-            screenHeightPixels = rs.getObject("screen_height_pixels") as? Int,
-            screenDensityDpi = rs.getObject("screen_density_dpi") as? Int,
-            displayRotation = rs.getObject("display_rotation") as? Int,
-            interactionPointerCaptureCapability = rs.getString("interaction_pointer_capture_capability")
-                ?.let { value -> runCatching { InteractionPointerCaptureCapability.valueOf(value) }.getOrNull() },
-            reportedAt = rs.getObject("reported_at", java.time.OffsetDateTime::class.java)
-        )
-    }
-
-    override fun getAndroidSensorSettings(
-        @PathVariable(STUDY_ID) studyId: UUID,
-    ): AndroidSensorSetting {
-        // Fetch sensor settings directly without going through getStudySettings(),
-        // which now requires authentication. This endpoint remains public for mobile clients.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val settings = studyService.getStudySettings(realStudyId)
-        auditService.logWithContext {
-            action(AuditAction.VIEW)
-            resourceType("StudySettings")
-            studyId(realStudyId)
-            success(true)
-            additionalData(mapOf("endpoint" to "getAndroidSensorSettings"))
-        }
-        return settings[StudySettingType.AndroidSensor] as? AndroidSensorSetting
-            ?: AndroidSensorSetting.NO_SENSORS
-    }
-
-    @Timed
-    @PutMapping(
-        path = [STUDY_ID_PATH + DATA_COLLECTION],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    override fun setChronicleDataCollectionSettings(
-        @PathVariable(STUDY_ID) studyId: UUID,
-        @Valid @RequestBody dataCollectionSettings: ChronicleDataCollectionSettings,
-    ): OK {
-        ensureValidStudy(studyId)
-        ensureWriteAccess(AclKey(studyId))
-
-        return try {
-            persistLockedStudySettingsMutation(studyId) { priorSettings ->
-                mergeLegacyDataCollectionSettings(priorSettings, dataCollectionSettings)
-            }
-            studyService.refreshStudyCache(setOf(studyId))
-            auditService.logWithContext {
-                action(AuditAction.SETTINGS_CHANGE)
-                resourceType("StudySettings")
-                resourceId(studyId)
-                studyId(studyId)
-                success(true)
-                additionalData(mapOf("settingType" to "DataCollection"))
-            }
-            OK()
-        } catch (ex: Exception) {
-            auditService.logWithContext {
-                action(AuditAction.SETTINGS_CHANGE)
-                resourceType("StudySettings")
-                studyId(studyId)
-                failed(ex.message ?: "Data collection settings update failed")
-            }
-            throw ex
-        }
-    }
+    private fun loadStudySensorAvailability(studyId: UUID): List<AndroidDeviceSensorAvailability> =
+        storageResolver.getPlatformStorage().connection.use { AndroidSensorAvailabilityRepository(it).listForStudy(studyId) }
 
     /**
      * Applies a settings mutation under the study row lock.
@@ -2980,159 +2025,124 @@ public open class StudyController @Inject constructor(
      * a dashboard that read a stale map is rejected with 412 rather than clobbering a concurrent
      * change to a different setting type. A missing precondition keeps the legacy behaviour.
      */
+    
+
     private fun persistLockedStudySettingsMutation(
         studyId: UUID,
-        expectedRevision: Long? = null,
+        expectedRevision: Long?,
         mutation: (StudySettings) -> StudySettings,
-    ): LockedStudyUpdate = storageResolver.getPlatformStorage().connection.use { connection ->
-        AuditedTransactionBuilder<LockedStudyUpdate>(connection, auditingManager)
-            .transaction { transaction ->
-                applyLockedSettingsMutation(transaction, studyId, expectedRevision, studyService, mutation).also { update ->
-                    recordSettingsAuditDiff(studyId, checkNotNull(update.priorSettings),
-                        checkNotNull(update.stampedStudy.settings), transaction)
-                }
-            }
-            .audit { _ ->
-                listOf(
-                    AuditableEvent(
-                        aclKey = AclKey(studyId),
-                        eventType = AuditEventType.UPDATE_STUDY_SETTINGS,
-                    ),
-                )
-            }
-            .buildAndRun()
-    }
+    ): LockedStudyUpdate = studyService.persistLockedStudySettingsMutation(
+        studyId, expectedRevision, studySettingsAuditService, mutation,
+    )
 
-    @Suppress("DEPRECATION")
-    override fun uploadAndroidUsageEventDataV4(
-        studyId: UUID, participantId: String, sourceDeviceId: String, data: ChronicleData,
-    ): Int = uploadAndroidUsageEventData(studyId, participantId, sourceDeviceId, data)
-
-    @Suppress("DEPRECATION")
-    override fun uploadAndroidSensorDataV4(
-        studyId: UUID, participantId: String, sourceDeviceId: String, data: List<AndroidSensorSample>,
-    ): Int = uploadAndroidSensorData(studyId, participantId, sourceDeviceId, data)
-
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
     override fun uploadAndroidSensorDataReceiptV4(
-        studyId: UUID, participantId: String, sourceDeviceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: List<AndroidSensorSample>,
+        studyId: UUID, participantId: String, sourceRandomDeviceId: String,
+        @Valid @RequestBody @Size(max = MAX_UPLOAD_ROWS) data: List<AndroidSensorSample>,
         settingsVersion: Int?,
-    ): SensorUploadReceipt {
-        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        mobileUploadEnrollmentGate(studyId, participantId, deviceId, "sensor receipt upload", allowCollectionHaltResolution = true)
-        require(data.map { it.id }.toSet().size == data.size) { "Duplicate sensor sample IDs" }
-        val receipt = collectionWriteOrReject(studyId, participantId, deviceId, "sensor receipt upload") {
+        decisionSeq: Long?,
+    ): UploadReceipt {
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(studyId, participantId, sourceRandomDeviceId)
+        mobileUploadEnrollmentGate(studyId, participantId, randomDeviceId, "sensor receipt upload", allowCollectionHaltResolution = true)
+        requireUploadRow(data.map { it.id }.toSet().size == data.size) { "Duplicate sensor sample IDs" }
+        val receipt = collectionWriteOrReject(studyId, participantId, randomDeviceId, "sensor receipt upload") {
             participantCollectionAcknowledgmentService.withCollectionUploadRecheck(
-                studyId, participantId, deviceId, data.mapTo(linkedSetOf()) { SensorCollectionModules.moduleFor(it.sensor) },
-                uploadSettingsVersion(settingsVersion), allowPartial = true,
-                latestCapturedAt = data.maxOfOrNull { it.timestamp.toInstant() },
-                allowQueuedCaptures = true,
+                uploadRequest(studyId, participantId, randomDeviceId, settingsVersion, decisionSeq),
+                data.mapTo(linkedSetOf()) { SensorCollectionModules.moduleFor(it.sensor) }, allowPartial = true,
             ) { authorization ->
                 val retained = storageResolver.getPlatformStorage().connection.use { connection ->
-                    com.openlattice.chronicle.storage.ParticipantPurgeCutoff.retainPermitted(
+                    ParticipantPurgeCutoff.retainPermitted(
                         connection, studyId, participantId, data, { it.timestamp })
                 }
                 val accepted = retained.filter { SensorCollectionModules.moduleFor(it.sensor) in authorization.acceptedModules }
-                androidSensorDataUploadService.upload(studyId, participantId, deviceId, accepted)
-                SensorUploadReceipt(accepted.mapTo(linkedSetOf()) { it.id },
-                    data.filter { it !in retained || SensorCollectionModules.moduleFor(it.sensor) in authorization.discardedModules }.mapTo(
-                        linkedSetOf()) { it.id },
-                    retained.filter { SensorCollectionModules.moduleFor(it.sensor) in authorization.heldModules }.mapTo(linkedSetOf()) { it.id },
-                    authorization.settingsVersion)
+                webhookService.withDataSubmission(studyId, participantId, ParticipantDataType.AndroidSensor) {
+                    androidSensorDataUploadService.upload(studyId, participantId, randomDeviceId, accepted)
+                }
+                val acceptedIds = accepted.mapTo(linkedSetOf()) { it.id }
+                UploadReceipt(acceptedIds, data.mapTo(linkedSetOf()) { it.id } - acceptedIds, authorization.settingsVersion)
             }
         }
         auditService.logWithContext {
-            action(AuditAction.SENSOR_DATA_UPLOAD)
+            action(AuditEventType.SENSOR_DATA_UPLOAD)
             resourceType("SensorData")
             studyId(studyId)
             success(true)
             accessedPHI(true)
             additionalData(mapOf("recordCount" to receipt.acceptedIds.size, "discardedCount" to receipt.discardedIds.size))
         }
-        fireDataSubmitted(studyId, participantId, "android_sensor", receipt.acceptedIds.size)
         return receipt
     }
 
-    @Suppress("DEPRECATION")
-    override fun uploadBatteryTelemetryV4(
-        studyId: UUID, participantId: String, sourceDeviceId: String, data: List<BatterySample>,
-    ): Int = uploadBatteryTelemetry(studyId, participantId, sourceDeviceId, data)
+    /** Every module a usage batch touches, including the optional fields its events carry. */
+    private fun usageUploadModules(events: List<ChronicleUsageEvent>): Set<CollectionModuleId> =
+        events.flatMapTo(linkedSetOf(), ::usageUploadModules)
 
-    @Suppress("DEPRECATION")
-    override fun uploadInteractionEventsV4(
-        studyId: UUID, participantId: String, sourceDeviceId: String, data: List<AndroidInteractionEvent>,
-    ): Int = uploadInteractionEvents(studyId, participantId, sourceDeviceId, data)
+    private fun usageUploadModules(event: ChronicleUsageEvent): Set<CollectionModuleId> = buildSet {
+        add(usageEventModule(event))
+        if (usageEventModule(event) == CollectionModuleId.USAGE_EVENTS && event.activityClass != null) {
+            add(CollectionModuleId.IN_APP_ACTIVITY_CLASS)
+        }
+        if (event.user.isNotEmpty()) add(CollectionModuleId.USER_IDENTIFICATION)
+    }
 
-    @RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.PARTICIPANT_STUDY)
-    @PostMapping(
-        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + ANDROID_PATH + SOURCE_DEVICE_ID_PATH]
+    /** Drops the optional fields whose module the participant has not consented to. */
+    private fun consentedFields(event: ChronicleUsageEvent, consented: Set<CollectionModuleId>) = event.copy(
+        activityClass = event.activityClass.takeIf {
+            usageEventModule(event) == CollectionModuleId.DEVICE_LIFECYCLE || CollectionModuleId.IN_APP_ACTIVITY_CLASS in consented
+        },
+        user = event.user.takeIf { CollectionModuleId.USER_IDENTIFICATION in consented }.orEmpty(),
     )
-    @Deprecated("Use v4 uploadAndroidUsageEventDataV4 instead")
-    override fun uploadAndroidUsageEventData(
+
+    override fun uploadAndroidUsageEventDataV4(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @PathVariable(SOURCE_DEVICE_ID) datasourceId: String,
-        @Valid @RequestBody @Size(max = 10_000) data: ChronicleData,
-    ): Int {
+        sourceRandomDeviceId: String,
+        @Valid @RequestBody data: ChronicleData,
+        settingsVersion: Int?,
+        decisionSeq: Long?,
+    ): UploadReceipt {
         logParticipantAction("Android usage event upload received", studyId, participantId)
         validateParticipantId(participantId)
         // Legacy study ID resolution is needed as long as there are enrolled participants in legacy studies.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val deviceId = DeviceIdUtils.deriveDeviceId(realStudyId, participantId, datasourceId)
-        mobileUploadEnrollmentGate(realStudyId, participantId, deviceId, "android usage event upload")
+        val realStudyId = studyService.requireStudyId(studyId)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(realStudyId, participantId, sourceRandomDeviceId)
+        // The upload recheck refuses a device that has not acknowledged consent.
+        mobileUploadEnrollmentGate(realStudyId, participantId, randomDeviceId, "android usage event upload")
         val events = data.filterIsInstance<ChronicleUsageEvent>()
+        val ids = events.map { it.clientEventId ?: throw UploadRowRejectedException("Usage event has no client event ID") }
+        requireUploadRow(ids.toSet().size == ids.size) { "Duplicate usage client event IDs" }
         return try {
-            val count = guardedDeviceWrite(
-                realStudyId,
-                participantId,
-                deviceId,
-                "android usage event upload",
-                uploadModules = buildSet {
-                    events.forEach { event ->
-                        add(usageEventModule(event))
-                        if (usageEventModule(event) == CollectionModuleId.USAGE_EVENTS && event.activityClass != null) {
-                            add(CollectionModuleId.IN_APP_ACTIVITY_CLASS)
-                        }
-                        if (event.user.isNotEmpty()) add(CollectionModuleId.USER_IDENTIFICATION)
-                    }
-                },
-                latestCapturedAt = events.maxOfOrNull { it.timestamp.toInstant() },
-            ) { consentedModules ->
-                val acceptedEvents = events.filter { usageEventModule(it) in consentedModules }.map { event ->
-                    event.copy(
-                        activityClass = event.activityClass.takeIf {
-                            usageEventModule(event) == CollectionModuleId.DEVICE_LIFECYCLE ||
-                                CollectionModuleId.IN_APP_ACTIVITY_CLASS in consentedModules
-                        },
-                        user = event.user.takeIf { CollectionModuleId.USER_IDENTIFICATION in consentedModules }.orEmpty(),
+            val receipt = collectionWriteOrReject(realStudyId, participantId, randomDeviceId, "android usage event upload") {
+                participantCollectionAcknowledgmentService.withCollectionUploadRecheck(
+                    uploadRequest(realStudyId, participantId, randomDeviceId, settingsVersion, decisionSeq),
+                    uploadModules = usageUploadModules(events), allowPartial = true,
+                ) { authorization ->
+                    // An event is stored when its module is accepted; an optional field it was not authorized
+                    // for is stripped, never held. A refused event is answered discarded, never re-sent.
+                    val accepted = events.filter { usageEventModule(it) in authorization.acceptedModules }
+                    val stored = if (accepted.isEmpty()) emptySet() else appDataUploadService.uploadAndroidUsageEvents(
+                        realStudyId, participantId, randomDeviceId, accepted.map { consentedFields(it, authorization.acceptedModules) },
                     )
+                    webhookService.withDataSubmission(realStudyId, participantId, ParticipantDataType.UsageEvents) { stored.size }
+                    UploadReceipt(stored, ids.toSet() - stored, authorization.settingsVersion)
                 }
-                if (events.isNotEmpty() && acceptedEvents.isEmpty()) {
-                    throw CollectionHaltedException(realStudyId, participantId, deviceId)
-                }
-                if (acceptedEvents.isEmpty()) 0 else appDataUploadService.uploadAndroidUsageEvents(
-                    realStudyId, participantId, deviceId, acceptedEvents,
-                )
             }
             auditService.logWithContext {
-                action(AuditAction.USAGE_DATA_UPLOAD)
+                action(AuditEventType.USAGE_DATA_UPLOAD)
                 resourceType("UsageData")
                 studyId(realStudyId)
                 success(true)
                 accessedPHI(true)
                 phiFields(listOf("participantId", "usageEvents"))
-                additionalData(mapOf("participantId" to participantId, "recordCount" to count))
+                additionalData(mapOf("participantId" to participantId, "recordCount" to receipt.acceptedIds.size,
+                    "discardedCount" to receipt.discardedIds.size))
             }
-            fireDataSubmitted(realStudyId, participantId, "android_usage_events", count)
-            count
+            receipt
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.USAGE_DATA_UPLOAD)
+                action(AuditEventType.USAGE_DATA_UPLOAD)
                 resourceType("UsageData")
                 studyId(realStudyId)
-                failed(ex.message ?: "Usage event data upload failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
@@ -3147,25 +2157,16 @@ public open class StudyController @Inject constructor(
     override fun getStudySettings(
         @PathVariable(STUDY_ID) studyId: UUID,
     ): Map<StudySettingType, StudySetting> {
-        // T-27: Full settings endpoint now requires authentication.
+        // The full settings endpoint requires authentication.
         // Mobile clients should use getAndroidSensorSettings() or getStudySensors() instead,
         // which return only the minimal sensor config needed for enrollment.
         ensureAuthenticated()
         ensureReadAccess(AclKey(studyId))
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        // Read the revision BEFORE the settings: the two reads use separate connections, so
-        // reading it after could hand the client a revision newer than the map it received and
-        // let a subsequent If-Match PATCH silently clobber the concurrent change (V103 lost
-        // update). Reading it first can only produce a stale-low token, which fails safe with 412.
-        val revision = studyService.getStudySettingsRevision(realStudyId)
-        val settings = collectionSettingsForFeatures(
-            StudySettings(studyService.getStudySettings(realStudyId)),
-            studyService.getStudy(realStudyId).modules.keys.map { it.name }.toSet(),
-        )
-        setSettingsRevisionEtag(revision)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val study = getStudyWithEtag(realStudyId)
+        val settings = collectionSettingsForFeatures(study)
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("StudySettings")
             studyId(realStudyId)
             success(true)
@@ -3182,87 +2183,34 @@ public open class StudyController @Inject constructor(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(SETTING_TYPE) settingsKey: StudySettingType,
     ): StudySetting {
-        when (settingsKey) {
-            // T-27: Sensor and AndroidSensor are the only setting types that mobile
-            // clients need without authentication. Everything else requires read access.
-            //
-            // Phase 9A: DataCollection joins the mobile-public set. The generalized
-            // AndroidDataCollectionSetting (chronicle-models §1B.2) carries no apiKey,
-            // signing secret, or participantId — it is pure, study-scoped collection
-            // configuration, exactly like AndroidSensor — so a current/updated mobile
-            // client may read it without authentication. The read stays study-scoped
-            // and RLS-enforced via ensureValidStudy; this is an explicit decision, not
-            // an accidental relaxation, and mirrors the existing AndroidSensor path.
-            StudySettingType.Sensor,
-            StudySettingType.AndroidSensor,
-            StudySettingType.DataCollection,
-            // W2: the study encryption setting carries ONLY the public key (no private key,
-            // apiKey, signing secret, or participantId), and the device must fetch it
-            // pre-enrollment to seal its uploads — so it joins the mobile-public set,
-            // study-scoped and RLS-enforced via ensureValidStudy, exactly like DataCollection.
-            StudySettingType.Encryption -> if (!ensureValidStudy(studyId)) {
-                throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.study.notFound"))
-            }
-            else -> ensureReadAccess(AclKey(studyId))
+        if (settingsKey == StudySettingType.DataCollection) {
+            // Mobile clients read only this public policy projection, without acquiring full study access.
+            val snapshot = participantCollectionAcknowledgmentService.collectionSettingsSnapshotForDevice(studyId)
+                ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.study.notFound"))
+            setSettingsRevisionEtag(snapshot.revision)
+            logStudySettingView(studyId, settingsKey)
+            return snapshot.setting
         }
-        // Revision first — see getStudySettings above: a revision read after the settings can be
-        // newer than them, turning a later If-Match PATCH into a silent lost update.
-        val revision = studyService.getStudySettingsRevision(studyId)
-        val rawSettings = StudySettings(studyService.getStudySettings(studyId))
-        val settings = if (settingsKey == StudySettingType.DataCollection) {
-            val collection = rawSettings[settingsKey] as? AndroidDataCollectionSetting
-                ?: AndroidDataCollectionSetting.fromLegacy(rawSettings[StudySettingType.AndroidSensor] as? AndroidSensorSetting)
-            collectionSettingsForFeatures(
-                StudySettings(rawSettings + (settingsKey to collection)),
-                studyService.getStudy(studyId).modules.keys.map { it.name }.toSet(),
-            )
-        } else rawSettings
-        setSettingsRevisionEtag(revision)
+        ensureReadAccess(AclKey(studyId))
+        val settings = getStudyWithEtag(studyId).settings
         val setting = when (settingsKey) {
-            StudySettingType.AndroidSensor -> settings[settingsKey] ?: AndroidSensorSetting.NO_SENSORS
-            StudySettingType.Sensor -> settings[settingsKey] ?: SensorSetting.NO_SENSORS
-            // Phase 9A: generalized DataCollection read with the legacy fallback chain
-            // (design §1B.4): stored DataCollection setting → derived from legacy
-            // AndroidSensor → safe coded defaults. A missing setting never throws and
-            // never silently enables a privacy-sensitive module — fromLegacy() only
-            // ever enables hardware_sensors, and only when AndroidSensor has sensors.
-            StudySettingType.DataCollection -> settings[settingsKey] as? AndroidDataCollectionSetting
-                ?: AndroidDataCollectionSetting.fromLegacy(
-                    settings[StudySettingType.AndroidSensor] as? AndroidSensorSetting
-                )
-            // W2: an un-provisioned study returns a disabled default (device → plaintext),
-            // never throws. The setting carries only the public key.
-            StudySettingType.Encryption -> settings[settingsKey] as? StudyEncryptionSetting
-                ?: StudyEncryptionSetting()
+            StudySettingType.AppUsageSurvey -> settings.appUsageSurvey()
             else -> settings.getValue(settingsKey)
         }
+        logStudySettingView(studyId, settingsKey)
+        return setting
+    }
+
+    private fun logStudySettingView(studyId: UUID, settingsKey: StudySettingType) {
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("StudySettings")
             studyId(studyId)
             success(true)
             additionalData(mapOf("settingType" to settingsKey.name))
         }
-        return setting
     }
 
-    @Deprecated("Prefer getStudySetting, this is left in for app compat.")
-    @Timed
-    @GetMapping(
-        path = [STUDY_ID_PATH + SETTINGS_PATH + SENSORS_PATH],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    override fun getStudySensors(@PathVariable(STUDY_ID) studyId: UUID): Set<SensorType> {
-        val sensors = studyService.getStudySensors(studyId)
-        auditService.logWithContext {
-            action(AuditAction.VIEW)
-            resourceType("StudySettings")
-            studyId(studyId)
-            success(true)
-            additionalData(mapOf("endpoint" to "getStudySensors"))
-        }
-        return sensors
-    }
 
 
     @Timed
@@ -3280,15 +2228,18 @@ public open class StudyController @Inject constructor(
 
         ensureAuthenticated()
         ensureReadAccess(AclKey(studyId))
-        val participants = studyService.getStudyParticipants(studyId, safeLimit, safeOffset)
+        // Read once: the service's iterable runs its query again on every iteration.
+        val listed = studyService.getStudyParticipants(studyId, safeLimit, safeOffset).toList()
+        val consent = participantCollectionAcknowledgmentService.consentStates(studyId, listed.map { it.participantId })
+        val participants = listed.map { participant -> participant.copy(consentState = consent[participant.participantId]) }
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
             resourceType("Participant")
             studyId(studyId)
             success(true)
             accessedPHI(true)
             phiFields(listOf("participantId", "participantData"))
-            additionalData(mapOf("participantCount" to participants.count()))
+            additionalData(mapOf("participantCount" to participants.size))
         }
         return participants
     }
@@ -3310,15 +2261,14 @@ public open class StudyController @Inject constructor(
             SecurableObjectType.Study,
             EnumSet.of(Permission.READ)
         )
-        // Cap the number of study IDs to prevent unbounded Hazelcast getAll().
-        // Users with access to thousands of studies would otherwise force full materialization.
+        // The list pages in memory over one Hazelcast getAll(), so it refuses an ID set it would have to cut short.
         val studyIds = studyAclKeys.mapTo(mutableSetOf()) { it.first() }
-        val cappedStudyIds = if (studyIds.size > PaginationDefaults.MAX_BULK_IDS) {
-            studyIds.sorted().take(PaginationDefaults.MAX_BULK_IDS).toMutableSet()
-        } else studyIds
-        val studies = studyService.getStudies(cappedStudyIds)
+        require(studyIds.size <= PaginationDefaults.MAX_BULK_IDS) {
+            "More than ${PaginationDefaults.MAX_BULK_IDS} studies are readable; list them per organization"
+        }
+        val studies = studyService.getStudies(studyIds)
 
-        auditingManager.recordEvents(studies.map {
+        recordReadEvents(studies.map {
             AuditableEvent(
                 aclKey = AclKey(it.id),
                 eventType = AuditEventType.GET_ALL_STUDIES,
@@ -3328,7 +2278,7 @@ public open class StudyController @Inject constructor(
         })
 
         auditService.logWithContext {
-            action(AuditAction.LIST)
+            action(AuditEventType.LIST)
             resourceType("Study")
             success(true)
             additionalData(mapOf("studyCount" to studies.count()))
@@ -3356,7 +2306,7 @@ public open class StudyController @Inject constructor(
         ensureReadAccess(AclKey(studyId))
         val stats = studyService.getStudyParticipantStats(studyId, safeLimit, safeOffset)
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
             resourceType("Participant")
             studyId(studyId)
             success(true)
@@ -3372,12 +2322,16 @@ public open class StudyController @Inject constructor(
         path = [STUDY_ID_PATH + PARTICIPANTS_PATH + IOS_PATH + UPLOAD_STATUS_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
-    override fun getIosUploadStatus(@PathVariable(STUDY_ID) studyId: UUID): Map<String, IosUploadStatus> {
+    override fun getIosUploadStatus(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @RequestParam(defaultValue = "100") limit: Int,
+        @RequestParam(defaultValue = "0") offset: Int,
+    ): Map<String, IosUploadStatus> {
         ensureReadAccess(AclKey(studyId))
-        val status = loadIosUploadStatus(studyId)
+        val status = loadIosUploadStatus(studyId, PaginationDefaults.clampLimit(limit), PaginationDefaults.clampOffset(offset))
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
-            resourceType("SensorData")
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
+            resourceType("ScreenTimeData")
             studyId(studyId)
             success(true)
             accessedPHI(true)
@@ -3387,12 +2341,13 @@ public open class StudyController @Inject constructor(
         return status
     }
 
-    private fun loadIosUploadStatus(studyId: UUID): Map<String, IosUploadStatus> {
+    private fun loadIosUploadStatus(studyId: UUID, limit: Int, offset: Int): Map<String, IosUploadStatus> {
         val result = linkedMapOf<String, IosUploadStatus>()
         storageResolver.getPlatformStorage().connection.use { conn ->
             conn.prepareStatement(GET_IOS_UPLOAD_STATUS_SQL).use { ps ->
-                ps.setObject(1, studyId.toString())
-                ps.setObject(2, studyId)
+                ps.setObject(1, studyId)
+                ps.setInt(2, limit)
+                ps.setInt(3, offset)
                 ps.executeQuery().use { rs -> readIosUploadStatusRows(rs, result) }
             }
         }
@@ -3408,7 +2363,7 @@ public open class StudyController @Inject constructor(
     override fun getAndroidDiagnostics(
         @PathVariable(STUDY_ID) studyId: UUID,
         @RequestParam(value = "participantId", required = false) participantId: String?,
-        @RequestParam(value = "deviceId", required = false) deviceId: UUID?,
+        @RequestParam(value = "randomDeviceId", required = false) randomDeviceId: UUID?,
         @RequestParam(value = "from", required = false)
         @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) fromDay: LocalDate?,
         @RequestParam(value = "to", required = false)
@@ -3422,7 +2377,7 @@ public open class StudyController @Inject constructor(
         val page = uploadDiagnosticsQueryService.getPage(
             studyId = studyId,
             participantId = participantId,
-            deviceId = deviceId,
+            randomDeviceId = randomDeviceId,
             fromDay = fromDay,
             toDay = toDay,
             moduleFamily = moduleFamily,
@@ -3431,12 +2386,12 @@ public open class StudyController @Inject constructor(
             limit = limit,
         )
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
             resourceType("UploadDiagnostics")
             studyId(studyId)
             success(true)
             accessedPHI(true)
-            phiFields(listOf("participantId", "deviceId", "uploadDiagnostics", "dataQualityAlerts"))
+            phiFields(listOf("participantId", "randomDeviceId", "uploadDiagnostics"))
             additionalData(mapOf("rowCount" to page.items.size))
         }
         return page
@@ -3453,9 +2408,6 @@ public open class StudyController @Inject constructor(
                 committedRows = rs.getLong("committed_rows"),
                 lastCommittedAt = rs.getObject("last_committed_at", OffsetDateTime::class.java),
                 lastObservationEndAt = rs.getObject("last_observation_end_at", OffsetDateTime::class.java),
-                bufferedBatches = rs.getLong("buffered_batches"),
-                bufferedRecords = rs.getLong("buffered_records"),
-                lastBufferedUploadAt = rs.getObject("last_buffered_upload_at", OffsetDateTime::class.java),
             )
         }
     }
@@ -3469,42 +2421,35 @@ public open class StudyController @Inject constructor(
         )
     }
 
-    private fun warnParticipantAction(message: String, studyId: UUID, participantId: String) {
-        logger.warn(
-            "{} for studyId={}, participantRef={}",
-            message,
-            studyId,
-            LogSanitizer.stableFingerprint(participantId, "participant")
-        )
-    }
+
 
     override fun getParticipantsData(
         studyId: UUID,
         dataType: ParticipantDataType,
         participantIds: Set<String>,
-        startDateTime: OffsetDateTime,
-        endDateTime: OffsetDateTime,
+        startDateTime: OffsetDateTime?,
+        endDateTime: OffsetDateTime?,
+    ): Iterable<Map<String, Any>> = participantsData(
+        studyId, dataType, participantIds, SynchronousExportLimits.validate(participantIds, startDateTime, endDateTime),
+    )
+
+    private fun participantsData(
+        studyId: UUID,
+        dataType: ParticipantDataType,
+        participantIds: Set<String>,
+        window: SynchronousExportWindow,
     ): Iterable<Map<String, Any>> {
+        val startDateTime = window.start
+        val endDateTime = window.end
         ensureReadAccess(AclKey(studyId))
         return when (dataType) {
-            ParticipantDataType.Preprocessed -> downloadService.getPreprocessedUsageEventsData(
-                studyId,
-                participantIds,
-                startDateTime,
-                endDateTime
-            )
-
             ParticipantDataType.AppUsageSurvey -> downloadService.getParticipantsAppUsageSurveyData(
                 studyId,
                 participantIds,
                 startDateTime,
-                endDateTime
+                endDateTime,
+                StudySettings(studyService.getStudySettings(studyId)).timeZone(),
             )
-
-            ParticipantDataType.IOSSensor -> {
-                @Suppress("DEPRECATION") val sensors = getStudySensors(studyId)
-                downloadService.getParticipantsSensorData(studyId, participantIds, sensors, startDateTime, endDateTime)
-            }
 
             ParticipantDataType.UsageEvents -> {
                 downloadService.getParticipantsUsageEventsData(studyId, participantIds, startDateTime, endDateTime)
@@ -3525,7 +2470,8 @@ public open class StudyController @Inject constructor(
             ParticipantDataType.HealthMetrics,
             ParticipantDataType.ConnectivityState,
             ParticipantDataType.AppNetworkUsage,
-            ParticipantDataType.DeviceSettings -> downloadService.getParticipantsCollectionData(
+            ParticipantDataType.DeviceSettings,
+            ParticipantDataType.IOSScreenTime -> downloadService.getParticipantsCollectionData(
                 studyId,
                 participantIds,
                 dataType,
@@ -3539,31 +2485,19 @@ public open class StudyController @Inject constructor(
                 startDateTime,
                 endDateTime,
             )
-
-            ParticipantDataType.DataQualityAlerts -> downloadService.getParticipantsDataQualityAlertsData(
-                studyId,
-                participantIds,
-                startDateTime,
-                endDateTime,
-            )
         }
     }
 
     private fun getParticipantsDataWithSensorFilter(
-        studyId: UUID,
-        dataType: ParticipantDataType,
-        participantIds: Set<String>,
-        startDateTime: OffsetDateTime,
-        endDateTime: OffsetDateTime,
-        sensorTypes: Set<String>?
+        studyId: UUID, request: SynchronousExportRequest, window: SynchronousExportWindow,
     ): Iterable<Map<String, Any>> {
-        if (dataType == ParticipantDataType.AndroidSensor && !sensorTypes.isNullOrEmpty()) {
+        if (request.dataType == ParticipantDataType.AndroidSensor && !request.sensorTypes.isNullOrEmpty()) {
             ensureReadAccess(AclKey(studyId))
             return downloadService.getParticipantsAndroidSensorData(
-                studyId, participantIds, startDateTime, endDateTime, sensorTypes
+                studyId, request.participantId, window.start, window.end, request.sensorTypes,
             )
         }
-        return getParticipantsData(studyId, dataType, participantIds, startDateTime, endDateTime)
+        return participantsData(studyId, request.dataType, request.participantId, window)
     }
 
     @PatchMapping(
@@ -3573,30 +2507,52 @@ public open class StudyController @Inject constructor(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
         @RequestParam(PARTICIPATION_STATUS) participationStatus: ParticipationStatus,
+        @RequestHeader(EditRevisionApi.IF_MATCH, required = false) revision: String?,
     ): OK {
         ensureWriteAccess(AclKey(studyId))
+        val expectedRevision = parseRevisionPrecondition(revision, "error.participant.invalidStatusRevision")
         return try {
-            studyService.updateParticipationStatus(studyId, participantId, participationStatus)
-            auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_WITHDRAW)
-                resourceType("Participant")
-                studyId(studyId)
-                success(true)
-                accessedPHI(true)
-                phiFields(listOf("participantId", "participationStatus"))
-                additionalData(mapOf("participantId" to participantId, "newStatus" to participationStatus.name))
-            }
+            // The service owns "already in force" and the audit row of a change; an unchanged status writes neither.
+            studyService.updateParticipationStatus(studyId, participantId, participationStatus, expectedRevision)
             OK("Successfully updated participation status")
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.PARTICIPANT_WITHDRAW)
+                action(if (participationStatus == ParticipationStatus.NOT_ENROLLED) AuditEventType.PARTICIPANT_WITHDRAW
+                    else AuditEventType.UPDATE_PARTICIPATION_STATUS)
                 resourceType("Participant")
                 studyId(studyId)
-                failed(ex.message ?: "Participation status update failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
         }
+    }
+
+    /**
+     * ConcurrentEditFilter locks the row and sets the ETag; this reads the snapshot on its pinned connection.
+     * The explicit charset keeps the Content-Type the filter served before this handler existed.
+     */
+    @GetMapping(
+        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + StudyApi.ANNOTATIONS_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE + ";charset=UTF-8"]
+    )
+    public fun getParticipantAnnotations(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @PathVariable(PARTICIPANT_ID) participantId: String,
+    ): String {
+        ensureReadAccess(AclKey(studyId))
+        val json = studyService.getParticipantAnnotations(studyId, participantId)
+            ?: throw NoSuchElementException("Resource not found")
+        auditService.logWithContext {
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
+            resourceType("ParticipantAnnotations")
+            studyId(studyId)
+            success(true)
+            accessedPHI(true)
+            phiFields(listOf("participantId", "participantNotes", "participantTags"))
+            additionalData(mapOf("participantId" to participantId))
+        }
+        return json
     }
 
     @PatchMapping(
@@ -3606,13 +2562,14 @@ public open class StudyController @Inject constructor(
     override fun updateParticipantAnnotations(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestBody annotations: Map<String, @JvmSuppressWildcards Any?>,
+        @Valid @RequestBody annotations: ParticipantAnnotationsUpdate,
+        @RequestHeader(EditRevisionApi.IF_MATCH) revision: String,
     ): OK {
         ensureWriteAccess(AclKey(studyId))
         return try {
             studyService.updateParticipantAnnotations(studyId, participantId, annotations)
             auditService.logWithContext {
-                action(AuditAction.UPDATE)
+                action(AuditEventType.UPDATE)
                 resourceType("Participant")
                 studyId(studyId)
                 success(true)
@@ -3623,10 +2580,10 @@ public open class StudyController @Inject constructor(
             OK("Successfully updated participant annotations")
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.UPDATE)
+                action(AuditEventType.UPDATE)
                 resourceType("Participant")
                 studyId(studyId)
-                failed(ex.message ?: "Participant annotation update failed")
+                success(false)
                 additionalData(mapOf("participantId" to participantId))
             }
             throw ex
@@ -3638,48 +2595,43 @@ public open class StudyController @Inject constructor(
         path = [STUDY_ID_PATH + PARTICIPANTS_PATH + DATA_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE, CustomMediaType.TEXT_CSV_VALUE]
     )
-    @RateLimit(type = RateLimitType.SENSITIVE, keyStrategy = RateLimitKeyStrategy.STUDY)
     public fun getParticipantsData(
         @PathVariable(STUDY_ID) studyId: UUID,
-        @RequestParam(value = DATA_TYPE) dataType: ParticipantDataType,
-        @RequestParam(value = PARTICIPANT_ID) @Size(max = SynchronousExportLimits.MAX_PARTICIPANTS) participantIds: Set<String>,
-        @RequestParam(value = START_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) startDateTime: OffsetDateTime?,
-        @RequestParam(value = END_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) endDateTime: OffsetDateTime?,
-        @RequestParam(value = RESPONSE_TYPE, defaultValue = "csv") fileType: FileType,
-        @RequestParam(value = FILE_NAME) @Size(max = 64) fileName: String?,
-        @RequestParam(value = "sensorTypes", required = false) sensorTypes: Set<String>?,
+        @Valid @ModelAttribute request: SynchronousExportRequest,
         response: HttpServletResponse,
     ): Iterable<Map<String, Any>> {
-        check(fileType == FileType.csv || fileType == FileType.json) { "Requested file type must be json or CSV." }
-        val (boundedStart, boundedEnd) = SynchronousExportLimits.validate(
-            participantIds,
-            startDateTime,
-            endDateTime,
-        )
+        check(request.responseType == FileType.csv || request.responseType == FileType.json) {
+            "Requested file type must be json or CSV."
+        }
+        val window = SynchronousExportLimits.validate(request.participantId, request.startDate, request.endDate)
         val data = getParticipantsDataWithSensorFilter(
-            studyId,
-            dataType,
-            participantIds,
-            boundedStart,
-            boundedEnd,
-            sensorTypes
+            studyId, request, window,
         )
+        ChronicleServerUtil.setDownloadContentType(response, request.responseType)
+        ChronicleServerUtil.setContentDisposition(response,
+            request.fileName ?: "${request.dataType}_${LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)}",
+            request.responseType)
+        auditParticipantDownload(studyId, request.dataType, request.participantId.size, request.responseType)
+        // CSV and JSON both stream from the cursor (PostgresDownload*HttpMessageConverter); no size is refused.
+        return data
+    }
 
-        ChronicleServerUtil.setDownloadContentType(response, fileType)
-        ChronicleServerUtil.setContentDisposition(
-            response,
-            MoreObjects.firstNonNull(
-                fileName,
-                "${dataType}_${
-                    LocalDate.now()
-                        .format(DateTimeFormatter.BASIC_ISO_DATE)
-                }"
-            ),
-            fileType
-        )
+    /** Browser form POST of [getParticipantsData]; the token resolver checks its CSRF form field. */
+    @Timed
+    @PostMapping(
+        path = [STUDY_ID_PATH + PARTICIPANTS_PATH + DATA_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE, CustomMediaType.TEXT_CSV_VALUE]
+    )
+    public fun postParticipantsData(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @Valid @ModelAttribute request: SynchronousExportRequest,
+        response: HttpServletResponse,
+    ): Iterable<Map<String, Any>> = getParticipantsData(studyId, request, response)
 
-        // Legacy audit event (existing system)
-        recordEvent(
+    private fun auditParticipantDownload(
+        studyId: UUID, dataType: ParticipantDataType, participantCount: Int, fileType: FileType,
+    ) {
+        recordReadEvent(
             AuditableEvent(
                 aclKey = AclKey(studyId),
                 securablePrincipalId = Principals.getCurrentSecurablePrincipal().id,
@@ -3691,7 +2643,7 @@ public open class StudyController @Inject constructor(
         )
 
         auditService.logWithContext {
-            action(AuditAction.DOWNLOAD)
+            action(AuditEventType.DOWNLOAD)
             resourceType("ParticipantData")
             studyId(studyId)
             success(true)
@@ -3699,44 +2651,13 @@ public open class StudyController @Inject constructor(
             phiFields(listOf("participantId", "participantData"))
             additionalData(mapOf(
                 "dataType" to dataType.name,
-                "participantCount" to participantIds.size,
+                "participantCount" to participantCount,
                 "fileType" to fileType.name
             ))
         }
 
-        if (fileType != FileType.json) return data
-
-        // The legacy JSON client contract requires an array. Bound materialization
-        // so a large but authorized export cannot exhaust the server heap.
-        val iterator = data.iterator()
-        val jsonRows = try {
-            buildList {
-                var bytes = 2L // JSON array brackets.
-                while (iterator.hasNext()) {
-                    val row = iterator.next()
-                    bytes += settingsAuditMapper.writeValueAsBytes(row).size
-                    if (isNotEmpty()) bytes++
-                    if (bytes > SynchronousExportLimits.MAX_JSON_BYTES) {
-                        throw ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, Messages.get("error.export.jsonByteLimit"))
-                    }
-                    add(row)
-                    if (size > SynchronousExportLimits.MAX_JSON_ROWS) break
-                }
-            }
-        } finally {
-            (iterator as? AutoCloseable)?.close()
-        }
-        if (jsonRows.size > SynchronousExportLimits.MAX_JSON_ROWS) {
-            throw ResponseStatusException(
-                HttpStatus.CONTENT_TOO_LARGE,
-                Messages.format(
-                    "error.export.jsonRowLimit",
-                    SynchronousExportLimits.MAX_JSON_ROWS.toString(),
-                ),
-            )
-        }
-        return jsonRows
     }
+
 
     @Timed
     @GetMapping(
@@ -3749,7 +2670,7 @@ public open class StudyController @Inject constructor(
         ensureReadAccess(AclKey(studyId))
         val result = enrollmentService.isKnownParticipant(studyId, participantId)
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("Participant")
             studyId(studyId)
             success(true)
@@ -3771,16 +2692,16 @@ public open class StudyController @Inject constructor(
     private fun validateUploadEnvelopeIdentity(
         requestStudyId: UUID,
         requestParticipantId: String,
-        requestSourceDeviceId: String,
+        requestSourceRandomDeviceId: String,
         envelopeStudyId: String,
         envelopeParticipantId: String,
-        envelopeDeviceId: String,
+        envelopeRandomDeviceId: String,
     ) {
         val parsedEnvelopeStudyId = runCatching { UUID.fromString(envelopeStudyId) }.getOrNull()
         if (
             parsedEnvelopeStudyId != requestStudyId ||
             envelopeParticipantId != requestParticipantId ||
-            envelopeDeviceId != requestSourceDeviceId
+            envelopeRandomDeviceId != requestSourceRandomDeviceId
         ) {
             throw ResponseStatusException(
                 HttpStatus.BAD_REQUEST,

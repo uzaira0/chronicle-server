@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.services.studies
 
+import com.openlattice.chronicle.storage.ResolvedStorage
+
 import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
@@ -32,14 +34,13 @@ import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import org.mockito.ArgumentMatchers.anyString
+import org.mockito.Mockito.times
 import org.mockito.Mockito.inOrder
 import org.mockito.Mockito.never
-import org.mockito.kotlin.doNothing
 import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.same
-import org.mockito.kotlin.spy
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import java.sql.Connection
@@ -67,9 +68,10 @@ class StudyServiceCachePublicationTest {
         TestSecurityUtils.setupSecurityContext()
         whenever(hazelcast.getMap<UUID, Study>(HazelcastMap.STUDIES.name)).thenReturn(studies)
         whenever(storageResolver.getDefaultPlatformStorage())
-            .thenReturn(PostgresFlavor.VANILLA to dataSource)
+            .thenReturn(ResolvedStorage(PostgresFlavor.VANILLA, dataSource))
         whenever(storageResolver.getPlatformStorage()).thenReturn(dataSource)
         whenever(dataSource.connection).thenReturn(connection)
+        whenever(connection.createStatement()).thenReturn(mock<Statement>())
         whenever(connection.createArrayOf(eq("UUID"), org.mockito.kotlin.any())).thenReturn(uuidSqlArray)
     }
 
@@ -83,8 +85,8 @@ class StudyServiceCachePublicationTest {
         val studyId = UUID.randomUUID()
         val study = Study(title = "cache publication", contact = "test@example.com")
         whenever(idGenerationService.getNextId()).thenReturn(studyId)
-        val service = spy(newService())
-        doNothing().whenever(service).createStudy(same(connection), same(study))
+        val studyInsert = stubStudyWrites()
+        val service = newService()
 
         val actualId = service.createStudy(study)
 
@@ -94,7 +96,16 @@ class StudyServiceCachePublicationTest {
             Principal(PrincipalType.USER, "test-user"),
         )
         verify(authorizationService).ensureAceIsLoaded(AclKey(studyId), SystemRole.adminRole)
-        val ordered = inOrder(connection, authorizationService)
+        val ordered = inOrder(studyInsert, authorizationService, connection)
+        ordered.verify(studyInsert).executeUpdate()
+        ordered.verify(authorizationService).createUnnamedSecurableObject(
+            same(connection),
+            eq(AclKey(studyId)),
+            eq(SystemRole.adminRole),
+            eq(EnumSet.allOf(Permission::class.java)),
+            eq(SecurableObjectType.Study),
+            eq(OffsetDateTime.MAX),
+        )
         ordered.verify(connection).commit()
         ordered.verify(authorizationService).ensureAceIsLoaded(
             AclKey(studyId),
@@ -113,12 +124,14 @@ class StudyServiceCachePublicationTest {
         doThrow(IllegalStateException("injected cache failure"))
             .whenever(authorizationService)
             .ensureAceIsLoaded(AclKey(studyId), owner)
-        val service = spy(newService())
-        doNothing().whenever(service).createStudy(same(connection), same(study))
+        val studyInsert = stubStudyWrites()
+        val service = newService()
 
         val actualId = service.createStudy(study)
 
         assertEquals(studyId, actualId)
+        verify(studyInsert).setObject(1, studyId)
+        verify(studyInsert).executeUpdate()
         verify(connection).commit()
         verify(authorizationService).ensureAceIsLoaded(AclKey(studyId), owner)
         verify(authorizationService).ensureAceIsLoaded(AclKey(studyId), SystemRole.adminRole)
@@ -274,22 +287,20 @@ class StudyServiceCachePublicationTest {
     }
 
     @Test
-    fun `legacy study id resolution returns null when resolved study is quarantined`() {
-        val legacyStudyId = UUID.randomUUID()
-        val resolvedStudyId = UUID.randomUUID()
-        val legacyStatement = mock<PreparedStatement>()
-        val legacyResultSet = mock<ResultSet>()
-        whenever(connection.prepareStatement(anyString())).thenReturn(legacyStatement)
-        whenever(legacyStatement.executeQuery()).thenReturn(legacyResultSet)
-        whenever(legacyResultSet.next()).thenReturn(true)
-        whenever(legacyResultSet.getObject("study_id", UUID::class.java)).thenReturn(resolvedStudyId)
-        stubBlockedStudy(resolvedStudyId)
+    fun `unknown and quarantined study ids are rejected`() {
+        val studyId = UUID.randomUUID()
+        val statement = mock<PreparedStatement>()
+        val rows = mock<ResultSet>()
+        whenever(connection.prepareStatement(anyString())).thenReturn(statement)
+        whenever(statement.executeQuery()).thenReturn(rows)
+        whenever(rows.next()).thenReturn(false, true)
+        whenever(rows.getObject("study_id", UUID::class.java)).thenReturn(studyId)
+        stubBlockedStudy(studyId)
         val service = newService()
-
-        val actual = service.getStudyId(legacyStudyId)
-
-        assertEquals(null, actual)
-        verify(studies).evict(resolvedStudyId)
+        assertEquals(null, service.getStudyId(UUID.randomUUID()))
+        assertEquals(null, service.getStudyId(studyId))
+        verify(statement, times(2)).executeQuery()
+        verify(studies).evict(studyId)
     }
 
     @Test
@@ -336,14 +347,15 @@ class StudyServiceCachePublicationTest {
         val studyId = UUID.randomUUID()
         val study = Study(title = "failed commit", contact = "test@example.com")
         whenever(idGenerationService.getNextId()).thenReturn(studyId)
-        val service = spy(newService())
-        doNothing().whenever(service).createStudy(same(connection), same(study))
+        val studyInsert = stubStudyWrites()
+        val service = newService()
         doThrow(SQLException("injected commit failure")).whenever(connection).commit()
 
         assertThrows(SQLException::class.java) {
             service.createStudy(study)
         }
 
+        verify(studyInsert).executeUpdate()
         verify(connection).rollback()
         verify(studies, never()).evict(studyId)
         verify(studies, never()).get(studyId)
@@ -358,7 +370,7 @@ class StudyServiceCachePublicationTest {
     fun `register rejects participant ids that enrollment codes would later refuse`() {
         val studyLimits = mock<StudyLimitsManager>()
         val service = newService(studyLimits)
-        for (badId in listOf("CL 001", "niño-07")) {
+        for (badId in listOf("CL 001", "niño-07", ".", "..")) {
             val participant = Participant(badId, Candidate(), ParticipationStatus.ENROLLED)
             val error = assertThrows(IllegalArgumentException::class.java) {
                 service.registerParticipant(connection, UUID.randomUUID(), participant)
@@ -366,6 +378,21 @@ class StudyServiceCachePublicationTest {
             assertEquals("Invalid participant ID format", error.message)
         }
         org.mockito.Mockito.verifyNoInteractions(studyLimits)
+    }
+
+    /**
+     * The real `createStudy(connection, study)` runs against the JDBC boundary: every statement it prepares
+     * succeeds, and the study-row INSERT is returned so a test can place the write in order.
+     */
+    private fun stubStudyWrites(): PreparedStatement {
+        val statement = mock<PreparedStatement>()
+        whenever(statement.executeUpdate()).thenReturn(1)
+        whenever(statement.executeBatch()).thenReturn(intArrayOf())
+        whenever(connection.prepareStatement(anyString())).thenReturn(statement)
+        val studyInsert = mock<PreparedStatement>()
+        whenever(studyInsert.executeUpdate()).thenReturn(1)
+        whenever(connection.prepareStatement(StudyService.INSERT_STUDY_SQL)).thenReturn(studyInsert)
+        return studyInsert
     }
 
     private fun newService(studyLimitsMgr: StudyLimitsManager = mock()): StudyService =

@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.studies.tasks
 
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.tasks.HazelcastFixedRateTask
 import com.geekbeast.tasks.HazelcastTaskDependencies
 import com.openlattice.chronicle.services.studies.StudyLimitsManager
@@ -31,6 +32,7 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
                 pauseParticipantsForStudiesOverDuration()
             } catch (exception: Exception) {
                 logger.error("Unable to enumerate studies past their duration", exception)
+                ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.STUDY_LIMITS)
             }
             expireStudiesOutsideOfRetentionPeriod()
         }
@@ -50,6 +52,7 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
                 logger.info("Paused {} enrolled participants in study {}", paused, studyId)
             } catch (exception: Exception) {
                 logger.error("Unable to pause enrolled participants in study {}", studyId, exception)
+                ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.STUDY_LIMITS)
             }
         }
     }
@@ -58,7 +61,7 @@ public open class StudyLimitsEnforcementTask : HazelcastFixedRateTask<StudyLimit
     private fun expireStudiesOutsideOfRetentionPeriod() {
         val deps = getDependency()
         val studiesToExpire = deps.studyLimitsManager.getStudiesExcceedingDataRetentionPeriod()
-        com.openlattice.chronicle.observability.ChronicleMetrics.studiesRetentionExpired.set(studiesToExpire.size.toDouble())
+        ChronicleMetrics.studiesRetentionExpired.set(studiesToExpire.size.toDouble())
         logger.info("{} studies have ended their retention period and require deletion", studiesToExpire.size)
     }
 }

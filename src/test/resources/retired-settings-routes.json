@@ -1,0 +1,10 @@
+[
+  {"path":"/chronicle/v3/organization/{organizationId}/settings","methods":["GET","PUT"]},
+  {"path":"/chronicle/v3/organization/{organizationId}/data-collection","methods":["GET","PUT"]},
+  {"path":"/chronicle/v3/organization/{organizationId}/app-component/CHRONICLE","methods":["GET","PUT"]},
+  {"path":"/chronicle/v3/notification/{studyId}/principal/{principalId}/phone-numbers","methods":["GET"]},
+  {"path":"/chronicle/v3/notification/{studyId}/principal/{principalId}/phone-numbers/+15555550100","methods":["PUT"]},
+  {"path":"/chronicle/v3/notification/{studyId}/principal/{principalId}/phone-numbers/+15555550100/verify","methods":["GET","POST"]},
+  {"path":"/chronicle/v3/notification/{studyId}/principal/{principalId}/notifications","methods":["GET","PUT"]},
+  {"path":"/chronicle/v3/notification/{studyId}/principal/{principalId}/notifications/PASSIVE_DATA_COLLECTION_COMPLIANCE","methods":["GET","PUT"]}
+]

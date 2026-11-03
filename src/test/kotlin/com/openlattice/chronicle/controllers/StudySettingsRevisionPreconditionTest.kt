@@ -1,17 +1,30 @@
 package com.openlattice.chronicle.controllers
 
-import com.openlattice.chronicle.android.AndroidSensorSetting
-import com.openlattice.chronicle.android.AndroidSensorType
+import com.openlattice.chronicle.services.studies.StudySettingsRevisionMismatchException
+import com.openlattice.chronicle.services.studies.loadLockedStudySettings
+import com.openlattice.chronicle.services.studies.applyLockedSettingsMutation
+import com.openlattice.chronicle.services.studies.checkLockedStudyRevision
+import com.openlattice.chronicle.services.studies.mergeStudySetting
+
+import com.openlattice.chronicle.survey.SurveySettings
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.notifications.StudyNotificationSettings
 import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.study.StudyFeature
 import com.openlattice.chronicle.study.StudySettings
+import com.openlattice.chronicle.study.StudyUpdate
+import com.openlattice.chronicle.mapstores.storage.StudyMapstore
+import com.openlattice.chronicle.serializers.StudyStreamSerializer
+import com.hazelcast.internal.serialization.impl.DefaultSerializationServiceBuilder
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
 import org.mockito.Mockito
@@ -61,9 +74,10 @@ class StudySettingsRevisionPreconditionTest {
         assertEquals(7L, parseSettingsRevisionPrecondition("\"7\""))
         assertEquals(7L, parseSettingsRevisionPrecondition("7"))
         assertEquals(7L, parseSettingsRevisionPrecondition("W/\"7\""))
-        assertNull(parseSettingsRevisionPrecondition(null))
-        assertNull(parseSettingsRevisionPrecondition("  "))
-        assertNull("* means no precondition", parseSettingsRevisionPrecondition("*"))
+        for (missing in listOf(null, "  ", "*")) {
+            val required = assertThrows(ResponseStatusException::class.java) { parseSettingsRevisionPrecondition(missing) }
+            assertEquals(428, required.statusCode.value())
+        }
         assertEquals(7L, parseSettingsRevisionPrecondition("\"7--gzip\""))
         assertEquals(7L, parseSettingsRevisionPrecondition("\"7--br\""))
         assertEquals(7L, parseSettingsRevisionPrecondition("W/\"7-gzip\""))
@@ -76,19 +90,124 @@ class StudySettingsRevisionPreconditionTest {
     }
 
     @Test
+    fun committedWriteRejectsAnEditFromTheCacheBeforeEviction() {
+        val studyId = newStudy()
+        HikariDataSource(HikariConfig().apply {
+            jdbcUrl = postgres.jdbcUrl
+            username = postgres.username
+            password = postgres.password
+            maximumPoolSize = 1
+        }).use { storage ->
+            val mapstore = StudyMapstore(storage)
+            val cached = checkNotNull(mapstore.load(studyId))
+            inTransaction { transaction ->
+                applyLockedSettingsMutation(transaction, studyId, cached.settingsRevision, studyService) { prior ->
+                    mergeStudySetting(prior, StudySettingType.Survey, sensorSetting())
+                }
+            }
+            val serialization = DefaultSerializationServiceBuilder().build()
+            try {
+                val output = serialization.createObjectDataOutput(256)
+                StudyStreamSerializer.serialize(output, cached)
+                val stale = StudyStreamSerializer.deserialize(serialization.createObjectDataInput(output.toByteArray()))
+                val mismatch = assertThrows(StudySettingsRevisionMismatchException::class.java) {
+                    inTransaction { transaction ->
+                        applyLockedSettingsMutation(transaction, studyId, stale.settingsRevision, studyService) { it }
+                    }
+                }
+                assertEquals(currentRevision(studyId), mismatch.currentRevision)
+                val fresh = checkNotNull(mapstore.load(studyId))
+                assertEquals(mismatch.currentRevision, fresh.settingsRevision)
+                val freshOutput = serialization.createObjectDataOutput(256)
+                StudyStreamSerializer.serialize(freshOutput, fresh)
+                assertEquals(fresh, StudyStreamSerializer.deserialize(
+                    serialization.createObjectDataInput(freshOutput.toByteArray()),
+                ))
+            } finally {
+                serialization.dispose()
+            }
+        }
+    }
+
+    @Test
     fun `matching revision succeeds and increments the revision`() {
         val studyId = newStudy()
         assertEquals(0L, currentRevision(studyId))
 
         val update = inTransaction { transaction ->
             applyLockedSettingsMutation(transaction, studyId, expectedRevision = 0L, studyService) { prior ->
-                mergeStudySetting(prior, StudySettingType.AndroidSensor, sensorSetting())
+                mergeStudySetting(prior, StudySettingType.Survey, sensorSetting())
             }
         }
 
         assertEquals(1L, update.settingsRevision)
         assertEquals(1L, currentRevision(studyId))
-        assertNotNull(loadSettings(studyId)[StudySettingType.AndroidSensor])
+        assertNotNull(loadSettings(studyId)[StudySettingType.Survey])
+    }
+
+    @Test
+    fun `an unchanged write keeps the revision and a changed one moves it`() {
+        val studyId = newStudy()
+        val writeSurvey = { expected: Long ->
+            inTransaction { transaction ->
+                applyLockedSettingsMutation(transaction, studyId, expected, studyService) { prior ->
+                    mergeStudySetting(prior, StudySettingType.Survey, sensorSetting())
+                }
+            }.settingsRevision
+        }
+        assertEquals(1L, writeSurvey(0L))
+        assertEquals(1L, writeSurvey(1L))
+        inTransaction { transaction -> studyService.updateStudy(transaction, studyId, StudyUpdate(title = "revision")) }
+        assertEquals(1L, currentRevision(studyId))
+        inTransaction { transaction -> studyService.updateStudy(transaction, studyId, StudyUpdate(title = "renamed")) }
+        assertEquals(2L, currentRevision(studyId))
+    }
+
+    @Test
+    fun everyContentColumnPersistsAndOnlyChangedRowsAdvanceTheRevision() {
+        val changes = listOf(
+            Triple("title", StudyUpdate(title = "renamed"), "renamed"),
+            Triple("description", StudyUpdate(description = "description"), "description"),
+            Triple("lat", StudyUpdate(lat = -33.0), -33.0),
+            Triple("lon", StudyUpdate(lon = -70.0), -70.0),
+            Triple("study_group", StudyUpdate(group = "group"), "group"),
+            Triple("study_version", StudyUpdate(version = "version"), "version"),
+            Triple("contact", StudyUpdate(contact = "research@example.org"), "research@example.org"),
+            Triple("storage", StudyUpdate(storage = "alternate"), "alternate"),
+            Triple("settings", StudyUpdate(settings = StudySettings(emptyMap())), "{}"),
+            Triple("modules", StudyUpdate(modules = emptyMap()), "{}"),
+        )
+        val readRow = { column: String, studyId: UUID ->
+            postgres.createConnection("").use { connection ->
+                connection.prepareStatement("SELECT $column, updated_at FROM studies WHERE study_id = ?").use { statement ->
+                    statement.setObject(1, studyId)
+                    statement.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        rows.getObject(1).toString() to rows.getObject(2)
+                    }
+                }
+            }
+        }
+        for ((column, change, expected) in changes) {
+            val studyId = newStudy()
+            // Start JSON columns with content so replacing either with {} is a real change.
+            inTransaction { transaction ->
+                studyService.updateStudy(transaction, studyId,
+                    StudyUpdate(settings = StudySettings(mapOf(StudySettingType.Survey to sensorSetting())),
+                        modules = mapOf(StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>())))
+            }
+            val before = currentRevision(studyId)
+            inTransaction { transaction -> studyService.updateStudy(transaction, studyId, change) }
+            assertEquals(column, before + 1, currentRevision(studyId))
+            val saved = readRow(column, studyId)
+            assertEquals(column, expected.toString(), saved.first)
+            inTransaction { transaction ->
+                studyService.updateStudy(transaction, studyId, change)
+                studyService.updateStudy(transaction, studyId, StudyUpdate())
+            }
+            assertEquals(column, saved, readRow(column, studyId))
+            assertEquals(column, before + 1, currentRevision(studyId))
+        }
     }
 
     @Test
@@ -96,7 +215,7 @@ class StudySettingsRevisionPreconditionTest {
         val studyId = newStudy()
         inTransaction { transaction ->
             applyLockedSettingsMutation(transaction, studyId, expectedRevision = null, studyService) { prior ->
-                mergeStudySetting(prior, StudySettingType.AndroidSensor, sensorSetting())
+                mergeStudySetting(prior, StudySettingType.Survey, sensorSetting())
             }
         }
 
@@ -111,18 +230,51 @@ class StudySettingsRevisionPreconditionTest {
         assertEquals(1L, mismatch.currentRevision)
         assertNotNull(
             "the 412 body must carry the current settings so the client can re-render",
-            mismatch.currentSettings[StudySettingType.AndroidSensor],
+            mismatch.currentSettings[StudySettingType.Survey],
         )
         assertNull(mismatch.currentSettings[StudySettingType.Notifications])
         assertEquals(1L, currentRevision(studyId))
     }
 
     @Test
-    fun `a write with no precondition keeps the legacy behaviour`() {
+    fun `details check and settings write agree on absent matching and stale revisions`() {
         val studyId = newStudy()
         inTransaction { transaction ->
             applyLockedSettingsMutation(transaction, studyId, expectedRevision = null, studyService) { prior ->
-                mergeStudySetting(prior, StudySettingType.AndroidSensor, sensorSetting())
+                mergeStudySetting(prior, StudySettingType.Survey, sensorSetting())
+            }
+        }
+        val current = currentRevision(studyId)
+        val checks = mapOf<String, (Connection, Long?) -> Unit>(
+            "details" to { transaction, expected -> checkLockedStudyRevision(transaction, studyId, expected) },
+            "settings" to { transaction, expected ->
+                applyLockedSettingsMutation(transaction, studyId, expected, studyService) { it }
+            },
+        )
+        for ((name, check) in checks) {
+            for ((expected, stale) in listOf(null to false, current to false, current - 1 to true)) {
+                rolledBack { transaction ->
+                    if (stale) {
+                        val mismatch = assertThrows(name, StudySettingsRevisionMismatchException::class.java) {
+                            check(transaction, expected)
+                        }
+                        assertEquals(name, current, mismatch.currentRevision)
+                        assertNotNull(name, mismatch.currentSettings[StudySettingType.Survey])
+                    } else {
+                        check(transaction, expected)
+                    }
+                }
+            }
+        }
+        assertEquals(current, currentRevision(studyId))
+    }
+
+    @Test
+    fun `internal isolated mutations preserve distinct setting types`() {
+        val studyId = newStudy()
+        inTransaction { transaction ->
+            applyLockedSettingsMutation(transaction, studyId, expectedRevision = null, studyService) { prior ->
+                mergeStudySetting(prior, StudySettingType.Survey, sensorSetting())
             }
         }
         // Second write from a client that never read the new revision still succeeds.
@@ -133,7 +285,7 @@ class StudySettingsRevisionPreconditionTest {
         }
         assertEquals(2L, update.settingsRevision)
         val settings = loadSettings(studyId)
-        assertNotNull(settings[StudySettingType.AndroidSensor])
+        assertNotNull(settings[StudySettingType.Survey])
         assertNotNull(settings[StudySettingType.Notifications])
     }
 
@@ -144,7 +296,7 @@ class StudySettingsRevisionPreconditionTest {
         val executor = Executors.newFixedThreadPool(2)
         try {
             val writes = listOf(
-                writeTask(barrier, studyId, StudySettingType.AndroidSensor, sensorSetting()),
+                writeTask(barrier, studyId, StudySettingType.Survey, sensorSetting()),
                 writeTask(barrier, studyId, StudySettingType.Notifications, notificationSetting()),
             )
             executor.invokeAll(writes, 60, TimeUnit.SECONDS).forEach { it.get() }
@@ -153,7 +305,7 @@ class StudySettingsRevisionPreconditionTest {
         }
 
         val settings = loadSettings(studyId)
-        assertNotNull("concurrent write of another type must not be clobbered", settings[StudySettingType.AndroidSensor])
+        assertNotNull("concurrent write of another type must not be clobbered", settings[StudySettingType.Survey])
         assertNotNull(settings[StudySettingType.Notifications])
         assertEquals(2L, currentRevision(studyId))
     }
@@ -185,6 +337,15 @@ class StudySettingsRevisionPreconditionTest {
         }
     }
 
+    private fun rolledBack(block: (Connection) -> Unit) = postgres.createConnection("").use { connection ->
+        connection.autoCommit = false
+        try {
+            block(connection)
+        } finally {
+            connection.rollback()
+        }
+    }
+
     private fun newStudy(): UUID {
         val studyId = UUID.randomUUID()
         postgres.createConnection("").use { connection ->
@@ -211,7 +372,7 @@ class StudySettingsRevisionPreconditionTest {
         }
     }
 
-    private fun sensorSetting() = AndroidSensorSetting(setOf(AndroidSensorType.accelerometer))
+    private fun sensorSetting() = SurveySettings(appUsageThresholdInSeconds = 42)
 
     private fun notificationSetting() = StudyNotificationSettings(
         labFriendlyName = "lab",

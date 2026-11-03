@@ -65,22 +65,22 @@ class StudySettingsAuditServiceTest {
             sourceIp = "192.168.1.100",
             settingKey = StudySettingType.Notifications,
             beforeValue = mapOf("enabled" to false),
-            afterValue = mapOf("enabled" to true),
-            changeSummary = "Enabled notifications"
+            afterValue = mapOf("enabled" to true)
         )
 
         verify(mockPs).setObject(kEq(2), kEq(studyId))
         verify(mockPs).setString(3, "user-1")
         verify(mockPs).setString(5, "192.168.1.100")
         verify(mockPs).setString(6, StudySettingType.Notifications.name)
-        verify(mockPs).setString(kEq(9), kEq("Enabled notifications"))
+        verify(mockPs).setString(kEq(9), kEq(service.generateChangeSummary(StudySettingType.Notifications,
+            mapOf("enabled" to false), mapOf("enabled" to true))))
         verify(mockPs).executeUpdate()
     }
 
     @Test
     fun transactionalAuditDoesNotBorrowOrCloseAnotherConnection() {
         service.recordSettingsChange(UUID.randomUUID(), "staff", null, StudySettingType.Notifications,
-            null, mapOf("enabled" to true), "Changed settings", mockConnection)
+            null, mapOf("enabled" to true), mockConnection)
         Mockito.verifyNoInteractions(mockHds)
         verify(mockConnection, Mockito.never()).close()
         verify(mockPs).executeUpdate()
@@ -92,10 +92,9 @@ class StudySettingsAuditServiceTest {
             studyId = UUID.randomUUID(),
             changedBy = "user-1",
             sourceIp = null,
-            settingKey = StudySettingType.Sensor,
+            settingKey = StudySettingType.Survey,
             beforeValue = null,
-            afterValue = mapOf("sensors" to listOf("accelerometer")),
-            changeSummary = "First time configuration"
+            afterValue = mapOf("sensors" to listOf("accelerometer"))
         )
 
         verify(mockPs).setString(5, null) // sourceIp
@@ -111,8 +110,7 @@ class StudySettingsAuditServiceTest {
             sourceIp = null,
             settingKey = StudySettingType.DataCollection,
             beforeValue = mapOf("key" to "old"),
-            afterValue = mapOf("key" to "new"),
-            changeSummary = "Updated data collection"
+            afterValue = mapOf("key" to "new")
         )
 
         verify(mockPs).setString(5, null)
@@ -131,8 +129,7 @@ class StudySettingsAuditServiceTest {
                 sourceIp = "10.0.0.1",
                 settingKey = settingType,
                 beforeValue = null,
-                afterValue = mapOf("configured" to true),
-                changeSummary = "Set $settingType"
+                afterValue = mapOf("configured" to true)
             )
 
             verify(ps).setString(6, settingType.name)
@@ -188,12 +185,12 @@ class StudySettingsAuditServiceTest {
     fun testGenerateChangeSummaryNoEffectiveChange() {
         val value = mapOf("enabled" to true)
         val result = service.generateChangeSummary(
-            StudySettingType.Sensor,
+            StudySettingType.Survey,
             value,
             value
         )
 
-        assertEquals("Setting 'Sensor' was updated (no effective change)", result)
+        assertEquals("Setting 'Survey' was updated (no effective change)", result)
     }
 
     @Test
@@ -249,16 +246,7 @@ class StudySettingsAuditServiceTest {
         assertEquals("Setting 'Notifications' was updated", result)
     }
 
-    @Test
-    fun testGenerateChangeSummaryWithEmptyMaps() {
-        val before = emptyMap<String, Any>()
-        val after = emptyMap<String, Any>()
-
-        val result = service.generateChangeSummary(StudySettingType.Pipeline, before, after)
-
-        // Same maps, no changes
-        assertEquals("Setting 'Pipeline' was updated (no effective change)", result)
-    }
+    
 
     // --- module-granular DataCollection summaries ---
 
@@ -267,20 +255,20 @@ class StudySettingsAuditServiceTest {
         val before = AndroidDataCollectionSetting(
             modules = mapOf(
                 CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = false),
-                CollectionModuleId.HARDWARE_SENSORS to CollectionModuleSetting(enabled = true),
+                CollectionModuleId.SENSOR_ACCELEROMETER to CollectionModuleSetting(enabled = true),
             )
         )
         val after = AndroidDataCollectionSetting(
             modules = mapOf(
                 CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = true),
-                CollectionModuleId.HARDWARE_SENSORS to CollectionModuleSetting(enabled = false),
+                CollectionModuleId.SENSOR_ACCELEROMETER to CollectionModuleSetting(enabled = false),
             )
         )
 
         val result = service.generateChangeSummary(StudySettingType.DataCollection, before, after)
 
-        assertTrue(result, result.contains("enabled 'battery_telemetry'"))
-        assertTrue(result, result.contains("disabled 'hardware_sensors'"))
+        assertTrue(result, result.contains("enabled '${CollectionModuleId.BATTERY_TELEMETRY.id}'"))
+        assertTrue(result, result.contains("disabled '${CollectionModuleId.SENSOR_ACCELEROMETER.id}'"))
     }
 
     @Test

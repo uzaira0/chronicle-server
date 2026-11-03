@@ -2,7 +2,6 @@ package com.openlattice.chronicle.util
 
 /**
  * Pagination defaults and limits to prevent bulk data exfiltration.
- * HIPAA §164.312(a)(1) — Access controls must limit data exposure.
  */
 public object PaginationDefaults {
     public const val DEFAULT_PAGE_SIZE: Int = 100

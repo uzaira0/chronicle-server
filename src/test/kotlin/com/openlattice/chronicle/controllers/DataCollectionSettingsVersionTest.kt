@@ -1,45 +1,54 @@
 package com.openlattice.chronicle.controllers
 
+import com.openlattice.chronicle.services.studies.collectionSettingsForFeatures
+import com.openlattice.chronicle.services.studies.stampDataCollectionSettingsVersion
+import com.openlattice.chronicle.services.studies.stampInitialDataCollectionSettings
+import com.openlattice.chronicle.services.studies.mergeAndStampDataCollectionSettingsVersionLocked
+import com.openlattice.chronicle.services.studies.mergeStudySetting
+import com.openlattice.chronicle.services.studies.validateClientSupportedCollectionPolicy
+
+import com.fasterxml.jackson.core.JsonProcessingException
+import com.openlattice.chronicle.survey.SurveySettings
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionDefaults
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.collection.CollectionModuleSetting
 import com.openlattice.chronicle.collection.CollectionCadence
-import com.openlattice.chronicle.collection.BatteryPolicy
 import com.openlattice.chronicle.collection.HealthConnectRecordType
-import com.openlattice.chronicle.collection.NetworkPolicy
-import com.openlattice.chronicle.android.AndroidSensorSetting
-import com.openlattice.chronicle.android.AndroidSensorType
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
-import com.openlattice.chronicle.settings.AppUsageFrequency
 import com.openlattice.chronicle.study.StudySettingType
-import com.openlattice.chronicle.study.StudyEncryptionSetting
+import com.openlattice.chronicle.study.StudyFeature
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.study.StudyUpdate
 import com.openlattice.chronicle.study.StudyWithdrawalSetting
 import com.openlattice.chronicle.study.WithdrawalMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
-import org.springframework.web.server.ResponseStatusException
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.util.UUID
 
 class DataCollectionSettingsVersionTest {
-    @Test fun withdrawalDefaultsToErasureAndRejectsInvalidSettings() {
-        assertEquals(StudyWithdrawalSetting(WithdrawalMode.ERASE),
+    private val collectionFeatures = setOf(StudyFeature.CHRONICLE_DATA_COLLECTION.name)
+
+    @Test fun `revision stamping requires explicit prior and requested features`() {
+        assertTrue(::stampDataCollectionSettingsVersion.parameters.none { it.isOptional })
+    }
+
+    @Test fun withdrawalDefaultsToRetentionAndRejectsInvalidSettings() {
+        assertEquals(StudyWithdrawalSetting(WithdrawalMode.KEEP_PRIOR_DATA),
             Study(title = "withdrawal policy", contact = "research@example.org").settings[StudySettingType.Withdrawal])
         assertThrows(IllegalArgumentException::class.java) {
-            mergeStudySetting(StudySettings(), StudySettingType.Withdrawal, StudyEncryptionSetting())
+            mergeStudySetting(StudySettings(), StudySettingType.Withdrawal, SurveySettings())
         }
-        assertThrows(com.fasterxml.jackson.core.JsonProcessingException::class.java) {
+        assertThrows(JsonProcessingException::class.java) {
             ObjectMappers.getJsonMapper().readValue(
                 """{"Withdrawal":{"@class":"com.openlattice.chronicle.study.StudyWithdrawalSetting","mode":"UNKNOWN_MODE"}}""",
                 StudySettings::class.java,
@@ -48,9 +57,25 @@ class DataCollectionSettingsVersionTest {
     }
 
     @Test
+    fun `operational modules cannot require an unavailable consent decision`() {
+        CollectionModuleId.entries.filterNot { it.consentGated }.forEach { module ->
+            val settings = AndroidDataCollectionSetting(modules = mapOf(
+                module to CollectionModuleSetting(enabled = true, required = true),
+            ))
+            val failure = assertThrows("${module.id} must not demand unsupported consent", IllegalArgumentException::class.java) {
+                validateClientSupportedCollectionPolicy(settings)
+            }
+            assertTrue(failure.message.orEmpty().contains("no per-module consent decision"))
+        }
+        validateClientSupportedCollectionPolicy(AndroidDataCollectionSetting(modules = mapOf(
+            CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = true, required = true),
+        )))
+    }
+
+    @Test
     fun `new study without collection policy receives server issued initial default`() {
         val study = Study(title = "initial policy", contact = "research@example.org",
-            modules = mapOf(com.openlattice.chronicle.study.StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()))
+            modules = mapOf(StudyFeature.CHRONICLE_DATA_COLLECTION to emptyMap<String, Any>()))
 
         val stamped = stampInitialDataCollectionSettings(study)
 
@@ -60,41 +85,8 @@ class DataCollectionSettingsVersionTest {
         )
     }
 
-    @Test
-    fun `new study preserves an explicitly supplied legacy collection policy`() {
-        val legacy = ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY)
-        val study = Study(
-            title = "legacy policy",
-            contact = "research@example.org",
-            settings = StudySettings(mapOf(StudySettingType.DataCollection to legacy)),
-        )
 
-        val stamped = stampInitialDataCollectionSettings(study)
 
-        assertEquals(legacy, stamped.settings[StudySettingType.DataCollection])
-    }
-
-    @Test
-    fun `study encryption remains disabled until encrypted payloads can be exported`() {
-        val enabled = StudyEncryptionSetting(
-            enabled = true,
-            keyId = "release-gate-key",
-            publicKeyPem = "PUBLIC KEY",
-            mlkemPublicKey = "public-key-material",
-        )
-        val settings = StudySettings(mapOf(StudySettingType.Encryption to enabled))
-
-        assertThrows(IllegalArgumentException::class.java) {
-            stampDataCollectionSettingsVersion(null, StudyUpdate(settings = settings))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            mergeStudySetting(StudySettings(emptyMap()), StudySettingType.Encryption, enabled)
-        }
-
-        requireExportableStudyEncryption(
-            StudySettings(mapOf(StudySettingType.Encryption to StudyEncryptionSetting(enabled = false))),
-        )
-    }
     private val baseSetting = AndroidDataCollectionSetting(
         modules = mapOf(
             CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = true),
@@ -104,11 +96,15 @@ class DataCollectionSettingsVersionTest {
 
     @Test fun testPolicyChangeIncrementsServerRevisionAndIgnoresClientRevision() {
         val changed = baseSetting.copy(
-            modules = mapOf(CollectionModuleId.USAGE_EVENTS to CollectionModuleSetting(enabled = true)),
+            modules = mapOf(CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = false)),
             settingsVersion = 99,
         )
 
-        val stamped = stampDataCollectionSettingsVersion(settings(baseSetting), update(changed))
+        val stamped = stampDataCollectionSettingsVersion(
+            settings(baseSetting), update(changed),
+            priorFeatures = collectionFeatures,
+            requestedFeatures = collectionFeatures,
+        )
 
         assertEquals(5, dataCollection(stamped).settingsVersion)
     }
@@ -117,9 +113,25 @@ class DataCollectionSettingsVersionTest {
         val stamped = stampDataCollectionSettingsVersion(
             settings(baseSetting),
             update(baseSetting.copy(settingsVersion = 99)),
+            priorFeatures = collectionFeatures,
+            requestedFeatures = collectionFeatures,
         )
 
         assertEquals(4, dataCollection(stamped).settingsVersion)
+    }
+
+    @Test fun `writing back the read form of a sparse policy is not a change`() {
+        // GET settings/type/DataCollection answers the complete effective map; the stored map is sparse.
+        val readForm = collectionSettingsForFeatures(settings(baseSetting), collectionFeatures)
+            .getValue(StudySettingType.DataCollection) as AndroidDataCollectionSetting
+
+        val stamped = stampDataCollectionSettingsVersion(
+            settings(baseSetting), update(readForm),
+            priorFeatures = collectionFeatures,
+            requestedFeatures = collectionFeatures,
+        )
+
+        assertEquals(baseSetting, dataCollection(stamped))
     }
 
     @Test fun testUnchangedPolicyKeepsStoredSetOrder() {
@@ -138,7 +150,11 @@ class DataCollectionSettingsVersionTest {
         val prior = mapper.readValue(stored, StudySettings::class.java)
         val reordered = withRecordTypes(HealthConnectRecordType.STEPS, HealthConnectRecordType.SLEEP)
 
-        val stamped = stampDataCollectionSettingsVersion(prior, update(reordered.copy(settingsVersion = 99)))
+        val stamped = stampDataCollectionSettingsVersion(
+            prior, update(reordered.copy(settingsVersion = 99)),
+            priorFeatures = collectionFeatures,
+            requestedFeatures = collectionFeatures,
+        )
 
         // jsonb array equality is ordered: the revision trigger refuses any other order.
         assertEquals(
@@ -148,7 +164,11 @@ class DataCollectionSettingsVersionTest {
     }
 
     @Test fun testFirstDataCollectionSettingStartsAtInitialRevision() {
-        val stamped = stampDataCollectionSettingsVersion(null, update(baseSetting.copy(settingsVersion = 99)))
+        val stamped = stampDataCollectionSettingsVersion(
+            null, update(baseSetting.copy(settingsVersion = 99)),
+            priorFeatures = collectionFeatures,
+            requestedFeatures = collectionFeatures,
+        )
 
         assertEquals(AndroidDataCollectionSetting.INITIAL_SETTINGS_VERSION, dataCollection(stamped).settingsVersion)
     }
@@ -172,41 +192,19 @@ class DataCollectionSettingsVersionTest {
         whenever(featureRows.next()).thenReturn(true)
         whenever(featureRows.getString("modules")).thenReturn("{\"CHRONICLE_DATA_COLLECTION\":{}}")
         val changed = baseSetting.copy(
-            modules = mapOf(CollectionModuleId.USAGE_EVENTS to CollectionModuleSetting(enabled = true)),
+            modules = mapOf(CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(enabled = false)),
             settingsVersion = 99,
         )
 
-        val locked = stampDataCollectionSettingsVersionLocked(connection, studyId, update(changed))
+        val locked = mergeAndStampDataCollectionSettingsVersionLocked(connection, studyId, update(changed))
 
         assertEquals(5, dataCollection(locked.stampedStudy).settingsVersion)
         verify(statement).setObject(1, studyId)
     }
 
-    @Test fun testLegacyEndpointCannotReplaceVersionedDataCollectionSettings() {
-        val exception = assertThrows(ResponseStatusException::class.java) {
-            mergeLegacyDataCollectionSettings(
-                settings(baseSetting),
-                ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY),
-            )
-        }
 
-        assertEquals(409, exception.statusCode.value())
-    }
 
-    @Test fun testLegacyEndpointMergesWithoutDroppingOtherAuthoritativeSettings() {
-        val legacy = ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY)
-        val prior = StudySettings(
-            mapOf(StudySettingType.AndroidSensor to AndroidSensorSetting.NO_SENSORS),
-        )
 
-        val merged = mergeLegacyDataCollectionSettings(prior, legacy)
-
-        assertEquals(legacy, merged[StudySettingType.DataCollection])
-        assertEquals(
-            AndroidSensorSetting.NO_SENSORS,
-            merged[StudySettingType.AndroidSensor],
-        )
-    }
 
     @Test fun testPerTypeDeltaMergesIntoLockedAuthoritativeSettingsWithoutRevertingDataCollection() {
         val authoritative = settings(
@@ -217,26 +215,25 @@ class DataCollectionSettingsVersionTest {
                 settingsVersion = 5,
             ),
         )
-        val sensorDelta = AndroidSensorSetting(sensors = setOf(AndroidSensorType.accelerometer))
+        val sensorDelta = SurveySettings(appUsageThresholdInSeconds = 42)
 
-        val merged = mergeStudySetting(authoritative, StudySettingType.AndroidSensor, sensorDelta)
+        val merged = mergeStudySetting(authoritative, StudySettingType.Survey, sensorDelta)
 
         assertEquals(authoritative[StudySettingType.DataCollection], merged[StudySettingType.DataCollection])
-        assertEquals(sensorDelta, merged[StudySettingType.AndroidSensor])
+        assertEquals(sensorDelta, merged[StudySettingType.Survey])
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testEnabledHealthConnectRequiresAnExplicitRecordTypeScope() {
-        stampDataCollectionSettingsVersion(
-            null,
-            update(
+        assertThrows(IllegalArgumentException::class.java) {
+            validateClientSupportedCollectionPolicy(
                 AndroidDataCollectionSetting(
                     modules = mapOf(
                         CollectionModuleId.HEALTH_CONNECT to CollectionModuleSetting(enabled = true),
                     ),
                 ),
-            ),
-        )
+            )
+        }
     }
 
     @Test fun testEnabledHealthConnectAcceptsAnExplicitRecordTypeScope() {
@@ -252,7 +249,11 @@ class DataCollectionSettingsVersionTest {
             ),
         )
 
-        val stamped = stampDataCollectionSettingsVersion(null, update(scoped))
+        val stamped = stampDataCollectionSettingsVersion(
+            null, update(scoped),
+            priorFeatures = collectionFeatures,
+            requestedFeatures = collectionFeatures,
+        )
 
         assertEquals(
             setOf(HealthConnectRecordType.STEPS, HealthConnectRecordType.SLEEP),
@@ -261,11 +262,10 @@ class DataCollectionSettingsVersionTest {
         )
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testNonHealthConnectModuleRejectsHealthConnectRecordTypes() {
-        stampDataCollectionSettingsVersion(
-            null,
-            update(
+        assertThrows(IllegalArgumentException::class.java) {
+            validateClientSupportedCollectionPolicy(
                 AndroidDataCollectionSetting(
                     modules = mapOf(
                         CollectionModuleId.BATTERY_TELEMETRY to CollectionModuleSetting(
@@ -274,8 +274,8 @@ class DataCollectionSettingsVersionTest {
                         ),
                     ),
                 ),
-            ),
-        )
+            )
+        }
     }
 
     @Test
@@ -284,15 +284,6 @@ class DataCollectionSettingsVersionTest {
             CollectionModuleSetting(
                 enabled = true,
                 collectionCadence = CollectionCadence(intervalSeconds = 60),
-            ),
-            baseSetting.modules.getValue(CollectionModuleId.BATTERY_TELEMETRY).copy(
-                uploadCadence = CollectionCadence(intervalSeconds = 120),
-            ),
-            baseSetting.modules.getValue(CollectionModuleId.BATTERY_TELEMETRY).copy(
-                batteryPolicy = BatteryPolicy(minLevelPercent = 20),
-            ),
-            baseSetting.modules.getValue(CollectionModuleId.BATTERY_TELEMETRY).copy(
-                networkPolicy = NetworkPolicy(requireUnmetered = true),
             ),
         )
 
@@ -305,9 +296,11 @@ class DataCollectionSettingsVersionTest {
                             modules = mapOf(CollectionModuleId.USAGE_EVENTS to moduleSetting),
                         ),
                     ),
+                    priorFeatures = collectionFeatures,
+                    requestedFeatures = collectionFeatures,
                 )
             }
-            org.junit.Assert.assertTrue(error.message.orEmpty().contains("not supported by the Play build"))
+            assertTrue(error.message.orEmpty().contains("not supported by the Android app"))
         }
     }
 
@@ -336,7 +329,11 @@ class DataCollectionSettingsVersionTest {
                 ),
             )
 
-            val stamped = stampDataCollectionSettingsVersion(null, update(setting))
+            val stamped = stampDataCollectionSettingsVersion(
+                null, update(setting),
+                priorFeatures = collectionFeatures,
+                requestedFeatures = collectionFeatures,
+            )
 
             assertEquals(
                 60L,
@@ -345,11 +342,10 @@ class DataCollectionSettingsVersionTest {
         }
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testRejectsJitterEvenForSupportedPullModules() {
-        stampDataCollectionSettingsVersion(
-            null,
-            update(
+        assertThrows(IllegalArgumentException::class.java) {
+            validateClientSupportedCollectionPolicy(
                 AndroidDataCollectionSetting(
                     modules = mapOf(
                         CollectionModuleId.DEVICE_SETTINGS to CollectionModuleSetting(
@@ -358,8 +354,8 @@ class DataCollectionSettingsVersionTest {
                         ),
                     ),
                 ),
-            ),
-        )
+            )
+        }
     }
 
     private fun settings(setting: AndroidDataCollectionSetting): StudySettings =
@@ -368,16 +364,13 @@ class DataCollectionSettingsVersionTest {
     @Test
     fun `disabling upload telemetry is rejected because the Play client refuses to enroll without it`() {
         val error = assertThrows(IllegalArgumentException::class.java) {
-            stampDataCollectionSettingsVersion(
-                null,
-                update(
-                    AndroidDataCollectionSetting(
-                        modules = mapOf(CollectionModuleId.UPLOAD_TELEMETRY to CollectionModuleSetting(enabled = false)),
-                    ),
+            validateClientSupportedCollectionPolicy(
+                AndroidDataCollectionSetting(
+                    modules = mapOf(CollectionModuleId.UPLOAD_TELEMETRY to CollectionModuleSetting(enabled = false)),
                 ),
             )
         }
-        org.junit.Assert.assertTrue(error.message.orEmpty().contains("upload_telemetry cannot be disabled"))
+        assertTrue(error.message.orEmpty().contains("upload_telemetry cannot be disabled"))
     }
 
     private fun update(setting: AndroidDataCollectionSetting): StudyUpdate = StudyUpdate(settings = settings(setting))

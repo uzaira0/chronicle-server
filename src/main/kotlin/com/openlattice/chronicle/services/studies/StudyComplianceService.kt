@@ -1,10 +1,8 @@
 package com.openlattice.chronicle.services.studies
 
-import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.postgres.PostgresArrays
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
-import com.geekbeast.postgres.streams.StatementHolderSupplier
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.query.Predicates
 import com.openlattice.chronicle.auditing.AuditingComponent
@@ -13,17 +11,21 @@ import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.notifications.StudyNotificationSettings
 import com.openlattice.chronicle.postgres.ResultSetAdapters
+import com.openlattice.chronicle.services.download.DataDownloadService
+import com.openlattice.chronicle.services.upload.UploadType
 import com.openlattice.chronicle.sources.SourceDeviceType
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
-import com.openlattice.chronicle.storage.PostgresColumns
-import com.openlattice.chronicle.storage.PostgresEventColumns
-import com.openlattice.chronicle.storage.PostgresEventTables
-import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.DEVICES
+import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
+import com.openlattice.chronicle.storage.PostgresEventColumns
+import com.openlattice.chronicle.storage.PostgresEventTables
+import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.StreamingReadTransaction
 import com.openlattice.chronicle.study.ComplianceViolation
+import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudyComplianceManager
 import com.openlattice.chronicle.study.StudyDuration
@@ -53,77 +55,57 @@ public open class StudyComplianceService(
 
         private val ACTIVE_PARTICIPANTS = """
             SELECT ${STUDY_ID.name}, ${PARTICIPANT_ID.name}, array_agg(distinct coalesce(${DEVICE_TYPE.name},'${SourceDeviceType.None}')) as ${DEVICE_TYPE.name}
-            FROM ${ChroniclePostgresTables.STUDY_PARTICIPANTS.name}
+            FROM (
+                SELECT * FROM ${ChroniclePostgresTables.STUDY_PARTICIPANTS.name}
+                WHERE ${PostgresColumns.PARTICIPATION_STATUS.name} = '${ParticipationStatus.ENROLLED}'
+                  AND ${STUDY_ID.name} = ANY(?)
+                ORDER BY ${STUDY_ID.name}, ${PARTICIPANT_ID.name} COLLATE "C" LIMIT ? OFFSET ?
+            ) ${ChroniclePostgresTables.STUDY_PARTICIPANTS.name}
             LEFT JOIN ${DEVICES.name} USING(${STUDY_ID.name}, ${PARTICIPANT_ID.name})
-            WHERE ${ChroniclePostgresTables.STUDY_PARTICIPANTS.name}.${PostgresColumns.PARTICIPATION_STATUS.name} = '${ParticipationStatus.ENROLLED}'
-              AND ${STUDY_ID.name} = ANY(?)
             GROUP BY ${STUDY_ID.name}, ${PARTICIPANT_ID.name}
         """.trimIndent()
 
-        public val NO_DATA_STUDIES_SUFFIX: String = """
-            GROUP BY (${PostgresEventColumns.STUDY_ID.name},${PostgresEventColumns.PARTICIPANT_ID.name})
-            HAVING count(*) > 0
-        """.trimIndent()
+        /** A storage stage holding research rows, and the predicate selecting the accepted ones. */
+        private data class ResearchStore(val table: String, val acceptedRows: String = "true")
 
-        public fun getDataUploadedSql(dataTable: String): String {
-            return """
-            SELECT ${PostgresEventColumns.STUDY_ID.name}::text AS ${PostgresEventColumns.STUDY_ID.name},${PostgresEventColumns.PARTICIPANT_ID.name}
-            FROM $dataTable
-            WHERE
-        """.trimIndent()
-        }
+        /**
+         * Every storage stage whose rows show that a phone's research data reached the server. Each records the
+         * server's receipt in `uploaded_at`. An accepted Android usage or sensor upload waits in the buffer until
+         * the mover materializes it; rows the sensor mover quarantined carry another type and do not count.
+         * Availability reports and diagnostics are not research data.
+         */
+        private val RESEARCH_STORES: Map<SourceDeviceType, List<ResearchStore>> = mapOf(
+            SourceDeviceType.Android to listOf(
+                PostgresEventTables.CHRONICLE_USAGE_EVENTS.name,
+                ChroniclePostgresTables.ANDROID_SENSOR_DATA.name,
+            ).plus(DataDownloadService.COLLECTION_EXPORTS
+                .filterKeys { it != ParticipantDataType.SensorAvailability && it != ParticipantDataType.IOSScreenTime }
+                .values.map { it.table.name })
+                .map { ResearchStore(it) } + ResearchStore(ChroniclePostgresTables.UPLOAD_BUFFER.name,
+                "${PostgresColumns.UPLOAD_TYPE.name} IN (${UploadType.entries
+                    .filter { it.countsAsResearchReceipt }.joinToString { "'${it.name}'" }})"),
+            SourceDeviceType.Ios to listOf(ResearchStore(ChroniclePostgresTables.IOS_SCREEN_TIME_USAGE.name)),
+        )
 
-        private fun getIntervalSql(
-            studyId: UUID,
-            studyDuration: StudyDuration,
-            timestampColumn: String,
-            flavor: PostgresFlavor,
-        ): String {
-            val nowFunction = when (flavor) {
-                PostgresFlavor.VANILLA -> "now()"
-                else -> "now()"
-            }
-            return """
-            (${PostgresEventColumns.STUDY_ID.name} = '$studyId' AND $timestampColumn >= $nowFunction - '${studyDuration.years} years ${studyDuration.months} months ${studyDuration.days} days'::interval) 
-        """.trimIndent()
-        }
-
-        private fun buildSql(
-            dataTable: String,
-            timestampColumn: String,
-            enabledStudiesSettings: Map<UUID, Map<StudySettingType, StudySetting>>,
-            filterByInterval: Boolean = true,
-            flavor: PostgresFlavor,
-        ): String {
-            //Build the SQL to query all study participants that have not uploaded data within prescribed time.
-            return getDataUploadedSql(dataTable) + enabledStudiesSettings.map { (studyId, studySettings) ->
-                val notificationSettings =
-                    studySettings.getValue(StudySettingType.Notifications) as StudyNotificationSettings
-                if (filterByInterval) {
-                    getIntervalSql(studyId, notificationSettings.noDataUploaded, timestampColumn, flavor)
-                } else {
-                    "${PostgresEventColumns.STUDY_ID.name} = '$studyId'"
-                }
-            }.joinToString(" OR ") + NO_DATA_STUDIES_SUFFIX
-
-        }
-
-        internal fun androidUploadsSql(
+        /**
+         * The one rule for upload compliance on every platform: the participants with a research row the
+         * server received inside their study's no-data window. Receipt, not capture: a phone that was
+         * offline and drains old captures today is compliant. Ingestion already enforces module consent.
+         */
+        internal fun recentResearchUploadsSql(
+            platform: SourceDeviceType,
             settings: Map<UUID, Map<StudySettingType, StudySetting>>,
-            flavor: PostgresFlavor,
-        ): String {
-            // Ingestion already enforces module consent. Any accepted research stream
-            // counts as activity; availability reports and diagnostics do not.
-            val sources = listOf(
-                PostgresEventTables.CHRONICLE_USAGE_EVENTS.name to PostgresEventColumns.TIMESTAMP.name,
-                ChroniclePostgresTables.ANDROID_SENSOR_DATA.name to PostgresColumns.SAMPLE_TIMESTAMP.name,
-                ChroniclePostgresTables.AMBIENT_AUDIO_EVENTS.name to PostgresColumns.SAMPLE_TIMESTAMP.name,
-            ) + com.openlattice.chronicle.services.download.DataDownloadService.COLLECTION_EXPORTS
-                .filterKeys { it != com.openlattice.chronicle.study.ParticipantDataType.SensorAvailability }
-                .values.map { it.table.name to it.timestampColumn.name }
-            return sources.joinToString(" UNION ") { (table, timestamp) ->
-                buildSql(table, timestamp, settings, true, flavor)
+        ): String = RESEARCH_STORES.getValue(platform).joinToString(" UNION ") { store ->
+            val windows = settings.keys.joinToString(" OR ") { studyId ->
+                val window = getDurationPolicy(studyId, settings)
+                "(${PostgresEventColumns.STUDY_ID.name} = '$studyId' AND ${PostgresColumns.UPLOADED_AT.name} >= now() - " +
+                    "'${window.years} years ${window.months} months ${window.days} days'::interval)"
             }
+            """
+            SELECT DISTINCT ${PostgresEventColumns.STUDY_ID.name}::text AS ${PostgresEventColumns.STUDY_ID.name}, ${PostgresEventColumns.PARTICIPANT_ID.name}
+            FROM ${store.table}
+            WHERE ${store.acceptedRows} AND ($windows)
+            """.trimIndent()
         }
 
         public fun getDurationPolicy(
@@ -134,6 +116,21 @@ public open class StudyComplianceService(
                 .getValue(studyId)
                 .getValue(StudySettingType.Notifications) as StudyNotificationSettings).noDataUploaded
         }
+    }
+
+    override fun getStudyCompliancePage(studyId: UUID, limit: Int, offset: Int): com.openlattice.chronicle.study.StudyCompliancePage {
+        val safeLimit = com.openlattice.chronicle.util.PaginationDefaults.clampLimit(limit)
+        val safeOffset = com.openlattice.chronicle.util.PaginationDefaults.clampOffset(offset)
+        val settings = getVisibleStudySettings(listOf(studyId))
+        if (settings.isEmpty()) return com.openlattice.chronicle.study.StudyCompliancePage(emptyMap(), null)
+        val candidates = getActiveStudyParticipants(settings.keys, safeLimit + 1, safeOffset)
+        val participantIds = candidates.values.flatMap { it[studyId].orEmpty() }.toSortedSet()
+        val selected = participantIds.take(safeLimit).toSet()
+        val page = candidates.mapValues { (_, studies) -> studies.mapValues { (_, ids) -> ids.intersect(selected) } }
+        return com.openlattice.chronicle.study.StudyCompliancePage(
+            complianceViolations(settings, page),
+            if (participantIds.size > safeLimit) safeOffset.toLong() + safeLimit else null,
+        )
     }
 
     override fun getNonCompliantStudies(studies: Collection<UUID>): Map<UUID, Map<String, List<ComplianceViolation>>> {
@@ -154,24 +151,16 @@ public open class StudyComplianceService(
             return mapOf()
         }
 
-        val activeParticipants = getActiveStudyParticipants(enabledStudiesSettings.keys)
+        return complianceViolations(enabledStudiesSettings, getActiveStudyParticipants(enabledStudiesSettings.keys))
+    }
 
-        return activeParticipants.flatMap { (sourceDeviceType, participants) ->
+    private fun complianceViolations(
+        enabledStudiesSettings: Map<UUID, Map<StudySettingType, StudySetting>>,
+        activeParticipants: Map<SourceDeviceType, Map<UUID, Set<String>>>,
+    ): Map<UUID, Map<String, List<ComplianceViolation>>> = activeParticipants.flatMap { (sourceDeviceType, participants) ->
             when (sourceDeviceType) {
-                SourceDeviceType.Android -> getStudyParticipantsWithoutRecentUploads(
-                    androidUploadsSql(enabledStudiesSettings, storageResolver.getDefaultEventStorage().first), enabledStudiesSettings,
-                    participants,
-                    sourceDeviceType
-                ).asSequence()
-
-                SourceDeviceType.Ios -> getStudyParticipantsWithoutRecentUploads(
-                    buildSql(
-                        PostgresEventTables.IOS_SENSOR_DATA.name,
-                        PostgresEventColumns.RECORDED_DATE_TIME.name,
-                        enabledStudiesSettings,
-                        true,
-                        storageResolver.getDefaultEventStorage().first
-                    ),
+                SourceDeviceType.Android, SourceDeviceType.Ios -> getStudyParticipantsWithoutRecentUploads(
+                    recentResearchUploadsSql(sourceDeviceType, enabledStudiesSettings),
                     enabledStudiesSettings,
                     participants,
                     sourceDeviceType
@@ -185,21 +174,20 @@ public open class StudyComplianceService(
         }
             .groupBy({ it.key }, { it.value })
             .mapValues { participantViolations ->
-                participantViolations.value.flatten().groupBy({ it.first }, { it.second })
+                participantViolations.value.flatMap { it.entries }.groupBy({ it.key }, { it.value })
             }
-    }
 
     private fun getStudyParticipantsWithoutEnrolledDevices(
         enabledStudiesSettings: Map<UUID, Map<StudySettingType, StudySetting>>,
         activeParticipants: Map<UUID, Set<String>>,
-    ): Map<UUID, List<Pair<String, ComplianceViolation>>> {
+    ): Map<UUID, Map<String, ComplianceViolation>> {
 
         return activeParticipants.mapValues { (studyId, participants) ->
             val violation = ComplianceViolation(
                 ViolationReason.NOT_ENROLLED,
                 buildDescriptionNotEnrolled(studyId, getDurationPolicy(studyId, enabledStudiesSettings))
             )
-            participants.map { it to violation }
+            participants.associateWith { violation }
         }
     }
 
@@ -208,14 +196,16 @@ public open class StudyComplianceService(
         enabledStudiesSettings: Map<UUID, Map<StudySettingType, StudySetting>>,
         activeParticipants: Map<UUID, Set<String>>,
         sourceDeviceType: SourceDeviceType,
-    ): Map<UUID, List<Pair<String, ComplianceViolation>>> {
+    ): Map<UUID, Map<String, ComplianceViolation>> {
         val studyParticipants = mutableMapOf<UUID, MutableSet<String>>()
-        //Load all participants with recent uploads.
+        val participants = activeParticipants.values.flatten().toSet()
+        if (participants.isEmpty()) return emptyMap()
+        // Restrict receipt materialization to the source participant page before collecting rows.
         BasePostgresIterable(
-            StatementHolderSupplier(
-                storageResolver.getDefaultEventStorage().second,
-                sql
-            )
+            PreparedStatementHolderSupplier(
+                storageResolver.getEventStorageWithFlavor(),
+                "SELECT * FROM ($sql) receipts WHERE participant_id = ANY(?)",
+            ) { statement -> statement.setArray(1, PostgresArrays.createTextArray(statement.connection, participants)) }
         ) { rs ->
             UUID.fromString(rs.getString(PostgresEventColumns.STUDY_ID.name)) to rs.getString(PostgresEventColumns.PARTICIPANT_ID.name)
         }
@@ -231,19 +221,25 @@ public open class StudyComplianceService(
             )
 
             (participantIds - (studyParticipants[studyId] ?: emptySet()).toSet())
-                .map { it to violation }
+                .associateWith { violation }
 
         }
     }
 
-    private fun getActiveStudyParticipants(studyFilter: Set<UUID>): Map<SourceDeviceType, Map<UUID, Set<String>>> {
+    private fun getActiveStudyParticipants(
+        studyFilter: Set<UUID>, limit: Int = Int.MAX_VALUE, offset: Int = 0,
+    ): Map<SourceDeviceType, Map<UUID, Set<String>>> {
         val studyParticipants = mutableMapOf<SourceDeviceType, MutableMap<UUID, MutableSet<String>>>()
         BasePostgresIterable(
-            PreparedStatementHolderSupplier(
+            StreamingReadTransaction(
                 storageResolver.getPlatformStorage(),
                 ACTIVE_PARTICIPANTS,
                 1024
-            ) { ps -> ps.setArray(1, PostgresArrays.createUuidArray(ps.connection, studyFilter)) }
+            ) { ps ->
+                ps.setArray(1, PostgresArrays.createUuidArray(ps.connection, studyFilter))
+                ps.setInt(2, limit)
+                ps.setInt(3, offset)
+            }
         ) { rs ->
             Triple(
                 ResultSetAdapters.deviceTypes(rs),
@@ -279,7 +275,7 @@ public open class StudyComplianceService(
         sourceDeviceType: SourceDeviceType
     ): String {
         return """
-            Study policy for $studyId requires ${sourceDeviceType.name} uploads within the last ${studyDuration.years} years ${studyDuration.months} months ${studyDuration.days} days.
+            Study policy for $studyId requires ${sourceDeviceType.name} research data received within the last ${studyDuration.years} years ${studyDuration.months} months ${studyDuration.days} days.
         """.trimIndent()
     }
 

@@ -1,6 +1,11 @@
 package com.openlattice.chronicle.services.studies
 
+import com.openlattice.chronicle.study.StudySetting
+import com.openlattice.chronicle.authorization.principals.Principals
+import java.sql.Connection
+
 import com.fasterxml.jackson.module.kotlin.readValue
+import com.openlattice.chronicle.audit.AuditRequestContext
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
@@ -63,6 +68,37 @@ public open class StudySettingsAuditService(
         """.trimIndent()
     }
 
+    @Suppress("LoopWithTooManyJumpStatements")
+    internal fun recordSettingsDiff(
+        studyId: UUID,
+        before: Map<StudySettingType, StudySetting>,
+        after: Map<StudySettingType, StudySetting>,
+        connection: Connection,
+    ) {
+        val changedBy = Principals.getCurrentUser().id
+        val sourceIp = AuditRequestContext.getStaffClientIpReference()
+        for (settingType in (before.keys + after.keys)) {
+            val beforeValue = before[settingType]
+            val afterValue = after[settingType] ?: continue
+            if (beforeValue != null &&
+                mapper.writeValueAsString(beforeValue) ==
+                mapper.writeValueAsString(afterValue)
+            ) {
+                continue
+            }
+            recordSettingsChange(
+                studyId = studyId,
+                changedBy = changedBy,
+                sourceIp = sourceIp,
+                settingKey = settingType,
+                beforeValue = beforeValue,
+                afterValue = afterValue,
+                connection = connection,
+            )
+        }
+    }
+
+    /** Records one setting change with its generated [generateChangeSummary]. */
     public fun recordSettingsChange(
         studyId: UUID,
         changedBy: String,
@@ -70,15 +106,15 @@ public open class StudySettingsAuditService(
         settingKey: StudySettingType,
         beforeValue: Any?,
         afterValue: Any,
-        changeSummary: String,
-        connection: java.sql.Connection? = null,
+        connection: Connection? = null,
     ) {
         if (connection == null) {
             storageResolver.getPlatformStorage().connection.use {
-                recordSettingsChange(studyId, changedBy, sourceIp, settingKey, beforeValue, afterValue, changeSummary, it)
+                recordSettingsChange(studyId, changedBy, sourceIp, settingKey, beforeValue, afterValue, it)
             }
             return
         }
+        val changeSummary = generateChangeSummary(settingKey, beforeValue, afterValue)
         connection.prepareStatement(INSERT_AUDIT_ENTRY_SQL).use { ps ->
             val entryId = UUID.randomUUID()
             ps.setObject(1, entryId)

@@ -20,6 +20,7 @@ import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
@@ -92,6 +93,25 @@ class StudyLifecycleServiceTest {
     @Test
     fun testServiceConstructsSuccessfully() {
         assertNotNull(service)
+    }
+
+    /** "Copy of " plus a maximum-length title must fit the V1 studies_title_format CHECK, not fail with HTTP 500. */
+    @Test
+    fun testCloneOfAMaximumLengthTitleStaysWithinTheTitleColumnLimit() {
+        val sourceStudyId = UUID.randomUUID()
+        // A surrogate pair straddles the cut point, so a plain substring would leave half a code point.
+        val title = "t".repeat(1991) + "😀" + "t".repeat(7)
+        assertEquals(2000, title.length)
+        `when`(studyService.getStudy(sourceStudyId)).thenReturn(Study(title = title, contact = "test@example.com"))
+
+        service.cloneStudy(sourceStudyId, "test-user", StudyCloneRequest())
+
+        val values = org.mockito.ArgumentCaptor.forClass(String::class.java)
+        Mockito.verify(mockPs, Mockito.atLeastOnce()).setString(Mockito.eq(2), values.capture())
+        val cloneTitle = values.allValues.single { it.startsWith("Copy of ") }
+        assertTrue(cloneTitle.length <= 2000)
+        assertTrue(cloneTitle.isNotEmpty() && !cloneTitle.last().isHighSurrogate())
+        assertEquals("Copy of " + "t".repeat(1991), cloneTitle)
     }
 
     @Test
@@ -226,11 +246,13 @@ class StudyLifecycleServiceTest {
         assertEquals(StudyLifecycleStatus.SCHEDULED_FOR_DELETION, result)
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testGetLifecycleStatusThrowsWhenStudyNotFound() {
         `when`(mockRs.next()).thenReturn(false)
 
-        service.getLifecycleStatus(UUID.randomUUID())
+        assertThrows(com.openlattice.chronicle.exceptions.StudyNotFoundException::class.java) {
+            service.getLifecycleStatus(UUID.randomUUID())
+        }
     }
 
     // --- archiveStudy tests ---
@@ -262,7 +284,7 @@ class StudyLifecycleServiceTest {
         `when`(mockConnection.autoCommit).thenReturn(true)
 
         val studyId = UUID.randomUUID()
-        service.archiveStudy(studyId, "test-user")
+        service.archiveStudy(studyId, "test-user", expectedRevision = 0)
 
         Mockito.verify(mockConnection).prepareStatement(
             Mockito.argThat<String> { sql -> sql.contains("FOR UPDATE") }
@@ -273,12 +295,12 @@ class StudyLifecycleServiceTest {
             kEq(mockConnection),
             kEq(studyId),
             kEq(WebhookEventType.STUDY_STATUS_CHANGED),
-            Mockito.anyMap(),
+            kAny(),
         )
     }
 
-    @Test(expected = IllegalStateException::class)
-    fun testArchiveStudyFailsWhenAlreadyArchived() {
+    @Test
+    fun testArchiveReplayWhenAlreadyArchivedIsANoOp() {
         val statusRs = Mockito.mock(ResultSet::class.java)
         val statusPs = Mockito.mock(PreparedStatement::class.java)
 
@@ -289,10 +311,14 @@ class StudyLifecycleServiceTest {
         `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(statusPs)
         `when`(mockConnection.autoCommit).thenReturn(true)
 
-        service.archiveStudy(UUID.randomUUID(), "test-user")
+        // A stale revision does not matter: the archive it asked for already landed.
+        service.archiveStudy(UUID.randomUUID(), "test-user", expectedRevision = 41)
+
+        Mockito.verify(mockConnection, Mockito.times(1)).prepareStatement(kAnyString())
+        Mockito.verifyNoInteractions(webhookService)
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testArchiveStudyFailsWhenScheduledForDeletion() {
         val statusRs = Mockito.mock(ResultSet::class.java)
         val statusPs = Mockito.mock(PreparedStatement::class.java)
@@ -304,7 +330,9 @@ class StudyLifecycleServiceTest {
         `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(statusPs)
         `when`(mockConnection.autoCommit).thenReturn(true)
 
-        service.archiveStudy(UUID.randomUUID(), "test-user")
+        assertThrows(IllegalStateException::class.java) {
+            service.archiveStudy(UUID.randomUUID(), "test-user", expectedRevision = 0)
+        }
     }
 
     // --- unarchiveStudy tests ---
@@ -333,14 +361,14 @@ class StudyLifecycleServiceTest {
 
         `when`(mockConnection.autoCommit).thenReturn(true)
 
-        service.unarchiveStudy(UUID.randomUUID(), "test-user")
+        service.unarchiveStudy(UUID.randomUUID(), "test-user", expectedRevision = 0)
 
         // Verify the lifecycle event insert was executed
         Mockito.verify(insertPs).executeUpdate()
     }
 
-    @Test(expected = IllegalStateException::class)
-    fun testUnarchiveStudyFailsWhenActive() {
+    @Test
+    fun testUnarchiveReplayWhenActiveIsANoOp() {
         val statusRs = Mockito.mock(ResultSet::class.java)
         val statusPs = Mockito.mock(PreparedStatement::class.java)
 
@@ -351,18 +379,20 @@ class StudyLifecycleServiceTest {
         `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(statusPs)
         `when`(mockConnection.autoCommit).thenReturn(true)
 
-        service.unarchiveStudy(UUID.randomUUID(), "test-user")
+        service.unarchiveStudy(UUID.randomUUID(), "test-user", expectedRevision = 41)
+
+        Mockito.verify(mockConnection, Mockito.times(1)).prepareStatement(kAnyString())
+        Mockito.verifyNoInteractions(webhookService)
     }
 
     // --- scheduled deletion transaction-boundary tests ---
 
     @Test
-    fun testScheduleStudyDeletionWritesLifecycleStateInsideQuarantineTransaction() {
+    fun testStudyDeletionRequestWritesLifecycleStateInsideQuarantineTransaction() {
         val studyId = UUID.randomUUID()
         val operationId = UUID.randomUUID()
-        val deleteAfter = OffsetDateTime.parse("2026-08-20T12:00:00Z")
         val idempotencyKey = UUID.nameUUIDFromBytes(
-            "study-erasure:$studyId:${deleteAfter.toInstant()}".toByteArray(Charsets.UTF_8)
+            "study-erasure:$studyId:default".toByteArray(Charsets.UTF_8)
         )
         val statusRs = Mockito.mock(ResultSet::class.java)
         val updateRs = Mockito.mock(ResultSet::class.java)
@@ -384,37 +414,36 @@ class StudyLifecycleServiceTest {
             .thenReturn(eventPs)
             .thenReturn(schedulePs)
         Mockito.doAnswer { invocation ->
-            val transaction = invocation.getArgument<(Connection, UUID, Boolean) -> Unit>(4)
+            val transaction = invocation.getArgument<(Connection, UUID, Boolean) -> Unit>(3)
             transaction(mockConnection, operationId, true)
             operationId
         }.`when`(dataDeletionOrchestrator).quarantineStudyAtomically(
             kEq(studyId),
             kEq("test-user"),
             kEq(idempotencyKey),
-            kEq(deleteAfter),
             kAny(),
         )
 
-        val actual = service.scheduleStudyDeletion(studyId, "test-user", deleteAfter)
+        val actual = service.requestStudyDeletion(studyId, "test-user")
 
         assertEquals(operationId, actual)
         Mockito.verify(mockConnection).prepareStatement(
             Mockito.argThat<String> { sql -> sql.contains("FOR UPDATE") }
         )
         Mockito.verify(updatePs).setString(1, StudyLifecycleStatus.SCHEDULED_FOR_DELETION.name)
-        Mockito.verify(schedulePs).setObject(3, deleteAfter)
+        Mockito.verify(schedulePs).setObject(kEq(3), kAny<OffsetDateTime>())
         Mockito.verify(schedulePs).setObject(4, operationId)
         Mockito.verify(schedulePs).setString(5, StudyLifecycleStatus.ACTIVE.name)
         Mockito.verify(webhookService).enqueueEvent(
             kEq(mockConnection),
             kEq(studyId),
             kEq(WebhookEventType.STUDY_STATUS_CHANGED),
-            Mockito.anyMap(),
+            kAny(),
         )
     }
 
     @Test
-    fun testImmediateStudyDeletionRetriesUseStableOperationKeyWithoutRewritingLifecycleState() {
+    fun testRepeatedStudyDeletionRequestsUseStableOperationKeyWithoutRewritingLifecycleState() {
         val studyId = UUID.randomUUID()
         val operationId = UUID.randomUUID()
         val idempotencyKey = UUID.nameUUIDFromBytes(
@@ -428,7 +457,7 @@ class StudyLifecycleServiceTest {
         `when`(statusPs.executeQuery()).thenReturn(statusRs)
         `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(statusPs)
         Mockito.doAnswer { invocation ->
-            val transaction = invocation.getArgument<(Connection, UUID, Boolean) -> Unit>(4)
+            val transaction = invocation.getArgument<(Connection, UUID, Boolean) -> Unit>(3)
             transaction(mockConnection, operationId, false)
             operationId
         }.`when`(dataDeletionOrchestrator).quarantineStudyAtomically(
@@ -436,24 +465,22 @@ class StudyLifecycleServiceTest {
             kEq("test-user"),
             kEq(idempotencyKey),
             kAny(),
-            kAny(),
         )
 
-        assertEquals(operationId, service.scheduleImmediateStudyDeletion(studyId, "test-user"))
-        assertEquals(operationId, service.scheduleImmediateStudyDeletion(studyId, "test-user"))
+        assertEquals(operationId, service.requestStudyDeletion(studyId, "test-user"))
+        assertEquals(operationId, service.requestStudyDeletion(studyId, "test-user"))
 
         Mockito.verify(dataDeletionOrchestrator, Mockito.times(2)).quarantineStudyAtomically(
             kEq(studyId),
             kEq("test-user"),
             kEq(idempotencyKey),
             kAny(),
-            kAny(),
         )
         Mockito.verify(webhookService, Mockito.never()).enqueueEvent(
             kAny(),
             kAny(),
             kAny(),
-            Mockito.anyMap(),
+            kAny(),
         )
     }
 
@@ -507,114 +534,89 @@ class StudyLifecycleServiceTest {
             kEq(mockConnection),
             kEq(studyId),
             kEq(WebhookEventType.STUDY_STATUS_CHANGED),
-            Mockito.anyMap(),
-        )
-    }
-
-    // --- executeScheduledDeletions tests ---
-
-    @Test
-    fun testExecuteScheduledDeletionsNoStudies() {
-        `when`(mockRs.next()).thenReturn(false)
-
-        service.executeScheduledDeletions()
-
-        // No exception — early return
-        Mockito.verify(storageResolver, Mockito.atLeastOnce()).getPlatformStorage()
-    }
-
-    @Test
-    fun testExecuteScheduledDeletionsWithStudies() {
-        org.springframework.security.core.context.SecurityContextHolder.clearContext()
-        val studyId = UUID.randomUUID()
-        val operationId = UUID.randomUUID()
-        val deleteAfter = OffsetDateTime.parse("2026-08-20T12:00:00Z")
-
-        // First call: query for due studies
-        val dueRs = Mockito.mock(ResultSet::class.java)
-        `when`(dueRs.next()).thenReturn(true, false)
-        `when`(dueRs.getObject(kAnyString(), kEq(UUID::class.java))).thenReturn(studyId)
-        `when`(dueRs.getObject(kAnyString(), kEq(OffsetDateTime::class.java))).thenReturn(deleteAfter)
-
-        val duePs = Mockito.mock(PreparedStatement::class.java)
-        `when`(duePs.executeQuery()).thenReturn(dueRs)
-
-        val linkConnection = Mockito.mock(Connection::class.java)
-        val linkPs = Mockito.mock(PreparedStatement::class.java)
-        `when`(linkConnection.prepareStatement(kAnyString())).thenReturn(linkPs)
-        `when`(linkPs.executeUpdate()).thenReturn(1)
-
-        `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(duePs)
-        Mockito.doAnswer { invocation ->
-            val transaction = invocation.getArgument<(Connection, UUID, Boolean) -> Unit>(4)
-            transaction(linkConnection, operationId, true)
-            operationId
-        }.`when`(dataDeletionOrchestrator).quarantineStudyAtomically(
-            kEq(studyId),
-            kEq("legacy-schedule"),
-            kAny(),
-            kEq(deleteAfter),
             kAny(),
         )
-
-        service.executeScheduledDeletions()
-
-        Mockito.verify(linkPs).setObject(1, operationId)
-        Mockito.verify(linkPs).setObject(2, studyId)
-        Mockito.verify(linkPs).executeUpdate()
-        val events = org.mockito.kotlin.argumentCaptor<List<com.openlattice.chronicle.auditing.AuditableEvent>>()
-        Mockito.verify(auditingManager).recordEvents(events.capture())
-        assertEquals(com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal, events.firstValue.single().principal)
-    }
-
-    // --- getStudyDataSummary tests ---
-
-    @Test
-    fun testGetStudyDataSummaryReturnsCorrectCounts() {
-        val studyId = UUID.randomUUID()
-
-        // First call for lifecycle status
-        val statusRs = Mockito.mock(ResultSet::class.java)
-        `when`(statusRs.next()).thenReturn(true)
-        `when`(statusRs.getString(kAnyString())).thenReturn(StudyLifecycleStatus.ACTIVE.name)
-
-        // Subsequent calls for count queries (8 counts)
-        val countRs = Mockito.mock(ResultSet::class.java)
-        `when`(countRs.next()).thenReturn(true)
-        `when`(countRs.getLong(1)).thenReturn(42L)
-
-        val statusPs = Mockito.mock(PreparedStatement::class.java)
-        `when`(statusPs.executeQuery()).thenReturn(statusRs)
-
-        val countPs = Mockito.mock(PreparedStatement::class.java)
-        `when`(countPs.executeQuery()).thenReturn(countRs)
-
-        `when`(mockConnection.prepareStatement(kAnyString()))
-            .thenReturn(statusPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-
-        val summary = service.getStudyDataSummary(studyId)
-
-        assertEquals(studyId, summary.studyId)
-        assertEquals(StudyLifecycleStatus.ACTIVE, summary.lifecycleStatus)
     }
 
     // --- autoArchiveExpiredStudies tests ---
 
-    @Test
-    fun testAutoArchiveExpiredStudiesNoExpired() {
-        `when`(mockRs.next()).thenReturn(false)
+    @Test fun expirationSnapshotCannotArchiveAStudyWhoseDeadlineWasExtended() {
+        val selected = Mockito.mock(ResultSet::class.java)
+        val status = Mockito.mock(ResultSet::class.java)
+        val selectedStatement = Mockito.mock(PreparedStatement::class.java)
+        val statusStatement = Mockito.mock(PreparedStatement::class.java)
+        val deadlineStatement = Mockito.mock(PreparedStatement::class.java)
+        val deadline = Mockito.mock(ResultSet::class.java)
+        `when`(selected.next()).thenReturn(true, false)
+        `when`(selected.getObject(kEq("study_id"), kEq(UUID::class.java))).thenReturn(UUID.randomUUID())
+        `when`(status.next()).thenReturn(true)
+        `when`(status.getString(kAnyString())).thenReturn(StudyLifecycleStatus.ACTIVE.name)
+        `when`(deadline.next()).thenReturn(true)
+        `when`(deadline.getBoolean(1)).thenReturn(false)
+        `when`(selectedStatement.executeQuery()).thenReturn(selected)
+        `when`(statusStatement.executeQuery()).thenReturn(status)
+        `when`(deadlineStatement.executeQuery()).thenReturn(deadline)
+        `when`(mockConnection.prepareStatement(kAnyString())).thenReturn(selectedStatement, statusStatement, deadlineStatement)
+        service.autoArchiveExpiredStudies()
+        Mockito.verify(deadlineStatement, Mockito.never()).setString(1, StudyLifecycleStatus.ARCHIVED.name)
+        Mockito.verify(deadlineStatement).executeQuery()
+        Mockito.verifyNoInteractions(webhookService)
+    }
+
+    /**
+     * The nightly auto-archive of studies past their end date: a database error on one study is counted on the
+     * background-failure metric operators alert on, and the next expired study is still archived.
+     */
+    @Test fun oneStudyFailingToAutoArchiveIsCountedAndTheNextIsStillArchived() {
+        val failing = UUID.randomUUID()
+        val archived = UUID.randomUUID()
+        val selected = Mockito.mock(ResultSet::class.java)
+        val selectedStatement = Mockito.mock(PreparedStatement::class.java)
+        `when`(selected.next()).thenReturn(true, true, false)
+        `when`(selected.getObject(kEq("study_id"), kEq(UUID::class.java))).thenReturn(failing, archived)
+        `when`(selectedStatement.executeQuery()).thenReturn(selected)
+        `when`(mockRs.next()).thenReturn(true)
+        `when`(mockRs.getString(kAnyString())).thenReturn(StudyLifecycleStatus.ACTIVE.name)
+        `when`(mockRs.getBoolean(1)).thenReturn(true)
+        `when`(mockConnection.autoCommit).thenReturn(true)
+        var prepared = 0
+        `when`(mockConnection.prepareStatement(kAnyString())).thenAnswer {
+            prepared += 1
+            when (prepared) {
+                1 -> selectedStatement
+                2 -> throw SQLException("connection reset", "08006")
+                else -> mockPs
+            }
+        }
+        val failures = com.openlattice.chronicle.observability.ChronicleMetrics.backgroundTaskFailuresTotal
+            .labels(com.openlattice.chronicle.observability.ChronicleMetrics.BackgroundTask.AUTO_ARCHIVE.label)
+        val before = failures.get()
 
         service.autoArchiveExpiredStudies()
 
-        // No exception — early return
+        assertEquals(before + 1, failures.get(), 0.0)
+        Mockito.verify(webhookService).enqueueEvent(
+            kEq(mockConnection), kEq(archived), kEq(WebhookEventType.STUDY_STATUS_CHANGED), kAny(),
+        )
+        Mockito.verify(webhookService, Mockito.never()).enqueueEvent(
+            kEq(mockConnection), kEq(failing), kEq(WebhookEventType.STUDY_STATUS_CHANGED), kAny(),
+        )
+    }
+
+    @Test
+    fun testAutoArchiveExpiredStudiesNoExpired() {
+        `when`(mockRs.next()).thenReturn(false)
+        val failures = com.openlattice.chronicle.observability.ChronicleMetrics.backgroundTaskFailuresTotal
+            .labels(com.openlattice.chronicle.observability.ChronicleMetrics.BackgroundTask.AUTO_ARCHIVE.label)
+        val before = failures.get()
+
+        service.autoArchiveExpiredStudies()
+
+        // Only the expiry query ran: no status row was written, nothing was announced, nothing failed.
+        Mockito.verify(mockConnection, Mockito.times(1)).prepareStatement(kAnyString())
+        Mockito.verify(mockPs, Mockito.never()).executeUpdate()
+        Mockito.verifyNoInteractions(webhookService, auditingManager)
+        assertEquals(before, failures.get(), 0.0)
     }
 
     @Test
@@ -628,45 +630,13 @@ class StudyLifecycleServiceTest {
         Mockito.verify(mockPs).setObject(1, studyId)
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testGetLifecycleStatusThrowsForInvalidStatus() {
         `when`(mockRs.next()).thenReturn(true)
         `when`(mockRs.getString(kAnyString())).thenReturn("INVALID_STATUS")
 
-        service.getLifecycleStatus(UUID.randomUUID())
-    }
-
-    @Test
-    fun testGetStudyDataSummaryWithZeroCounts() {
-        val studyId = UUID.randomUUID()
-
-        val statusRs = Mockito.mock(ResultSet::class.java)
-        `when`(statusRs.next()).thenReturn(true)
-        `when`(statusRs.getString(kAnyString())).thenReturn(StudyLifecycleStatus.ARCHIVED.name)
-
-        val countRs = Mockito.mock(ResultSet::class.java)
-        `when`(countRs.next()).thenReturn(false) // no rows in count
-
-        val statusPs = Mockito.mock(PreparedStatement::class.java)
-        `when`(statusPs.executeQuery()).thenReturn(statusRs)
-
-        val countPs = Mockito.mock(PreparedStatement::class.java)
-        `when`(countPs.executeQuery()).thenReturn(countRs)
-
-        `when`(mockConnection.prepareStatement(kAnyString()))
-            .thenReturn(statusPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-            .thenReturn(countPs)
-
-        val summary = service.getStudyDataSummary(studyId)
-
-        assertEquals(StudyLifecycleStatus.ARCHIVED, summary.lifecycleStatus)
-        assertEquals(0L, summary.participantCount)
+        assertThrows(IllegalArgumentException::class.java) {
+            service.getLifecycleStatus(UUID.randomUUID())
+        }
     }
 }

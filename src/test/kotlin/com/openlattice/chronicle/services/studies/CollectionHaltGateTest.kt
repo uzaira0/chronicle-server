@@ -2,9 +2,10 @@ package com.openlattice.chronicle.services.studies
 
 import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
 import com.openlattice.chronicle.collection.CollectionCadence
-import com.openlattice.chronicle.collection.CollectionDataDisposition
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.collection.CollectionModuleSetting
+import com.openlattice.chronicle.storage.RecordedCollectionDecision
+import com.openlattice.chronicle.storage.current
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -25,8 +26,8 @@ class CollectionHaltGateTest {
     }
 
     @Test
-    fun `currently required module with no decision halts every upload`() {
-        assertTrue(
+    fun `currently required module with no decision leaves accepted siblings collecting`() {
+        assertFalse(
             collectionIsHalted(
                 latestSettings = setting(version = 2, enabled = true, required = true),
                 issuedRevisions = listOf(
@@ -39,8 +40,8 @@ class CollectionHaltGateTest {
     }
 
     @Test
-    fun `newly required module rejects an acceptance from its optional revision`() {
-        assertTrue(
+    fun `newly required module preserves an acceptance from its optional revision`() {
+        assertFalse(
             collectionIsHalted(
                 latestSettings = setting(version = 2, enabled = true, required = true),
                 issuedRevisions = listOf(
@@ -91,6 +92,7 @@ class CollectionHaltGateTest {
                     setting(version = 3, enabled = true, required = true),
                 ),
                 decisions = mapOf(moduleId to accepted(version = 1)),
+                uploadModules = setOf(moduleId),
             ),
         )
     }
@@ -131,8 +133,8 @@ class CollectionHaltGateTest {
     }
 
     @Test
-    fun `required module policy change requires a decision at or after that change`() {
-        assertTrue(
+    fun `required module cadence edit keeps its acceptance`() {
+        assertFalse(
             collectionIsHalted(
                 latestSettings = setting(
                     version = 2,
@@ -155,8 +157,24 @@ class CollectionHaltGateTest {
                     ),
                 ),
                 decisions = mapOf(moduleId to accepted(version = 1)),
+                uploadModules = setOf(moduleId),
             ),
         )
+    }
+
+    @Test
+    fun `required decline survives every settings edit until accepted or disabled`() {
+        val declinedAt = setting(version = 1, enabled = true, required = true)
+        for (edit in listOf(
+            setting(version = 2, enabled = true, required = true, collectionIntervalSeconds = 60),
+            setting(version = 2, enabled = true, required = true, unrelatedEnabled = true),
+            setting(version = 2, enabled = true, required = true, unrelatedEnabled = false),
+        )) {
+            assertTrue("$edit", collectionIsHalted(edit, listOf(declinedAt, edit), mapOf(moduleId to declined(version = 1))))
+            assertFalse("$edit", collectionIsHalted(edit, listOf(declinedAt, edit), mapOf(moduleId to accepted(version = 2))))
+        }
+        val disabled = setting(version = 2, enabled = false, required = false)
+        assertFalse(collectionIsHalted(disabled, listOf(declinedAt, disabled), mapOf(moduleId to declined(version = 1))))
     }
 
     @Test
@@ -187,6 +205,7 @@ class CollectionHaltGateTest {
                 latestSettings = setting(version = 1, enabled = true, required = true),
                 issuedRevisions = listOf(setting(version = 1, enabled = true, required = true)),
                 decisions = mapOf(moduleId to unavailable(version = 1)),
+                uploadModules = setOf(moduleId),
             ),
         )
     }
@@ -201,6 +220,7 @@ class CollectionHaltGateTest {
                     setting(version = 3, enabled = true, required = true),
                 ),
                 decisions = mapOf(moduleId to accepted(version = 1)),
+                uploadModules = setOf(moduleId),
             ),
         )
     }
@@ -223,6 +243,7 @@ class CollectionHaltGateTest {
                 latestSettings = setting(version = 3, enabled = true, required = true),
                 issuedRevisions = listOf(setting(version = 2, enabled = true, required = true)),
                 decisions = mapOf(moduleId to accepted(version = 3)),
+                uploadModules = setOf(moduleId),
             ),
         )
     }
@@ -238,55 +259,69 @@ class CollectionHaltGateTest {
     }
 
     @Test
-    fun `active decision query includes all three states in authoritative server order`() {
-        val normalized = ParticipantCollectionAcknowledgmentService.ACTIVE_COLLECTION_DECISIONS_SQL
-            .replace(Regex("\\s+"), " ")
-
-        assertTrue(normalized.contains("acknowledgment.acknowledged_modules"))
-        assertTrue(normalized.contains("acknowledgment.declined_modules"))
-        assertTrue(normalized.contains("acknowledgment.unavailable_modules"))
-        assertTrue(
-            normalized.contains(
-                "ORDER BY acknowledgment.settings_version, acknowledgment.recorded_at, acknowledgment.id",
-            ),
-        )
-        assertFalse(normalized.contains("acknowledgment.acknowledged_at"))
+    fun `rows captured while a module was enabled upload after it is disabled and none are held`() {
+        val enabled = setting(version = 1, enabled = true, required = false)
+        val disabled = setting(version = 2, enabled = false, required = false)
+        val history = listOf(RecordedCollectionDecision(moduleId, accepted(1), seq = 1))
+        val beforeDisable = collectionUploadAuthorization(enabled, listOf(enabled, disabled), history.current(1), setOf(moduleId))
+        val afterDisable = collectionUploadAuthorization(disabled, listOf(enabled, disabled), history.current(1), setOf(moduleId))
+        assertEquals(setOf(moduleId), beforeDisable.acceptedModules)
+        assertEquals(setOf(moduleId), afterDisable.discardedModules)
+        assertTrue(afterDisable.acceptedModules.isEmpty())
     }
 
     @Test
-    fun historicalQueueHonorsFlushHoldDiscardAndPolicyEdits() {
+    fun `a cadence edit keeps rows on both sides of it accepted`() {
         val old = setting(version = 1, enabled = true, required = false)
-        val decisions = mapOf(moduleId to accepted(1))
-        CollectionDataDisposition.entries.forEach { disposition ->
-            val latest = setting(version = 2, enabled = false, required = false).copy(
-                modules = mapOf(moduleId to CollectionModuleSetting(enabled = false, disableDisposition = disposition)))
-            val authorization = checkNotNull(collectionUploadAuthorization(latest, listOf(old, latest), decisions,
-                decisions, setOf(moduleId), 1))
-            assertEquals(setOf(moduleId), when (disposition) {
-                CollectionDataDisposition.FLUSH_THEN_STOP -> authorization.acceptedModules
-                CollectionDataDisposition.HOLD_PENDING -> authorization.heldModules
-                CollectionDataDisposition.DISCARD_AND_STOP -> authorization.discardedModules
-            })
-        }
         val edited = setting(version = 2, enabled = true, required = false, collectionIntervalSeconds = 300)
-        assertEquals(setOf(moduleId), checkNotNull(collectionUploadAuthorization(edited, listOf(old, edited), decisions,
-            decisions, setOf(moduleId), 1)).acceptedModules)
-        assertEquals(setOf(moduleId), checkNotNull(collectionUploadAuthorization(edited, listOf(old, edited), decisions,
-            decisions, setOf(moduleId), 2)).heldModules)
-        val legacyDisabled = setting(version = 2, enabled = false, required = false)
-        assertEquals(setOf(moduleId), checkNotNull(collectionUploadAuthorization(legacyDisabled, listOf(old, legacyDisabled),
-            decisions, decisions, setOf(moduleId), null)).acceptedModules)
+        val history = listOf(RecordedCollectionDecision(moduleId, accepted(1), seq = 1))
+        listOf(old, edited).forEach { captured ->
+            assertEquals(setOf(moduleId),
+                collectionUploadAuthorization(captured, listOf(old, edited), history.current(1), setOf(moduleId)).acceptedModules)
+        }
     }
 
     @Test
-    fun historicalVersionCannotOverrideConsentRevocationOrMissingEvidence() {
-        val old = setting(version = 1, enabled = true, required = false)
-        val latest = setting(version = 2, enabled = true, required = false)
-        val authorization = checkNotNull(collectionUploadAuthorization(latest, listOf(old, latest), mapOf(moduleId to declined(2)),
-            mapOf(moduleId to accepted(1)), setOf(moduleId), 1))
-        assertTrue(authorization.acceptedModules.isEmpty())
-        assertTrue(collectionUploadAuthorization(latest, listOf(latest), mapOf(moduleId to accepted(1)),
-            mapOf(moduleId to accepted(1)), setOf(moduleId), 1) == null)
+    fun `decline and reaccept at one version judge each row by the decision in force at its sequence`() {
+        val settings = setting(version = 1, enabled = true, required = false)
+        val history = listOf(
+            RecordedCollectionDecision(moduleId, accepted(1), seq = 1),
+            RecordedCollectionDecision(moduleId, declined(1), seq = 2),
+            RecordedCollectionDecision(moduleId, accepted(1), seq = 3),
+        )
+        val accepted = (1L..3L).map { seq ->
+            collectionUploadAuthorization(settings, listOf(settings), history.current(seq), setOf(moduleId)).acceptedModules
+        }
+        assertEquals(listOf(setOf(moduleId), emptySet(), setOf(moduleId)), accepted)
+    }
+
+    @Test
+    fun `never consented disabled fields are discarded and consented usage is accepted`() {
+        val usage = CollectionModuleId.USAGE_EVENTS
+        val fields = setOf(CollectionModuleId.IN_APP_ACTIVITY_CLASS, CollectionModuleId.USER_IDENTIFICATION)
+        val lifecycle = CollectionModuleId.DEVICE_LIFECYCLE
+        val settings = AndroidDataCollectionSetting(modules = mapOf(usage to CollectionModuleSetting(enabled = true),
+            lifecycle to CollectionModuleSetting(enabled = false)) +
+            fields.associateWith { CollectionModuleSetting(enabled = false) }, settingsVersion = 1)
+        val history = listOf(RecordedCollectionDecision(usage, accepted(1), seq = 1))
+        val authorization = collectionUploadAuthorization(settings, listOf(settings), history.current(), fields + usage + lifecycle)
+        assertEquals(setOf(usage), authorization.acceptedModules)
+        assertEquals(fields + lifecycle, authorization.discardedModules)
+    }
+
+    @Test
+    fun `a required decline in force at capture discards every module of the batch`() {
+        val settings = AndroidDataCollectionSetting(modules = mapOf(
+            moduleId to CollectionModuleSetting(enabled = true, required = true),
+            CollectionModuleId.USAGE_EVENTS to CollectionModuleSetting(enabled = true)), settingsVersion = 1)
+        val history = listOf(
+            RecordedCollectionDecision(moduleId, accepted(1), seq = 1),
+            RecordedCollectionDecision(CollectionModuleId.USAGE_EVENTS, accepted(1), seq = 1),
+            RecordedCollectionDecision(moduleId, declined(1), seq = 2),
+        )
+        val modules = setOf(moduleId, CollectionModuleId.USAGE_EVENTS)
+        assertEquals(modules, collectionUploadAuthorization(settings, listOf(settings), history.current(1), modules).acceptedModules)
+        assertEquals(modules, collectionUploadAuthorization(settings, listOf(settings), history.current(2), modules).discardedModules)
     }
 
     private fun accepted(version: Int) = IssuedCollectionDecision(

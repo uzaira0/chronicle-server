@@ -4,11 +4,8 @@ import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.openlattice.chronicle.audit.AuditAction
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.audit.logWithContext
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
@@ -18,6 +15,7 @@ import com.openlattice.chronicle.study.ComplianceViolation
 import com.openlattice.chronicle.study.StudyComplianceManager
 import com.openlattice.chronicle.services.studies.StudyLimitsManager
 import com.openlattice.chronicle.services.studies.StudyService
+import com.openlattice.chronicle.services.studies.requireStudyId
 import com.openlattice.chronicle.services.studies.tasks.StudyComplianceHazelcastTask
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.StudyComplianceApi
@@ -28,7 +26,6 @@ import com.openlattice.chronicle.study.StudyLimitsApi.Companion.STUDY_ID_PATH
 import jakarta.validation.Valid
 import org.slf4j.LoggerFactory
 import org.springframework.http.MediaType
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -48,8 +45,6 @@ import jakarta.inject.Inject
 // is /chronicle/v3/compliance/... The unversioned form stays for the Retrofit StudyComplianceApi
 // client, matching how AuthTokenController declares its two paths.
 @RequestMapping(value = [StudyComplianceApi.CONTROLLER, StudyComplianceApi.V3_CONTROLLER])
-@Validated
-@RateLimit(type = RateLimitType.ADMIN)
 public open class StudyComplianceController @Inject constructor(
     // reason: @Inject-wired DI dependency retained intentionally; removing it would alter the
     // controller's injected collaborator set
@@ -71,13 +66,21 @@ public open class StudyComplianceController @Inject constructor(
         value = [STUDY + STUDY_ID_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
-    override fun getStudyComplianceViolations(@PathVariable(STUDY_ID) studyId: UUID): Map<UUID, Map<String, List<ComplianceViolation>>> {
+    override fun getStudyComplianceViolations(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @org.springframework.web.bind.annotation.RequestParam(defaultValue = "100") limit: Int,
+        @org.springframework.web.bind.annotation.RequestParam(defaultValue = "0") offset: Int,
+    ): Map<UUID, Map<String, List<ComplianceViolation>>> {
         ensureReadAccess(AclKey(studyId))
-        check(studyService.isValidStudy(studyId)) { "$studyId is not valid." }
+        studyService.requireStudyId(studyId)
 
-        val violations = studyComplianceManager.getNonCompliantStudies(listOf(studyId))
+        val page = studyComplianceManager.getStudyCompliancePage(studyId, limit, offset)
+        val request = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes()
+            as? org.springframework.web.context.request.ServletRequestAttributes
+        page.nextOffset?.let { request?.response?.setHeader("X-Next-Offset", it.toString()) }
+        val violations = page.violations
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
             resourceType("StudyCompliance")
             studyId(studyId)
             success(true)

@@ -1,5 +1,8 @@
 package com.openlattice.chronicle.services.studies
 
+import com.openlattice.chronicle.exceptions.StudyNotFoundException
+
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
@@ -12,10 +15,10 @@ import com.openlattice.chronicle.authorization.SecurableObjectType
 import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.ids.IdConstants
+import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDIES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_DELETION_SCHEDULE
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_LIFECYCLE_EVENTS
-import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY_PARTICIPANTS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ORGANIZATION_STUDIES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CHANGED_BY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CREATED_AT
@@ -24,8 +27,6 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.EVENT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LIFECYCLE_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NEW_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ORGANIZATION_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPATION_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PREVIOUS_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.REASON
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCHEDULED_BY
@@ -35,12 +36,14 @@ import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.STUDY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ENDS
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudyCloneRequest
-import com.openlattice.chronicle.study.StudyDataSummary
 import com.openlattice.chronicle.study.StudyLifecycleStatus
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
-import com.openlattice.chronicle.services.delete.bindErasureStudyId
 import com.openlattice.chronicle.services.webhooks.WebhookService
+import com.openlattice.chronicle.services.webhooks.WebhookPayload
 import com.openlattice.chronicle.webhooks.WebhookEventType
+import com.openlattice.chronicle.i18n.Messages
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.time.Clock
@@ -65,6 +68,9 @@ public open class StudyLifecycleService(
         private val mapper = ObjectMappers.newJsonMapper()
         private const val DELETION_OPERATION_ID = "operation_id"
 
+        /** V1 studies_title_format: at most 2000 UTF-16 code units, the same unit as the API @Size(max = 2000). */
+        private const val STUDY_TITLE_MAX_UTF16 = 2000
+
         private val GET_LIFECYCLE_STATUS_SQL = """
             SELECT ${LIFECYCLE_STATUS.name} FROM ${STUDIES.name} WHERE ${STUDY_ID.name} = ?
         """.trimIndent()
@@ -75,7 +81,9 @@ public open class StudyLifecycleService(
 
         private val UPDATE_LIFECYCLE_STATUS_SQL = """
             UPDATE ${STUDIES.name}
-            SET ${LIFECYCLE_STATUS.name} = ?, updated_at = now()
+            SET ${LIFECYCLE_STATUS.name} = ?, updated_at = now(),
+                -- Every lifecycle writer advances the study revision that dashboard If-Match is checked against.
+                settings_revision = settings_revision + 1
             WHERE ${STUDY_ID.name} = ?
             RETURNING ${LIFECYCLE_STATUS.name}
         """.trimIndent()
@@ -109,40 +117,6 @@ public open class StudyLifecycleService(
             WHERE ${STUDY_ID.name} = ?
         """.trimIndent()
 
-        private val GET_LEGACY_PRE_DELETION_STATUS_SQL = """
-            SELECT ${PREVIOUS_STATUS.name}
-            FROM ${STUDY_LIFECYCLE_EVENTS.name}
-            WHERE ${STUDY_ID.name} = ? AND ${NEW_STATUS.name} = 'SCHEDULED_FOR_DELETION'
-            ORDER BY ${CREATED_AT.name} DESC, ${EVENT_ID.name} DESC
-            LIMIT 1
-        """.trimIndent()
-
-        private val GET_STUDIES_DUE_FOR_DELETION_SQL = """
-            SELECT ${STUDY_ID.name}, ${SCHEDULED_BY.name}, ${DELETE_AFTER.name}
-            FROM ${STUDY_DELETION_SCHEDULE.name}
-            WHERE ${DELETE_AFTER.name} <= now() AND $DELETION_OPERATION_ID IS NULL
-        """.trimIndent()
-
-        private val LINK_DELETION_SCHEDULE_OPERATION_SQL = """
-            UPDATE ${STUDY_DELETION_SCHEDULE.name}
-            SET $DELETION_OPERATION_ID = ?
-            WHERE ${STUDY_ID.name} = ? AND $DELETION_OPERATION_ID IS NULL
-        """.trimIndent()
-
-        private val GET_DELETION_SCHEDULE_OPERATION_SQL = """
-            SELECT $DELETION_OPERATION_ID
-            FROM ${STUDY_DELETION_SCHEDULE.name}
-            WHERE ${STUDY_ID.name} = ?
-        """.trimIndent()
-
-        private val CLONE_PARTICIPANTS_SQL = """
-            INSERT INTO ${STUDY_PARTICIPANTS.name}
-                (${STUDY_ID.name}, ${PARTICIPANT_ID.name}, ${PARTICIPATION_STATUS.name})
-            SELECT ?, ${PARTICIPANT_ID.name}, ${PARTICIPATION_STATUS.name}
-            FROM ${STUDY_PARTICIPANTS.name}
-            WHERE ${STUDY_ID.name} = ?
-        """.trimIndent()
-
         private val CLONE_ORG_STUDIES_SQL = """
             INSERT INTO ${ORGANIZATION_STUDIES.name}
                 (${ORGANIZATION_ID.name}, ${STUDY_ID.name}, user_id, settings)
@@ -152,26 +126,35 @@ public open class StudyLifecycleService(
         """.trimIndent()
     }
 
-    public open fun archiveStudy(studyId: UUID, userId: String) {
-        transitionStatus(studyId, userId, StudyLifecycleStatus.ACTIVE, StudyLifecycleStatus.ARCHIVED, "Archived by user")
+    /** Archives the study if the caller saw [expectedRevision]; replaying an archive that already landed is a no-op. */
+    public open fun archiveStudy(studyId: UUID, userId: String, expectedRevision: Long) {
+        transitionStatus(
+            studyId, userId, StudyLifecycleStatus.ACTIVE, StudyLifecycleStatus.ARCHIVED, "Archived by user",
+            expectedRevision = expectedRevision,
+        )
         logger.info("Study {} archived by user {}", studyId, userId)
     }
 
-    public open fun unarchiveStudy(studyId: UUID, userId: String) {
-        transitionStatus(studyId, userId, StudyLifecycleStatus.ARCHIVED, StudyLifecycleStatus.ACTIVE, "Unarchived by user")
+    /** Restores the study if the caller saw [expectedRevision]; replaying a restore that already landed is a no-op. */
+    public open fun unarchiveStudy(studyId: UUID, userId: String, expectedRevision: Long) {
+        transitionStatus(
+            studyId, userId, StudyLifecycleStatus.ARCHIVED, StudyLifecycleStatus.ACTIVE, "Unarchived by user",
+            expectedRevision = expectedRevision,
+        )
         logger.info("Study {} unarchived by user {}", studyId, userId)
     }
 
     public open fun cloneStudy(studyId: UUID, userId: String, request: StudyCloneRequest): UUID {
         val originalStudy = studyService.getStudy(studyId)
         val newStudyId = idGenerationService.getNextId()
-        val newTitle = request.newTitle.ifBlank { "Copy of ${originalStudy.title}" }
+        val newTitle = request.newTitle.ifBlank { cloneTitle(originalStudy.title) }
         val aclKey = AclKey(newStudyId)
         val creator = Principals.getCurrentUser()
         val adminRole = Principals.getAdminRole()
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
                 .transaction { conn ->
+                    RLSConnectionCustomizer.authorizeCreatedStudy(conn, newStudyId)
                     // Insert cloned study row
                     insertClonedStudy(conn, newStudyId, newTitle, originalStudy, request)
                     studyLimitsMgr.initializeStudyLimits(conn, newStudyId)
@@ -181,15 +164,6 @@ public open class StudyLifecycleService(
                         ps.setObject(1, newStudyId)
                         ps.setObject(2, studyId)
                         ps.executeUpdate()
-                    }
-
-                    // Clone participants if requested
-                    if (request.includeParticipants) {
-                        conn.prepareStatement(CLONE_PARTICIPANTS_SQL).use { ps ->
-                            ps.setObject(1, newStudyId)
-                            ps.setObject(2, studyId)
-                            ps.executeUpdate()
-                        }
                     }
 
                     // Set up authorization
@@ -240,6 +214,14 @@ public open class StudyLifecycleService(
         return newStudyId
     }
 
+    /** "Copy of <title>", cut to the studies.title limit without splitting a surrogate pair. */
+    private fun cloneTitle(title: String): String {
+        val copy = "Copy of $title"
+        if (copy.length <= STUDY_TITLE_MAX_UTF16) return copy
+        val end = if (copy[STUDY_TITLE_MAX_UTF16 - 1].isHighSurrogate()) STUDY_TITLE_MAX_UTF16 - 1 else STUDY_TITLE_MAX_UTF16
+        return copy.substring(0, end)
+    }
+
     private fun insertClonedStudy(
         conn: Connection,
         newStudyId: UUID,
@@ -256,54 +238,29 @@ public open class StudyLifecycleService(
             ps.setString(6, originalStudy.group)
             ps.setString(7, originalStudy.version)
             ps.setString(8, originalStudy.contact)
-            ps.setBoolean(9, originalStudy.notificationsEnabled)
-            ps.setString(10, originalStudy.storage)
-            ps.setString(11, if (request.includeSettings) mapper.writeValueAsString(originalStudy.settings) else "{}")
-            ps.setString(12, mapper.writeValueAsString(originalStudy.modules))
-            ps.setString(13, originalStudy.phoneNumber)
+            ps.setString(9, originalStudy.storage)
+            ps.setString(10, if (request.includeSettings) mapper.writeValueAsString(originalStudy.settings) else "{}")
+            ps.setString(11, mapper.writeValueAsString(originalStudy.modules))
+            ps.setString(12, originalStudy.phoneNumber)
             ps.executeUpdate()
         }
     }
 
-    public open fun scheduleStudyDeletion(studyId: UUID, userId: String, deleteAfter: OffsetDateTime): UUID =
-        scheduleStudyDeletionAtomically(
-            studyId = studyId,
-            userId = userId,
-            deleteAfter = deleteAfter,
-            idempotencyKey = studyErasureIdempotencyKey(studyId, deleteAfter),
-        )
-
     /**
-     * Compatibility path for the legacy direct-delete endpoint, which has no client-supplied
-     * idempotency key. One stable key per study makes uncertain HTTP retries resolve the same
-     * quarantine operation instead of creating a second erasure request.
+     * Records the deletion request and blocks the study's data at once. Physical erasure waits for an owner
+     * to run it; one stable key per study makes uncertain HTTP retries resolve the same request.
      */
-    public open fun scheduleImmediateStudyDeletion(studyId: UUID, userId: String): UUID =
-        scheduleStudyDeletionAtomically(
-            studyId = studyId,
-            userId = userId,
-            deleteAfter = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC),
-            idempotencyKey = studyErasureIdempotencyKey(studyId, null),
-        )
-
-    private fun scheduleStudyDeletionAtomically(
-        studyId: UUID,
-        userId: String,
-        deleteAfter: OffsetDateTime,
-        idempotencyKey: UUID,
-    ): UUID {
+    public open fun requestStudyDeletion(studyId: UUID, userId: String): UUID {
         val aclKey = AclKey(studyId)
+        val requestedAt = OffsetDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)
         val operationId = dataDeletionOrchestrator.quarantineStudyAtomically(
             studyId = studyId,
             requestedBy = userId,
-            idempotencyKey = idempotencyKey,
-            requestedDeleteAfter = deleteAfter,
+            idempotencyKey = studyErasureIdempotencyKey(studyId),
         ) { connection, deletionOperationId, inserted ->
             val previousStatus = getCurrentStatusForUpdate(connection, studyId)
             if (previousStatus == StudyLifecycleStatus.SCHEDULED_FOR_DELETION) {
-                check(!inserted) {
-                    "Study is already scheduled for deletion; cancel it before choosing a new date"
-                }
+                check(!inserted) { "Study deletion is already requested" }
                 return@quarantineStudyAtomically
             }
             check(
@@ -318,12 +275,13 @@ public open class StudyLifecycleService(
                 previousStatus,
                 StudyLifecycleStatus.SCHEDULED_FOR_DELETION,
                 userId,
-                "Scheduled for deletion after $deleteAfter",
+                "Deletion requested",
             )
+            // delete_after records when deletion was requested; erasure itself waits for an owner.
             connection.prepareStatement(INSERT_DELETION_SCHEDULE_SQL).use { statement ->
                 statement.setObject(1, studyId)
                 statement.setString(2, userId)
-                statement.setObject(3, deleteAfter)
+                statement.setObject(3, requestedAt)
                 statement.setObject(4, deletionOperationId)
                 statement.setString(5, previousStatus.name)
                 statement.executeUpdate()
@@ -332,24 +290,22 @@ public open class StudyLifecycleService(
                 connection,
                 studyId,
                 StudyLifecycleStatus.SCHEDULED_FOR_DELETION,
-                "Scheduled for deletion after $deleteAfter",
+                "Deletion requested",
                 previousStatus,
             )
-            recordEvent(
+            recordEvent(connection,
                 AuditableEvent(
                     aclKey,
                     eventType = AuditEventType.SCHEDULE_STUDY_DELETION,
-                    description = "Scheduled for deletion after $deleteAfter",
+                    description = "Deletion requested",
                     study = studyId,
                     organization = IdConstants.UNINITIALIZED.id,
-                    data = mapOf(
-                        "deleteAfter" to deleteAfter.toString(),
-                        "operationId" to deletionOperationId.toString(),
-                    ),
+                    data = mapOf("operationId" to deletionOperationId.toString()),
                 )
             )
         }
-        logger.info("Study {} scheduled for deletion after {} by user {}", studyId, deleteAfter, userId)
+        studyService.refreshStudyCache(setOf(studyId))
+        logger.info("Study {} deletion requested by user {}", studyId, userId)
         return operationId
     }
 
@@ -363,8 +319,7 @@ public open class StudyLifecycleService(
             val restoredStatus = if (currentStatus == StudyLifecycleStatus.SCHEDULED_FOR_DELETION) {
                 getPreDeletionStatus(connection, studyId)
             } else {
-                // Compatibility for quarantines created by the legacy direct-delete endpoint,
-                // which did not update lifecycle state before this transaction boundary existed.
+                // The erasure request was recorded without a lifecycle change, so there is none to undo.
                 currentStatus
             }
             check(
@@ -394,7 +349,7 @@ public open class StudyLifecycleService(
                 statement.setObject(1, studyId)
                 statement.executeUpdate()
             }
-            recordEvent(
+            recordEvent(connection,
                 AuditableEvent(
                     aclKey,
                     eventType = AuditEventType.CANCEL_SCHEDULED_DELETION,
@@ -405,6 +360,7 @@ public open class StudyLifecycleService(
                 )
             )
         }
+        studyService.refreshStudyCache(setOf(studyId))
         logger.info("Scheduled deletion cancelled for study {} by user {}", studyId, userId)
     }
 
@@ -414,119 +370,50 @@ public open class StudyLifecycleService(
         }
     }
 
-    public open fun executeScheduledDeletions() {
-        data class DueStudy(val studyId: UUID, val requestedBy: String, val deleteAfter: OffsetDateTime?)
-        val dueStudies = mutableListOf<DueStudy>()
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(GET_STUDIES_DUE_FOR_DELETION_SQL).use { ps ->
-                val rs = ps.executeQuery()
-                while (rs.next()) {
-                    dueStudies.add(
-                        DueStudy(
-                            studyId = rs.getObject(STUDY_ID.name, UUID::class.java),
-                            requestedBy = rs.getString(SCHEDULED_BY.name) ?: "legacy-schedule",
-                            deleteAfter = rs.getObject(DELETE_AFTER.name, OffsetDateTime::class.java),
-                        )
-                    )
-                }
-            }
-        }
-
-        if (dueStudies.isEmpty()) {
-            logger.debug("No studies due for deletion")
-            return
-        }
-
-        // Reconcile only legacy schedules that predate their durable operation link. Keep
-        // the schedule row until cancellation or physical study erasure so its exact prior
-        // lifecycle status remains available throughout the quarantine.
-        dueStudies.forEach { due ->
-            dataDeletionOrchestrator.quarantineStudyAtomically(
-                studyId = due.studyId,
-                requestedBy = due.requestedBy,
-                idempotencyKey = studyErasureIdempotencyKey(due.studyId, due.deleteAfter),
-                requestedDeleteAfter = due.deleteAfter,
-            ) { connection, operationId, _ ->
-                val linked = connection.prepareStatement(LINK_DELETION_SCHEDULE_OPERATION_SQL).use { statement ->
-                    statement.setObject(1, operationId)
-                    statement.setObject(2, due.studyId)
-                    statement.executeUpdate() == 1
-                }
-                if (!linked) {
-                    check(getDeletionScheduleOperation(connection, due.studyId) == operationId) {
-                        "Study deletion schedule is linked to a different erasure operation"
-                    }
-                    return@quarantineStudyAtomically
-                }
-                recordEvent(
-                    AuditableEvent(
-                        AclKey(due.studyId),
-                        eventType = AuditEventType.SCHEDULE_STUDY_DELETION,
-                        description = "Linked legacy deletion schedule to verified erasure processing",
-                        securablePrincipalId = IdConstants.CHRONICLE.id,
-                        principal = com.openlattice.chronicle.authorization.SystemUser.CHRONICLE.principal,
-                        study = due.studyId,
-                        organization = IdConstants.UNINITIALIZED.id,
-                        data = mapOf("operationId" to operationId.toString()),
-                    )
-                )
-            }
-        }
-        logger.info("Successfully reconciled {} scheduled study deletions", dueStudies.size)
-    }
-
-    private fun getDeletionScheduleOperation(connection: Connection, studyId: UUID): UUID? =
-        connection.prepareStatement(GET_DELETION_SCHEDULE_OPERATION_SQL).use { statement ->
-            statement.setObject(1, studyId)
-            statement.executeQuery().use { resultSet ->
-                if (resultSet.next()) resultSet.getObject(DELETION_OPERATION_ID, UUID::class.java) else null
-            }
-        }
-
     private fun getPreDeletionStatus(connection: Connection, studyId: UUID): StudyLifecycleStatus {
-        connection.prepareStatement(GET_SCHEDULED_PREVIOUS_STATUS_SQL).use { statement ->
+        return connection.prepareStatement(GET_SCHEDULED_PREVIOUS_STATUS_SQL).use { statement ->
             statement.setObject(1, studyId)
-            statement.executeQuery().use { resultSet ->
-                if (resultSet.next()) {
-                    resultSet.getString(PREVIOUS_STATUS.name)?.let { return StudyLifecycleStatus.valueOf(it) }
-                }
-            }
-        }
-        return connection.prepareStatement(GET_LEGACY_PRE_DELETION_STATUS_SQL).use { statement ->
-            statement.setObject(1, studyId)
-            statement.executeQuery().use { resultSet ->
-                check(resultSet.next()) { "Scheduled deletion has no restorable lifecycle state" }
-                StudyLifecycleStatus.valueOf(resultSet.getString(PREVIOUS_STATUS.name))
+            statement.executeQuery().use { rows ->
+                check(rows.next()) { "Scheduled deletion has no restorable lifecycle state" }
+                StudyLifecycleStatus.valueOf(rows.getString(PREVIOUS_STATUS.name))
             }
         }
     }
 
-    private fun studyErasureIdempotencyKey(studyId: UUID, deleteAfter: OffsetDateTime?): UUID =
+    private fun studyErasureIdempotencyKey(studyId: UUID): UUID =
         // deterministic retry idempotency key
         // nosemgrep: chronicle-uuid-from-string
-        UUID.nameUUIDFromBytes(
-            "study-erasure:$studyId:${deleteAfter?.toInstant() ?: "default"}".toByteArray(Charsets.UTF_8)
-        )
+        UUID.nameUUIDFromBytes("study-erasure:$studyId:default".toByteArray(Charsets.UTF_8))
 
     private fun transitionStatus(
         studyId: UUID, userId: String,
         expectedFrom: StudyLifecycleStatus, targetStatus: StudyLifecycleStatus,
-        reason: String
-    ) {
+        reason: String,
+        onlyIfExpired: Boolean = false,
+        expectedRevision: Long? = null,
+    ): Boolean {
         val aclKey = AclKey(studyId)
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            AuditedTransactionBuilder<Unit>(connection, auditingManager)
+        return storageResolver.getPlatformStorage().connection.use { connection ->
+            AuditedTransactionBuilder<Boolean>(connection, auditingManager)
                 .transaction { conn ->
                     val currentStatus = getCurrentStatusForUpdate(conn, studyId)
+                    if (expectedRevision != null) {
+                        if (currentStatus == targetStatus) return@transaction false
+                        if (studyService.getStudySettingsRevision(conn, studyId) != expectedRevision) {
+                            throw ResponseStatusException(HttpStatus.PRECONDITION_FAILED, Messages.get("error.study.lifecycleChanged"))
+                        }
+                    }
                     check(currentStatus == expectedFrom) {
                         "Cannot transition study $studyId from $currentStatus to $targetStatus (expected $expectedFrom)"
                     }
+                    if (onlyIfExpired && !studyHasExpired(conn, studyId)) return@transaction false
                     updateStatus(conn, studyId, targetStatus)
                     insertLifecycleEvent(conn, studyId, currentStatus, targetStatus, userId, reason)
                     enqueueStudyStatusChanged(conn, studyId, targetStatus, reason, currentStatus)
+                    true
                 }
-                .audit {
-                    listOf(
+                .audit { changed ->
+                    if (!changed) emptyList() else listOf(
                         AuditableEvent(
                             aclKey,
                             eventType = if (targetStatus == StudyLifecycleStatus.ARCHIVED)
@@ -542,7 +429,7 @@ public open class StudyLifecycleService(
                     )
                 }
                 .buildAndRun()
-        }
+        }.also { changed -> if (changed) studyService.refreshStudyCache(setOf(studyId)) }
     }
 
     private fun enqueueStudyStatusChanged(
@@ -556,11 +443,7 @@ public open class StudyLifecycleService(
             connection,
             studyId,
             WebhookEventType.STUDY_STATUS_CHANGED,
-            buildMap {
-                previousStatus?.let { put("previousStatus", it.name) }
-                put("newStatus", newStatus.name)
-                put("reason", reason)
-            },
+            WebhookPayload.StudyStatusChanged(previousStatus?.name, newStatus.name, reason),
         )
     }
 
@@ -585,7 +468,7 @@ public open class StudyLifecycleService(
         return connection.prepareStatement(sql).use { ps ->
             ps.setObject(1, studyId)
             val rs = ps.executeQuery()
-            check(rs.next()) { "Study $studyId not found" }
+            if (!rs.next()) throw StudyNotFoundException(studyId)
             StudyLifecycleStatus.valueOf(rs.getString(LIFECYCLE_STATUS.name))
         }
     }
@@ -595,25 +478,7 @@ public open class StudyLifecycleService(
             ps.setString(1, status.name)
             ps.setObject(2, studyId)
             val rs = ps.executeQuery()
-            check(rs.next()) { "Study $studyId not found" }
-        }
-    }
-
-    public open fun getStudyDataSummary(studyId: UUID): StudyDataSummary {
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            val status = getCurrentStatus(connection, studyId)
-            StudyDataSummary(
-                studyId = studyId,
-                participantCount = countRows(connection, "study_participants", studyId),
-                usageEventsCount = countRows(connection, "chronicle_usage_events", studyId),
-                preprocessedEventsCount = countRows(connection, "preprocessed_usage_events", studyId),
-                sensorDataCount = countRows(connection, "sensor_data", studyId),
-                androidSensorDataCount = countRows(connection, "android_sensor_data", studyId),
-                appUsageSurveyCount = countRows(connection, "app_usage_survey", studyId),
-                questionnaireSubmissionsCount = countRows(connection, "questionnaire_submissions", studyId),
-                tudSubmissionsCount = countRows(connection, "time_use_diary_submissions", studyId),
-                lifecycleStatus = status
-            )
+            if (!rs.next()) throw StudyNotFoundException(studyId)
         }
     }
 
@@ -644,23 +509,16 @@ public open class StudyLifecycleService(
         logger.info("Auto-archiving {} expired studies: {}", expiredStudyIds.size, expiredStudyIds)
         for (studyId in expiredStudyIds) {
             try {
-                transitionStatus(
+                val archived = transitionStatus(
                     studyId, "system",
                     StudyLifecycleStatus.ACTIVE, StudyLifecycleStatus.ARCHIVED,
-                    "Auto-archived: study end date has passed"
+                    "Auto-archived: study end date has passed", onlyIfExpired = true,
                 )
-                logger.info("Auto-archived expired study {}", studyId)
+                if (archived) logger.info("Auto-archived expired study {}", studyId)
             } catch (ex: Exception) {
-                logger.warn("Failed to auto-archive study {}", studyId, ex)
+                logger.error("Failed to auto-archive study {}", studyId, ex)
+                ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.AUTO_ARCHIVE)
             }
-        }
-    }
-
-    private fun countRows(connection: Connection, tableName: String, studyId: UUID): Long {
-        return connection.prepareStatement("SELECT COUNT(*) FROM $tableName WHERE study_id = ?").use { ps ->
-            ps.bindErasureStudyId(studyId)
-            val rs = ps.executeQuery()
-            if (rs.next()) rs.getLong(1) else 0L
         }
     }
 

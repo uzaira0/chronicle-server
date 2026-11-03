@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.services.studies
 
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import org.slf4j.LoggerFactory
@@ -17,21 +18,16 @@ public open class StudyDeletionScheduler(
     // reason: boundary catch — scheduled task must log any failure type and not propagate past the scheduler
     @Suppress("TooGenericExceptionCaught")
     @Scheduled(fixedRate = ONE_HOUR_MS)
-    public fun processScheduledDeletions() {
+    public fun processScheduledDeletions(): Unit = RLSRequestContext.withSystemContext {
         try {
-            RLSRequestContext.withSystemContext {
-                lifecycleService.executeScheduledDeletions()
-            }
-        } catch (ex: Exception) {
-            logger.error("Error reconciling scheduled study deletions", ex)
-        }
-        try {
+            // Only resumes erasures an owner started; a pending request is never erased here.
             val verifiedOperations = dataDeletionOrchestrator.processDueOperations()
             if (verifiedOperations > 0) {
-                logger.info("Completed and verified {} quarantined data deletion operations", verifiedOperations)
+                logger.info("Resumed and verified {} owner-started data deletion operations", verifiedOperations)
             }
         } catch (ex: Exception) {
-            logger.error("Error processing quarantined data deletions", ex)
+            logger.error("Error resuming owner-started data deletions", ex)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.DELETION_RESUME)
         }
     }
 
@@ -45,16 +41,7 @@ public open class StudyDeletionScheduler(
             }
         } catch (ex: Exception) {
             logger.error("Error auto-archiving expired studies", ex)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.AUTO_ARCHIVE)
         }
     }
-    @Scheduled(cron = "@daily")
-    @Suppress("TooGenericExceptionCaught")
-    public fun reportOverdueRetentionHolds() {
-        try {
-            dataDeletionOrchestrator.reportOverdueRetentionHolds()
-        } catch (ex: Exception) {
-            logger.error("Error reviewing overdue retention holds", ex)
-        }
-    }
-
 }

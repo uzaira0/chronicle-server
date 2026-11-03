@@ -18,6 +18,19 @@ import org.springframework.web.bind.annotation.RequestMapping
 import java.util.*
 
 class StudyComplianceControllerTest {
+    @Test
+    fun missingStudyIsNotFound() {
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
+        TestSecurityUtils.setupSecurityContext()
+        try {
+            org.junit.Assert.assertThrows(com.openlattice.chronicle.exceptions.StudyNotFoundException::class.java) {
+                controller.getStudyComplianceViolations(UUID.randomUUID())
+            }
+        } finally {
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
 
     private val studyLimitsMgr = Mockito.mock(StudyLimitsManager::class.java)
     private val studyService = Mockito.mock(StudyService::class.java)
@@ -26,16 +39,14 @@ class StudyComplianceControllerTest {
     private val storageResolver = Mockito.mock(StorageResolver::class.java)
     private val auditingManager = Mockito.mock(AuditingManager::class.java)
     private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
-    private val auditService = Mockito.mock(com.openlattice.chronicle.audit.AuditService::class.java)
+    private val audit = com.openlattice.chronicle.audit.RecordingAuditingManager()
+    private val auditService = com.openlattice.chronicle.audit.AuditService(audit)
     private val controller = StudyComplianceController(
         studyLimitsMgr, studyService, studyComplianceManager,
         studyComplianceHazelcastTask, storageResolver, auditingManager, authorizationManager, auditService
     )
 
-    @Test
-    fun testControllerConstructsWithAllDependencies() {
-        assertNotNull(controller)
-    }
+    
 
     /**
      * The researcher dashboard fetches /chronicle/api/web/compliance/study/{id}, and both
@@ -60,21 +71,20 @@ class StudyComplianceControllerTest {
         Mockito.`when`(authorizationManager.checkIfHasPermissions(
             kAny(), kAny(), kAny()
         )).thenReturn(true)
-        Mockito.`when`(studyService.isValidStudy(studyId)).thenReturn(true)
-        Mockito.`when`(studyComplianceManager.getNonCompliantStudies(listOf(studyId)))
-            .thenReturn(emptyMap())
+        Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
+        Mockito.`when`(studyComplianceManager.getStudyCompliancePage(studyId, 100, 0))
+            .thenReturn(com.openlattice.chronicle.study.StudyCompliancePage(emptyMap(), null))
 
         TestSecurityUtils.setupSecurityContext()
 
         val result = controller.getStudyComplianceViolations(studyId)
         assertNotNull(result)
-        verify(studyComplianceManager).getNonCompliantStudies(listOf(studyId))
-        val audit = org.mockito.kotlin.argumentCaptor<com.openlattice.chronicle.audit.AuditLogEntry>()
-        verify(auditService).log(audit.capture())
-        assertEquals(com.openlattice.chronicle.audit.AuditAction.PARTICIPANT_DATA_ACCESS, audit.firstValue.action)
-        assertEquals(studyId, audit.firstValue.studyId)
-        assertTrue(audit.firstValue.success)
-        assertTrue(audit.firstValue.accessedPHI)
+        verify(studyComplianceManager).getStudyCompliancePage(studyId, 100, 0)
+        val event = audit.events.single()
+        assertEquals(com.openlattice.chronicle.auditing.AuditEventType.PARTICIPANT_DATA_ACCESS, event.eventType)
+        assertEquals(studyId, event.study)
+        assertEquals(true, event.data["success"])
+        assertEquals(true, event.data["accessedPHI"])
         TestSecurityUtils.clearSecurityContext()
     }
 
@@ -98,7 +108,8 @@ class StudyComplianceControllerTest {
             .`when`(studyComplianceHazelcastTask).notifyNonCompliantStudies(violations)
         org.junit.Assert.assertThrows(java.sql.SQLException::class.java) { controller.triggerStudyComplianceNotifications(setOf(study)) }
         org.junit.Assert.assertThrows(java.sql.SQLException::class.java) { controller.triggerComplianceNotificationsForAllStudies() }
-        Mockito.verifyNoInteractions(auditingManager)
+        Mockito.verify(auditingManager, Mockito.times(2)).transactionStorage
+        Mockito.verifyNoMoreInteractions(auditingManager)
         Mockito.verify(connection, Mockito.times(2)).rollback()
         TestSecurityUtils.clearSecurityContext()
     }

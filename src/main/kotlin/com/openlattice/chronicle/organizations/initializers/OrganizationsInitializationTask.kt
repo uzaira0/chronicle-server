@@ -21,14 +21,17 @@
 
 package com.openlattice.chronicle.organizations.initializers
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
+
 import com.geekbeast.tasks.HazelcastInitializationTask
 import com.geekbeast.tasks.Task
 import com.google.common.base.Stopwatch
 import com.openlattice.chronicle.authorization.initializers.AuthorizationInitializationTask
 import com.openlattice.chronicle.authorization.initializers.AuthorizationInitializationTask.Companion.GLOBAL_ADMIN_ROLE
 import com.openlattice.chronicle.ids.IdConstants
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.organizations.Organization
-import com.openlattice.chronicle.tasks.PostConstructInitializerTaskDependencies
 import com.openlattice.chronicle.util.ensureVanilla
 import org.slf4j.LoggerFactory
 import java.util.concurrent.TimeUnit
@@ -40,44 +43,45 @@ private val logger = LoggerFactory.getLogger(OrganizationsInitializationTask::cl
  * @author Matthew Tamayo-Rios &lt;matthew@openlattice.com&gt;
  */
 public open class OrganizationsInitializationTask : HazelcastInitializationTask<OrganizationsInitializationDependencies> {
-    // reason: boundary catch — global-org bootstrap must roll back and log any failure type without aborting startup
-    @Suppress("TooGenericExceptionCaught")
-    override fun initialize(dependencies: OrganizationsInitializationDependencies) {
-        logger.info("Running bootstrap process for organizations.")
-        val sw = Stopwatch.createStarted()
-        val organizationService = dependencies.organizationService
-        val globalOrg = organizationService.maybeGetOrganization(IdConstants.SYSTEM_ORGANIZATION.id)
+    override fun initialize(dependencies: OrganizationsInitializationDependencies): Unit = runCatching {
+        RLSRequestContext.withSystemContext {
+            logger.info("Running bootstrap process for organizations.")
+            val sw = Stopwatch.createStarted()
+            val organizationService = dependencies.organizationService
+            val globalOrg = organizationService.maybeGetOrganization(IdConstants.SYSTEM_ORGANIZATION.id)
 
-        if (globalOrg.isPresent) {
-            val org = globalOrg.get()
+            if (globalOrg.isPresent) {
+                val org = globalOrg.get()
 
-            logger.info(
-                "Expected id = {}, Actual id = {}",
-                IdConstants.SYSTEM_ORGANIZATION.id,
-                org.id
-            )
-            require(IdConstants.SYSTEM_ORGANIZATION.id == org.id) {
-                "Mismatch in expected global org id and read global org id"
-            }
-        } else {
-            val org = createGlobalOrg()
-            val (flavor, hds) = dependencies.storageResolver.getDefaultPlatformStorage()
-            ensureVanilla(flavor)
-            hds.connection.use { connection ->
-                try {
-                    connection.autoCommit = false
-                    //Note: Consider auditing this
-                    organizationService.createOrganization(connection, GLOBAL_ADMIN_ROLE.principal, org)
-                    connection.commit()
-                } catch (ex: Exception) {
-                    logger.error("Unable to create global organization; rolling back.", ex)
-                    connection.rollback()
+                logger.info(
+                    "Expected id = {}, Actual id = {}",
+                    IdConstants.SYSTEM_ORGANIZATION.id,
+                    org.id
+                )
+                require(IdConstants.SYSTEM_ORGANIZATION.id == org.id) {
+                    "Mismatch in expected global org id and read global org id"
+                }
+            } else {
+                val org = createGlobalOrg()
+                val storage = dependencies.storageResolver.getDefaultPlatformStorage()
+                val flavor = storage.flavor
+                val hds = storage.dataSource
+                ensureVanilla(flavor)
+                hds.connection.use { connection ->
+                    connection.withTransaction {
+                        //Note: Consider auditing this
+                        organizationService.createOrganization(connection, GLOBAL_ADMIN_ROLE.principal, org)
+                        connection.commit()
+                    }
                 }
             }
-        }
 
-        logger.info("Bootstrapping for organizations took {} ms", sw.elapsed(TimeUnit.MILLISECONDS))
-    }
+            logger.info("Bootstrapping for organizations took {} ms", sw.elapsed(TimeUnit.MILLISECONDS))
+        }
+    }.onFailure { failure ->
+        ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.ORGANIZATION_BOOTSTRAP)
+        logger.error("Unable to bootstrap organizations.", failure)
+    }.getOrThrow()
 
     override fun getInitialDelay(): Long {
         return 0
@@ -88,10 +92,7 @@ public open class OrganizationsInitializationTask : HazelcastInitializationTask<
     }
 
     override fun after(): Set<Class<out HazelcastInitializationTask<*>>> {
-        return setOf(
-            AuthorizationInitializationTask::class.java,
-            PostConstructInitializerTaskDependencies.PostConstructInitializerTask::class.java,
-        )
+        return setOf(AuthorizationInitializationTask::class.java)
     }
 
     override fun getName(): String {

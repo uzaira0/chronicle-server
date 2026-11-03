@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.studies.tasks
 
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.studies.StudyLimitsManager
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.storage.StorageResolver
@@ -26,11 +27,11 @@ class StudyLimitsEnforcementTaskTest {
         assertEquals(TimeUnit.HOURS, task.getTimeUnit())
         task.runTask()
         Mockito.verify(studies).pauseEnrolledParticipants(study)
-        assertEquals(1.0, com.openlattice.chronicle.observability.ChronicleMetrics.studiesRetentionExpired.get(), 0.0)
+        assertEquals(1.0, ChronicleMetrics.studiesRetentionExpired.get(), 0.0)
         Mockito.verifyNoMoreInteractions(studies)
         Mockito.`when`(limits.getStudiesExcceedingDataRetentionPeriod()).thenReturn(emptySet())
         task.runTask()
-        assertEquals(0.0, com.openlattice.chronicle.observability.ChronicleMetrics.studiesRetentionExpired.get(), 0.0)
+        assertEquals(0.0, ChronicleMetrics.studiesRetentionExpired.get(), 0.0)
     }
 
     @Test
@@ -43,10 +44,33 @@ class StudyLimitsEnforcementTaskTest {
         Mockito.`when`(limits.getStudiesExcceedingDataRetentionPeriod()).thenReturn(setOf(healthyStudy))
         Mockito.doThrow(IllegalStateException("synthetic pause failure")).`when`(studies).pauseEnrolledParticipants(failingStudy)
         val dependencies = StudyLimitsEnforcementTaskDependencies(Mockito.mock(StorageResolver::class.java), limits, studies)
+        val failures = ChronicleMetrics.backgroundTaskFailuresTotal.labels("study_limits")
+        val before = failures.get()
         object : StudyLimitsEnforcementTask() {
             override fun getDependency() = dependencies
         }.runTask()
+        assertEquals(before + 1, failures.get(), 0.0)
         Mockito.verify(studies).pauseEnrolledParticipants(healthyStudy)
-        assertEquals(1.0, com.openlattice.chronicle.observability.ChronicleMetrics.studiesRetentionExpired.get(), 0.0)
+        assertEquals(1.0, ChronicleMetrics.studiesRetentionExpired.get(), 0.0)
+    }
+
+    /** The hourly duration query itself fails (database restarting): counted once, and retention expiry still runs. */
+    @Test
+    fun durationQueryFailureIsCountedAndRetentionExpiryStillRuns() {
+        val limits = Mockito.mock(StudyLimitsManager::class.java)
+        val studies = Mockito.mock(StudyManager::class.java)
+        Mockito.`when`(limits.getStudiesExceedingDurationLimit()).thenThrow(IllegalStateException("connection refused"))
+        Mockito.`when`(limits.getStudiesExcceedingDataRetentionPeriod()).thenReturn(setOf(UUID.randomUUID(), UUID.randomUUID()))
+        val dependencies = StudyLimitsEnforcementTaskDependencies(Mockito.mock(StorageResolver::class.java), limits, studies)
+        val failures = ChronicleMetrics.backgroundTaskFailuresTotal.labels("study_limits")
+        val before = failures.get()
+
+        object : StudyLimitsEnforcementTask() {
+            override fun getDependency() = dependencies
+        }.runTask()
+
+        assertEquals(before + 1, failures.get(), 0.0)
+        assertEquals(2.0, ChronicleMetrics.studiesRetentionExpired.get(), 0.0)
+        Mockito.verifyNoInteractions(studies)
     }
 }
