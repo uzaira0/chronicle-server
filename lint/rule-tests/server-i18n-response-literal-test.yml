@@ -1,0 +1,25 @@
+id: server-i18n-response-literal
+valid:
+- val title = translated
+invalid:
+- "package cases\n\nimport jakarta.servlet.http.HttpServletResponse\nimport org.springframework.http.HttpStatus\n\
+  import org.springframework.http.ResponseEntity\nimport org.springframework.web.server.ResponseStatusException\n\
+  \n// Cases for server-i18n-response-literal. A `FIRE:` marker names the finding expected on that\n// line; unmarked\
+  \ lines must be clean.\nclass ResponseLiterals(private val response: HttpServletResponse, private val missing:\
+  \ String, private val detail: String) {\n    fun a(): Nothing = throw ResponseStatusException(HttpStatus.NOT_FOUND,\
+  \ \"Study not found\") // FIRE: server-i18n-response-literal\n    fun b(): Nothing = throw ResponseStatusException(HttpStatus.CONFLICT,\
+  \ \"Configuration is missing $missing\") // FIRE: server-i18n-response-literal\n    fun c(e: Exception): Nothing\
+  \ = throw ResponseStatusException(HttpStatus.BAD_REQUEST, \"Invalid request body\", e) // FIRE: server-i18n-response-literal\n\
+  \    fun d(): Nothing = throw ResponseStatusException(HttpStatus.BAD_REQUEST, \"Prefix: \" + detail) // FIRE:\
+  \ server-i18n-response-literal\n    fun e() = response.sendError(HttpStatus.UNAUTHORIZED.value(), \"Invalid or\
+  \ expired API key\") // FIRE: server-i18n-response-literal\n    fun f() = response.sendError(401, \"Numeric status\
+  \ literal\") // FIRE: server-i18n-response-literal\n    fun g() = ApiError(status = 400, error = \"Bad Request\"\
+  , message = \"Validation failed\", errors = null) // FIRE: server-i18n-response-literal\n    fun g2() = ApiError(status\
+  \ = 400, error = \"Bad Request\", message = \"Prefix: \" + detail, errors = null) // FIRE: server-i18n-response-literal\n\
+  \    fun h() = reject(\"Export range too large\") // FIRE: server-i18n-response-literal\n    fun i() = ResponseEntity.status(HttpStatus.FORBIDDEN).body(\"\
+  Access denied\") // FIRE: server-i18n-response-literal\n    fun j() = ResponseEntity(\"Not found here\", HttpStatus.NOT_FOUND)\
+  \ // FIRE: server-i18n-response-literal\n    fun k(): Nothing = throw ResponseStatusException( // FIRE: server-i18n-response-literal\n\
+  \        HttpStatus.NOT_FOUND,\n        // a comment inside the call does not hide it\n        \"Split across\
+  \ lines\",\n    )\n    val l = ResponseStatusException(HttpStatus.GONE, \"Assigned, not thrown\") // FIRE: server-i18n-response-literal\n\
+  \    fun m() = ResponseEntity // FIRE: server-i18n-response-literal\n        .status(HttpStatus.FORBIDDEN)\n \
+  \       .body(\"Chained across lines\")\n}\n\nfun reject(message: String): Nothing = throw IllegalArgumentException(message)\n"

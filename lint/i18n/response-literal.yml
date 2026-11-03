@@ -7,6 +7,7 @@ message: >-
   src/main/resources/messages.properties. A protocol-level rejection that never renders as prose
   may be marked with "// ast-grep-ignore: server-i18n-response-literal" on its own line above.
 note: |
+  Blind spots: Only direct literal response arguments and literal concatenations match; messages assembled in variables or helper calls are not traced.
   Matched by node shape, so comments and line breaks inside the call do not hide it. Only a
   direct string literal (or "literal" + expr) counts; "$detail" alone carries no English.
 ignores:

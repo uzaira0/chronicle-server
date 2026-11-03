@@ -25,9 +25,10 @@ import java.util.Locale
 /**
  * Translation support for text the server generates for a human to read.
  *
- * English (`messages.properties`) is the only table this repository maintains. A translator adds
- * `messages_<lang>.properties` next to it and the request's `Accept-Language` header selects it;
- * anything missing from a translated table falls back to the English entry.
+ * English (`messages.properties`) is the base table; each translation is a
+ * `messages_<lang>.properties` next to it (Spanish: `messages_es.properties`), selected by the
+ * request's `Accept-Language` header. Anything missing from a translated table falls back to the
+ * English entry.
  *
  * Field names, enum values, identifiers, audit descriptions and log lines are deliberately NOT
  * routed through here — only strings a participant or researcher reads on a screen.
