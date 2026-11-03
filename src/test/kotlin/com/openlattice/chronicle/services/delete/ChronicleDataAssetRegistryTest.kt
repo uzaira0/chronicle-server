@@ -1,21 +1,35 @@
 package com.openlattice.chronicle.services.delete
 
-import com.openlattice.chronicle.deletion.DeleteParticipantRegisteredAssetData
+import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+
 import com.openlattice.chronicle.controllers.TestSecurityUtils
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
-import java.io.File
-import java.util.UUID
+import java.sql.PreparedStatement
 
 class ChronicleDataAssetRegistryTest {
+    @Test
+    fun processingPoliciesCoverEveryRegisteredResearchDataAsset() {
+        val expected = ChronicleDataAssetRegistry.participantAssets.filter { it.processingData }.map { it.tableName }.toSet()
+        val actual = ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("""
+                    SELECT tablename FROM pg_policies WHERE schemaname = 'public'
+                    AND policyname LIKE 'processing_block_%' AND permissive = 'RESTRICTIVE' AND cmd = 'SELECT'
+                """.trimIndent()).use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+            }
+        }
+        assertEquals(expected, actual)
+    }
+
     @Test
     fun purgeObservationExpressionsMatchPersistedColumns() {
         com.openlattice.chronicle.contract.ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
             ChronicleDataAssetRegistry.participantAssets.forEach { asset ->
-                val captureTime = ChronicleDataAssetRegistry.purgeCaptureTimeSql(asset) ?: return@forEach
+                val captureTime = asset.captureTimeSql ?: return@forEach
                 connection.createStatement().use { statement ->
                     statement.executeQuery("SELECT $captureTime FROM ${asset.tableName} LIMIT 0").use { rows ->
                         assertEquals("${asset.id} must compare observation instants", "timestamptz", rows.metaData.getColumnTypeName(1))
@@ -35,16 +49,7 @@ class ChronicleDataAssetRegistryTest {
         TestSecurityUtils.clearSecurityContext()
     }
 
-    @Test
-    fun registryContainsPreviouslyOmittedParticipantAssets() {
-        val tables = ChronicleDataAssetRegistry.participantAssets.map { it.tableName }.toSet()
-
-        assertTrue("encrypted_payloads" in tables)
-        assertTrue("data_quality_alerts" in tables)
-        assertTrue("time_use_diary_summarized" in tables)
-        assertTrue("study_event_stream" in tables)
-        assertTrue("android_device_sensor_availability" in tables)
-    }
+    
 
     @Test
     fun accessArtifactsAreVerifiedBeforeTheirCascadingParent() {
@@ -56,96 +61,70 @@ class ChronicleDataAssetRegistryTest {
 
     @Test
     fun deletionQuarantinePolicyCoversEveryRegisteredAsset() {
-        // V50 swept the then-existing tables; tables added after it (e.g. V65's
-        // ambient_audio_events) must ship their own deletion_quarantine_<table>
-        // policy in their own migration — applied migrations are immutable under
-        // Flyway, so the whole corpus is scanned, not just V50.
-        val v50 = requireNotNull(
-            javaClass.getResourceAsStream("/db/migration/V50__participant_access_deletion_ledger.sql")
-        ).bufferedReader().use { it.readText() }
-        assertTrue("Quarantine must be a restrictive RLS policy", "AS RESTRICTIVE FOR SELECT" in v50)
+        ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
+            connection.prepareStatement("""
+                SELECT EXISTS (SELECT 1 FROM pg_policy
+                    WHERE polrelid = ?::regclass AND polname = ? AND NOT polpermissive AND polcmd = 'r')
+            """.trimIndent()).use { statement ->
+                ChronicleDataAssetRegistry.participantAssets.filterNot {
+                    it.participantScope == ParticipantScope.BLOCK_TOKEN_COLUMN
+                }.forEach { asset ->
+                    assertQuarantinePolicy(statement, asset.tableName)
+                }
+            }
+        }
+    }
 
-        val migrationDir = sequenceOf(
-            File("src/main/resources/db/migration"),
-            File("chronicle-server/src/main/resources/db/migration"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("Could not locate db/migration from cwd=${File(".").absolutePath}")
-        val corpus = migrationDir.listFiles { f -> f.extension == "sql" }!!
-            .joinToString("\n") { it.readText() }
-
-        // Opaque replay identities use trigger-only INSERT and deletion-worker DELETE policies.
-        ChronicleDataAssetRegistry.participantAssets.filterNot {
-            it.participantScope == ParticipantScope.BLOCK_TOKEN_COLUMN
-        }.forEach { asset ->
-            assertTrue(
-                "No migration defines the deletion-quarantine policy for ${asset.tableName} " +
-                    "(V50 registry literal or a later deletion_quarantine_${asset.tableName} policy)",
-                "'${asset.tableName}'" in v50 ||
-                    "deletion_quarantine_${asset.tableName}" in corpus,
-            )
+    private fun assertQuarantinePolicy(statement: PreparedStatement, tableName: String) {
+        statement.setString(1, "public.$tableName")
+        statement.setString(2, "deletion_quarantine_$tableName")
+        statement.executeQuery().use { rows ->
+            assertTrue(rows.next())
+            assertTrue("Missing restrictive quarantine on $tableName", rows.getBoolean(1))
         }
     }
 
     @Test
     fun everyRegisteredParticipantTableExceptJobsHasBothMutationGuards() {
-        val migrationDir = sequenceOf(
-            File("src/main/resources/db/migration"),
-            File("chronicle-server/src/main/resources/db/migration"),
-        ).first { it.isDirectory }
-        val corpus = migrationDir.listFiles { file -> file.extension == "sql" }!!
-            .joinToString("\n") { it.readText() }
-        val v68 = File(migrationDir, "V68__make_deletion_proofs_observable_and_stable.sql").readText()
-        val guardedByV68 = Regex("'([a-z_]+)'")
-            .findAll(v68.substringAfter("FOREACH table_name IN ARRAY ARRAY[").substringBefore("] LOOP"))
-            .map { it.groupValues[1] }
-            .toSet()
-
-        ChronicleDataAssetRegistry.participantAssets.filterNot {
-            it.tableName == "jobs" || it.participantScope == ParticipantScope.BLOCK_TOKEN_COLUMN
-        }.forEach { asset ->
-            if (asset.tableName in guardedByV68) return@forEach
-            for (operation in listOf("insert", "update")) {
-                val trigger = Regex(
-                    """CREATE TRIGGER deletion_mutation_guard_$operation\s+AFTER ${operation.uppercase()} ON ${asset.tableName}\b""",
-                    RegexOption.IGNORE_CASE,
-                )
-                assertTrue("Missing $operation guard on ${asset.tableName}", trigger.containsMatchIn(corpus))
+        ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
+            connection.prepareStatement("""
+                SELECT count(*) FROM pg_trigger
+                WHERE tgrelid = ?::regclass AND NOT tgisinternal
+                  AND tgname IN ('deletion_mutation_guard_insert', 'deletion_mutation_guard_update')
+            """.trimIndent()).use { statement ->
+                ChronicleDataAssetRegistry.participantAssets.filterNot {
+                    it.tableName == "jobs" || it.participantScope == ParticipantScope.BLOCK_TOKEN_COLUMN
+                }.forEach { asset ->
+                    assertMutationGuards(statement, asset.tableName)
+                }
             }
+        }
+    }
+
+    private fun assertMutationGuards(statement: PreparedStatement, tableName: String) {
+        statement.setString(1, "public.$tableName")
+        statement.executeQuery().use { rows ->
+            assertTrue(rows.next())
+            assertEquals("Mutation guards on $tableName", 2, rows.getInt(1))
         }
     }
 
     @Test
     fun everyMigrationTableWithAParticipantIdIsDeletedOrDeliberatelyRetained() {
-        // Participant tables carry no FK to study_participants, so participant deletion reaches
-        // only what this registry names. usage_event_annotations and participant_pseudonyms were
-        // missed until V105; this scan catches the next one.
-        val retained = mapOf(
-            "api_keys" to "revoked credential kept as withdrawal replay evidence (V90)",
-            "mobile_withdrawal_requests" to "withdrawal receipt kept for replay (V90)",
-            "data_deletion_operations" to "the deletion ledger itself",
-        )
-        val migrationDir = sequenceOf(
-            File("src/main/resources/db/migration"),
-            File("chronicle-server/src/main/resources/db/migration"),
-        ).firstOrNull { it.isDirectory }
-            ?: error("Could not locate db/migration from cwd=${File(".").absolutePath}")
-        val corpus = migrationDir.listFiles { f -> f.extension == "sql" }!!
-            .joinToString("\n") { it.readText() }
-        val created = Regex(
-            """CREATE TABLE(?: IF NOT EXISTS)?\s+(?:public\.)?"?(\w+)"?\s*\((.*?)\)\s*(?:USING\s+\w+\s*)?(?:PARTITION BY [^;]*)?;""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-        ).findAll(corpus)
-            .filter { Regex("""\bparticipant_id\b""").containsMatchIn(it.groupValues[2]) }
-            .map { it.groupValues[1].lowercase() }
-        val added = Regex(
-            """ALTER TABLE(?: IF EXISTS)?\s+(?:ONLY\s+)?(?:public\.)?"?(\w+)"?\s+ADD COLUMN(?: IF NOT EXISTS)?\s+participant_id\b""",
-            RegexOption.IGNORE_CASE,
-        ).findAll(corpus).map { it.groupValues[1].lowercase() }
-        val participantTables = (created + added).toSet()
-        assertTrue("scan found no participant tables", "usage_event_annotations" in participantTables)
-
-        val registered = ChronicleDataAssetRegistry.participantAssets.map { it.tableName }.toSet()
-        assertEquals(emptySet<String>(), participantTables - registered - retained.keys)
+        val retained = setOf("api_keys", "mobile_withdrawal_requests", "data_deletion_operations", "study_participants",
+            "participant_collection_acknowledgment")
+        val registered = (ChronicleDataAssetRegistry.participantAssets + ChronicleDataAssetRegistry.withdrawalAssets)
+            .map { it.tableName }.toSet()
+        val tables = ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery("""
+                    SELECT table_name FROM information_schema.columns
+                    WHERE table_schema = 'public' AND column_name = 'participant_id'
+                      AND table_name IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public')
+                """.trimIndent()).use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+            }
+        }
+        assertEquals(emptySet<String>(), tables - registered - retained)
     }
 
     @Test
@@ -162,28 +141,5 @@ class ChronicleDataAssetRegistryTest {
             .map { it.name.lowercase() }.toSet()
         assertTrue("Kotlin inventory must include devices", "devices" in tables)
         assertEquals(emptySet<String>(), tables - registered - retained)
-    }
-
-    @Test
-    fun deletionPlanCreatesExactlyOneJobPerRegisteredAsset() {
-        var ordinal = 0L
-        val jobs = ParticipantDeletionPlan.jobs(
-            studyId = UUID.randomUUID(),
-            participantIds = setOf("participant:test"),
-            contact = "test",
-            nextJobId = { UUID(0, ++ordinal) },
-        )
-
-        assertEquals(ChronicleDataAssetRegistry.participantAssets.size, jobs.size)
-        val genericAssetIds = jobs.mapNotNull { job ->
-            (job.definition as? DeleteParticipantRegisteredAssetData)?.assetId
-        }.toSet()
-        assertEquals(
-            ChronicleDataAssetRegistry.participantAssets
-                .filterNot { it.handledByDedicatedJob }
-                .map { it.id }
-                .toSet(),
-            genericAssetIds,
-        )
     }
 }

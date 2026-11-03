@@ -1,9 +1,8 @@
 package com.openlattice.chronicle.services.delete
 
 import com.openlattice.chronicle.ChronicleServerTests
-import com.openlattice.chronicle.tasks.RestoreContinuityInitializationDependencies
-import com.openlattice.chronicle.tasks.RestoreContinuityInitializationTask
-import org.junit.Assert.assertNotNull
+import com.openlattice.chronicle.upgrades.RuntimeDatabaseValidationService
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -15,7 +14,7 @@ class DataDeletionSpringWiringTest : ChronicleServerTests() {
     fun `public deletion methods dispatch to the initialized Spring target`() {
         val orchestrator = testServer.context.getBean(DataDeletionOrchestrator::class.java)
 
-        val failure = assertThrows(IllegalStateException::class.java) {
+        val failure = assertThrows(NoSuchElementException::class.java) {
             orchestrator.getOperation(UUID.randomUUID())
         }
 
@@ -23,9 +22,8 @@ class DataDeletionSpringWiringTest : ChronicleServerTests() {
     }
 
     @Test
-    fun `restore continuity startup gate and dependencies are wired`() {
-        assertNotNull(testServer.context.getBean(RestoreContinuityReconciler::class.java))
-        assertNotNull(testServer.context.getBean(RestoreContinuityInitializationDependencies::class.java))
-        assertNotNull(testServer.context.getBean(RestoreContinuityInitializationTask::class.java))
+    fun `backend validates its runtime login without an owner reconciliation bean`() {
+        assertTrue(testServer.context.getBeansOfType(RestoreContinuityReconciler::class.java).isEmpty())
+        testServer.context.getBean(RuntimeDatabaseValidationService::class.java).runUpgrade()
     }
 }

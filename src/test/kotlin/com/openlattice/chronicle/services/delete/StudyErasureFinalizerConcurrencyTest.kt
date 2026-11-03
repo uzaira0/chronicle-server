@@ -5,6 +5,7 @@ import com.geekbeast.jdbc.DataSourceManager
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import com.openlattice.chronicle.contract.seedEnrolledParticipant
 import com.openlattice.chronicle.storage.StorageResolver
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
@@ -13,6 +14,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
+import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
@@ -20,15 +23,16 @@ import org.mockito.kotlin.whenever
 import org.testcontainers.containers.PostgreSQLContainer
 import java.sql.Connection
 import java.time.Clock
-import java.time.Duration
-import java.time.Instant
-import java.time.ZoneOffset
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** Real erasure workers share inventory locks with other workers and queued ingestion writers. */
 class StudyErasureFinalizerConcurrencyTest {
+    private val context = RestoreContinuityFixture()
+    @Before fun installFixtureContext() = context.installContext()
+    @After fun restoreFixtureContext() = context.restoreContext()
+
     companion object {
         private lateinit var postgres: PostgreSQLContainer<*>
 
@@ -60,13 +64,13 @@ class StudyErasureFinalizerConcurrencyTest {
             pool("finalizer-control-writer-${UUID.randomUUID()}").use { writerPool ->
                 seedStudy(erasedStudyId)
                 seedStudy(controlStudyId)
-                val clock = Clock.fixed(Instant.now().minus(Duration.ofDays(8)), ZoneOffset.UTC)
+                val clock = Clock.systemUTC()
                 val finalizer = DataDeletionOrchestrator(resolver(finalizerPool), mock<AuditingManager>(), clock)
                 val operationId = finalizer.quarantineStudy(erasedStudyId, "finalizer-test", UUID.randomUUID())
                 writerPool.connection.use { writer ->
                     writer.autoCommit = false
-                    writer.createStatement().use { it.execute("LOCK TABLE sensor_data IN ROW EXCLUSIVE MODE") }
-                    val worker = executor.submit<Int> { finalizer.processDueOperations(1) }
+                    writer.createStatement().use { it.execute("LOCK TABLE ios_screen_time_usage IN ROW EXCLUSIVE MODE") }
+                    val worker = executor.submit<Int> { finalizer.eraseNow(operationId, erasedStudyId, "finalizer-test"); 1 }
                     var insertStarted = false
                     try {
                         assertEquals("Finalization must finish while another study holds a writer lock", 1, worker.get(20, TimeUnit.SECONDS))
@@ -74,13 +78,16 @@ class StudyErasureFinalizerConcurrencyTest {
                         val insertion = executor.submit<Int> {
                             try {
                                 val inserted = writer.prepareStatement("""
-                                    INSERT INTO sensor_data (study_id, participant_id, sample_id, sensor_type,
-                                        sample_duration, device_version, device_name, device_model, device_system_name)
-                                    VALUES (?, ?, ?, 'phoneUsage', 60, '26', 'fixture', 'phone', 'iOS')
+                                    INSERT INTO ios_screen_time_usage (study_id, participant_id, random_device_id, record_id,
+                                        row_kind, captured_at, observation_start, observation_end, timezone,
+                                        app_name, duration_seconds)
+                                    VALUES (?, ?, ?, ?, 'application', now(),
+                                        now() - interval '1 hour', now(), 'UTC', 'Fixture', 60)
                                 """.trimIndent()).use { statement ->
-                                    statement.setString(1, controlStudyId.toString())
+                                    statement.setObject(1, controlStudyId)
                                     statement.setString(2, participantId)
-                                    statement.setString(3, sampleId.toString())
+                                    statement.setObject(3, UUID.randomUUID())
+                                    statement.setObject(4, sampleId)
                                     statement.executeUpdate()
                                 }
                                 writer.commit()
@@ -95,10 +102,10 @@ class StudyErasureFinalizerConcurrencyTest {
                         assertEquals("COMPLETED", finalizer.getOperation(operationId).status)
                         postgres.createConnection("").use { observer ->
                             observer.prepareStatement("""
-                                SELECT (SELECT count(*) FROM sensor_data WHERE study_id = ?),
+                                SELECT (SELECT count(*) FROM ios_screen_time_usage WHERE study_id = ?),
                                     (SELECT count(*) FROM data_deletion_tombstones WHERE operation_id = ?)
                             """.trimIndent()).use { statement ->
-                                statement.setString(1, controlStudyId.toString())
+                                statement.setObject(1, controlStudyId)
                                 statement.setObject(2, operationId)
                                 statement.executeQuery().use { rows ->
                                     assertTrue(rows.next())
@@ -129,14 +136,17 @@ class StudyErasureFinalizerConcurrencyTest {
         val executor = Executors.newFixedThreadPool(2)
         pool(finalizerName).use { finalizerPool -> pool(drainName).use { drainPool ->
             seedStudy(erasedStudy); seedStudy(bufferedStudy)
+            postgres.createConnection("").use { seedEnrolledParticipant(it, bufferedStudy, participant) }
             val finalizer = DataDeletionOrchestrator(resolver(finalizerPool), mock<AuditingManager>(),
-                Clock.fixed(Instant.now().minus(Duration.ofDays(8)), ZoneOffset.UTC))
+                Clock.systemUTC())
             val operation = finalizer.quarantineStudy(erasedStudy, "order-test", UUID.randomUUID())
-            val drain = com.openlattice.chronicle.services.upload.AppDataUploadService(resolver(drainPool), mock(), mock())
+            val drain = com.openlattice.chronicle.services.upload.AppDataUploadService(resolver(drainPool), mock())
             val event = com.openlattice.chronicle.android.ChronicleUsageEvent(studyId = bufferedStudy,
                 participantId = participant, appPackageName = "com.example.order", interactionType = "Move to Foreground",
-                timestamp = java.time.OffsetDateTime.now(), timezone = "UTC", user = "", applicationLabel = "Order")
-            assertEquals(1, drain.uploadAndroidUsageEvents(bufferedStudy, participant, UUID.randomUUID(), listOf(event)))
+                timestamp = java.time.OffsetDateTime.now(), timezone = "UTC", user = "", applicationLabel = "Order",
+                clientEventId = UUID.randomUUID())
+            assertEquals(setOf(event.clientEventId),
+                drain.uploadAndroidUsageEvents(bufferedStudy, participant, UUID.randomUUID(), listOf(event)))
             postgres.createConnection("").use { observer ->
                 observer.createStatement().use { statement ->
                     statement.execute("""CREATE FUNCTION hold_buffer_drain() RETURNS trigger LANGUAGE plpgsql AS ${'$'}${'$'}
@@ -149,13 +159,13 @@ class StudyErasureFinalizerConcurrencyTest {
                 }
                 val draining = executor.submit {
                     com.openlattice.chronicle.storage.rls.RLSRequestContext.withSystemContext {
-                        drain.moveToEventStorage(bufferedStudy, participant)
+                        drain.drainEventStorage()
                     }
                 }
                 var worker: java.util.concurrent.Future<Int>? = null
                 try {
                     awaitQueryLock(observer, drainName, "%DELETE FROM upload_buffer%")
-                    worker = executor.submit<Int> { finalizer.processDueOperations(1) }
+                    worker = executor.submit<Int> { finalizer.eraseNow(operation, erasedStudy, "order-test"); 1 }
                     assertEquals("An unrelated drain must not block erasure", 1, worker.get(10, TimeUnit.SECONDS))
                     observer.createStatement().use { it.execute("SELECT pg_advisory_unlock($barrierKey)") }
                     draining.get(10, TimeUnit.SECONDS)
@@ -188,7 +198,7 @@ class StudyErasureFinalizerConcurrencyTest {
         seedStudy(arrived)
         fun enqueue(study: UUID) = postgres.createConnection("").use { writer ->
             writer.prepareStatement("""INSERT INTO upload_buffer
-                (study_id, participant_id, upload_type, data, uploaded_at, device_id)
+                (study_id, participant_id, upload_type, data, uploaded_at, random_device_id)
                 VALUES (?, 'census-test', 'Android', '[]'::jsonb, now(), ?)""").use {
                 it.setObject(1, study)
                 it.setObject(2, UUID.randomUUID())
@@ -248,7 +258,7 @@ class StudyErasureFinalizerConcurrencyTest {
     }
 
     @Test
-    fun `two study finalizers acquire table inventory before export writes without a lock upgrade deadlock`() {
+    fun `two study finalizers queued at the table inventory lock both complete`() {
         val firstStudyId = UUID.randomUUID()
         val secondStudyId = generateSequence(UUID::randomUUID).first {
             Math.floorMod(it.hashCode(), 256) != Math.floorMod(firstStudyId.hashCode(), 256)
@@ -257,57 +267,50 @@ class StudyErasureFinalizerConcurrencyTest {
         val secondName = "finalizer-second-${UUID.randomUUID()}"
         val barrierKey = UUID.randomUUID().mostSignificantBits
         val executor = Executors.newFixedThreadPool(2)
-        pool(firstName).use { firstPool ->
-            pool(secondName).use { secondPool ->
-                val clock = Clock.fixed(Instant.now().minus(Duration.ofDays(8)), ZoneOffset.UTC)
-                val first = DataDeletionOrchestrator(resolver(firstPool), mock<AuditingManager>(), clock)
-                val second = DataDeletionOrchestrator(resolver(secondPool), mock<AuditingManager>(), clock)
-                seedStudy(firstStudyId)
-                seedStudy(secondStudyId)
-                val firstOperationId = first.quarantineStudy(firstStudyId, "finalizer-test", UUID.randomUUID())
-                val secondOperationId = second.quarantineStudy(secondStudyId, "finalizer-test", UUID.randomUUID())
-                postgres.createConnection("").use { barrier ->
-                    installFinalizationBarrier(barrier, barrierKey)
-                    barrier.prepareStatement("SELECT pg_advisory_lock(?)").use { statement ->
-                        statement.setLong(1, barrierKey)
-                        statement.execute()
-                    }
-                    try {
-                        val firstWorker = executor.submit<Int> { first.processDueOperations(1) }
-                        awaitFinalizationBarrier(barrier, firstName)
-                        val secondWorker = executor.submit<Int> { second.processDueOperations(1) }
-                        awaitFinalizationBarrier(barrier, secondName)
-                        val queuedLocks = exportLocksAtBarrier(barrier, firstName, secondName)
-                        // Both are now in completeOperation. The original order holds one
-                        // RowExclusive(export_jobs) per worker, creating a table-lock upgrade cycle.
-                        barrier.prepareStatement("SELECT pg_advisory_unlock(?)").use { statement ->
-                            statement.setLong(1, barrierKey)
-                            statement.execute()
-                        }
-                        assertEquals("first finalizer failed; queued export locks: $queuedLocks", 1, firstWorker.get(20, TimeUnit.SECONDS))
-                        assertEquals("second finalizer failed; queued export locks: $queuedLocks", 1, secondWorker.get(20, TimeUnit.SECONDS))
-                        assertEquals("COMPLETED", first.getOperation(firstOperationId).status)
-                        assertEquals("COMPLETED", second.getOperation(secondOperationId).status)
-                        barrier.prepareStatement("SELECT count(*) FROM data_deletion_tombstones WHERE operation_id = ANY(?)").use { statement ->
-                            statement.setArray(1, barrier.createArrayOf("uuid", arrayOf(firstOperationId, secondOperationId)))
-                            statement.executeQuery().use { rows ->
-                                assertTrue(rows.next())
-                                assertEquals(2L, rows.getLong(1))
-                            }
-                        }
-                    } finally {
-                        barrier.prepareStatement("SELECT pg_advisory_unlock(?)").use { statement ->
-                            statement.setLong(1, barrierKey)
-                            statement.execute()
-                        }
-                        executor.shutdownNow()
-                        assertTrue("finalizers did not stop", executor.awaitTermination(20, TimeUnit.SECONDS))
-                        restoreLockFunction(barrier)
-                    }
-                }
+        withPoolsAndBarrier(firstName, secondName) { firstPool, secondPool, barrier ->
+            val clock = Clock.systemUTC()
+            val first = DataDeletionOrchestrator(resolver(firstPool), mock<AuditingManager>(), clock)
+            val second = DataDeletionOrchestrator(resolver(secondPool), mock<AuditingManager>(), clock)
+            seedStudy(firstStudyId)
+            seedStudy(secondStudyId)
+            val firstOperationId = first.quarantineStudy(firstStudyId, "finalizer-test", UUID.randomUUID())
+            val secondOperationId = second.quarantineStudy(secondStudyId, "finalizer-test", UUID.randomUUID())
+            installFinalizationBarrier(barrier, barrierKey)
+            barrier.createStatement().use { it.execute("SELECT pg_advisory_lock($barrierKey)") }
+            try {
+                val firstWorker = executor.submit<Int> { first.eraseNow(firstOperationId, firstStudyId, "finalizer-test"); 1 }
+                awaitFinalizationBarrier(barrier, firstName)
+                val secondWorker = executor.submit<Int> { second.eraseNow(secondOperationId, secondStudyId, "finalizer-test"); 1 }
+                awaitFinalizationBarrier(barrier, secondName)
+                // Both are now in completeOperation.
+                barrier.createStatement().use { it.execute("SELECT pg_advisory_unlock($barrierKey)") }
+                assertEquals("first finalizer failed", 1, firstWorker.get(20, TimeUnit.SECONDS))
+                assertEquals("second finalizer failed", 1, secondWorker.get(20, TimeUnit.SECONDS))
+                assertEquals("COMPLETED", first.getOperation(firstOperationId).status)
+                assertEquals("COMPLETED", second.getOperation(secondOperationId).status)
+                assertEquals(2L, tombstoneCount(barrier, firstOperationId, secondOperationId))
+            } finally {
+                barrier.createStatement().use { it.execute("SELECT pg_advisory_unlock($barrierKey)") }
+                executor.shutdownNow()
+                assertTrue("finalizers did not stop", executor.awaitTermination(20, TimeUnit.SECONDS))
+                restoreLockFunction(barrier)
             }
         }
     }
+
+    private fun withPoolsAndBarrier(
+        firstName: String,
+        secondName: String,
+        block: (HikariDataSource, HikariDataSource, Connection) -> Unit,
+    ) = pool(firstName).use { firstPool ->
+        pool(secondName).use { secondPool -> postgres.createConnection("").use { block(firstPool, secondPool, it) } }
+    }
+
+    private fun tombstoneCount(connection: Connection, vararg operationIds: UUID): Long =
+        connection.prepareStatement("SELECT count(*) FROM data_deletion_tombstones WHERE operation_id = ANY(?)").use { statement ->
+            statement.setArray(1, connection.createArrayOf("uuid", arrayOf<Any>(*operationIds)))
+            statement.executeQuery().use { rows -> check(rows.next()); rows.getLong(1) }
+        }
 
     private fun pool(name: String): HikariDataSource = HikariDataSource(HikariConfig().apply {
         jdbcUrl = postgres.jdbcUrl
@@ -330,14 +333,6 @@ class StudyErasureFinalizerConcurrencyTest {
         postgres.createConnection("").use { connection ->
             connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, 'finalizer concurrency')").use { statement ->
                 statement.setObject(1, studyId)
-                statement.executeUpdate()
-            }
-            connection.prepareStatement("""
-                INSERT INTO export_jobs (export_id, study_id, status, format, request, created_by)
-                VALUES (?, ?, 'PENDING', 'CSV', '{}'::jsonb, 'finalizer-test')
-            """.trimIndent()).use { statement ->
-                statement.setObject(1, UUID.randomUUID())
-                statement.setObject(2, studyId)
                 statement.executeUpdate()
             }
         }
@@ -386,19 +381,4 @@ class StudyErasureFinalizerConcurrencyTest {
         }
         throw AssertionError("Expected $applicationName queued at the final study-table inventory lock")
     }
-
-    private fun exportLocksAtBarrier(connection: Connection, firstName: String, secondName: String): List<String> =
-        connection.prepareStatement("""
-            SELECT activity.application_name || ':' || locks.mode
-            FROM pg_locks locks JOIN pg_stat_activity activity ON activity.pid = locks.pid
-            WHERE activity.application_name IN (?, ?) AND locks.granted
-              AND locks.relation = 'export_jobs'::regclass
-            ORDER BY activity.application_name, locks.mode
-        """.trimIndent()).use { statement ->
-            statement.setString(1, firstName)
-            statement.setString(2, secondName)
-            statement.executeQuery().use { rows ->
-                buildList { while (rows.next()) add(rows.getString(1)) }
-            }
-        }
 }

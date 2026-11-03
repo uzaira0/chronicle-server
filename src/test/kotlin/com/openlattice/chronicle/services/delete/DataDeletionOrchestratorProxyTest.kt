@@ -32,9 +32,13 @@ class DataDeletionOrchestratorProxyTest {
         val proxy = ProxyFactory(target).apply { isProxyTargetClass = true }.proxy as DataDeletionOrchestrator
         val operation = RestoredDeletionOperation(
             UUID.randomUUID(), UUID.randomUUID(), null, null, null, DataDeletionMode.STUDY_ERASURE,
-            "CANCELLED", "researcher", UUID.randomUUID(), null, "researcher", java.time.OffsetDateTime.now(), false,
+            "CANCELLED", "researcher", UUID.randomUUID(), "researcher", java.time.OffsetDateTime.now(), false,
         )
-        assertFalse(proxy.reconcileRestoredOperation(operation, emptyList()))
+        Mockito.`when`(rows.getObject("operation_id", UUID::class.java)).thenReturn(operation.operationId)
+        Mockito.`when`(rows.getObject("study_id", UUID::class.java)).thenReturn(operation.studyId)
+        Mockito.`when`(rows.getString("mode")).thenReturn(operation.mode.name)
+        Mockito.`when`(rows.getObject("idempotency_key", UUID::class.java)).thenReturn(operation.idempotencyKey)
+        assertFalse(proxy.reconcileRestoredOperation(operation))
         Mockito.verify(storage).requireDeletionStorageColocated(operation.studyId)
         Mockito.verify(connection).commit()
     }

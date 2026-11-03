@@ -9,19 +9,22 @@ import org.junit.Before
 import org.junit.ClassRule
 import org.junit.Test
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
+import com.openlattice.chronicle.services.delete.ChronicleDataAssetRegistry
+import com.openlattice.chronicle.services.delete.ParticipantAssetOperation
+import com.openlattice.chronicle.services.delete.ParticipantScope
+import com.openlattice.chronicle.services.delete.bindErasureStudyId
 import java.sql.Connection
 import java.util.UUID
 
 /**
- * Right-to-erasure (HIPAA / GDPR) regression test: deleting a participant must remove **every** row
+ * Right-to-erasure regression test: deleting a participant must remove **every** row
  * that participant produced across **every** collection table, while leaving other participants and
  * other studies untouched.
  *
- * It drives the production erasure inventory ([StudyDeletionTable]) and the production erasure
- * predicate (`WHERE study_id = ? AND participant_id = ANY(?)` — the exact filter every
- * `DeleteParticipant*DataRunner` uses) against a real Postgres. Creating each table from the enum
- * means a new collection table added to the erasure path is automatically covered here; a new
- * collection table that is NOT added to [StudyDeletionTable] is caught by [erasureCoversEveryCollectionTable].
+ * It drives the production erasure inventory ([ChronicleDataAssetRegistry]) and the registry's own
+ * DELETE statement against a real Postgres. Creating each table from the registry means a new
+ * collection table added to the erasure path is automatically covered here; a new collection table
+ * that is NOT registered is caught by [erasureCoversEveryCollectionTable].
  *
  * This is the test that would have failed before the six sensing-expansion tables (sleep_events,
  * activity_recognition_events, health_metrics, connectivity_state_events, app_network_usage,
@@ -40,11 +43,11 @@ class ParticipantErasureTest {
         private const val P2 = "participant-to-keep"
 
         // Participant-data collection tables that erasure MUST purge. Add a new collection table here
-        // and the coverage test forces a matching StudyDeletionTable entry + per-participant runner.
+        // and the coverage test forces a matching registry entry.
         private val REQUIRED_COLLECTION_TABLES = setOf(
-            "chronicle_usage_events", "chronicle_usage_stats", "preprocessed_usage_events",
-            "sensor_data", "android_sensor_data", "battery_telemetry", "interaction_events",
-            "app_audio_activity", "app_audio_content", "ambient_audio_events", "notification_activity",
+            "chronicle_usage_events", "chronicle_usage_stats",
+            "ios_screen_time_usage", "android_sensor_data", "battery_telemetry", "interaction_events",
+            "app_audio_activity", "app_audio_content", "notification_activity",
             "sleep_events", "activity_recognition_events", "health_metrics",
             "connectivity_state_events", "app_network_usage", "device_settings",
             "app_usage_survey", "questionnaire_submissions", "time_use_diary_submissions",
@@ -54,7 +57,10 @@ class ParticipantErasureTest {
 
     private lateinit var hds: HikariDataSource
 
-    private fun tableNames(): List<String> = StudyDeletionTable.dataTableNames()
+    private val scalarAssets = ChronicleDataAssetRegistry.participantAssets
+        .filter { it.participantScope == ParticipantScope.SCALAR_COLUMN }
+
+    private fun tableNames(): List<String> = scalarAssets.map { it.tableName }
 
     @Before
     fun setUp() {
@@ -103,11 +109,12 @@ class ParticipantErasureTest {
     @Test
     fun erasingAParticipantRemovesEveryRowAcrossEveryCollectionTable() {
         hds.connection.use { c ->
-            // Apply the production erasure predicate to every collection table for P1 in STUDY_A.
-            for (t in tableNames()) {
-                c.prepareStatement("""DELETE FROM "$t" WHERE study_id = ? AND participant_id = ANY(?)""").use { ps ->
-                    ps.setObject(1, STUDY_A)
-                    ps.setArray(2, c.createArrayOf("text", arrayOf(P1)))
+            // Apply the production erasure statement to every collection table for P1 in STUDY_A.
+            for (asset in scalarAssets) {
+                val sql = ChronicleDataAssetRegistry.participantStatement(asset, ParticipantAssetOperation.DELETE)
+                c.prepareStatement(sql).use { ps ->
+                    ps.bindErasureStudyId(STUDY_A)
+                    ps.setString(2, P1)
                     ps.executeUpdate()
                 }
             }
@@ -121,11 +128,10 @@ class ParticipantErasureTest {
 
     @Test
     fun erasureCoversEveryCollectionTable() {
-        val covered = StudyDeletionTable.dataTableNames().toSet()
+        val covered = ChronicleDataAssetRegistry.participantAssets.map { it.tableName }.toSet()
         val missing = REQUIRED_COLLECTION_TABLES - covered
         assertTrue(
-            "Collection tables missing from the participant erasure path (add a StudyDeletionTable " +
-                "entry + DeleteParticipant*Data runner): $missing",
+            "Collection tables missing from the participant erasure registry: $missing",
             missing.isEmpty(),
         )
     }

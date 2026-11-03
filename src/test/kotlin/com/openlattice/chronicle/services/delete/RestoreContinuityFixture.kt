@@ -1,18 +1,19 @@
 package com.openlattice.chronicle.services.delete
 
+import com.openlattice.chronicle.contract.seedCandidate
+
 import com.codahale.metrics.MetricRegistry
 import com.codahale.metrics.health.HealthCheckRegistry
-import com.geekbeast.configuration.postgres.PostgresConfiguration
-import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.jdbc.DataSourceManager
 import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
+import com.openlattice.chronicle.storage.rls.RLSConnectionContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.testcontainers.containers.PostgreSQLContainer
 import java.sql.Connection
-import java.util.Properties
 import java.util.UUID
 
 internal class RestoreContinuityFixture {
@@ -26,51 +27,50 @@ internal class RestoreContinuityFixture {
             ChronicleContractTestSchema.waitForQueryReady(postgres)
             ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(postgres)
 
-            val hikariProperties = Properties().apply {
-                setProperty("jdbcUrl", postgres.jdbcUrl)
-                setProperty("username", postgres.username)
-                setProperty("password", postgres.password)
-                setProperty("maximumPoolSize", "4")
-            }
-            val postgresConfiguration = PostgresConfiguration(
-                hikariConfiguration = hikariProperties,
-                usingCitus = false,
-                flavor = PostgresFlavor.VANILLA,
-                initializeIndices = false,
-                initializeTables = false,
-            )
             val dataSourceManager = DataSourceManager(
-                mapOf(
-                    "default" to postgresConfiguration,
-                    "chronicle" to postgresConfiguration,
-                    "platform_read" to postgresConfiguration,
-                ),
-                HealthCheckRegistry(),
-                MetricRegistry(),
+                ChronicleContractTestSchema.storageConfigurations(postgres, maximumPoolSize = 4),
+                HealthCheckRegistry(), MetricRegistry(),
             )
             storageResolver = StorageResolver(dataSourceManager, ChronicleStorageConfiguration())
         }
+
+        fun bootstrapConnection(): Connection =
+            storageResolver.getBootstrapStorage().connection
 
         fun stop() {
             postgres.stop()
         }
     }
 
+    private var previousFixtureContext: RLSConnectionContext? = null
+
+    fun installContext() {
+        previousFixtureContext = RLSRequestContext.current()
+        RLSRequestContext.set(RLSConnectionContext("restore-fixture", emptySet(), isAdmin = true))
+    }
+
+    fun restoreContext() {
+        previousFixtureContext?.let(RLSRequestContext::set) ?: RLSRequestContext.clear()
+    }
+
+    val checkpointRepository: RestoreCheckpointRepository by lazy {
+        RestoreCheckpointRepository(storageResolver.getBootstrapStorage(), RestoreContinuityReconciler.CONTRACT_VERSION)
+    }
+
     val checkpointId: UUID = UUID.randomUUID()
     val studyId: UUID = UUID.randomUUID()
     val participantId: String = "restore-participant-${UUID.randomUUID()}"
-    val deviceId: UUID = UUID.randomUUID()
+    val randomDeviceId: UUID = UUID.randomUUID()
     val apiKeyId: UUID = UUID.randomUUID()
     val requestId: UUID = UUID.randomUUID()
     val operationId: UUID = UUID.randomUUID()
-    val heldOperationId: UUID = UUID.randomUUID()
-    val heldRequestId: UUID = UUID.randomUUID()
-    val holdId: UUID = UUID.randomUUID()
+    val laterOperationId: UUID = UUID.randomUUID()
+    val laterRequestId: UUID = UUID.randomUUID()
     val accessCodeId: UUID = UUID.randomUUID()
     val enrollmentAttemptId: UUID = UUID.randomUUID()
 
     fun cleanFixture() {
-        storageResolver.getPlatformStorage().connection.use { connection ->
+        bootstrapConnection().use { connection ->
             connection.createStatement().use { statement ->
                 statement.execute("DROP SCHEMA IF EXISTS chronicle_restore_continuity CASCADE")
             }
@@ -110,29 +110,17 @@ internal class RestoreContinuityFixture {
                 it.setString(1, "restore-hash-${apiKeyId}")
                 it.executeUpdate()
             }
-            for (table in listOf("battery_telemetry", "upload_buffer")) {
+            for (table in listOf("battery_telemetry", "upload_buffer", "participant_form_access_codes", "study_participants", "studies")) {
                 connection.prepareStatement("DELETE FROM $table WHERE study_id = ?").use {
                     it.setObject(1, studyId)
                     it.executeUpdate()
                 }
             }
-            connection.prepareStatement("DELETE FROM participant_form_access_codes WHERE study_id = ?").use {
-                it.setObject(1, studyId)
-                it.executeUpdate()
-            }
-            connection.prepareStatement("DELETE FROM study_participants WHERE study_id = ?").use {
-                it.setObject(1, studyId)
-                it.executeUpdate()
-            }
-            connection.prepareStatement("DELETE FROM studies WHERE study_id = ?").use {
-                it.setObject(1, studyId)
-                it.executeUpdate()
-            }
         }
     }
 
     fun seedRestoredOlderState(includeStudy: Boolean = true) {
-        storageResolver.getPlatformStorage().connection.use { connection ->
+        bootstrapConnection().use { connection ->
             if (includeStudy) connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, ?)").use {
                 it.setObject(1, studyId)
                 it.setString(2, "restore-continuity-${studyId}")
@@ -147,14 +135,14 @@ internal class RestoreContinuityFixture {
             ).use {
                 it.setObject(1, studyId)
                 it.setString(2, participantId)
-                it.setObject(3, UUID.randomUUID())
+                it.setObject(3, seedCandidate(connection))
                 assertEquals(1, it.executeUpdate())
             }
             connection.prepareStatement(
                 """
                 INSERT INTO api_keys (
                     key_id, study_id, key_hash, key_prefix, name, scope, created_by,
-                    expires_at, revoked, participant_id, device_id
+                    expires_at, revoked, participant_id, random_device_id
                 ) VALUES (?, ?, ?, 'restore-key', 'restore key', 'MOBILE', 'fixture',
                           now() + interval '1 day', false, ?, ?)
                 """.trimIndent(),
@@ -163,7 +151,7 @@ internal class RestoreContinuityFixture {
                 it.setObject(2, studyId)
                 it.setString(3, "restore-hash-${apiKeyId}")
                 it.setString(4, participantId)
-                it.setObject(5, deviceId)
+                it.setObject(5, randomDeviceId)
                 assertEquals(1, it.executeUpdate())
             }
             connection.prepareStatement(
@@ -181,13 +169,51 @@ internal class RestoreContinuityFixture {
         }
     }
 
+    fun seedEnrollmentInvitation(connection: Connection, invitationId: UUID = accessCodeId): String {
+        val rawToken = invitationId.toString()
+        connection.prepareStatement(
+            """
+            INSERT INTO participant_form_access_codes (
+                access_code_id, token_hash, study_id, participant_id, form_kind,
+                issuer_type, issued_by, expires_at
+            ) VALUES (?, ?, ?, ?, 'ENROLLMENT',
+                      'RESEARCHER', 'fixture', now() + interval '1 day')
+            """.trimIndent(),
+        ).use {
+            it.setObject(1, invitationId)
+            it.setBytes(2, com.openlattice.chronicle.services.participantaccess.ParticipantSessionSecrets.sha256(rawToken))
+            it.setObject(3, studyId)
+            it.setString(4, participantId)
+            assertEquals(1, it.executeUpdate())
+        }
+        return rawToken
+    }
+
+    fun seedCollectionAcknowledgment(connection: Connection, id: UUID = UUID.randomUUID(), declined: Boolean = true) {
+        val module = "[\"${com.openlattice.chronicle.collection.CollectionModuleId.BATTERY_TELEMETRY.id}\"]"
+        connection.prepareStatement("""
+            INSERT INTO participant_collection_acknowledgment (id, study_id, participant_id, source_random_device_id,
+                acknowledged_modules, declined_modules, acknowledged_at, recorded_at, settings_version,
+                evidence_access_code_id, evidence_api_key_id, decision_seq)
+            VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, now(), now() + ? * interval '1 second', 1, ?, ?,
+                (SELECT COALESCE(max(decision_seq), 0) + 1 FROM participant_collection_acknowledgment WHERE evidence_api_key_id = ?))
+        """.trimIndent()).use {
+            it.setObject(1, id); it.setObject(2, studyId); it.setString(3, participantId)
+            it.setString(4, randomDeviceId.toString())
+            it.setString(5, if (declined) "[]" else module); it.setString(6, if (declined) module else "[]")
+            it.setInt(7, if (declined) 1 else 0); it.setObject(8, UUID.randomUUID()); it.setObject(9, apiKeyId)
+            it.setObject(10, apiKeyId)
+            assertEquals(1, it.executeUpdate())
+        }
+    }
+
     fun seedContinuityCheckpoint() {
-        storageResolver.getPlatformStorage().connection.use { connection ->
+        bootstrapConnection().use { connection ->
             createContinuitySchema(connection)
             connection.prepareStatement(
                 """
                 INSERT INTO chronicle_restore_continuity.withdrawal_requests
-                    (request_id, api_key_id, study_id, participant_id, device_id,
+                    (request_id, api_key_id, study_id, participant_id, random_device_id,
                      already_withdrawn, created_at)
                 VALUES (?, ?, ?, ?, ?, false, '2026-08-20T12:00:00Z')
                 """.trimIndent(),
@@ -196,20 +222,20 @@ internal class RestoreContinuityFixture {
                 it.setObject(2, apiKeyId)
                 it.setObject(3, studyId)
                 it.setString(4, participantId)
-                it.setObject(5, deviceId)
+                it.setObject(5, randomDeviceId)
                 assertEquals(1, it.executeUpdate())
             }
             connection.prepareStatement(
                 """
                 INSERT INTO chronicle_restore_continuity.revoked_api_keys
-                    (key_id, study_id, participant_id, device_id)
+                    (key_id, study_id, participant_id, random_device_id)
                 VALUES (?, ?, ?, ?)
                 """.trimIndent(),
             ).use {
                 it.setObject(1, apiKeyId)
                 it.setObject(2, studyId)
                 it.setString(3, participantId)
-                it.setObject(4, deviceId)
+                it.setObject(4, randomDeviceId)
                 assertEquals(1, it.executeUpdate())
             }
             connection.prepareStatement(
@@ -227,10 +253,10 @@ internal class RestoreContinuityFixture {
                 """
                 INSERT INTO chronicle_restore_continuity.deletion_operations (
                     operation_id, study_id, participant_ref, participant_id, mode, status,
-                    requested_by, idempotency_key, registry_version, quarantine_until,
+                    requested_by, idempotency_key, registry_version,
                     completed_at, proof_hash, cancelled_by, cancelled_at
                 ) VALUES (?, ?, 'participant-source-proof', ?, 'WITHDRAW_AND_ERASE', 'COMPLETED',
-                          'mobile-self-withdrawal', ?, 1, '2026-08-20T12:00:00Z',
+                          'mobile-self-withdrawal', ?, 1,
                           '2026-08-20T12:01:00Z', 'source-proof', NULL, NULL)
                 """.trimIndent(),
             ).use {
@@ -257,7 +283,7 @@ internal class RestoreContinuityFixture {
     }
 
     fun sealContinuityCheckpoint(connection: Connection) {
-        val digest = RestoreContinuityReconciler.computeCheckpointSha256(connection)
+        val digest = checkpointRepository.computeCheckpointSha256(connection)
         connection.prepareStatement(
             """
             INSERT INTO chronicle_restore_continuity.checkpoint (
@@ -267,7 +293,7 @@ internal class RestoreContinuityFixture {
                 collection_revision_count, published_collection_settings_count,
                 enrollment_invitation_count, erased_device_key_tombstone_count,
                 restricted_participant_count, archived_study_count, purge_cutoff_count, collection_acknowledgment_count
-            ) SELECT ${RestoreContinuityReconciler.CONTRACT_VERSION}, ?, '2026-08-20T12:02:00Z', '100', ?,
+            ) SELECT ${RestoreContinuityReconciler.CONTRACT_VERSION}, ?, '2026-08-20T12:02:00Z', '1', ?,
                      (SELECT count(*) FROM chronicle_restore_continuity.withdrawal_requests),
                      (SELECT count(*) FROM chronicle_restore_continuity.revoked_api_keys),
                      (SELECT count(*) FROM chronicle_restore_continuity.withdrawn_participants),
@@ -292,7 +318,7 @@ internal class RestoreContinuityFixture {
     fun createContinuitySchema(connection: Connection) {
         connection.createStatement().use { statement ->
             statement.execute("CREATE SCHEMA chronicle_restore_continuity")
-            statement.execute(RestoreContinuityReconciler.restoreResource("restore-restrictions-schema.sql"))
+            statement.execute(restoreResource("restore-restrictions-schema.sql"))
             statement.execute(
                 """
                 CREATE TABLE chronicle_restore_continuity.checkpoint (
@@ -320,7 +346,7 @@ internal class RestoreContinuityFixture {
                 CREATE TABLE chronicle_restore_continuity.withdrawal_requests (
                     request_id UUID PRIMARY KEY, api_key_id UUID NOT NULL UNIQUE,
                     study_id UUID NOT NULL, participant_id TEXT NOT NULL,
-                    device_id UUID NOT NULL, already_withdrawn BOOLEAN NOT NULL,
+                    random_device_id UUID NOT NULL, already_withdrawn BOOLEAN NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL
                 )
                 """.trimIndent(),
@@ -329,7 +355,7 @@ internal class RestoreContinuityFixture {
                 """
                 CREATE TABLE chronicle_restore_continuity.revoked_api_keys (
                     key_id UUID PRIMARY KEY, study_id UUID NOT NULL,
-                    participant_id TEXT, device_id UUID
+                    participant_id TEXT, random_device_id UUID
                 )
                 """.trimIndent(),
             )
@@ -346,25 +372,21 @@ internal class RestoreContinuityFixture {
                 CREATE TABLE chronicle_restore_continuity.deletion_operations (
                     operation_id UUID PRIMARY KEY, study_id UUID NOT NULL,
                     participant_ref TEXT, participant_id TEXT,
-                    -- What V68 derives in public; these fixtures never seed a completed participant shape.
-                    participant_block_token TEXT GENERATED ALWAYS AS
-                        (md5(study_id::text || ':' || participant_id)) STORED,
+                    participant_block_token TEXT,
                     mode TEXT NOT NULL,
                     status TEXT NOT NULL, requested_by TEXT NOT NULL,
                     idempotency_key UUID NOT NULL UNIQUE, registry_version INTEGER NOT NULL,
-                    quarantine_until TIMESTAMPTZ, started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
+                    started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
                     proof_hash TEXT, cancelled_by TEXT, cancelled_at TIMESTAMPTZ
                 )
                 """.trimIndent(),
             )
             statement.execute(
                 """
-                CREATE TABLE chronicle_restore_continuity.retention_holds (
-                    hold_id UUID PRIMARY KEY, operation_id UUID NOT NULL,
-                    study_id UUID NOT NULL, reason TEXT NOT NULL, created_by TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL, review_at TIMESTAMPTZ NOT NULL,
-                    released_by TEXT, released_at TIMESTAMPTZ, release_reason TEXT
-                )
+                CREATE TRIGGER set_deletion_block_token
+                BEFORE INSERT OR UPDATE OF study_id, participant_id, participant_block_token
+                ON chronicle_restore_continuity.deletion_operations
+                FOR EACH ROW EXECUTE FUNCTION public.chronicle_set_deletion_block_token()
                 """.trimIndent(),
             )
             statement.execute(
@@ -380,7 +402,7 @@ internal class RestoreContinuityFixture {
                 """
                 CREATE TABLE chronicle_restore_continuity.data_collection_settings_revisions (
                     study_id UUID NOT NULL, settings_version INTEGER NOT NULL,
-                    setting JSONB NOT NULL, issued_at TIMESTAMPTZ NOT NULL
+                    setting JSONB NOT NULL, study_modules JSONB NOT NULL DEFAULT '{}'::jsonb, issued_at TIMESTAMPTZ NOT NULL
                 )
                 """.trimIndent(),
             )
@@ -388,7 +410,7 @@ internal class RestoreContinuityFixture {
                 """
                 CREATE TABLE chronicle_restore_continuity.published_data_collection_settings (
                     study_id UUID NOT NULL, settings_version INTEGER NOT NULL,
-                    setting JSONB NOT NULL
+                    setting JSONB NOT NULL, study_modules JSONB NOT NULL DEFAULT '{}'::jsonb
                 )
                 """.trimIndent(),
             )
@@ -402,7 +424,7 @@ internal class RestoreContinuityFixture {
                     expires_at TIMESTAMPTZ NOT NULL, exchanged_at TIMESTAMPTZ,
                     revoked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL,
                     enrollment_attempt_id UUID, enrollment_source_device_hash TEXT,
-                    enrollment_device_id UUID, enrollment_manifest_digest TEXT,
+                    enrollment_random_device_id UUID, enrollment_manifest_digest TEXT,
                     enrollment_request_hash TEXT, enrollment_proposed_key_hash TEXT,
                     enrollment_replay_expires_at TIMESTAMPTZ,
                     enrollment_settings_version INTEGER, enrollment_disclosure_version TEXT,
@@ -417,12 +439,12 @@ internal class RestoreContinuityFixture {
                 )
                 """.trimIndent(),
             )
-            statement.execute(RestoreContinuityReconciler.restoreResource("restore-authorities-schema.sql"))
+            statement.execute(restoreResource("restore-authorities-schema.sql"))
         }
     }
 
     fun schemaExists(schema: String): Boolean =
-        storageResolver.getPlatformStorage().connection.use { connection ->
+        bootstrapConnection().use { connection ->
             connection.prepareStatement("SELECT to_regnamespace(?) IS NOT NULL").use {
                 it.setString(1, schema)
                 it.executeQuery().use { resultSet ->

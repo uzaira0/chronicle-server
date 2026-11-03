@@ -4,8 +4,6 @@ import com.codahale.metrics.annotation.Timed
 import jakarta.validation.Valid
 import com.openlattice.chronicle.authorization.StudyPermission
 import com.openlattice.chronicle.authorization.annotations.RequiresStudyAccess
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.services.delete.ParticipantPurgeService
 import com.openlattice.chronicle.study.ParticipantDataPurgeSummary
 import com.openlattice.chronicle.study.ParticipantPurgeApi
@@ -23,7 +21,6 @@ import java.util.*
 @RestController
 @RequestMapping(path = [StudyApi.BASE, StudyApi.CONTROLLER])
 @Timed
-@RateLimit(type = RateLimitType.SENSITIVE)
 public open class ParticipantPurgeController(
     private val purgeService: ParticipantPurgeService,
 ) : ParticipantPurgeApi {

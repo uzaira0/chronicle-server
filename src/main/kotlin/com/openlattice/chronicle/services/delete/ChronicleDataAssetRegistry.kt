@@ -1,8 +1,10 @@
 package com.openlattice.chronicle.services.delete
 
-import com.openlattice.chronicle.sensorkit.SensorType
+import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresEventColumns
+import com.openlattice.chronicle.storage.PostgresEventTables
+import com.openlattice.chronicle.storage.ScreenTimeUsageCaptures
 import java.sql.PreparedStatement
 import java.sql.Types
 import java.util.UUID
@@ -24,70 +26,139 @@ internal fun PreparedStatement.bindErasureStudyId(studyId: UUID) {
 public data class ParticipantDataAsset(
     val id: String,
     val tableName: String,
-    val handledByDedicatedJob: Boolean,
     val participantScope: ParticipantScope = ParticipantScope.SCALAR_COLUMN,
+    val captureTimeSql: String? = null,
+    val processingData: Boolean = true,
 )
 
-public enum class ParticipantScope(internal val predicate: String) {
-    SCALAR_COLUMN("participant_id = ?"),
-    TEXT_ARRAY_COLUMN("? = ANY(participant_ids)"),
-    BLOCK_TOKEN_COLUMN("participant_block_token = chronicle_participant_block_token(study_id, ?::text)"),
-
-    /** Access codes minus the exchanged enrollment code a still-enrolled device acknowledges against. */
-    NON_ENROLLMENT_EVIDENCE_CODES("participant_id = ? AND NOT $EXCHANGED_ENROLLMENT_CODE"),
+public enum class ParticipantScope {
+    SCALAR_COLUMN,
+    TEXT_ARRAY_COLUMN,
+    BLOCK_TOKEN_COLUMN,
+    NON_ENROLLMENT_EVIDENCE_CODES,
 }
 
-/** The device's enrollment evidence: collection acknowledgments require this row unrevoked. */
-internal const val EXCHANGED_ENROLLMENT_CODE = "(form_kind = 'ENROLLMENT' AND exchanged_at IS NOT NULL)"
+internal enum class ParticipantAssetOperation { COUNT, DELETE }
 
 public object ChronicleDataAssetRegistry {
     private val SQL_IDENTIFIER = Regex("^[a-z][a-z0-9_]*$")
 
+    internal fun participantStatement(asset: ParticipantDataAsset, operation: ParticipantAssetOperation): String {
+        val action = when (operation) {
+            ParticipantAssetOperation.COUNT -> "SELECT COUNT(*)"
+            ParticipantAssetOperation.DELETE -> "DELETE"
+        }
+        val predicate = when (asset.participantScope) {
+            ParticipantScope.SCALAR_COLUMN -> "participant_id = ?"
+            ParticipantScope.TEXT_ARRAY_COLUMN -> "? = ANY(participant_ids)"
+            ParticipantScope.BLOCK_TOKEN_COLUMN -> "participant_block_token = chronicle_participant_block_token(study_id, ?::text)"
+            ParticipantScope.NON_ENROLLMENT_EVIDENCE_CODES -> """
+                participant_id = ? AND access_code_id NOT IN (
+                    SELECT access_code_id FROM exchanged_enrollment_access_codes
+                )
+            """.trimIndent()
+        }
+        return "$action FROM ${asset.tableName} WHERE $STUDY_ERASURE_PREDICATE AND $predicate"
+    }
+
     public val participantAssets: List<ParticipantDataAsset> = listOf(
-        ParticipantDataAsset("usage-events", "chronicle_usage_events", true),
-        ParticipantDataAsset("usage-stats", "chronicle_usage_stats", true),
-        ParticipantDataAsset("preprocessed-usage", "preprocessed_usage_events", true),
-        ParticipantDataAsset("ios-sensor", "sensor_data", true),
-        ParticipantDataAsset("android-sensor", "android_sensor_data", true),
-        ParticipantDataAsset("app-usage-survey", "app_usage_survey", true),
-        ParticipantDataAsset("questionnaire-submissions", "questionnaire_submissions", true),
-        ParticipantDataAsset("tud-submissions", "time_use_diary_submissions", true),
-        ParticipantDataAsset("participant-stats", "participant_stats", true),
-        ParticipantDataAsset("upload-buffer", "upload_buffer", true),
-        ParticipantDataAsset("battery-telemetry", "battery_telemetry", true),
-        ParticipantDataAsset("interaction-events", "interaction_events", true),
-        ParticipantDataAsset("app-audio-activity", "app_audio_activity", true),
-        ParticipantDataAsset("app-audio-content", "app_audio_content", true),
-        ParticipantDataAsset("ambient-audio", "ambient_audio_events", true),
-        ParticipantDataAsset("notification-activity", "notification_activity", true),
-        ParticipantDataAsset("sleep-events", "sleep_events", true),
-        ParticipantDataAsset("activity-recognition", "activity_recognition_events", true),
-        ParticipantDataAsset("health-metrics", "health_metrics", true),
-        ParticipantDataAsset("connectivity-state", "connectivity_state_events", true),
-        ParticipantDataAsset("app-network-usage", "app_network_usage", true),
-        ParticipantDataAsset("device-settings", "device_settings", true),
-        ParticipantDataAsset("upload-diagnostics", "upload_diagnostics", false),
-        ParticipantDataAsset("encrypted-payloads", "encrypted_payloads", false),
-        ParticipantDataAsset("data-quality-alerts", "data_quality_alerts", false),
-        ParticipantDataAsset("tud-summarized", "time_use_diary_summarized", false),
-        ParticipantDataAsset("study-event-stream", "study_event_stream", false),
-        ParticipantDataAsset("android-device-sensor-availability", "android_device_sensor_availability", false),
-        ParticipantDataAsset("participant-form-receipts", "participant_form_submission_receipts", false),
-        ParticipantDataAsset("participant-form-sessions", "participant_form_sessions", false),
-        ParticipantDataAsset("usage-event-annotations", "usage_event_annotations", false),
-        ParticipantDataAsset("participant-pseudonyms", "participant_pseudonyms", false),
-        ParticipantDataAsset("notifications", "notifications", false),
-        ParticipantDataAsset("webhook-deliveries", "webhook_deliveries", false),
-        ParticipantDataAsset("jobs", "jobs", false, ParticipantScope.TEXT_ARRAY_COLUMN),
+        ParticipantDataAsset(
+            "usage-events", PostgresEventTables.CHRONICLE_USAGE_EVENTS.name,
+            captureTimeSql = PostgresEventColumns.TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "usage-stats", PostgresEventTables.CHRONICLE_USAGE_STATS.name,
+            captureTimeSql = PostgresEventColumns.TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "ios-screen-time-usage", ChroniclePostgresTables.IOS_SCREEN_TIME_USAGE.name,
+            captureTimeSql = ScreenTimeUsageCaptures.CAPTURE_TIME_SQL,
+        ),
+        ParticipantDataAsset(
+            "android-sensor", ChroniclePostgresTables.ANDROID_SENSOR_DATA.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "app-usage-survey", ChroniclePostgresTables.APP_USAGE_SURVEY.name,
+            captureTimeSql = PostgresColumns.SUBMISSION_DATE.name,
+        ),
+        ParticipantDataAsset(
+            "questionnaire-submissions", ChroniclePostgresTables.QUESTIONNAIRE_SUBMISSIONS.name,
+            captureTimeSql = PostgresColumns.COMPLETED_AT.name,
+        ),
+        ParticipantDataAsset(
+            "tud-submissions", ChroniclePostgresTables.TIME_USE_DIARY_SUBMISSIONS.name,
+            captureTimeSql = PostgresColumns.SUBMISSION_DATE.name,
+        ),
+        ParticipantDataAsset("participant-stats", ChroniclePostgresTables.PARTICIPANT_STATS.name),
+        ParticipantDataAsset("upload-buffer", ChroniclePostgresTables.UPLOAD_BUFFER.name),
+        ParticipantDataAsset(
+            "battery-telemetry", ChroniclePostgresTables.BATTERY_TELEMETRY.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "interaction-events", ChroniclePostgresTables.INTERACTION_EVENTS.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "app-audio-activity", ChroniclePostgresTables.APP_AUDIO_ACTIVITY.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "app-audio-content", ChroniclePostgresTables.APP_AUDIO_CONTENT.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "notification-activity", ChroniclePostgresTables.NOTIFICATION_ACTIVITY.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "sleep-events", ChroniclePostgresTables.SLEEP_EVENTS.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "activity-recognition", ChroniclePostgresTables.ACTIVITY_RECOGNITION_EVENTS.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "health-metrics", ChroniclePostgresTables.HEALTH_METRICS.name,
+            captureTimeSql = "to_timestamp(${PostgresColumns.HEALTH_END_MILLIS.name} / 1000.0)",
+        ),
+        ParticipantDataAsset(
+            "connectivity-state", ChroniclePostgresTables.CONNECTIVITY_STATE_EVENTS.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "app-network-usage", ChroniclePostgresTables.APP_NETWORK_USAGE.name,
+            captureTimeSql = "to_timestamp(${PostgresColumns.APP_NETWORK_BUCKET_END_MILLIS.name} / 1000.0)",
+        ),
+        ParticipantDataAsset(
+            "device-settings", ChroniclePostgresTables.DEVICE_SETTINGS.name,
+            captureTimeSql = PostgresColumns.SAMPLE_TIMESTAMP.name,
+        ),
+        ParticipantDataAsset(
+            "upload-diagnostics", "upload_diagnostics",
+            captureTimeSql = "last_occurred_at",
+        ),
+        ParticipantDataAsset("tud-summarized", ChroniclePostgresTables.TIME_USE_DIARY_SUMMARIZED.name),
+        ParticipantDataAsset(
+            "android-device-sensor-availability", ChroniclePostgresTables.ANDROID_DEVICE_SENSOR_AVAILABILITY.name,
+            captureTimeSql = PostgresColumns.REPORTED_AT.name,
+        ),
+        ParticipantDataAsset("participant-form-receipts", "participant_form_submission_receipts", processingData = false),
+        ParticipantDataAsset("participant-form-sessions", "participant_form_sessions", processingData = false),
+        ParticipantDataAsset("notifications", ChroniclePostgresTables.NOTIFICATIONS.name, processingData = false),
+        ParticipantDataAsset("webhook-deliveries", "webhook_deliveries", processingData = false),
+        ParticipantDataAsset("jobs", ChroniclePostgresTables.JOBS.name, ParticipantScope.TEXT_ARRAY_COLUMN, processingData = false),
         // Keep access codes last: deleting one cascades sessions and receipts, which would
         // otherwise make their independently verified step counts inaccurate.
-        ParticipantDataAsset("participant-form-access-codes", "participant_form_access_codes", false),
+        ParticipantDataAsset("participant-form-access-codes", "participant_form_access_codes", processingData = false),
     )
 
     /** Enrollment metadata and replay fences survive collected-data purge, then leave with enrollment. */
     public val withdrawalAssets: List<ParticipantDataAsset> = listOf(
-        ParticipantDataAsset("devices", "devices", false),
-        ParticipantDataAsset("purge-cutoffs", "participant_purge_cutoffs", false, ParticipantScope.BLOCK_TOKEN_COLUMN),
+        ParticipantDataAsset("devices", ChroniclePostgresTables.DEVICES.name),
+        ParticipantDataAsset("purge-cutoffs", "participant_purge_cutoffs", ParticipantScope.BLOCK_TOKEN_COLUMN),
     )
 
     internal fun assetsFor(mode: DataDeletionMode): List<ParticipantDataAsset> = when (mode) {
@@ -113,30 +184,5 @@ public object ChronicleDataAssetRegistry {
         check(participantAssets.all { SQL_IDENTIFIER.matches(it.tableName) }) {
             "Participant data-asset table names must be trusted SQL identifiers"
         }
-    }
-
-    public fun participantAsset(assetId: String): ParticipantDataAsset =
-        participantAssets.singleOrNull { it.id == assetId }
-            ?: throw IllegalArgumentException("Unknown participant data asset")
-
-    /** Observation times match upload admission; receipt time cannot preserve an undated capture. */
-    internal fun purgeCaptureTimeSql(asset: ParticipantDataAsset): String? = when (asset.tableName) {
-        "chronicle_usage_events" -> "COALESCE(${PostgresEventColumns.TIMESTAMP.name}, ${PostgresEventColumns.COLLECTED_AT.name})"
-        "chronicle_usage_stats", "usage_event_annotations" -> PostgresEventColumns.TIMESTAMP.name
-        "preprocessed_usage_events" -> PostgresEventColumns.APP_DATETIME_END.name
-        "sensor_data" -> "LEAST(COALESCE(${PostgresEventColumns.EXACT_RECORDED_DATE_TIME.name}, ${PostgresEventColumns.RECORDED_DATE_TIME.name}), " +
-            "CASE WHEN ${PostgresEventColumns.SENSOR_TYPE.name} = '${SensorType.deviceUsage.name}' THEN ${PostgresEventColumns.END_DATE_TIME.name} END)"
-        "android_sensor_data", "battery_telemetry", "interaction_events", "app_audio_activity",
-        "app_audio_content", "ambient_audio_events", "notification_activity", "sleep_events",
-        "activity_recognition_events", "connectivity_state_events", "device_settings" ->
-            PostgresColumns.SAMPLE_TIMESTAMP.name
-        "health_metrics" -> "to_timestamp(${PostgresColumns.HEALTH_END_MILLIS.name} / 1000.0)"
-        "app_network_usage" -> "to_timestamp(${PostgresColumns.APP_NETWORK_BUCKET_END_MILLIS.name} / 1000.0)"
-        "app_usage_survey", "time_use_diary_submissions" -> PostgresColumns.SUBMISSION_DATE.name
-        "questionnaire_submissions" -> PostgresColumns.COMPLETED_AT.name
-        "android_device_sensor_availability" -> PostgresColumns.REPORTED_AT.name
-        "upload_diagnostics" -> "last_occurred_at"
-        // Aggregates and access artifacts have no single observation time; ciphertext is undated.
-        else -> null
     }
 }

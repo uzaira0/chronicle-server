@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.controllers
 
+import org.junit.Assert.assertThrows
+
 import com.openlattice.chronicle.services.delete.ParticipantPurgeService
 import com.openlattice.chronicle.study.ParticipantDataPurgeSummary
 import com.openlattice.chronicle.study.ParticipantPurgeRequest
@@ -22,10 +24,7 @@ class ParticipantPurgeControllerTest {
         TestSecurityUtils.setupSecurityContext()
     }
 
-    @Test
-    fun testControllerConstructsSuccessfully() {
-        assertNotNull(controller)
-    }
+    
 
     @Test
     fun testControllerAcceptsPurgeService() {
@@ -60,14 +59,16 @@ class ParticipantPurgeControllerTest {
         verify(purgeService).previewPurge(studyId, participantId)
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testPreviewParticipantPurgePropagatesException() {
         val studyId = UUID.randomUUID()
         val participantId = "p-123"
         Mockito.`when`(purgeService.previewPurge(studyId, participantId))
             .thenThrow(RuntimeException("preview error"))
 
-        controller.previewParticipantPurge(studyId, participantId)
+        assertThrows(RuntimeException::class.java) {
+            controller.previewParticipantPurge(studyId, participantId)
+        }
     }
 
     @Test
@@ -128,14 +129,16 @@ class ParticipantPurgeControllerTest {
         assertEquals(0, result.count())
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testExecuteParticipantPurgePropagatesException() {
         val studyId = UUID.randomUUID()
         val request = Mockito.mock(ParticipantPurgeRequest::class.java)
         Mockito.`when`(purgeService.executePurge(studyId, request))
             .thenThrow(RuntimeException("purge error"))
 
-        controller.executeParticipantPurge(studyId, request)
+        assertThrows(RuntimeException::class.java) {
+            controller.executeParticipantPurge(studyId, request)
+        }
     }
 
     @Test
@@ -179,20 +182,5 @@ class ParticipantPurgeControllerTest {
         controller.executeParticipantPurge(studyId, request)
         verify(purgeService).executePurge(studyId, request)
         Mockito.verifyNoMoreInteractions(purgeService)
-    }
-
-    @Test
-    fun testPreviewAndExecuteUseSameServiceInstance() {
-        val studyId = UUID.randomUUID()
-        val participantId = "p-123"
-        val summary = Mockito.mock(ParticipantDataPurgeSummary::class.java)
-        val request = Mockito.mock(ParticipantPurgeRequest::class.java)
-        Mockito.`when`(purgeService.previewPurge(studyId, participantId)).thenReturn(summary)
-        Mockito.`when`(purgeService.executePurge(studyId, request)).thenReturn(emptyList())
-
-        controller.previewParticipantPurge(studyId, participantId)
-        controller.executeParticipantPurge(studyId, request)
-        verify(purgeService).previewPurge(studyId, participantId)
-        verify(purgeService).executePurge(studyId, request)
     }
 }

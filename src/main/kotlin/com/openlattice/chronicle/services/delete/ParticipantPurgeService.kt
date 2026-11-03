@@ -11,15 +11,17 @@ import com.openlattice.chronicle.services.enrollment.loadLockedStudy
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.ParticipantDataPurgeSummary
 import com.openlattice.chronicle.study.ParticipantPurgeRequest
-import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudyWithdrawalSetting
 import com.openlattice.chronicle.study.WithdrawalMode
 import com.openlattice.chronicle.util.LogSanitizer
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import org.slf4j.LoggerFactory
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.sql.Connection
+import java.time.Instant
 import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import java.util.*
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -55,18 +57,18 @@ public open class ParticipantPurgeService(
         }
 
         // Tables intentionally NOT purged:
-        // - candidates: keyed by candidate_id, contains no PII (Phase 5 de-identification
-        //   replaced names/DOBs with opaque hashes; only candidate_id remains as a key)
+        // - candidates: keyed by candidate_id, contains no PII (names/DOBs are opaque
+        //   hashes; only candidate_id remains as a key)
         // - study_participants: purge preserves enrollment by design
         // - devices: device enrollment metadata, preserved with enrollment; contains only
-        //   server-assigned device_id (UUIDs), not real hardware identifiers (Phase 3.6
-        //   removed source_device_id entirely; device_id is a deterministic UUID)
-        // - audit / audit_buffer: owner policy makes audit accountability immutable.
-        //   Historical identity-bearing rows remain retained; future audit writers
-        //   minimize participant identifiers via the existing AuditService sanitizer.
+        //   server-assigned random_device_id (UUIDs), not real hardware identifiers
+        //   (no source_random_device_id; random_device_id is a deterministic UUID)
+        // - audit / audit_buffer: audit accountability is immutable. Older identity-bearing
+        //   rows stay; audit writers minimize participant identifiers through the AuditService
+        //   sanitizer.
     }
 
-    public fun previewPurge(studyId: UUID, participantId: String): ParticipantDataPurgeSummary {
+    public open fun previewPurge(studyId: UUID, participantId: String): ParticipantDataPurgeSummary {
         val expiresAt = OffsetDateTime.now().plusMinutes(TOKEN_VALIDITY_MINUTES)
         val token = generateConfirmationToken(studyId, participantId, expiresAt)
 
@@ -79,8 +81,6 @@ public open class ParticipantPurgeService(
                 participantId = participantId,
                 usageEventsCount = counts.getValue("chronicle_usage_events"),
                 usageStatsCount = counts.getValue("chronicle_usage_stats"),
-                preprocessedEventsCount = counts.getValue("preprocessed_usage_events"),
-                sensorDataCount = counts.getValue("sensor_data"),
                 androidSensorDataCount = counts.getValue("android_sensor_data"),
                 appUsageSurveyCount = counts.getValue("app_usage_survey"),
                 questionnaireSubmissionsCount = counts.getValue("questionnaire_submissions"),
@@ -94,7 +94,7 @@ public open class ParticipantPurgeService(
                 tokenExpiresAt = expiresAt,
             )
         }
-        recordEvent(
+        recordReadEvent(
             AuditableEvent(
                 aclKey = AclKey(studyId),
                 eventType = AuditEventType.PREVIEW_PARTICIPANT_PURGE,
@@ -114,11 +114,7 @@ public open class ParticipantPurgeService(
         return summary
     }
 
-    // reason: HIPAA participant-erasure path — the length is one declarative deletion job per data
-    // table (each must be enumerated and audited); restructuring this enumeration risks dropping a
-    // table from the erasure set, so the explicit per-table list is kept intact
-    @Suppress("LongMethod")
-    public fun executePurge(studyId: UUID, request: ParticipantPurgeRequest): Iterable<UUID> {
+    public open fun executePurge(studyId: UUID, request: ParticipantPurgeRequest): Iterable<UUID> {
         return executePurge(
             studyId,
             request,
@@ -129,7 +125,6 @@ public open class ParticipantPurgeService(
         )
     }
 
-    @Suppress("LongMethod")
     private fun executePurge(
         studyId: UUID,
         request: ParticipantPurgeRequest,
@@ -150,11 +145,11 @@ public open class ParticipantPurgeService(
             requestedBy = Principals.getCurrentUser().id,
             idempotencyKey = idempotencyKey,
         )
-        recordEvent(
+        recordCommittedEvent(
             AuditableEvent(
                 aclKey = AclKey(operationId),
                 eventType = AuditEventType.PURGE_PARTICIPANT_DATA,
-                description = "Quarantined participant data for verified erasure after seven days; " +
+                description = "Blocked participant data pending an owner-run erasure; " +
                     "participant ref ${LogSanitizer.stableFingerprint(participantId, "participant")}",
                 study = studyId,
                 data = mapOf("operationId" to operationId.toString(), "mode" to mode.name),
@@ -174,11 +169,11 @@ public open class ParticipantPurgeService(
     public open fun executeSelfWithdrawal(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         keyId: UUID,
         requestId: UUID,
     ): MobileSelfWithdrawalResult {
-        var withdrawalMode = WithdrawalMode.ERASE
+        var withdrawalMode = StudyWithdrawalSetting().mode
         val transaction = dataDeletionOrchestrator.quarantineParticipantAtomically(
             studyId = studyId,
             participantId = participantId,
@@ -186,13 +181,12 @@ public open class ParticipantPurgeService(
             requestedBy = "device-self-withdrawal",
             idempotencyKey = requestId,
         ) { connection ->
-            withdrawalMode = (loadLockedStudy(connection, studyId).settings[StudySettingType.Withdrawal]
-                as? StudyWithdrawalSetting)?.mode ?: WithdrawalMode.ERASE
+            withdrawalMode = loadLockedStudy(connection, studyId).settings.withdrawal().mode
             val intent = apiKeyService.bindWithdrawalIntent(
                 connection,
                 studyId,
                 participantId,
-                deviceId,
+                randomDeviceId,
                 keyId,
                 requestId,
             )
@@ -203,13 +197,13 @@ public open class ParticipantPurgeService(
         }
         val operationId = transaction.operationId
         if (!transaction.result.alreadyWithdrawn) {
-            recordEvent(
+            recordCommittedEvent(
                 AuditableEvent(
                     aclKey = AclKey(operationId ?: studyId),
                     eventType = if (operationId == null) AuditEventType.UPDATE_PARTICIPATION_STATUS
                         else AuditEventType.PURGE_PARTICIPANT_DATA,
                     description = (if (operationId == null) "Withdrew without erasure; prior participant data retained; "
-                        else "Quarantined withdrawn participant data for verified erasure after seven days; ") +
+                        else "Blocked withdrawn participant data pending an owner-run erasure; ") +
                         "participant ref ${LogSanitizer.stableFingerprint(participantId, "participant")}",
                     study = studyId,
                     data = buildMap {
@@ -232,8 +226,7 @@ public open class ParticipantPurgeService(
         studyId: UUID,
         participantId: String,
     ): Long {
-        val predicate = asset.participantScope.predicate
-        val sql = "SELECT COUNT(*) FROM ${asset.tableName} WHERE $STUDY_ERASURE_PREDICATE AND $predicate"
+        val sql = ChronicleDataAssetRegistry.participantStatement(asset, ParticipantAssetOperation.COUNT)
         return connection.prepareStatement(sql).use { ps ->
             ps.bindErasureStudyId(studyId)
             ps.setString(2, participantId)
@@ -262,14 +255,14 @@ public open class ParticipantPurgeService(
         val expiryEpoch = parts[1].toLongOrNull() ?: return false
 
         // Check expiry
-        if (java.time.Instant.ofEpochSecond(expiryEpoch).isBefore(java.time.Instant.now())) {
+        if (Instant.ofEpochSecond(expiryEpoch).isBefore(Instant.now())) {
             return false
         }
 
         // Recompute and compare
         val expiresAt = OffsetDateTime.ofInstant(
-            java.time.Instant.ofEpochSecond(expiryEpoch),
-            java.time.ZoneOffset.UTC
+            Instant.ofEpochSecond(expiryEpoch),
+            ZoneOffset.UTC
         )
         val payload = "$studyId|$participantId|$expiryEpoch"
         val mac = Mac.getInstance("HmacSHA256")
@@ -277,7 +270,7 @@ public open class ParticipantPurgeService(
         val hmacBytes = mac.doFinal(payload.toByteArray(Charsets.UTF_8))
         val expectedSignature = Base64.getEncoder().encodeToString(hmacBytes)
 
-        return java.security.MessageDigest.isEqual(
+        return MessageDigest.isEqual(
             providedSignature.toByteArray(Charsets.UTF_8),
             expectedSignature.toByteArray(Charsets.UTF_8)
         )
