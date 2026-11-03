@@ -21,6 +21,21 @@ import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
 class NotificationJobRunnerFailureTest {
+    @Test fun successfulSmsAuditContainsOnlyAParticipantFingerprint() {
+        val twilio = mock<TwilioService>()
+        val connection = mock<Connection>()
+        whenever(connection.prepareStatement(any())).thenReturn(mock())
+        val notification = Notification(id = UUID.randomUUID(), studyId = UUID.randomUUID(), participantId = "private-participant",
+            status = "sent", messageId = "provider-id", notificationType = NotificationType.ENROLLMENT,
+            deliveryType = DeliveryType.SMS, body = "private message", destination = "+15555550123")
+        whenever(twilio.sendNotification(notification, connection)).thenReturn(notification)
+        val job = ChronicleJob(securablePrincipalId = UUID.randomUUID(), principal = Principal(PrincipalType.USER, "operator"),
+            definition = notification)
+        val description = NotificationJobRunner(twilio).run(connection, job).single().description
+        org.junit.Assert.assertFalse(description.contains(notification.destination))
+        org.junit.Assert.assertFalse(description.contains(notification.participantId))
+        assertTrue(description.contains(com.openlattice.chronicle.util.LogSanitizer.stableFingerprint(notification.participantId, "participant")))
+    }
     @Test
     fun unsupportedEmailPersistsFailureCancelsJobAndNeverAuditsSent() {
         val connection = mock<Connection>()

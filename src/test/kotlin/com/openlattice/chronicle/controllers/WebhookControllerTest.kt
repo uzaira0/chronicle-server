@@ -13,7 +13,8 @@ import java.util.UUID
 class WebhookControllerTest {
 
     private val webhookService = Mockito.mock(WebhookService::class.java)
-    private val auditService = Mockito.mock(com.openlattice.chronicle.audit.AuditService::class.java)
+    private val audit = com.openlattice.chronicle.audit.RecordingAuditingManager()
+    private val auditService = com.openlattice.chronicle.audit.AuditService(audit)
     private val controller = WebhookController(webhookService, auditService)
 
     @Test
@@ -35,7 +36,7 @@ class WebhookControllerTest {
         stubRegistration(studyId, webhookId)
         controller.deleteWebhook(studyId, webhookId)
         verify(webhookService).deleteWebhook(studyId, webhookId)
-        assertAudit(com.openlattice.chronicle.audit.AuditAction.DELETE, studyId)
+        assertAudit(com.openlattice.chronicle.auditing.AuditEventType.DELETE, studyId)
     }
 
     @Test
@@ -45,7 +46,7 @@ class WebhookControllerTest {
         stubRegistration(studyId, webhookId)
         controller.testWebhook(studyId, webhookId)
         verify(webhookService).testWebhook(studyId, webhookId)
-        assertAudit(com.openlattice.chronicle.audit.AuditAction.CONFIGURATION_CHANGE, studyId)
+        assertAudit(com.openlattice.chronicle.auditing.AuditEventType.CONFIGURATION_CHANGE, studyId)
     }
 
     @Test
@@ -58,7 +59,7 @@ class WebhookControllerTest {
             org.mockito.kotlin.whenever(webhookService.createWebhook(org.mockito.kotlin.any(), org.mockito.kotlin.any(), org.mockito.kotlin.any()))
                 .thenReturn(registration)
             controller.createWebhook(registration.studyId, request)
-            assertAudit(com.openlattice.chronicle.audit.AuditAction.CREATE, registration.studyId)
+            assertAudit(com.openlattice.chronicle.auditing.AuditEventType.CREATE, registration.studyId)
         } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext() }
     }
 
@@ -68,12 +69,11 @@ class WebhookControllerTest {
         return registration
     }
 
-    private fun assertAudit(action: com.openlattice.chronicle.audit.AuditAction, studyId: UUID) {
-        val audit = org.mockito.kotlin.argumentCaptor<com.openlattice.chronicle.audit.AuditLogEntry>()
-        verify(auditService).log(audit.capture())
-        assertEquals(action, audit.firstValue.action)
-        assertEquals(studyId, audit.firstValue.studyId)
-        assertEquals("example.org", audit.firstValue.additionalData?.get("destinationHost"))
+    private fun assertAudit(action: com.openlattice.chronicle.auditing.AuditEventType, studyId: UUID) {
+        val event = audit.events.single()
+        assertEquals(action, event.eventType)
+        assertEquals(studyId, event.study)
+        assertEquals("example.org", event.data["destinationHost"])
     }
 
     @Test

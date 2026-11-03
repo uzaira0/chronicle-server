@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.services.notifications
 
+import com.openlattice.chronicle.contract.seedCandidate
+
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
@@ -15,6 +17,7 @@ import com.openlattice.chronicle.services.jobs.JobService
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.twilio.TwilioService
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -27,7 +30,7 @@ import java.util.UUID
 
 class ResearcherNotificationScopeTest {
     @Test
-    fun `researcher email and SMS create study scoped jobs that deserialize for delivery`() {
+    fun `researcher alerts queue only supported SMS jobs that deserialize for delivery`() {
         val postgres = ChronicleContractTestSchema.sharedPostgres
         val studyId = UUID.randomUUID()
         val ids = mock<HazelcastIdGenerationService>()
@@ -53,23 +56,17 @@ class ResearcherNotificationScopeTest {
                         subject = "Study status", message = "Collection needs attention",
                     )), false, Principal(PrincipalType.USER, "researcher-scope-test"),
                 )
-                assertEquals(2, queued)
-                connection.prepareStatement("SELECT definition, participant_ids FROM jobs WHERE study_id = ?").use {
-                    it.setObject(1, studyId)
-                    it.executeQuery().use { rows ->
-                        var count = 0
-                        val mapper = ObjectMappers.newJsonMapper()
-                        while (rows.next()) {
-                            count++
-                            val definition = mapper.readTree(rows.getString("definition"))
-                            assertFalse(definition.has("participantId"))
-                            assertEquals(0, (rows.getArray("participant_ids").array as Array<*>).size)
-                            val notification = mapper.readValue(rows.getString("definition"), Notification::class.java)
-                            assertEquals("", notification.participantId)
-                            assertEquals(studyId, notification.studyId)
-                        }
-                        assertEquals(2, count)
-                    }
+                assertEquals(1, queued)
+                val jobRows = queuedJobs(connection, studyId)
+                assertEquals(1, jobRows.size)
+                val mapper = ObjectMappers.newJsonMapper()
+                jobRows.forEach { (definition, participantIds) ->
+                    assertFalse(mapper.readTree(definition).has("participantId"))
+                    assertEquals(0, participantIds)
+                    val notification = mapper.readValue(definition, Notification::class.java)
+                    assertEquals(DeliveryType.SMS, notification.deliveryType)
+                    assertEquals("", notification.participantId)
+                    assertEquals(studyId, notification.studyId)
                 }
             }
         } finally {
@@ -77,8 +74,27 @@ class ResearcherNotificationScopeTest {
         }
     }
 
+    /** Each queued job's definition JSON and the number of participant IDs it names. */
+    private fun queuedJobs(connection: java.sql.Connection, studyId: UUID): List<Pair<String, Int>> =
+        connection.prepareStatement("SELECT definition, participant_ids FROM jobs WHERE study_id = ?").use {
+            it.setObject(1, studyId)
+            val rows = it.executeQuery() // closed with its statement
+            buildList {
+                while (rows.next()) add(rows.getString("definition") to (rows.getArray("participant_ids").array as Array<*>).size)
+            }
+        }
+
+    /** [read] applied to the first row [sql] returns for [studyId], its only bind parameter. */
+    private fun <T> firstStudyRow(studyId: UUID, sql: String, read: (java.sql.ResultSet) -> T): T =
+        ChronicleContractTestSchema.sharedPostgres.createConnection("").use { connection ->
+            connection.prepareStatement(sql).use {
+                it.setObject(1, studyId)
+                it.executeQuery().use { rows -> org.junit.Assert.assertTrue(rows.next()); read(rows) }
+            }
+        }
+
     @Test
-    fun `participant identity in a researcher message is scoped deleted and fenced on withdrawal`() {
+    fun `participant identity in a researcher message is scoped deleted and fenced on withdrawal`() = RLSRequestContext.withSystemContext {
         val postgres = ChronicleContractTestSchema.sharedPostgres
         val study = UUID.randomUUID()
         val participant = "researcher-erasure-subject"
@@ -95,11 +111,15 @@ class ResearcherNotificationScopeTest {
         val jobs = JobService(ids, storage, mock())
         val service = NotificationService(storage, mock(), mock(), mock(), mock(), jobs, ids, mock(), mock())
         try {
-            postgres.createConnection("").use { connection -> connection.createStatement().use {
-                it.execute("INSERT INTO studies (study_id, title) VALUES ('$study', 'identity scope')")
-                it.execute(
-                    "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) VALUES ('$study', '$participant', '${UUID.randomUUID()}', 'ENROLLED')")
-            } }
+            postgres.createConnection("").use { connection ->
+                connection.prepareStatement("INSERT INTO studies (study_id, title) VALUES (?, 'identity scope')").use {
+                    it.setObject(1, study); it.executeUpdate()
+                }
+                connection.prepareStatement(
+                    "INSERT INTO study_participants (study_id, participant_id, candidate_id, participation_status) " +
+                        "VALUES (?, ?, ?, 'ENROLLED')",
+                ).use { it.setObject(1, study); it.setString(2, participant); it.setObject(3, seedCandidate(connection)); it.executeUpdate() }
+            }
             val notice = ResearcherNotification(emptySet(), setOf("+15555550100"),
                 NotificationType.PASSIVE_DATA_COLLECTION_COMPLIANCE, EnumSet.of(DeliveryType.SMS),
                 "Compliance", "Participant $participant needs attention", participantId = participant)
@@ -108,26 +128,18 @@ class ResearcherNotificationScopeTest {
                     Principal(PrincipalType.USER, "scope-test"))
             }
             assertEquals(1, enqueue())
-            postgres.createConnection("").use { connection -> connection.createStatement().use {
-                it.executeQuery("SELECT participant_id FROM notifications WHERE study_id = '$study'").use { rows ->
-                    org.junit.Assert.assertTrue(rows.next()); assertEquals(participant, rows.getString(1))
-                }
-                it.executeQuery("SELECT participant_ids FROM jobs WHERE study_id = '$study'").use { rows ->
-                    org.junit.Assert.assertTrue(rows.next()); assertEquals(listOf(participant), (rows.getArray(1).array as Array<*>).toList())
-                }
-            } }
+            assertEquals(participant, firstStudyRow(study, "SELECT participant_id FROM notifications WHERE study_id = ?") {
+                it.getString(1)
+            })
+            assertEquals(listOf(participant), firstStudyRow(study, "SELECT participant_ids FROM jobs WHERE study_id = ?") {
+                (it.getArray(1).array as Array<*>).toList()
+            })
             val orchestrator = com.openlattice.chronicle.services.delete.DataDeletionOrchestrator(storage, mock())
             val operation = orchestrator.quarantineParticipant(study, participant,
                 com.openlattice.chronicle.services.delete.DataDeletionMode.WITHDRAW_AND_ERASE, "scope-test", UUID.randomUUID())
-            postgres.createConnection("").use { connection -> connection.createStatement().use {
-                it.execute("UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = '$operation'")
-            } }
-            assertEquals(1, orchestrator.processDueOperations(1))
-            postgres.createConnection("").use { connection -> connection.createStatement().use {
-                for (table in listOf("notifications", "jobs")) it.executeQuery("SELECT count(*) FROM $table WHERE study_id = '$study'").use { rows ->
-                    org.junit.Assert.assertTrue(rows.next()); assertEquals(0L, rows.getLong(1))
-                }
-            } }
+            assertEquals("COMPLETED", orchestrator.eraseNow(operation, study, "test-owner").status)
+            assertEquals(0L, firstStudyRow(study, "SELECT count(*) FROM notifications WHERE study_id = ?") { it.getLong(1) })
+            assertEquals(0L, firstStudyRow(study, "SELECT count(*) FROM jobs WHERE study_id = ?") { it.getLong(1) })
             assertEquals("55000", assertThrows(SQLException::class.java) { enqueue() }.sqlState)
         } finally { jobs.shutdown(); pool.close() }
     }
@@ -144,7 +156,7 @@ class ResearcherNotificationScopeTest {
                 ).use {
                     it.setObject(1, UUID.randomUUID())
                     it.setObject(2, UUID.randomUUID())
-                    it.setString(3, """{"@type":"DeleteParticipantUsageData","participantId":""}""")
+                    it.setString(3, """{"@type":"Notification","participantId":""}""")
                     it.executeUpdate()
                 }
             }

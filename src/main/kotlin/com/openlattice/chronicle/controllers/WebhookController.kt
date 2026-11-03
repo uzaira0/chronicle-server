@@ -1,14 +1,12 @@
 package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
-import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.authorization.StudyPermission
 import com.openlattice.chronicle.authorization.annotations.RequiresStudyAccess
 import com.openlattice.chronicle.authorization.principals.Principals
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.base.OK
 import com.openlattice.chronicle.services.webhooks.WebhookNotFoundException
 import com.openlattice.chronicle.services.webhooks.WebhookService
@@ -34,7 +32,6 @@ import java.util.*
 @RestController
 @RequestMapping(path = [StudyApi.BASE, StudyApi.CONTROLLER])
 @Timed
-@RateLimit(type = RateLimitType.SENSITIVE)
 public open class WebhookController(
     private val webhookService: WebhookService,
     private val auditService: AuditService,
@@ -52,7 +49,7 @@ public open class WebhookController(
     ): WebhookRegistration {
         val userId = Principals.getCurrentUser().id
         return webhookService.createWebhook(studyId, userId, request).also {
-            auditWebhook(AuditAction.CREATE, it)
+            auditWebhook(AuditEventType.CREATE, it)
         }
     }
 
@@ -76,7 +73,7 @@ public open class WebhookController(
     ): OK {
         val registration = registration(studyId, webhookId)
         webhookService.deleteWebhook(studyId, webhookId)
-        auditWebhook(AuditAction.DELETE, registration)
+        auditWebhook(AuditEventType.DELETE, registration)
         return OK.ok
     }
 
@@ -103,7 +100,7 @@ public open class WebhookController(
     ): OK {
         val registration = registration(studyId, webhookId)
         webhookService.testWebhook(studyId, webhookId)
-        auditWebhook(AuditAction.CONFIGURATION_CHANGE, registration)
+        auditWebhook(AuditEventType.CONFIGURATION_CHANGE, registration)
         return OK.ok
     }
 
@@ -115,7 +112,7 @@ public open class WebhookController(
     private fun registration(studyId: UUID, webhookId: UUID): WebhookRegistration =
         webhookService.listWebhooks(studyId).firstOrNull { it.webhookId == webhookId } ?: throw WebhookNotFoundException()
 
-    private fun auditWebhook(action: AuditAction, registration: WebhookRegistration) {
+    private fun auditWebhook(action: AuditEventType, registration: WebhookRegistration) {
         auditService.logWithContext {
             action(action)
             resourceType("Webhook")

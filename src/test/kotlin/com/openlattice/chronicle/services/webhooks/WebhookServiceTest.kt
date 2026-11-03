@@ -1,34 +1,21 @@
 package com.openlattice.chronicle.services.webhooks
 
+import com.openlattice.chronicle.controllers.kAnyString
+import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.study.ParticipantDataType
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
+import com.openlattice.chronicle.services.participantaccess.EnrollmentDisclosureActivity
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.util.tests.EnrollmentDisclosureActivityResultFixture
 import com.openlattice.chronicle.webhooks.WebhookCreateRequest
 import com.openlattice.chronicle.webhooks.WebhookEventType
 import com.zaxxer.hikari.HikariDataSource
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
-import org.junit.Before
-import org.junit.Test
-import org.mockito.Mockito
-import com.openlattice.chronicle.controllers.kAnyString
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
-import org.mockito.ArgumentCaptor
-import org.mockito.Mockito.`when`
-import org.mockito.Mockito.never
-import org.mockito.Mockito.verify
+import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.UnknownHostException
-import java.io.IOException
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -38,6 +25,25 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.mockito.ArgumentCaptor
+import org.mockito.Mockito
+import org.mockito.Mockito.`when`
+import org.mockito.Mockito.never
+import org.mockito.Mockito.verify
+import org.springframework.web.server.ResponseStatusException
 
 class WebhookServiceTest {
     private companion object {
@@ -70,6 +76,7 @@ class WebhookServiceTest {
         `when`(erasureCheck.executeQuery()).thenReturn(erasureResult)
         `when`(erasureResult.next()).thenReturn(true)
         `when`(erasureResult.getBoolean(1)).thenReturn(true)
+        `when`(erasureResult.getBoolean("processing_allowed")).thenReturn(true)
         `when`(mockConnection.prepareStatement(kAnyString())).thenAnswer { invocation ->
             if (invocation.getArgument<String>(0).contains("SELECT chronicle_participant_mutation_allowed")) erasureCheck else mockPs
         }
@@ -78,6 +85,23 @@ class WebhookServiceTest {
         `when`(mockPs.executeUpdate()).thenReturn(1)
 
         service = WebhookService(storageResolver, idGenerationService, deliveryExecutor)
+    }
+
+    @Test
+    fun testParticipantWebhookOutboxDropsRawLabelsButKeepsInternalDeletionScope() {
+        val participantId = "SENTINEL-WEBHOOK-7c3a"
+        val reference = ParticipantRef.fromParticipantId(participantId)
+        val payloads = mapOf(
+            WebhookEventType.PARTICIPANT_ENROLLED to WebhookPayload.ParticipantEnrolled(reference, ParticipationStatus.ENROLLED.name),
+            WebhookEventType.DATA_SUBMITTED to WebhookPayload.DataSubmitted(reference, ParticipantDataType.UsageEvents, 2),
+        )
+        payloads.forEach { (event, payload) -> service.enqueueEvent(mockConnection, UUID.randomUUID(), event, payload) }
+        val bodies = ArgumentCaptor.forClass(String::class.java)
+        verify(mockPs, Mockito.times(payloads.size)).setString(Mockito.eq(2), bodies.capture())
+        verify(mockPs, Mockito.times(payloads.size)).setString(3, participantId)
+        assertTrue(bodies.allValues.all { it.contains(reference.value) })
+        assertTrue(bodies.allValues.none { it.contains(participantId) || it.contains("participantId") })
+        assertFalse(reference.toString().contains(participantId))
     }
 
     @Test
@@ -91,11 +115,8 @@ class WebhookServiceTest {
         val lock = Mockito.mock(PreparedStatement::class.java)
         val lockRows = Mockito.mock(ResultSet::class.java)
         val activity = Mockito.mock(PreparedStatement::class.java)
-        val activityRows = Mockito.mock(ResultSet::class.java)
         `when`(lock.executeQuery()).thenReturn(lockRows)
         `when`(lockRows.next()).thenReturn(true)
-        `when`(activity.executeQuery()).thenReturn(activityRows)
-        `when`(activityRows.next()).thenReturn(true)
         `when`(mockConnection.prepareStatement(kAnyString())).thenAnswer { invocation ->
             if (invocation.getArgument<String>(0).contains("FOR UPDATE")) lock else activity
         }
@@ -103,10 +124,13 @@ class WebhookServiceTest {
             hostResolver = { arrayOf(InetAddress.getByName("93.184.216.34")) })
         val request = WebhookCreateRequest(url = "https://example.org/callback", secret = VALID_SECRET,
             eventTypes = setOf(WebhookEventType.DATA_SUBMITTED))
-        for (active in listOf(true, false)) {
-            `when`(activityRows.getBoolean(1)).thenReturn(active)
-            `when`(activityRows.getBoolean(2)).thenReturn(!active)
-            val error = assertThrows(org.springframework.web.server.ResponseStatusException::class.java) {
+        for (activityCase in listOf(
+            EnrollmentDisclosureActivity(hasActiveEnrollment = true, pendingParticipantIds = emptyList()),
+            EnrollmentDisclosureActivity(hasActiveEnrollment = false, pendingParticipantIds = listOf("pending-participant")),
+        )) {
+            Mockito.doReturn(EnrollmentDisclosureActivityResultFixture.resultSet(activityCase))
+                .`when`(activity).executeQuery()
+            val error = assertThrows(ResponseStatusException::class.java) {
                 service.createWebhook(UUID.randomUUID(), "staff", request)
             }
             assertEquals(409, error.statusCode.value())
@@ -115,166 +139,28 @@ class WebhookServiceTest {
         verify(activity, never()).executeUpdate()
     }
 
-    @Test
-    fun terminalDeliveryPruningKeepsPendingAndRecentRows() {
-        val pg = com.openlattice.chronicle.contract.ChronicleContractTestSchema.sharedPostgres
-        HikariDataSource(com.zaxxer.hikari.HikariConfig().apply {
-            jdbcUrl = pg.jdbcUrl; username = pg.username; password = pg.password; maximumPoolSize = 1
-        }).use { pool ->
-            pool.connection.use { connection -> connection.createStatement().use { statement ->
-                statement.execute(
-                    "CREATE TEMP TABLE webhook_deliveries (delivery_id uuid PRIMARY KEY, delivery_state text, completed_at timestamptz)")
-                statement.execute("""INSERT INTO webhook_deliveries VALUES
-                    (gen_random_uuid(), 'SUCCEEDED', now() - interval '31 days'),
-                    (gen_random_uuid(), 'FAILED', now() - interval '31 days'),
-                    (gen_random_uuid(), 'SUCCEEDED', now()),
-                    (gen_random_uuid(), 'PENDING', now() - interval '31 days'),
-                    (gen_random_uuid(), 'IN_FLIGHT', now() - interval '31 days')""")
-                statement.execute("""INSERT INTO webhook_deliveries
-                    SELECT gen_random_uuid(), 'SUCCEEDED', now() - interval '31 days'
-                    FROM generate_series(1, 2500)""")
-            } }
-            val resolver = Mockito.mock(StorageResolver::class.java)
-            `when`(resolver.getPlatformStorage()).thenReturn(pool)
-            val pruning = WebhookService(resolver, idGenerationService, deliveryExecutor)
-            assertEquals(2502, pruning.pruneTerminalDeliveries())
-            pool.connection.use { connection -> connection.createStatement().use { statement ->
-                statement.executeQuery("SELECT count(*) FROM webhook_deliveries").use { rows ->
-                    assertTrue(rows.next()); assertEquals(3, rows.getInt(1))
-                }
-            } }
-            assertEquals(0, pruning.pruneTerminalDeliveries())
-        }
-    }
-
-    @Test
-    fun pruningStopsAtItsRunCapDuringSustainedTraffic() {
-        `when`(mockPs.executeUpdate()).thenReturn(1_000)
-        assertEquals(100_000, service.pruneTerminalDeliveries())
-        verify(mockPs, Mockito.times(WebhookService.DELIVERY_PRUNE_MAX_BATCHES)).executeUpdate()
-    }
-
     // --- createWebhook tests ---
 
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsMissingSecret() {
-        val request = WebhookCreateRequest(
+    @Test
+    fun testCreateWebhookRejectsInvalidCredentialsAndDestinations() {
+        val valid = WebhookCreateRequest(
             url = "https://example.com/callback",
-            secret = "",
-            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsShortSecret() {
-        val request = WebhookCreateRequest(
-            url = "https://example.com/callback",
-            secret = "too-short",
-            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsHttpUrl() {
-        val request = WebhookCreateRequest(
-            url = "http://example.com/callback",
             secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED)
+            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED),
         )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsUrlUserinfo() {
-        val request = WebhookCreateRequest(
-            url = "https://user:password@example.com/callback",
-            secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsUrlFragment() {
-        val request = WebhookCreateRequest(
-            url = "https://example.com/callback#token",
-            secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsLocalhostUrl() {
-        val webhookId = UUID.randomUUID()
-        `when`(idGenerationService.getNextId()).thenReturn(webhookId)
-
-        val request = WebhookCreateRequest(
-            url = "http://localhost:8080/callback",
-            secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejects127001() {
-        `when`(idGenerationService.getNextId()).thenReturn(UUID.randomUUID())
-
-        val request = WebhookCreateRequest(
-            url = "http://127.0.0.1/callback",
-            secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.DATA_SUBMITTED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsPrivateIp() {
-        `when`(idGenerationService.getNextId()).thenReturn(UUID.randomUUID())
-
-        val request = WebhookCreateRequest(
-            url = "http://192.168.1.1/callback",
-            secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.STUDY_STATUS_CHANGED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejects10DotNet() {
-        `when`(idGenerationService.getNextId()).thenReturn(UUID.randomUUID())
-
-        val request = WebhookCreateRequest(
-            url = "http://10.0.0.1/callback",
-            secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.EXPORT_COMPLETED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateWebhookRejectsMetadataEndpoint() {
-        `when`(idGenerationService.getNextId()).thenReturn(UUID.randomUUID())
-
-        val request = WebhookCreateRequest(
-            url = "http://169.254.169.254/latest/meta-data/",
-            secret = VALID_SECRET,
-            eventTypes = setOf(WebhookEventType.PARTICIPANT_ENROLLED)
-        )
-
-        service.createWebhook(UUID.randomUUID(), "user", request)
+        val invalid = listOf(
+            valid.copy(secret = ""), valid.copy(secret = "too-short"),
+        ) + listOf(
+            "http://example.com/callback", "https://user:password@example.com/callback",
+            "https://example.com/callback#token", "http://localhost:8080/callback",
+            "http://127.0.0.1/callback", "http://192.168.1.1/callback", "http://10.0.0.1/callback",
+            "http://169.254.169.254/latest/meta-data/",
+        ).map { valid.copy(url = it) }
+        invalid.forEach { request ->
+            assertThrows(IllegalArgumentException::class.java) {
+                service.createWebhook(UUID.randomUUID(), "user", request)
+            }
+        }
     }
 
     // --- listWebhooks tests ---
@@ -311,11 +197,13 @@ class WebhookServiceTest {
         verify(mockPs).setObject(2, studyId)
     }
 
-    @Test(expected = WebhookNotFoundException::class)
+    @Test
     fun testDeleteWebhookThrowsWhenNotFound() {
         `when`(mockPs.executeUpdate()).thenReturn(0)
 
-        service.deleteWebhook(UUID.randomUUID(), UUID.randomUUID())
+        assertThrows(WebhookNotFoundException::class.java) {
+            service.deleteWebhook(UUID.randomUUID(), UUID.randomUUID())
+        }
     }
 
     // --- getDeliveries tests ---
@@ -343,24 +231,39 @@ class WebhookServiceTest {
         }
     }
 
-    // --- fireEvent tests ---
+    private fun publishFixtureEvent() = PinnedPlatformConnection.committing(mockHds, mockConnection) {
+        service.withDataSubmission(UUID.randomUUID(), "fixture-participant", ParticipantDataType.UsageEvents) { 1 }
+    }
 
     @Test
-    fun testFireEventWithNoWebhooksDoesNotFail() {
+    fun dataSubmissionRequiresItsTransactionBeforeExecutingTheWrite() {
+        var written = false
+        assertThrows(IllegalStateException::class.java) {
+            service.withDataSubmission(UUID.randomUUID(), "fixture-participant", ParticipantDataType.UsageEvents) {
+                written = true
+                1
+            }
+        }
+        assertFalse(written)
+        verify(mockPs, never()).executeUpdate()
+    }
+
+    @Test
+    fun dataSubmissionWithoutWebhooksDoesNotDispatch() {
         `when`(mockPs.executeUpdate()).thenReturn(0)
 
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, mapOf("test" to true))
+        publishFixtureEvent()
 
         verify(mockPs).executeUpdate()
         verify(deliveryExecutor, never()).execute(Mockito.any(Runnable::class.java))
     }
 
     @Test
-    fun testFireEventQueueRejectionRemainsBestEffort() {
+    fun committedDataSubmissionKeepsItsOutboxWhenDispatchIsUnavailable() {
         Mockito.doThrow(RejectedExecutionException("queue full"))
             .`when`(deliveryExecutor).execute(Mockito.any(Runnable::class.java))
 
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, mapOf("test" to true))
+        publishFixtureEvent()
 
         verify(mockPs).executeUpdate()
         verify(deliveryExecutor).execute(Mockito.any(Runnable::class.java))
@@ -534,7 +437,7 @@ class WebhookServiceTest {
         `when`(mockRs.getInt("attempt_count")).thenReturn(0)
         val taskCaptor = ArgumentCaptor.forClass(Runnable::class.java)
 
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, mapOf("records" to 2))
+        publishFixtureEvent()
         verify(deliveryExecutor).execute(taskCaptor.capture())
         taskCaptor.value.run()
 
@@ -582,7 +485,7 @@ class WebhookServiceTest {
         `when`(mockPs.executeUpdate()).thenReturn(1, 0, 0)
         val taskCaptor = ArgumentCaptor.forClass(Runnable::class.java)
 
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, emptyMap())
+        publishFixtureEvent()
         verify(deliveryExecutor).execute(taskCaptor.capture())
         taskCaptor.value.run()
 
@@ -612,7 +515,7 @@ class WebhookServiceTest {
         `when`(mockRs.getString("url")).thenReturn("https://example.com/callback")
         `when`(mockRs.getString("secret_hash")).thenReturn("secret-hash")
         val task = ArgumentCaptor.forClass(Runnable::class.java)
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, emptyMap())
+        publishFixtureEvent()
         verify(deliveryExecutor).execute(task.capture())
         Mockito.clearInvocations(mockHds, mockConnection)
         val running = worker.submit { task.value.run() }
@@ -646,7 +549,7 @@ class WebhookServiceTest {
         `when`(mockRs.getInt("attempt_count")).thenReturn(0)
         val taskCaptor = ArgumentCaptor.forClass(Runnable::class.java)
 
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, emptyMap())
+        publishFixtureEvent()
         verify(deliveryExecutor).execute(taskCaptor.capture())
         taskCaptor.value.run()
 
@@ -660,7 +563,7 @@ class WebhookServiceTest {
         Mockito.doThrow(RejectedExecutionException("queue full"))
             .`when`(deliveryExecutor).execute(Mockito.any(Runnable::class.java))
 
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, emptyMap())
+        publishFixtureEvent()
 
         verify(mockPs).executeUpdate()
         verify(idGenerationService, never()).getNextId()
@@ -692,7 +595,7 @@ class WebhookServiceTest {
         `when`(mockRs.getInt("attempt_count")).thenReturn(0)
         val taskCaptor = ArgumentCaptor.forClass(Runnable::class.java)
 
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, emptyMap())
+        publishFixtureEvent()
         verify(deliveryExecutor).execute(taskCaptor.capture())
         try {
             taskCaptor.value.run()
@@ -709,7 +612,7 @@ class WebhookServiceTest {
     @Test
     fun testForcedShutdownRecordsQueuedDelivery() {
         val taskCaptor = ArgumentCaptor.forClass(Runnable::class.java)
-        service.fireEvent(UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED, emptyMap())
+        publishFixtureEvent()
         verify(deliveryExecutor).execute(taskCaptor.capture())
         `when`(deliveryExecutor.awaitTermination(10L, TimeUnit.SECONDS)).thenReturn(false)
         `when`(deliveryExecutor.shutdownNow()).thenReturn(listOf(taskCaptor.value))

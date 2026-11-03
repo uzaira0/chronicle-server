@@ -1,6 +1,7 @@
 package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
+import com.openlattice.chronicle.data.MobileParticipationStatus
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
 import com.openlattice.chronicle.i18n.Messages
@@ -8,11 +9,12 @@ import com.openlattice.chronicle.participantaccess.MobileReminderConfiguration
 import com.openlattice.chronicle.participantaccess.MobileReminderForm
 import com.openlattice.chronicle.participantaccess.ParticipantFormKind
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
-import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeCommand
-import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType
-import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
+import com.openlattice.chronicle.services.studies.ParticipantCollectionAcknowledgmentService
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.surveys.SurveysManager
+import com.openlattice.chronicle.services.surveys.appUsageDayRules
+import com.openlattice.chronicle.study.StudySettings
+import com.openlattice.chronicle.survey.AppUsageDayState
 import com.openlattice.chronicle.util.validateParticipantId
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.http.HttpHeaders
@@ -20,16 +22,15 @@ import org.springframework.http.HttpStatus
 import org.springframework.security.core.Authentication
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
-import org.springframework.web.bind.annotation.PostMapping
-import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import java.util.UUID
 
 /**
- * Device-bound reminder manifest. Android displays native notifications, but every
- * destination is a backend-hosted participant form protected by a one-time access code.
+ * Device-bound reminder schedule. Android displays native notifications, but every
+ * destination is a backend-hosted participant form; the phone mints its one-time code on tap.
  * Time Use Diary is intentionally absent: it has no Android reminder path.
  */
 @RestController
@@ -38,35 +39,11 @@ public open class MobileReminderController(
     private val enrollmentManager: EnrollmentManager,
     private val studyService: StudyService,
     private val surveysManager: SurveysManager,
-    private val participantFormAccessService: ParticipantFormAccessService,
+    private val participantCollectionAcknowledgmentService: ParticipantCollectionAcknowledgmentService,
 ) {
     // The DispatcherServlet is mounted at /chronicle/* and strips that prefix before Spring
     // matches controller paths. Keep the full path as well for direct servlet access.
-    @PostMapping(
-        path = [
-            "/v4/study/{studyId}/participant/{participantId}/reminders",
-            "/chronicle/v4/study/{studyId}/participant/{participantId}/reminders",
-        ]
-    )
-    public fun getReminderConfiguration(
-        @PathVariable studyId: UUID,
-        @PathVariable participantId: String,
-        authentication: Authentication,
-        response: HttpServletResponse,
-    ): MobileReminderConfiguration {
-        val device = boundDevice(studyId, participantId, authentication)
-        val status = enrollmentManager.getDeviceParticipationStatus(studyId, participantId).forDeviceClient(false)
-        val forms = if (status == ParticipationStatus.ENROLLED) {
-            buildForms(studyId, participantId, device, mintAccessCodes = true)
-        } else {
-            emptyList()
-        }
-        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store")
-        response.setHeader("Pragma", "no-cache")
-        return MobileReminderConfiguration(status, forms)
-    }
-
-    /** Returns reminder metadata for local scheduling without issuing participant access codes. */
+    /** Reminder metadata for local scheduling; the phone mints a form code only when the participant taps. */
     @GetMapping(
         path = [
             "/v4/study/{studyId}/participant/{participantId}/reminders",
@@ -80,9 +57,9 @@ public open class MobileReminderController(
         response: HttpServletResponse,
     ): MobileReminderConfiguration {
         val device = boundDevice(studyId, participantId, authentication)
-        val status = enrollmentManager.getDeviceParticipationStatus(studyId, participantId).forDeviceClient(false)
-        val forms = if (status == ParticipationStatus.ENROLLED) {
-            buildForms(studyId, participantId, device, mintAccessCodes = false)
+        val status = enrollmentManager.getDeviceParticipationStatus(studyId, participantId)
+        val forms = if (remindersActive(studyId, participantId, device, status)) {
+            buildForms(studyId, participantId)
         } else {
             emptyList()
         }
@@ -92,10 +69,10 @@ public open class MobileReminderController(
     }
 
     /**
-     * Side-effect-free status read for the device's enrollment monitor. The reminder manifest
-     * rotates form access codes, so polling it every 15 minutes would churn live links.
-     * Erasure-aware clients read ERASED; older clients read NOT_ENROLLED. A key deleted by erasure
+     * Side-effect-free status read for the device's enrollment monitor. A key deleted by erasure
      * is admitted through its tombstone (see ApiKeyAuthenticationFilter), so an offline phone learns it.
+     * It carries the participant's closed capture windows and the server's clock: the phone converts the windows to its
+     * own clock with that measurement and decides on the phone which rows fall inside them.
      */
     @GetMapping(
         path = [
@@ -108,17 +85,14 @@ public open class MobileReminderController(
         @PathVariable participantId: String,
         authentication: Authentication,
         response: HttpServletResponse,
-        @RequestHeader(value = ParticipationStatus.ERASURE_STATUS_VERSION_HEADER, required = false)
-        erasureStatusVersion: String? = null,
-    ): ParticipationStatus {
+    ): MobileParticipationStatus {
         response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store")
-        val supportsErasureStatus = erasureStatusVersion == ParticipationStatus.ERASURE_STATUS_VERSION
         if ((authentication as? ApiKeyAuthenticationToken)?.erased == true) {
             validateParticipantId(participantId)
-            return ParticipationStatus.ERASED.forDeviceClient(supportsErasureStatus)
+            return MobileParticipationStatus(ParticipationStatus.ERASED, OffsetDateTime.now(ZoneOffset.UTC))
         }
         boundDevice(studyId, participantId, authentication)
-        return enrollmentManager.getDeviceParticipationStatus(studyId, participantId).forDeviceClient(supportsErasureStatus)
+        return enrollmentManager.getDeviceCollectionStatus(studyId, participantId)
     }
 
     private fun boundDevice(studyId: UUID, participantId: String, authentication: Authentication): ApiKeyAuthenticationToken {
@@ -131,82 +105,40 @@ public open class MobileReminderController(
         return device
     }
 
-    private fun buildForms(
+    /** A required-module decline stops reminders like a pause, while the real participation status is still reported. */
+    private fun remindersActive(
         studyId: UUID,
         participantId: String,
         device: ApiKeyAuthenticationToken,
-        mintAccessCodes: Boolean,
-    ): List<MobileReminderForm> {
-        val templates = buildList {
-            if (studyService.isNotificationsEnabled(studyId)) {
-                add(
-                    ReminderTemplate(
-                        kind = ParticipantFormKind.APP_USAGE,
-                        resourceId = null,
-                        title = Messages.get("reminder.appUsage.title"),
-                        recurrenceRule = "FREQ=DAILY;BYHOUR=19;BYMINUTE=0;BYSECOND=0",
-                    )
-                )
-            }
-            surveysManager.getStudyQuestionnaires(studyId)
-                .asSequence()
-                .filter { questionnaire -> questionnaire.active }
-                .mapNotNull { questionnaire ->
-                    val id = questionnaire.id ?: return@mapNotNull null
-                    val recurrence = questionnaire.recurrenceRule?.takeIf { it.isNotBlank() }
-                        ?: return@mapNotNull null
-                    ReminderTemplate(
-                        kind = ParticipantFormKind.QUESTIONNAIRE,
-                        resourceId = id,
-                        title = questionnaire.title,
-                        recurrenceRule = recurrence,
-                    )
-                }
-                .forEach(::add)
-        }
-        if (!mintAccessCodes) {
-            val noCodeExpiresAt = OffsetDateTime.now()
-            return templates.map { template ->
+        status: ParticipationStatus,
+    ): Boolean = status == ParticipationStatus.ENROLLED && device.randomDeviceId?.let {
+        !participantCollectionAcknowledgmentService.isCollectionHalted(studyId, participantId, it)
+    } == true
+
+    private fun buildForms(studyId: UUID, participantId: String): List<MobileReminderForm> = buildList {
+        val rules = appUsageDayRules(StudySettings(studyService.getStudySettings(studyId)))
+        // The survey admission decides whether the study asks about app usage at all (shared devices only).
+        surveysManager.getAppUsageDays(studyId, participantId, rules)?.let { days ->
+            add(
                 MobileReminderForm(
-                    formKind = template.kind,
-                    resourceId = template.resourceId,
-                    title = template.title,
-                    recurrenceRule = template.recurrenceRule,
-                    accessCode = "",
-                    accessCodeExpiresAt = noCodeExpiresAt,
+                    formKind = ParticipantFormKind.APP_USAGE,
+                    title = Messages.get("reminder.appUsage.title"),
+                    // Noon and 19:00 in the study zone, until every ended day is answered.
+                    recurrenceRule = "FREQ=DAILY;BYHOUR=12,19;BYMINUTE=0;BYSECOND=0",
+                    timeZone = days.timeZone,
+                    unansweredDays = days.days.any { it.state != AppUsageDayState.ANSWERED },
                 )
-            }
-        }
-        val accessCodes = participantFormAccessService.createAccessCodes(
-            templates.map { template ->
-                ParticipantAccessCodeCommand(
-                    studyId = studyId,
-                    participantId = participantId,
-                    formKind = template.kind,
-                    resourceId = template.resourceId,
-                    logicalDate = null,
-                    requestedExpiresAt = null,
-                    issuerType = ParticipantAccessCodeIssuerType.DEVICE,
-                    issuedBy = "device:${device.keyId}",
-                )
-            },
-        )
-        return templates.zip(accessCodes) { template, access ->
-            MobileReminderForm(
-                formKind = template.kind,
-                resourceId = template.resourceId,
-                title = template.title,
-                recurrenceRule = template.recurrenceRule,
-                accessCode = access.accessCode,
-                accessCodeExpiresAt = access.expiresAt,
             )
         }
+        surveysManager.getStudyQuestionnaires(studyId)
+            .asSequence()
+            .filter { questionnaire -> questionnaire.active }
+            .mapNotNull { questionnaire ->
+                val id = questionnaire.id ?: return@mapNotNull null
+                val recurrence = questionnaire.recurrenceRule?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                MobileReminderForm(formKind = ParticipantFormKind.QUESTIONNAIRE, resourceId = id, title = questionnaire.title,
+                    recurrenceRule = recurrence)
+            }
+            .forEach(::add)
     }
-
-    private data class ReminderTemplate(
-        val kind: ParticipantFormKind,
-        val resourceId: UUID?,
-        val title: String,
-        val recurrenceRule: String,
-    )
 }

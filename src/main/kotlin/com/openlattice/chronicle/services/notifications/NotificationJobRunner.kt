@@ -66,8 +66,8 @@ public open class NotificationJobRunner(
 
         val sentDescription =
             "Sent ${notification.deliveryType} notification of type " +
-                "${notification.notificationType} to ${notification.destination} " +
-                "(participantId = ${notification.participantId})"
+                "${notification.notificationType} for " +
+                LogSanitizer.stableFingerprint(notification.participantId, "participant")
         return listOf(
             AuditableEvent(
                 AclKey(notification.studyId),

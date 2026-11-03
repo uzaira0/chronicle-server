@@ -1,15 +1,23 @@
 package com.openlattice.chronicle.services.webhooks
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.util.RetryBackoff
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.PostgresArrays
 import com.openlattice.chronicle.configuration.SsrfConfig
+import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
+import com.openlattice.chronicle.services.participantaccess.EnrollmentAccessCodeRepository
+import com.openlattice.chronicle.storage.DeletionStudyFence
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
+import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.SsrfException
-import com.openlattice.chronicle.util.SsrfViolationType
 import com.openlattice.chronicle.util.SsrfValidator
+import com.openlattice.chronicle.util.SsrfViolationType
 import com.openlattice.chronicle.webhooks.WebhookCreateRequest
 import com.openlattice.chronicle.webhooks.WebhookDeliveryInfo
 import com.openlattice.chronicle.webhooks.WebhookDeliveryState
@@ -23,7 +31,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.slf4j.LoggerFactory
+import org.springframework.http.HttpStatus
 import org.springframework.scheduling.annotation.Scheduled
+import org.springframework.web.server.ResponseStatusException
 import java.net.InetAddress
 import java.net.Proxy
 import java.security.MessageDigest
@@ -42,8 +52,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
+import com.openlattice.chronicle.util.hmacSha256
 import javax.net.ssl.SSLException
 
 public class WebhookNotFoundException : RuntimeException("Webhook is unavailable")
@@ -60,10 +69,6 @@ public open class WebhookService(
     internal companion object {
         private val logger = LoggerFactory.getLogger(WebhookService::class.java)
         private val mapper = ObjectMappers.newJsonMapper()
-        private const val DELIVERY_RETENTION_DAYS = 30L
-        private const val DELIVERY_PRUNE_BATCH_SIZE = 1_000
-        internal const val DELIVERY_PRUNE_MAX_BATCHES = 100
-        private const val DELIVERY_PRUNE_INTERVAL_MS = 3_600_000L
 
         private const val INSERT_WEBHOOK_SQL = """
             INSERT INTO webhook_registrations
@@ -84,8 +89,8 @@ public open class WebhookService(
 
         private const val ENQUEUE_EVENT_SQL = """
             INSERT INTO webhook_deliveries
-                (delivery_id, webhook_id, event_type, payload, delivery_state)
-            SELECT gen_random_uuid(), webhook_id, ?, ?::jsonb, 'PENDING'
+                (delivery_id, webhook_id, event_type, payload, delivery_state, participant_id)
+            SELECT gen_random_uuid(), webhook_id, ?, ?::jsonb, 'PENDING', ?
             FROM webhook_registrations
             WHERE study_id = ?
               AND enabled = true
@@ -124,6 +129,7 @@ public open class WebhookService(
                     delivery_state = 'IN_FLIGHT'
                     AND lease_expires_at <= now()
                 )) AND chronicle_participant_mutation_allowed(study_id, participant_id)
+                   AND chronicle_participant_processing_allowed(study_id, participant_id)
                 ORDER BY
                     CASE
                         WHEN delivery_state = 'PENDING' THEN available_at
@@ -294,9 +300,7 @@ public open class WebhookService(
         }
 
         public fun computeSignature(payload: String, secret: String): String {
-            val mac = Mac.getInstance("HmacSHA256")
-            mac.init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-            return "sha256=" + mac.doFinal(payload.toByteArray(Charsets.UTF_8))
+            return "sha256=" + hmacSha256(secret.toByteArray(Charsets.UTF_8), payload)
                 .joinToString("") { "%02x".format(it) }
         }
 
@@ -332,19 +336,18 @@ public open class WebhookService(
     @Suppress("TooGenericExceptionCaught")
     public fun createWebhook(studyId: UUID, userId: String, request: WebhookCreateRequest): WebhookRegistration {
         validateCreateRequest(request)
-        // C-5: Validate webhook URL against SSRF rules on registration
+        // Validate webhook URL against SSRF rules on registration
         validateWebhookUrl(request.url)
 
         val webhookId = idGenerationService.getNextId()
         val secretHash = if (request.secret.isNotBlank()) hashSecret(request.secret) else ""
 
         storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                val (active, pending) = com.openlattice.chronicle.services.studies.loadEnrollmentDisclosureActivity(connection, studyId)
-                if (active || pending) throw org.springframework.web.server.ResponseStatusException(
-                    org.springframework.http.HttpStatus.CONFLICT,
-                    com.openlattice.chronicle.i18n.Messages.get("error.webhook.recipientsLocked"),
+            connection.withTransaction {
+                val activity = EnrollmentAccessCodeRepository(connection).lockActivity(studyId)
+                if (activity.hasActiveEnrollment || activity.pendingParticipantIds.isNotEmpty()) throw ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    Messages.get("error.webhook.recipientsLocked"),
                 )
                 connection.prepareStatement(INSERT_WEBHOOK_SQL).use { ps ->
                     ps.setObject(1, webhookId)
@@ -359,9 +362,6 @@ public open class WebhookService(
                     ps.executeUpdate()
                 }
                 connection.commit()
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
             }
         }
 
@@ -442,35 +442,20 @@ public open class WebhookService(
         return deliveries
     }
 
-    /**
-     * Compatibility boundary for publishers that have already committed their domain change.
-     *
-     * Delivery rows commit before any executor submission. A caller that still owns its domain
-     * transaction can use [enqueueEvent] so the domain write and outbox rows share one commit.
-     */
-    @Suppress("TooGenericExceptionCaught")
-    public fun fireEvent(studyId: UUID, eventType: WebhookEventType, data: Map<String, Any>) {
-        try {
-            val enqueued = storageResolver.getPlatformStorage().connection.use { connection ->
-                enqueueEvent(connection, studyId, eventType, data)
-            }
-            if (enqueued > 0) {
-                submitDispatchTask()
-            }
-        } catch (ex: RejectedExecutionException) {
-            logger.warn(
-                "Webhook event was persisted but immediate dispatch is unavailable for studyRef {} eventType {}",
-                LogSanitizer.stableFingerprint(studyId.toString(), prefix = "study"),
-                eventType,
-            )
-        } catch (ex: Exception) {
-            logger.error(
-                "Webhook event enqueue failed for studyRef {} eventType {}",
-                LogSanitizer.stableFingerprint(studyId.toString(), prefix = "study"),
-                eventType,
-                ex,
-            )
+    /** The collection fence must already own a transaction before any data is written. */
+    public fun withDataSubmission(
+        studyId: UUID, participantId: String, dataType: ParticipantDataType, write: () -> Int,
+    ): Int {
+        val storage = storageResolver.getPlatformStorage()
+        val connection = checkNotNull(PinnedPlatformConnection.owningConnection(storage)) {
+            "Collected data and its webhook outbox require the collection transaction"
         }
+        val count = write()
+        if (count > 0 && enqueueEvent(connection, studyId, WebhookEventType.DATA_SUBMITTED,
+                WebhookPayload.DataSubmitted(ParticipantRef.fromParticipantId(participantId), dataType, count)) > 0) {
+            PinnedPlatformConnection.afterCommit(storage, this) { tryDispatch() }
+        }
+        return count
     }
 
     /**
@@ -481,21 +466,27 @@ public open class WebhookService(
         connection: Connection,
         studyId: UUID,
         eventType: WebhookEventType,
-        data: Map<String, Any>,
+        data: WebhookPayload,
     ): Int {
         val payload = eventPayload(studyId, eventType, data)
         connection.prepareStatement(ENQUEUE_EVENT_SQL).use { statement ->
             statement.setString(1, eventType.name)
             statement.setString(2, payload)
-            statement.setObject(3, studyId)
-            statement.setString(4, eventType.name)
+            val participant = when (data) {
+                is WebhookPayload.DataSubmitted -> data.participantRef
+                is WebhookPayload.ParticipantEnrolled -> data.participantRef
+                is WebhookPayload.StudyStatusChanged, is WebhookPayload.Test -> null
+            }
+            statement.setString(3, participant?.participantId)
+            statement.setObject(4, studyId)
+            statement.setString(5, eventType.name)
             return statement.executeUpdate()
         }
     }
 
     public fun testWebhook(studyId: UUID, webhookId: UUID) {
         val eventType = WebhookEventType.STUDY_STATUS_CHANGED
-        val payload = eventPayload(studyId, eventType, mapOf("test" to true))
+        val payload = eventPayload(studyId, eventType, WebhookPayload.Test())
         val inserted = storageResolver.getPlatformStorage().connection.use { connection ->
             connection.prepareStatement(ENQUEUE_TEST_SQL).use { statement ->
                 statement.setString(1, eventType.name)
@@ -509,20 +500,13 @@ public open class WebhookService(
             throw WebhookNotFoundException()
         }
 
-        try {
-            submitDispatchTask()
-        } catch (ex: RejectedExecutionException) {
-            logger.warn(
-                "Webhook test delivery was persisted but immediate dispatch is unavailable for webhook {}",
-                webhookId,
-            )
-        }
+        tryDispatch()
     }
 
     private fun eventPayload(
         studyId: UUID,
         eventType: WebhookEventType,
-        data: Map<String, Any>,
+        data: WebhookPayload,
     ): String {
         return mapper.writeValueAsString(
             mapOf(
@@ -534,8 +518,12 @@ public open class WebhookService(
         )
     }
 
-    private fun submitDispatchTask() {
+    private fun tryDispatch(): Boolean = try {
         deliveryExecutor.execute(DeliveryTask())
+        true
+    } catch (_: RejectedExecutionException) {
+        logger.debug("Webhook dispatcher queue is full; persisted deliveries remain pending")
+        false
     }
 
     /**
@@ -543,41 +531,9 @@ public open class WebhookService(
      * distribute work without occupying executor threads during backoff.
      */
     @Scheduled(fixedDelay = 2_000L)
-    public fun dispatchPendingDeliveries() {
+    public fun dispatchPendingDeliveries(): Unit = RLSRequestContext.withSystemContext {
         repeat(SCHEDULED_DISPATCH_TASKS) {
-            try {
-                submitDispatchTask()
-            } catch (ex: RejectedExecutionException) {
-                logger.debug("Webhook dispatcher queue is full; persisted deliveries remain pending")
-                return
-            }
-        }
-    }
-
-    @Scheduled(fixedDelay = DELIVERY_PRUNE_INTERVAL_MS)
-    public fun pruneTerminalDeliveries(): Int = RLSRequestContext.withSystemContext {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(
-                """
-                DELETE FROM webhook_deliveries WHERE delivery_id IN (
-                    SELECT delivery_id FROM webhook_deliveries
-                    WHERE delivery_state IN ('SUCCEEDED', 'FAILED')
-                      AND completed_at < now() - (? * interval '1 day')
-                    ORDER BY completed_at LIMIT ?
-                    FOR UPDATE SKIP LOCKED
-                )
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setLong(1, DELIVERY_RETENTION_DAYS)
-                statement.setInt(2, DELIVERY_PRUNE_BATCH_SIZE)
-                var total = 0
-                repeat(DELIVERY_PRUNE_MAX_BATCHES) {
-                    val deleted = statement.executeUpdate()
-                    total += deleted
-                    if (deleted < DELIVERY_PRUNE_BATCH_SIZE) return@withSystemContext total
-                }
-                total
-            }
+            if (!tryDispatch()) return@withSystemContext
         }
     }
 
@@ -670,7 +626,9 @@ public open class WebhookService(
             statement.setString(4, outcome.outcomeCode)
             statement.setObject(5, claim.deliveryId)
             statement.setObject(6, claim.leaseToken)
-            return statement.executeUpdate()
+            return statement.executeUpdate().also { updated ->
+                if (updated == 1) ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.WEBHOOK_DELIVERY)
+            }
         }
     }
 
@@ -679,11 +637,9 @@ public open class WebhookService(
         claim: ClaimedDelivery,
         outcome: DeliveryOutcome,
     ): Int {
-        val nextAttempt = claim.attemptCount + 1
-        val exponentialDelay = (1L shl (nextAttempt - 1).coerceAtMost(5)).coerceAtMost(30L)
         val delaySeconds = outcome.retryDelaySeconds
             ?.coerceIn(1L, MAX_RETRY_AFTER_SECONDS)
-            ?: exponentialDelay
+            ?: RetryBackoff.delaySeconds(claim.attemptCount)
         connection.prepareStatement(RESCHEDULE_DELIVERY_SQL).use { statement ->
             statement.setInt(1, outcome.status)
             statement.setString(2, outcome.outcomeCode)
@@ -808,27 +764,27 @@ public open class WebhookService(
 
         return RLSRequestContext.withSystemContext {
             storageResolver.getPlatformStorage().connection.use { connection ->
-                connection.autoCommit = false
-                try {
-                    com.openlattice.chronicle.storage.DeletionStudyFence.shared(connection, claim.studyId)
-                    val permitted = connection.prepareStatement("""
-                        SELECT chronicle_participant_mutation_allowed(study_id, participant_id)
+                connection.withTransaction {
+                    DeletionStudyFence.shared(connection, claim.studyId)
+                    val outcome = connection.prepareStatement("""
+                        SELECT chronicle_participant_mutation_allowed(study_id, participant_id),
+                               chronicle_participant_processing_allowed(study_id, participant_id) AS processing_allowed
                         FROM webhook_deliveries WHERE delivery_id = ? AND lease_token = ?
                     """.trimIndent()).use { statement ->
                         statement.setObject(1, claim.deliveryId)
                         statement.setObject(2, claim.leaseToken)
-                        statement.executeQuery().use { result -> result.next() && result.getBoolean(1) }
+                        statement.executeQuery().use { result ->
+                            when {
+                                !result.next() || !result.getBoolean(1) -> DeliveryOutcome(
+                                    status = NO_HTTP_STATUS, outcomeCode = "erasure_revoked", terminal = true)
+                                !result.getBoolean("processing_allowed") -> DeliveryOutcome(
+                                    status = NO_HTTP_STATUS, outcomeCode = "processing_blocked", consumeAttempt = false)
+                                else -> deliverWebhook(connection, claim, httpUrl, client)
+                            }
+                        }
                     }
-                    val outcome = if (permitted) deliverWebhook(connection, claim, httpUrl, client) else DeliveryOutcome(
-                        status = NO_HTTP_STATUS, outcomeCode = "erasure_revoked", terminal = true,
-                    )
                     connection.commit()
                     outcome
-                } catch (failure: Exception) {
-                    connection.rollback()
-                    throw failure
-                } finally {
-                    connection.autoCommit = true
                 }
             }
         }

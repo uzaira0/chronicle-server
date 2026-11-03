@@ -40,10 +40,10 @@ class TwilioPoolTest {
             resolver, mock(), mock(), mock(), mock(), mock(), mock(), mock(), hazelcast, mock(), mock(),
         )
         val update = mock<PreparedStatement>()
-        val legacy = mock<PreparedStatement>()
+        val studyLookup = mock<PreparedStatement>()
         val guard = mock<PreparedStatement>()
         val phone = mock<PreparedStatement>()
-        val legacyRows = mock<java.sql.ResultSet>()
+        val studyRows = mock<java.sql.ResultSet>()
         val guardRows = mock<java.sql.ResultSet>()
         val phoneRows = mock<java.sql.ResultSet>()
         val resolvedStudyId = UUID.randomUUID()
@@ -51,22 +51,22 @@ class TwilioPoolTest {
         whenever(owner.prepareStatement(any())).thenAnswer {
             val sql = it.arguments[0] as String
             when {
-                sql.contains("legacy_study_ids") -> legacy
+                sql.startsWith("SELECT study_id FROM studies") -> studyLookup
                 sql.contains("unnest") -> guard
                 sql.contains("study_phone_number") -> phone
                 else -> update
             }
         }
-        whenever(legacy.executeQuery()).thenReturn(legacyRows)
-        whenever(legacyRows.next()).thenReturn(true)
-        whenever(legacyRows.getObject("study_id", UUID::class.java)).thenReturn(resolvedStudyId)
+        whenever(studyLookup.executeQuery()).thenReturn(studyRows)
+        whenever(studyRows.next()).thenReturn(true)
+        whenever(studyRows.getObject("study_id", UUID::class.java)).thenReturn(resolvedStudyId)
         whenever(guard.executeQuery()).thenReturn(guardRows)
         whenever(guardRows.next()).thenReturn(false)
         whenever(phone.executeQuery()).thenReturn(phoneRows)
         whenever(phoneRows.next()).thenReturn(true)
         whenever(phoneRows.getString(1)).thenReturn("+15555550102")
         val notification = Notification(
-            UUID.randomUUID(), UUID.randomUUID(), "participant", status = "pending", messageId = "",
+            UUID.randomUUID(), resolvedStudyId, "participant", status = "pending", messageId = "",
             notificationType = NotificationType.ENROLLMENT, deliveryType = DeliveryType.SMS,
             body = "message", destination = "+15555550100",
         )
