@@ -3,12 +3,12 @@ package com.openlattice.chronicle.ids
 import com.geekbeast.hazelcast.IHazelcastClientProvider
 import com.hazelcast.client.HazelcastClient
 import com.hazelcast.client.config.ClientConfig
-import com.hazelcast.config.Config
 import com.hazelcast.config.QueueConfig
 import com.hazelcast.config.SerializerConfig
 import com.hazelcast.core.Hazelcast
 import com.openlattice.chronicle.mapstores.ids.Range
 import com.openlattice.chronicle.serializers.RangeStreamSerializer
+import com.openlattice.chronicle.testing.isolatedHazelcastConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -19,7 +19,6 @@ import org.springframework.web.server.ResponseStatusException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -28,12 +27,10 @@ import java.util.concurrent.TimeUnit
 class HazelcastIdNetworkDeadlineTest {
     @Test
     fun `live Hazelcast connection with stalled network cannot exceed the consumer deadline`() {
-        val config = Config().apply {
-            clusterName = "id-network-${UUID.randomUUID()}"
+        val config = isolatedHazelcastConfig("id-network").apply {
             setProperty("hazelcast.operation.thread.count", "2")
             setProperty("hazelcast.operation.generic.thread.count", "2")
             networkConfig.setPort(ServerSocket(0).use { it.localPort }).setPortAutoIncrement(false)
-            networkConfig.join.multicastConfig.isEnabled = false
             addQueueConfig(QueueConfig("ID_GENERATION").setMaxSize(1))
             serializationConfig.addSerializerConfig(SerializerConfig()
                 .setTypeClass(Range::class.java).setImplementation(RangeStreamSerializer()))

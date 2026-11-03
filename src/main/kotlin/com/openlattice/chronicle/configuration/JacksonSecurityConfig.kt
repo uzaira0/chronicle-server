@@ -16,11 +16,14 @@
  */
 package com.openlattice.chronicle.configuration
 
+import com.fasterxml.jackson.core.JsonParser
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.MapperFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
-import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator
+import com.fasterxml.jackson.databind.cfg.CoercionAction
+import com.fasterxml.jackson.databind.cfg.CoercionInputShape
+import com.fasterxml.jackson.databind.type.LogicalType
 import com.fasterxml.jackson.datatype.guava.GuavaModule
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
@@ -28,6 +31,9 @@ import com.fasterxml.jackson.module.blackbird.BlackbirdModule
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.serializers.FullQualifiedNameJacksonSerializer.registerWithMapper
+import com.openlattice.chronicle.serializers.StudyJacksonMixin
+import com.openlattice.chronicle.study.Study
+import com.openlattice.chronicle.generated.UploadLimits
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -40,12 +46,14 @@ import org.springframework.context.annotation.Primary
  *
  * 1. POLYMORPHIC DESERIALIZATION ATTACKS (CVE-2017-7525 and related):
  *    - Default typing is DISABLED by default
- *    - When polymorphism is needed, use explicit PolymorphicTypeValidator
- *    - Only whitelisted classes can be deserialized polymorphically
+ *    - Polymorphic models use @JsonTypeInfo(Id.NAME) with a @JsonSubTypes list,
+ *      so a payload can only name a subtype the model itself lists
  *
  * 2. MASS ASSIGNMENT ATTACKS:
  *    - FAIL_ON_UNKNOWN_PROPERTIES = true rejects unexpected JSON fields
  *    - Attackers cannot inject fields that don't exist on DTOs
+ *    - STRICT_DUPLICATE_DETECTION rejects a repeated key, which would otherwise overwrite a
+ *      field after the model's init validated it
  *
  * 3. DENIAL OF SERVICE:
  *    - Reasonable limits are enforced via Spring's request size limits
@@ -54,7 +62,7 @@ import org.springframework.context.annotation.Primary
  * Security Best Practices:
  * - Never enable default typing globally
  * - Always validate input against expected schema
- * - Use allowlists for polymorphic type handling
+ * - List polymorphic subtypes on the model with @JsonSubTypes
  */
 @Configuration
 public open class JacksonSecurityConfig {
@@ -67,22 +75,24 @@ public open class JacksonSecurityConfig {
          * Call this on any ObjectMapper that processes untrusted input.
          */
         public fun hardenObjectMapper(mapper: ObjectMapper): ObjectMapper {
+            mapper.factory.setStreamReadConstraints(mapper.factory.streamReadConstraints().rebuild()
+                .maxDocumentLength(UploadLimits.MAX_REQUEST_SIZE_BYTES).build())
             // CRITICAL: Disable default typing to prevent polymorphic deserialization attacks
             // This is the most important security setting for Jackson
             mapper.deactivateDefaultTyping()
 
-            // Several legacy wire/storage contracts still use @JsonTypeInfo(Id.CLASS).
-            // Restrict annotation-driven subtypes to Chronicle's model namespace so an
-            // attacker cannot ask Jackson to instantiate an arbitrary class on the classpath.
-            mapper.setPolymorphicTypeValidator(
-                BasicPolymorphicTypeValidator.builder()
-                    .allowIfSubType("com.openlattice.chronicle.")
-                    .build()
-            )
-
             // Reject unknown properties to prevent mass assignment attacks
             // If a JSON payload contains fields not in the target class, fail fast
             mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
+
+            // Refuse a repeated key: once every creator argument is read Jackson builds the object, then writes a
+            // later repeat straight into the field, past the model's init checks (CollectionAcknowledgment).
+            mapper.configure(JsonParser.Feature.STRICT_DUPLICATE_DETECTION, true)
+
+            // A malformed scalar must not become a valid notes/tag string.
+            for (shape in listOf(CoercionInputShape.Integer, CoercionInputShape.Float, CoercionInputShape.Boolean)) {
+                mapper.coercionConfigFor(LogicalType.Textual).setCoercion(shape, CoercionAction.Fail)
+            }
 
             // Fail on null for primitives to catch data issues early
             mapper.configure(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES, true)
@@ -99,7 +109,7 @@ public open class JacksonSecurityConfig {
             mapper.configure(MapperFeature.ACCEPT_CASE_INSENSITIVE_PROPERTIES, false)
 
             logger.info("Jackson ObjectMapper security hardening applied: " +
-                    "default typing disabled, polymorphic subtypes allowlisted, FAIL_ON_UNKNOWN_PROPERTIES enabled")
+                    "default typing disabled, FAIL_ON_UNKNOWN_PROPERTIES enabled")
 
             return mapper
         }
@@ -131,6 +141,7 @@ public open class JacksonSecurityConfig {
 
         // Register Chronicle-specific serializers
         registerWithMapper(mapper)
+        mapper.addMixIn(Study::class.java, StudyJacksonMixin::class.java)
 
         logger.info("Security-hardened ObjectMapper initialized as primary bean")
         return mapper

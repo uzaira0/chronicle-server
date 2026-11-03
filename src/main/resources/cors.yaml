@@ -5,10 +5,8 @@
 # to this backend.
 #
 # SECURITY NOTES:
-# - Never use "*" for allowed-origins when allow-credentials is true
+# - Name each allowed origin explicitly; "*" is never an origin
 # - In production, only list trusted HTTPS origins
-# - Keep the list of exposed headers minimal
-# - Only allow HTTP methods that your API actually uses
 #
 # Environment-specific configuration:
 # - For local development, set development-mode: true
@@ -24,48 +22,6 @@ enabled: true
 #   - "http://localhost:3000" (for development only)
 # Empty by default: operators must explicitly name their public web origin.
 allowed-origins: []
-
-# Allowed HTTP methods for cross-origin requests.
-# TRACE and TRACK are automatically filtered out for security.
-allowed-methods:
-  - "GET"
-  - "POST"
-  - "PUT"
-  - "DELETE"
-  - "PATCH"
-  - "OPTIONS"
-
-# Allowed request headers that can be sent in cross-origin requests.
-# Only include headers that the frontend actually needs to send.
-allowed-headers:
-  - "Authorization"
-  - "Content-Type"
-  - "Accept"
-  - "X-Requested-With"
-  - "Origin"
-  - "Access-Control-Request-Method"
-  - "Access-Control-Request-Headers"
-  - "X-Chronicle-Signature"
-  - "X-Chronicle-Timestamp"
-  - "X-Chronicle-Nonce"
-  - "If-Match"
-
-# Response headers that the browser is allowed to expose to JavaScript.
-# Only expose headers that the frontend needs to read.
-exposed-headers:
-  - "X-Request-Id"
-  - "X-RateLimit-Limit"
-  - "X-RateLimit-Remaining"
-  - "X-RateLimit-Reset"
-  - "ETag"
-
-# Whether to allow credentials (cookies, authorization headers).
-# WARNING: When true, allowed-origins MUST NOT include "*".
-allow-credentials: true
-
-# How long (in seconds) the browser should cache preflight responses.
-# Default: 3600 (1 hour). Max: 86400 (24 hours).
-max-age-seconds: 3600
 
 # Development mode automatically adds localhost origins.
 # IMPORTANT: Set to false in production!

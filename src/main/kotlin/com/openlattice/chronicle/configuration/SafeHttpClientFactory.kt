@@ -16,6 +16,7 @@
  */
 package com.openlattice.chronicle.configuration
 
+import com.openlattice.chronicle.storage.withFailureCleanup
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.SsrfException
 import com.openlattice.chronicle.util.SsrfValidator
@@ -117,23 +118,6 @@ public object SafeHttpClientFactory {
                     addNetworkInterceptor(RedirectValidatorInterceptor(config))
                 }
             }
-    }
-
-    /**
-     * Creates an OkHttpClient.Builder with SSRF protection and infinite timeouts.
-     *
-     * This matches the original RetrofitFactory behavior for backward compatibility.
-     * Note: Infinite timeouts are generally not recommended for production.
-     *
-     * @param config SSRF configuration
-     * @return A new OkHttpClient.Builder with SSRF protection and infinite timeouts
-     */
-    @JvmStatic
-    public fun createClientBuilderWithInfiniteTimeouts(config: SsrfConfig): OkHttpClient.Builder {
-        return createClientBuilder(config)
-            .connectTimeout(0, TimeUnit.MILLISECONDS)
-            .readTimeout(0, TimeUnit.MILLISECONDS)
-            .writeTimeout(0, TimeUnit.MILLISECONDS)
     }
 
     /**
@@ -245,8 +229,7 @@ public object SafeHttpClientFactory {
                             count,
                             safeTargetReference(request.url.toString()),
                         )
-                        response.close()
-                        throw SsrfException.tooManyRedirects(request.url.toString(), count)
+                        withFailureCleanup(response::close) { throw SsrfException.tooManyRedirects(request.url.toString(), count) }
                     }
                     redirectCounts.set(count)
 
@@ -266,8 +249,7 @@ public object SafeHttpClientFactory {
                             safeTargetReference(redirectUrl),
                             e.violationType,
                         )
-                        response.close()
-                        throw e
+                        withFailureCleanup(response::close) { throw e }
                     }
                 }
             } else {

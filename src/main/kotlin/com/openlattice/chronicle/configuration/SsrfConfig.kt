@@ -21,7 +21,6 @@ import com.geekbeast.rhizome.configuration.Configuration
 import com.geekbeast.rhizome.configuration.ConfigurationKey
 import com.geekbeast.rhizome.configuration.SimpleConfigurationKey
 import com.geekbeast.rhizome.configuration.configuration.annotation.ReloadableConfiguration
-import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 
 /**
  * Configuration for Server-Side Request Forgery (SSRF) prevention.
@@ -140,10 +139,5 @@ public data class SsrfConfig(
         )
     }
 
-    @SuppressFBWarnings(
-        value = ["IL_INFINITE_RECURSIVE_LOOP"],
-        justification = "Kotlin companion-object key accessed from getKey(); findbugs misreads " +
-            "companion-member access as self-recursion. Not recursive.",
-    )
-    override fun getKey(): ConfigurationKey = key
+    override fun getKey(): ConfigurationKey = Companion.key
 }

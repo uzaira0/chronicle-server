@@ -50,7 +50,6 @@ public open class HazelcastQueue<T> internal constructor(public val name: String
         // @formatter:off
 
         // When adding new entries to this list, please make sure to keep it sorted and keep the name in sync
-//        @JvmField val EMAIL_SPOOL = HazelcastQueue<RenderableEmailRequest>("EMAIL_SPOOL")
         @JvmField val ID_GENERATION = HazelcastQueue<UUID>("ID_GENERATION")
 //        @JvmField val TWILIO = HazelcastQueue<MessageRequest>("TWILIO")
 //        @JvmField val TWILIO_FEED = HazelcastQueue<SubscriptionNotification>("TWILIO_FEED")

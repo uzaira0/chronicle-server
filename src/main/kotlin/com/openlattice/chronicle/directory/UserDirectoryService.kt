@@ -30,15 +30,6 @@ internal const val SEARCH_ENGINE_VERSION = "v3"
 
 public interface UserDirectoryService {
 
-    @Timed
-    public fun getAllUsers(): Map<String, ChronicleUserProfile>
-
-    @Timed
-    public fun getUser(userId: String): ChronicleUserProfile
-
-    @Timed
-    public fun getUsers(userIds: Set<String>): Map<String, ChronicleUserProfile>
-
     //Future: Switch over to a Hazelcast map to relieve pressure from the external user directory
     @Timed
     public fun searchAllUsers(fields: UserSearchFields): Map<String, ChronicleUserProfile>

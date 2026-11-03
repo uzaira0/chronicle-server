@@ -13,4 +13,9 @@ public data class ChronicleStorageConfiguration(
     val platformReadStorage: String = ChronicleStorage.PLATFORM_READ.id,
     val defaultEventStorage: String = ChronicleStorage.CHRONICLE.id,
     val auditStorage: String = ChronicleStorage.CHRONICLE.id,
-)
+    val bootstrapStorage: String = DEFAULT_BOOTSTRAP_STORAGE,
+) {
+    public companion object {
+        public const val DEFAULT_BOOTSTRAP_STORAGE: String = "bootstrap"
+    }
+}

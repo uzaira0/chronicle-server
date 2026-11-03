@@ -128,8 +128,8 @@ public data class ErrorSanitizationConfig(
          * These patterns are scrubbed from messages even when sanitization is partial.
          */
         public val SENSITIVE_PATTERNS = listOf(
-            // File paths (Unix and Windows)
-            Regex("""(/[a-zA-Z0-9._-]+)+\.(kt|java|class|jar|xml|yaml|yml|properties|conf|json)"""),
+            // Match paths as single tokens to avoid recursive group repetition on long paths.
+            Regex("""(?<![a-zA-Z0-9._/-])/[a-zA-Z0-9._/-]*\.(kt|java|class|jar|xml|yaml|yml|properties|conf|json)"""),
             Regex("""[A-Z]:\\[^\s:*?"<>|]+\.(kt|java|class|jar|xml|yaml|yml|properties|conf|json)""", RegexOption.IGNORE_CASE),
             Regex("""/home/[^\s]+"""),
             Regex("""/var/[^\s]+"""),
@@ -139,14 +139,12 @@ public data class ErrorSanitizationConfig(
             Regex("""D:\\[^\s]+""", RegexOption.IGNORE_CASE),
 
             // SQL fragments
-            Regex("""SELECT\s+\S+(?:\s+\S+)*\s+FROM\s+\w+""", RegexOption.IGNORE_CASE),
             Regex("""INSERT\s+INTO\s+\w+""", RegexOption.IGNORE_CASE),
             Regex("""UPDATE\s+\w+\s+SET""", RegexOption.IGNORE_CASE),
             Regex("""DELETE\s+FROM\s+\w+""", RegexOption.IGNORE_CASE),
             Regex("""CREATE\s+(TABLE|INDEX|VIEW)""", RegexOption.IGNORE_CASE),
             Regex("""ALTER\s+TABLE\s+\w+""", RegexOption.IGNORE_CASE),
             Regex("""DROP\s+(TABLE|INDEX|VIEW)""", RegexOption.IGNORE_CASE),
-            Regex("""WHERE\s+\S+(?:\s+\S+)*?\s+(?:AND|OR)\b""", RegexOption.IGNORE_CASE),
             Regex("""JOIN\s+\w+\s+ON""", RegexOption.IGNORE_CASE),
 
             // Java/Kotlin class names that reveal internal structure
@@ -162,7 +160,7 @@ public data class ErrorSanitizationConfig(
             Regex("""com\.auth0\.[a-zA-Z0-9._$]+"""),
 
             // Package paths in stack traces
-            Regex("""at\s+[a-z]+\.[a-z]+\.[a-zA-Z0-9._$]+\([^)]+\)"""),
+            Regex("""\bat\s+[a-z]+\.[a-z]+\.[a-zA-Z0-9._$]+\([\s\S]*"""),
 
             // Connection strings and URLs
             Regex("""jdbc:postgresql://[^\s]+"""),
@@ -179,9 +177,26 @@ public data class ErrorSanitizationConfig(
         )
 
         /**
+         * SQL clauses redacted from their keyword to the end of the message once the clause they pair with follows
+         * (SELECT ... FROM, WHERE ... AND/OR), however long the text between. Each needs a token after the keyword,
+         * so "Select from the list" or "Choose where to save" stay readable.
+         */
+        public val SQL_TAIL_FRAGMENTS = listOf(
+            Regex("""\bSELECT\s++\S++""", RegexOption.IGNORE_CASE) to Regex("""\sFROM\s+\w""", RegexOption.IGNORE_CASE),
+            Regex("""\bWHERE\s++\S++""", RegexOption.IGNORE_CASE) to Regex("""\s(?:AND|OR)\b""", RegexOption.IGNORE_CASE),
+        )
+
+        /**
          * Generic replacement text for sanitized patterns.
          */
         public const val REDACTED = "[REDACTED]"
+
+        /** Two linear scans, no lookahead: the first keyword that ends before the last paired clause starts the tail. */
+        private fun redactTail(text: String, keyword: Regex, clause: Regex): String {
+            val lastClause = clause.findAll(text).lastOrNull()?.range?.first ?: return text
+            val first = keyword.find(text)?.takeIf { it.range.last < lastClause } ?: return text
+            return text.substring(0, first.range.first) + REDACTED
+        }
     }
 
     override fun getKey(): ConfigurationKey = ErrorSanitizationConfig.key
@@ -212,9 +227,10 @@ public data class ErrorSanitizationConfig(
         SENSITIVE_PATTERNS.forEach { pattern ->
             sanitized = pattern.replace(sanitized, REDACTED)
         }
+        SQL_TAIL_FRAGMENTS.forEach { (keyword, clause) -> sanitized = redactTail(sanitized, keyword, clause) }
 
-        // Remove consecutive redacted markers
-        sanitized = sanitized.replace(Regex("""\[REDACTED](?:\s*\[REDACTED])*\s*"""), "$REDACTED ")
+        // Possessive repetition collapses markers without stack growth or a placeholder that could occur in the input.
+        sanitized = sanitized.replace(Regex("""\[REDACTED](?:\s*+\[REDACTED])*+\s*+"""), "$REDACTED ")
 
         // Truncate if too long
         if (sanitized.length > maxMessageLength) {

@@ -24,45 +24,8 @@ import com.geekbeast.rhizome.configuration.Configuration
 import com.geekbeast.rhizome.configuration.ConfigurationKey
 import com.geekbeast.rhizome.configuration.SimpleConfigurationKey
 import com.geekbeast.rhizome.configuration.configuration.annotation.ReloadableConfiguration
-import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 
-/**
- * CORS (Cross-Origin Resource Sharing) configuration.
- *
- * This configuration controls which origins, methods, and headers are permitted
- * for cross-origin requests to the Chronicle API.
- *
- * Configuration is loaded from cors.yaml:
- * ```yaml
- * enabled: true
- * allowed-origins:
- *   - "https://study.example.org"
- * allowed-methods:
- *   - "GET"
- *   - "POST"
- *   - "PUT"
- *   - "DELETE"
- *   - "PATCH"
- *   - "OPTIONS"
- * allowed-headers:
- *   - "Authorization"
- *   - "Content-Type"
- *   - "X-Requested-With"
- * exposed-headers:
- *   - "X-Request-Id"
- * allow-credentials: true
- * max-age-seconds: 3600
- * ```
- *
- * SECURITY NOTES:
- * 1. NEVER use "*" for allowed-origins when allow-credentials is true
- * 2. Always explicitly list trusted origins - no wildcard subdomains
- * 3. Only expose headers that the frontend needs to read
- * 4. Limit allowed methods to those actually used by the API
- * 5. In production, use HTTPS origins only
- *
- * @author uzaira0
- */
+/** Origin admission only; the same-origin dashboard does not use a configurable CORS response policy. */
 @ReloadableConfiguration(uri = "cors.yaml")
 public data class CorsConfiguration(
     /**
@@ -86,71 +49,6 @@ public data class CorsConfiguration(
     val allowedOrigins: List<String> = listOf(),
 
     /**
-     * List of allowed HTTP methods for cross-origin requests.
-     * TRACE and TRACK are never allowed for security reasons.
-     */
-    @param:JsonProperty("allowed-methods")
-    val allowedMethods: List<String> = listOf(
-        "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"
-    ),
-
-    /**
-     * List of allowed request headers that can be sent in cross-origin requests.
-     * Only include headers that the frontend actually needs to send.
-     */
-    @param:JsonProperty("allowed-headers")
-    val allowedHeaders: List<String> = listOf(
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "X-Requested-With",
-        "Origin",
-        "Access-Control-Request-Method",
-        "Access-Control-Request-Headers",
-        "X-Chronicle-Signature",
-        "X-Chronicle-Timestamp",
-        "X-Chronicle-Nonce",
-        // Optimistic-concurrency precondition for study-settings writes (V103).
-        "If-Match",
-        com.openlattice.chronicle.filters.ParticipantFormAccessFilter.IDEMPOTENCY_HEADER
-    ),
-
-    /**
-     * List of response headers that the browser is allowed to expose to JavaScript.
-     * Only expose headers that the frontend needs to read.
-     */
-    @param:JsonProperty("exposed-headers")
-    val exposedHeaders: List<String> = listOf(
-        "X-Request-Id",
-        "X-RateLimit-Limit",
-        "X-RateLimit-Remaining",
-        "X-RateLimit-Reset",
-        com.openlattice.chronicle.authorization.JwtBlocklist.IDLE_DEADLINE_HEADER,
-        // Study-settings revision the dashboard sends back as If-Match.
-        "ETag"
-    ),
-
-    /**
-     * Whether credentials (cookies, authorization headers) are allowed.
-     *
-     * SECURITY: When true, allowed-origins MUST NOT include "*".
-     * The browser will reject responses if Access-Control-Allow-Credentials
-     * is true and Access-Control-Allow-Origin is "*".
-     */
-    @param:JsonProperty("allow-credentials")
-    val allowCredentials: Boolean = true,
-
-    /**
-     * How long (in seconds) the browser should cache preflight responses.
-     * Default: 3600 seconds (1 hour).
-     *
-     * Higher values reduce preflight requests but delay policy changes.
-     * Lower values ensure faster policy updates but increase request overhead.
-     */
-    @param:JsonProperty("max-age-seconds")
-    val maxAgeSeconds: Long = 3600,
-
-    /**
      * Development mode allows additional origins for local development.
      *
      * SECURITY: Must be false in production.
@@ -170,27 +68,9 @@ public data class CorsConfiguration(
     internal companion object {
         @JvmField
         public val key = SimpleConfigurationKey("cors.yaml")
-
-        /**
-         * HTTP methods that are NEVER allowed for security reasons.
-         * TRACE can be used for Cross-Site Tracing (XST) attacks.
-         * TRACK is a deprecated alias for TRACE in some servers.
-         */
-        public val FORBIDDEN_METHODS = setOf("TRACE", "TRACK")
-
-        /**
-         * Maximum allowed max-age to prevent indefinite caching.
-         * 86400 seconds = 24 hours
-         */
-        public const val MAX_ALLOWED_AGE: Long = 86400
     }
 
-    @SuppressFBWarnings(
-        value = ["IL_INFINITE_RECURSIVE_LOOP"],
-        justification = "Kotlin companion-object key accessed from getKey(); findbugs misreads " +
-            "companion-member access as self-recursion. Not recursive.",
-    )
-    override fun getKey(): ConfigurationKey = key
+    override fun getKey(): ConfigurationKey = Companion.key
 
     /**
      * Returns the effective list of allowed origins.
@@ -207,58 +87,6 @@ public data class CorsConfiguration(
         }
 
         return origins
-    }
-
-    /**
-     * Returns the effective list of allowed methods.
-     * Always filters out forbidden methods (TRACE, TRACK).
-     */
-    public fun getEffectiveAllowedMethods(): Set<String> {
-        return allowedMethods
-            .map { it.uppercase() }
-            .filter { it !in FORBIDDEN_METHODS }
-            .toSet()
-    }
-
-    /**
-     * Returns the effective max-age, capped at MAX_ALLOWED_AGE.
-     */
-    public fun getEffectiveMaxAge(): Long {
-        return minOf(maxAgeSeconds, MAX_ALLOWED_AGE)
-    }
-
-    /**
-     * Validates the configuration for security issues.
-     * @return List of validation error messages, empty if valid.
-     */
-    public fun validate(): List<String> {
-        val errors = mutableListOf<String>()
-
-        // Check for wildcard with credentials
-        if (allowCredentials && allowedOrigins.any { it == "*" }) {
-            errors.add("CORS: Wildcard origin '*' cannot be used with credentials enabled")
-        }
-
-        // Check for forbidden methods
-        val forbiddenUsed = allowedMethods.filter { it.uppercase() in FORBIDDEN_METHODS }
-        if (forbiddenUsed.isNotEmpty()) {
-            errors.add("CORS: Forbidden methods configured: $forbiddenUsed - these will be ignored")
-        }
-
-        // Check for empty origins in non-development mode
-        if (!developmentMode && allowedOrigins.isEmpty()) {
-            errors.add("CORS: No allowed origins configured and development mode is disabled")
-        }
-
-        // Check for http origins in non-development mode (warning)
-        if (!developmentMode) {
-            val httpOrigins = allowedOrigins.filter { it.startsWith("http://") }
-            if (httpOrigins.isNotEmpty()) {
-                errors.add("CORS: Non-HTTPS origins in production: $httpOrigins")
-            }
-        }
-
-        return errors
     }
 
     /**

@@ -19,10 +19,9 @@ class ObservabilityFilterTest {
         val filter = ObservabilityFilter()
         val studyId = "550e8400-e29b-41d4-a716-446655440000"
         val participantId = "u15-device-owner"
-        val sourceDeviceId = "iphone-identifier-for-vendor"
         val request = MockHttpServletRequest(
             "POST",
-            "/chronicle/v3/study/$studyId/participant/$participantId/android/$sourceDeviceId/upload"
+            "/chronicle/v4/study/$studyId/participant/$participantId/android"
         ).apply {
             remoteAddr = "127.0.0.1"
         }
@@ -42,7 +41,7 @@ class ObservabilityFilterTest {
         assertTrue(captured["participantId"]?.startsWith("participant:") == true)
         assertFalse(captured["participantId"]!!.contains(participantId))
         assertEquals(
-            "/chronicle/v3/study/{studyId}/participant/{participantId}/android/{sourceDeviceId}/upload",
+            "/chronicle/v4/study/{studyId}/participant/{participantId}/android",
             captured["httpPath"]
         )
         assertEquals("POST", captured["httpMethod"])
@@ -62,5 +61,35 @@ class ObservabilityFilterTest {
         })
 
         assertEquals(null, MDC.get("requestId"))
+    }
+
+    /**
+     * A support ticket quotes the X-Request-ID / X-Trace-ID the dashboard showed. A well-formed id from the proxy
+     * or a W3C traceparent is carried through; a malformed or log-injecting one is replaced, never echoed.
+     */
+    @Test
+    fun forwardedCorrelationIdsAreKeptOnlyWhenWellFormed() {
+        fun send(requestId: String?, traceparent: String?): MockHttpServletResponse {
+            val request = MockHttpServletRequest("GET", "/chronicle/v3/auth/session").apply {
+                requestId?.let { addHeader("X-Request-ID", it) }
+                traceparent?.let { addHeader("traceparent", it) }
+            }
+            return MockHttpServletResponse().also { ObservabilityFilter().doFilter(request, it, FilterChain { _, _ -> }) }
+        }
+        val traceId = "4bf92f3577b34da6a3ce929d0e0e4736"
+        val kept = send("edge-req_42", "00-$traceId-00f067aa0ba902b7-01")
+        assertEquals("edge-req_42", kept.getHeader("X-Request-ID"))
+        assertEquals(traceId, kept.getHeader("X-Trace-ID"))
+
+        for ((requestId, traceparent) in listOf(
+            "bad\r\nInjected: yes" to "00-${traceId.uppercase()}-00f067aa0ba902b7-01",
+            "a".repeat(65) to "garbage",
+        )) {
+            val replaced = send(requestId, traceparent)
+            assertTrue(Regex("[0-9a-f-]{36}").matches(replaced.getHeader("X-Request-ID")!!))
+            val freshTrace = replaced.getHeader("X-Trace-ID")!!
+            assertTrue(freshTrace, Regex("[0-9a-f]{32}").matches(freshTrace))
+            assertFalse(freshTrace.equals(traceId, ignoreCase = true))
+        }
     }
 }

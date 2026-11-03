@@ -21,8 +21,6 @@ import org.springframework.core.PriorityOrdered
  *
  * JWT, SMTP, Twilio, and other secrets are overlaid in [ChronicleConfigurationPod] because
  * those configuration beans are loaded later in the Spring lifecycle.
- *
- * HIPAA §164.312(a)(2)(iv) — Encryption and access controls for electronic PHI.
  */
 /**
  * Registered via @Import in ChronicleConfigurationPod.

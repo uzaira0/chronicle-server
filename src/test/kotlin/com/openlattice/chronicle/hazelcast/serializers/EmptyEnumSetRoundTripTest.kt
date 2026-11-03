@@ -4,25 +4,23 @@ import com.hazelcast.internal.serialization.impl.DefaultSerializationServiceBuil
 import com.openlattice.chronicle.authorization.DelegatedPermissionEnumSet
 import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.serializers.StudyLimitsStreamSerializer
-import com.openlattice.chronicle.study.StudyFeature
+import com.openlattice.chronicle.study.StudyDuration
 import com.openlattice.chronicle.study.StudyLimits
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.EnumSet
 
 /** EnumSet.copyOf(Collection) throws on an empty non-EnumSet collection; empty sets are valid values. */
 class EmptyEnumSetRoundTripTest {
     @Test
-    fun studyLimitsWithNoFeaturesRoundTrip() {
+    fun studyLimitsWithAndWithoutAnEndRoundTrip() {
         val serializer = StudyLimitsStreamSerializer()
         val ss = DefaultSerializationServiceBuilder().build()
-        val limits = StudyLimits(features = EnumSet.noneOf(StudyFeature::class.java))
-        val out = ss.createObjectDataOutput(1).also { serializer.write(it, limits) }
+        for (limits in listOf(StudyLimits(), StudyLimits(studyDuration = StudyDuration(days = 30)))) {
+            val out = ss.createObjectDataOutput(1).also { serializer.write(it, limits) }
 
-        val readBack = serializer.read(ss.createObjectDataInput(out.toByteArray()))
-
-        assertEquals(limits, readBack)
+            assertEquals(limits, serializer.read(ss.createObjectDataInput(out.toByteArray())))
+        }
     }
 
     @Test

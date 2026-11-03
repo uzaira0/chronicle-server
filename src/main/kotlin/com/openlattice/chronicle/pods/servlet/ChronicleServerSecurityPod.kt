@@ -19,37 +19,39 @@
  */
 package com.openlattice.chronicle.pods.servlet
 
-import com.openlattice.chronicle.configuration.boundedRestTemplate
-import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
+import com.openlattice.chronicle.authorization.PrincipalType
+import com.openlattice.chronicle.authorization.SystemRole
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleJwtClientConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
-import com.openlattice.chronicle.configuration.roleClientIdForClaims
 import com.openlattice.chronicle.configuration.JwtKeyMaterial
-import com.openlattice.chronicle.authorization.AuthorizationManager
-import com.openlattice.chronicle.authorization.JwtBlocklist
-import com.openlattice.chronicle.authorization.PrincipalType
-import com.openlattice.chronicle.authorization.SystemRole
-import com.openlattice.chronicle.security.MfaClaimValidator
-import org.slf4j.LoggerFactory
-import com.openlattice.chronicle.filters.ApiKeyAuthenticationFilter
-import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
-import com.openlattice.chronicle.services.security.HoneyTokenService
+import com.openlattice.chronicle.configuration.RequestHardeningFilters
+import com.openlattice.chronicle.configuration.boundedRestTemplate
+import com.openlattice.chronicle.configuration.roleClientIdForClaims
 import com.openlattice.chronicle.filters.ChronicleCookieOrBearerTokenResolver
-import com.openlattice.chronicle.filters.JwtBlocklistFilter
-import com.openlattice.chronicle.filters.RLSContextFilter
-import com.openlattice.chronicle.services.apikeys.ApiKeyService
-import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
-import com.openlattice.chronicle.storage.rls.RLSContextManager
+import com.openlattice.chronicle.filters.NativeExportDownload
+import com.openlattice.chronicle.pods.REQUIRE_MFA_PROPERTY
+import com.openlattice.chronicle.security.MfaClaimValidator
+import com.nimbusds.jose.JWSAlgorithm
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
+import jakarta.servlet.Filter
+import java.nio.charset.StandardCharsets
+import java.time.Instant
+import javax.crypto.spec.SecretKeySpec
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import org.springframework.http.HttpMethod
+import org.springframework.context.annotation.Import
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
 import org.springframework.security.config.annotation.web.configurers.CsrfConfigurer
 import org.springframework.security.config.http.SessionCreationPolicy
+import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator
 import org.springframework.security.oauth2.core.OAuth2TokenValidator
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.security.oauth2.jwt.JwtClaimNames
 import org.springframework.security.oauth2.jwt.JwtClaimValidator
@@ -59,101 +61,36 @@ import org.springframework.security.oauth2.jwt.JwtTimestampValidator
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter
-import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter
 import org.springframework.security.oauth2.server.resource.web.BearerTokenResolver
-import org.springframework.security.core.authority.SimpleGrantedAuthority
-import org.springframework.security.web.authentication.AnonymousAuthenticationFilter
+import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationEntryPoint
+import org.springframework.security.web.AuthenticationEntryPoint
 import org.springframework.security.web.SecurityFilterChain
-import org.springframework.web.cors.CorsConfigurationSource
-import com.openlattice.chronicle.configuration.ObservabilityFilter
-import com.openlattice.chronicle.observability.ApiMetricsFilter
-import com.openlattice.chronicle.security.MetricsAuthenticationFilter
-import com.openlattice.chronicle.controllers.ReviewerEnrollmentController
-import org.springframework.web.filter.CharacterEncodingFilter
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter
 import org.springframework.security.web.csrf.CsrfFilter
-import org.springframework.beans.factory.annotation.Autowired
-import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
-import org.springframework.beans.factory.annotation.Qualifier
-import org.springframework.context.annotation.Bean
-import java.nio.charset.StandardCharsets
-import java.util.Base64
-import javax.crypto.spec.SecretKeySpec
-import jakarta.servlet.Filter
+import org.springframework.web.cors.CorsConfigurationSource
+import org.springframework.web.filter.CharacterEncodingFilter
 
 @Configuration
+@Import(SecurityFilterRegistrationsPod::class)
 @EnableMethodSecurity(proxyTargetClass = true)
 @EnableWebSecurity(debug = false)
-public open class ChronicleServerSecurityPod {
+public open class ChronicleServerSecurityPod(
+    private val chronicleAuthConfiguration: ChronicleAuthConfiguration,
+    private val jwtKeyMaterial: JwtKeyMaterial,
+    private val requestHardeningFilters: RequestHardeningFilters,
+    @Value("\${${REQUIRE_MFA_PROPERTY}:true}") private val requireMfa: Boolean,
+    @Value("\${chronicle.security.approved-mfa-acr-values:}") private val approvedMfaAcrValues: String,
+) {
+    init {
+        // The built-in password login mints tokens with no MFA claim. With MFA required and no
+        // identity provider, the dashboard would sign in and then get 401 on every call.
+        require(!requireMfa || chronicleAuthConfiguration.dashboardPasswordHash.isNullOrBlank() ||
+            chronicleAuthConfiguration.oidc.enabled) {
+            "$REQUIRE_MFA_PROPERTY (REQUIRE_MFA) is true, but the only dashboard login is the built-in " +
+                "password, whose sessions carry no MFA claim. Set REQUIRE_MFA=false for the internal password login."
+        }
+    }
 
-    @Autowired
-    private lateinit var securityHardeningConfig: com.openlattice.chronicle.configuration.SecurityHardeningConfig
-
-    @Autowired
-    @Qualifier("parameterPollutionFilter")
-    private lateinit var parameterPollutionFilter: Filter
-
-    @Autowired
-    private lateinit var storageResolver: com.openlattice.chronicle.storage.StorageResolver
-
-    @Autowired
-    private lateinit var studyAuthorizationService: com.openlattice.chronicle.authorization.StudyAuthorizationService
-
-    @Autowired
-    private lateinit var auditService: com.openlattice.chronicle.audit.AuditService
-
-    @Autowired
-    private lateinit var chronicleAuthConfiguration: ChronicleAuthConfiguration
-
-    @Autowired
-    private lateinit var jwtKeyMaterial: JwtKeyMaterial
-
-    @Value("\${chronicle.security.require-mfa:true}")
-    private var requireMfa: Boolean = true
-
-    @Value("\${chronicle.security.approved-mfa-acr-values:}")
-    private lateinit var approvedMfaAcrValues: String
-
-    @Value("\${chronicle.security.metrics-username:chronicle-metrics}")
-    private lateinit var metricsUsername: String
-
-    @Value("\${chronicle.security.metrics-password:}")
-    private lateinit var metricsPassword: String
-
-    @Value("\${chronicle.security.metrics-password-files:}")
-    private lateinit var metricsPasswordFiles: String
-
-    @Autowired(required = false)
-    private var apiKeyService: ApiKeyService? = null
-
-    @Autowired(required = false)
-    private var authorizationManager: AuthorizationManager? = null
-
-    @Autowired
-    private lateinit var creatorPrincipalResolver: com.openlattice.chronicle.authorization.CreatorPrincipalResolver
-
-    @Autowired(required = false)
-    private var jwtBlocklist: JwtBlocklist? = null
-
-    @Autowired(required = false)
-    private var rlsContextManager: RLSContextManager? = null
-
-    @Autowired(required = false)
-    private var honeyTokenService: HoneyTokenService? = null
-
-    @Autowired
-    private lateinit var participantFormAccessService: ParticipantFormAccessService
-
-    @Autowired(required = false)
-    @Qualifier("mobileApiSignatureFilter")
-    private var mobileApiSignatureFilter: Filter? = null
-
-    @Autowired(required = false)
-    @Qualifier("corsValidationFilter")
-    private var corsValidationFilter: Filter? = null
-
-    @Autowired(required = false)
-    @Qualifier("rateLimitFilter")
-    private var rateLimitFilter: Filter? = null
 
     @Bean
     public fun chronicleTokenResolver(): BearerTokenResolver {
@@ -237,224 +174,52 @@ public open class ChronicleServerSecurityPod {
 
     @Bean
     @Throws(Exception::class)
-    // reason: linear Spring Security HttpSecurity DSL — the route allowlist and filter ordering
-    // are a single security-critical declaration that must not be split or reordered
-    @Suppress("LongMethod")
-    public fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
+    public fun securityFilterChain(
+        http: HttpSecurity,
+        jwtDecoder: JwtDecoder,
+        chronicleJwtAuthenticationConverter: JwtAuthenticationConverter,
+        chronicleTokenResolver: BearerTokenResolver,
+        filterRegistrations: List<SecurityFilterRegistration>,
+    ): SecurityFilterChain {
+        val bearerEntryPoint = BearerTokenAuthenticationEntryPoint()
+        val entryPoint = AuthenticationEntryPoint { request, response, exception ->
+            if (!NativeExportDownload.redirectForExpiredForm(request, response)) {
+                bearerEntryPoint.commence(request, response, exception)
+            }
+        }
         http
             .csrf(::disableCsrf)
             .oauth2ResourceServer { oauth2 ->
                 oauth2.jwt { jwt ->
-                    jwt.decoder(jwtDecoder())
-                    jwt.jwtAuthenticationConverter(chronicleJwtAuthenticationConverter())
+                    jwt.decoder(jwtDecoder)
+                    jwt.jwtAuthenticationConverter(chronicleJwtAuthenticationConverter)
                 }
-                oauth2.bearerTokenResolver(chronicleTokenResolver())
+                oauth2.bearerTokenResolver(chronicleTokenResolver)
+                oauth2.authenticationEntryPoint(entryPoint)
             }
+            .exceptionHandling { it.authenticationEntryPoint(entryPoint) }
             .sessionManagement { session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
             .securityContext { securityContext -> securityContext.requireExplicitSave(true) }
 
         // No Spring CORS headers: the dashboard is same-origin; origin validation lives in the CORS validation filter.
         http.cors { it.configurationSource(CorsConfigurationSource { null }) }
 
-        http.authorizeHttpRequests { auth ->
-            auth
-                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+        configureChronicleAuthorization(http)
 
-                // The historical /datastore/* servlet alias is intentionally retired. Keep an
-                // explicit deny here as defense in depth if a container mapping regresses.
-                .requestMatchers("/datastore/**").denyAll()
+        addRequestFilters(http, requestHardeningFilters.ordered)
+        filterRegistrations.forEach { it.register(http) }
+        return http.build()
+    }
 
-                // v4 mobile enrollment — bootstrap step that issues the per-device API key.
-                // Subsequent v4 uploads fall under /chronicle/** authenticated() and require X-Api-Key.
-                .requestMatchers(
-                    HttpMethod.GET,
-                    "/chronicle/v4/study/*/participant/*/enrollment-preview",
-                ).permitAll()
-                .requestMatchers(HttpMethod.POST, "/chronicle/v4/study/*/participant/*/enroll").permitAll()
-                // Reusable Play Console access is accepted only on this exact endpoint by
-                // MobileApiSignatureFilter, which converts it to a configured study scope.
-                .requestMatchers(HttpMethod.POST, ReviewerEnrollmentController.PATH).permitAll()
-                // Legacy iOS enrollment still uses the v3 path with the source device id in the URL.
-                // The controller validates the study/participant and derives the stored datasource id.
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/study/*/participant/*/*/enroll").permitAll()
-
-                // v3 study settings — only sensor-related endpoints are public (mobile needs these)
-                // T-27: Full settings endpoint (/settings) removed from permitAll — it exposed
-                // all study metadata to anyone with a study UUID. Mobile clients use the specific
-                // sensor endpoints below instead.
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/study/*/settings/sensors").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/study/*/settings/type/AndroidSensor").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/study/*/settings/type/Sensor").permitAll()
-                // DataCollection: the device reads its per-module collection settings as an
-                // unauthenticated GET (mirrors AndroidSensor). The AndroidDataCollectionSetting
-                // DTO carries no apiKey/secret/participantId/PHI by construction, so — like the
-                // sensor types above — it is safe to expose with only a study UUID, consistent
-                // with the T-27 decision to publish specific non-sensitive type endpoints only.
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/study/*/settings/type/DataCollection").permitAll()
-                // Encryption: retain this public, non-sensitive settings read for compatible clients,
-                // but the V95 release gate requires enabled=false and rejects encrypted payloads until
-                // an OWNER-gated decrypt/export path exists. The StudyEncryptionSetting DTO carries
-                // only a public key plus the disabled flag — never a private key or PHI. Clients may
-                // discover the disabled setting here; encrypted collection cannot silently engage.
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/study/*/settings/type/Encryption").permitAll()
-
-                // iOS writes intentionally fall through to /chronicle/** authenticated().
-                // The client persists the enrollment-issued device key in Keychain and
-                // ApiKeyAuthenticationFilter binds it to study, participant, and device.
-
-                // Participant access-code exchange is public but one-time and fail-closed in its service.
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/participant-access/exchange").permitAll()
-
-                // Participant form routes are anonymous only after ParticipantFormAccessFilter
-                // verifies a scoped, unexpired HttpOnly capability session. Researcher routes in
-                // the same controllers continue to require normal authentication and ACL checks.
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/time-use-diary/*/participant/*").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/time-use-diary/*/participant/*").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/time-use-diary/*/settings").permitAll()
-
-                // Survey endpoints (participant-facing, no auth)
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/survey/*/participant/*/app-usage").permitAll()
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/survey/*/participant/*/app-usage").permitAll()
-                // Study-scoped survey variant flag (DAILY/HOURLY) — non-sensitive config the
-                // participant survey page reads to pick its form; no participant/PHI in the path.
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/survey/*/app-usage-frequency").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/survey/*/participant/*/device-usage").permitAll()
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/survey/*/participant/*/device-usage").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/survey/*/questionnaire/*").permitAll()
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/survey/*/participant/*/questionnaire/*").permitAll()
-
-                // Auth cookie management — permitAll() alone is NOT sufficient because the
-                // BearerTokenAuthenticationFilter runs first. ChronicleCookieOrBearerTokenResolver
-                // must also return null for these paths. See auth-endpoint-routing.md.
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/auth/session").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/auth/oidc/login").permitAll()
-                .requestMatchers(HttpMethod.GET, "/chronicle/v3/auth/oidc/callback").permitAll()
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/auth/set-cookie").permitAll()
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/auth/testing-login").permitAll()
-                // The dashboard login itself must be reachable before anyone is
-                // authenticated; the controller verifies the configured bcrypt password and
-                // fails closed when none is set.
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/auth/dashboard-login").permitAll()
-                .requestMatchers(HttpMethod.POST, "/v3/auth/dashboard-login").permitAll()
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/auth/logout").permitAll()
-                .requestMatchers(HttpMethod.GET, "/v3/auth/oidc/login").permitAll()
-                .requestMatchers(HttpMethod.GET, "/v3/auth/oidc/callback").permitAll()
-
-                // Twilio webhook callback
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/notification/status").permitAll()
-
-                // Refresh token endpoint (authenticated via refresh token, not JWT)
-                .requestMatchers(HttpMethod.POST, "/chronicle/v3/auth/refresh").permitAll()
-                .requestMatchers(HttpMethod.POST, "/v3/auth/refresh").permitAll()
-
-                // JWKS endpoint (public key publication for RS256 mode)
-                .requestMatchers(HttpMethod.GET, "/chronicle/.well-known/jwks.json").permitAll()
-                .requestMatchers(HttpMethod.GET, "/.well-known/jwks.json").permitAll()
-
-                // Liveness and dependency-aware readiness are reached through
-                // the existing /chronicle/* servlet mapping. No other internal
-                // health endpoints are public.
-                .requestMatchers(
-                    HttpMethod.GET,
-                    "/chronicle/internal/health/live",
-                    "/chronicle/internal/health/ready",
-                ).permitAll()
-
-                // Metrics are authenticated by MetricsAuthenticationFilter and
-                // additionally restricted by edge routing and network policy.
-                .requestMatchers("/prometheus/**").permitAll()
-
-                // Everything else requires authentication
-                .requestMatchers("/chronicle/**").authenticated()
-        }
-
+    private fun addRequestFilters(http: HttpSecurity, hardeningFilters: List<Filter>) {
         val filter = CharacterEncodingFilter()
         filter.encoding = StandardCharsets.UTF_8.toString()
         filter.setForceEncoding(true)
         http.addFilterBefore(filter, CsrfFilter::class.java)
 
-        val hardeningFilters = listOf(
-            securityHardeningConfig.securityHeadersFilter(),
-            securityHardeningConfig.traceMethodBlockingFilter(),
-            securityHardeningConfig.requestSizeLimitFilter(),
-            securityHardeningConfig.requestValidationFilter(),
-            parameterPollutionFilter,
-        )
         hardeningFilters.forEach { hardening ->
             http.addFilterBefore(hardening, CsrfFilter::class.java)
         }
-
-        // Observability: MDC correlation context (requestId, traceId, studyId, participantId)
-        // Runs early so all downstream filters and controllers benefit from MDC fields.
-        http.addFilterAfter(ObservabilityFilter(), CharacterEncodingFilter::class.java)
-
-        // Observability: API request latency and error metrics (Prometheus)
-        http.addFilterAfter(ApiMetricsFilter(), ObservabilityFilter::class.java)
-
-        // Defense-in-depth origin validation before authentication/controller work.
-        corsValidationFilter?.let { filter ->
-            http.addFilterBefore(filter, BearerTokenAuthenticationFilter::class.java)
-        }
-        http.addFilterBefore(
-            MetricsAuthenticationFilter(
-                metricsUsername,
-                metricsPassword,
-                MetricsAuthenticationFilter.parsePasswordFiles(metricsPasswordFiles),
-            ),
-            BearerTokenAuthenticationFilter::class.java,
-        )
-
-        // Mobile bootstrap endpoints may be permitAll(), so request signing must run
-        // before API-key/JWT authentication and before controller deserialization.
-        mobileApiSignatureFilter?.let { filter ->
-            http.addFilterBefore(filter, BearerTokenAuthenticationFilter::class.java)
-        }
-
-        // Validated API-key/JWT identities must be available before bucketing phones behind SNAT.
-        rateLimitFilter?.let { filter ->
-            http.addFilterBefore(filter, rateLimitFilterAnchor(mobileApiSignatureFilter))
-        }
-
-        // H-1/H-2: Register API key authentication filter before JWT auth
-        // Includes honey token detection for canary API key alerting.
-        // Without the authorization manager a key's creator cannot be checked, so keys are not admitted at all.
-        val service = apiKeyService
-        val keyAuthorization = authorizationManager
-        if (service != null && keyAuthorization != null) {
-            http.addFilterBefore(
-                ApiKeyAuthenticationFilter(service, keyAuthorization, honeyTokenService, creatorPrincipalResolver::resolve),
-                BearerTokenAuthenticationFilter::class.java
-            )
-        }
-
-        http.addFilterBefore(
-            ParticipantFormAccessFilter(participantFormAccessService),
-            AnonymousAuthenticationFilter::class.java,
-        )
-
-        // JWT blocklist filter: reject revoked tokens after authentication
-        if (jwtBlocklist != null) {
-            http.addFilterAfter(JwtBlocklistFilter(jwtBlocklist!!, java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes)), BearerTokenAuthenticationFilter::class.java)
-            LoggerFactory.getLogger(ChronicleServerSecurityPod::class.java)
-                .info("JwtBlocklistFilter registered — token revocation is ENABLED")
-        } else {
-            LoggerFactory.getLogger(ChronicleServerSecurityPod::class.java)
-                .warn("JwtBlocklist bean not available — token revocation is DISABLED")
-        }
-
-        // C-6: Wire RLS context into the filter chain (runs after authentication)
-        if (rlsContextManager != null) {
-            http.addFilterAfter(
-                RLSContextFilter(rlsContextManager!!),
-                AnonymousAuthenticationFilter::class.java
-            )
-        }
-
-        http.addFilterAfter(com.openlattice.chronicle.filters.ConcurrentEditFilter(storageResolver, studyAuthorizationService, auditService),
-            org.springframework.security.web.access.intercept.AuthorizationFilter::class.java)
-        http.addFilterAfter(com.openlattice.chronicle.filters.CreateReceiptFilter(storageResolver, studyAuthorizationService),
-            com.openlattice.chronicle.filters.ConcurrentEditFilter::class.java)
-        return http.build()
     }
 
     // reason: boundary catch — JWT decode throws several JwtException subtypes; the fallback must
@@ -498,7 +263,7 @@ public open class ChronicleServerSecurityPod {
         val configuredJwks = authConfig.jwkSetUri?.takeIf { it.isNotBlank() }
         val decoder: NimbusJwtDecoder = if (configuredJwks != null) {
             LoggerFactory.getLogger(ChronicleServerSecurityPod::class.java)
-                .info("Configuring JwtDecoder with OIDC JWKS ({})", configuredJwks)
+                .info("Configuring JwtDecoder with OIDC JWKS")
             NimbusJwtDecoder.withJwkSetUri(configuredJwks).restOperations(boundedRestTemplate()).build()
         } else if (keyMaterial.isRs256()) {
             val rsaPublicKey = requireNotNull(keyMaterial.rsaPublicKey) {
@@ -508,14 +273,28 @@ public open class ChronicleServerSecurityPod {
                 .info("Configuring JwtDecoder with RS256 (kid={})", keyMaterial.keyId)
             NimbusJwtDecoder.withPublicKey(rsaPublicKey).build()
         } else {
-            // HS256: use existing symmetric secret from auth configuration
-            val secret = if (authConfig.base64EncodedSecret) {
-                Base64.getUrlDecoder().decode(authConfig.secret)
-            } else {
-                authConfig.secret.toByteArray(StandardCharsets.UTF_8)
+            val algorithm = requireNotNull(MacAlgorithm.from(authConfig.signingAlgorithm)) {
+                "Signing algorithm must be HS256, HS384 or HS512"
             }
-            val key = SecretKeySpec(secret, "HmacSHA256")
-            NimbusJwtDecoder.withSecretKey(key).build()
+            val keyAlgorithm = "HmacSHA${algorithm.name.removePrefix("HS")}"
+            val key = SecretKeySpec(authConfig.secretBytes(), keyAlgorithm)
+            val previous = authConfig.previousSecret.takeIf { it.isNotEmpty() }
+                ?.let { SecretKeySpec(authConfig.secretBytes(it), keyAlgorithm) }
+            val currentId = authConfig.keyId()
+            val previousId = previous?.let { authConfig.keyId(authConfig.previousSecret) }
+            NimbusJwtDecoder.withSecretKey(key).macAlgorithm(algorithm).jwtProcessorCustomizer { processor ->
+                processor.setJWSKeySelector { header, _ ->
+                    buildList {
+                        if (header.algorithm == JWSAlgorithm.parse(algorithm.name)) {
+                            if (header.keyID == null || header.keyID == currentId) add(key)
+                            // Legacy tokens have no kid; try both keys only during the configured overlap.
+                            val matchesPreviousKey = header.keyID == null || header.keyID == previousId
+                            if (previous != null && Instant.now().epochSecond < authConfig.previousSecretExpiresAt &&
+                                matchesPreviousKey) add(previous)
+                        }
+                    }
+                }
+            }.build()
         }
 
         if (requireMfa) {
@@ -549,7 +328,7 @@ internal fun rateLimitFilterAnchor(@Suppress("UNUSED_PARAMETER") mobileApiSignat
  * With [requireMfa] true, a token lacking qualifying `amr` or an explicitly
  * approved `acr` value fails validation;
  * `NimbusJwtDecoder` surfaces that as a `JwtValidationException`, which the bearer-token filter
- * renders as HTTP 401. HIPAA §164.312(d) (person/entity authentication — MFA).
+ * renders as HTTP 401.
  */
 internal fun buildJwtValidatorChain(
     issuer: String,
@@ -560,6 +339,7 @@ internal fun buildJwtValidatorChain(
     val validatorList = mutableListOf<OAuth2TokenValidator<Jwt>>(
         JwtTimestampValidator(),
         JwtIssuerValidator(issuer),
+        JwtClaimValidator<Any?>(JwtClaimNames.SUB) { it is String && it.isNotBlank() },
         JwtClaimValidator<Any?>(JwtClaimNames.AUD) { aud ->
             when (aud) {
                 is String -> audience == aud

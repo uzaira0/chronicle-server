@@ -1,10 +1,11 @@
 package com.openlattice.chronicle.ids
 
-import com.geekbeast.hazelcast.IHazelcastClientProvider
+import com.geekbeast.hazelcast.HazelcastClientProvider
 import com.hazelcast.collection.IQueue
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.mapstores.ids.Range
+import com.openlattice.chronicle.pods.ChronicleServerServicesPod
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -153,9 +154,27 @@ class HazelcastIdGenerationServiceTest {
         }
     }
 
-    private fun withService(random: Boolean = false, configure: (IMap<Long, Range>, IQueue<UUID>, CountDownLatch, LinkedBlockingQueue<UUID>) ->
-        Unit): Fixture {
-        val clients = mock<IHazelcastClientProvider>()
+    /** The study, participant and candidate ids a deployment issues come from the pod's bean, so that bean must be random. */
+    @Test
+    fun `the production bean issues random ids`() {
+        withService(create = { clients -> ChronicleServerServicesPod().idGenerationService(clients) }) { _, queue, block, available ->
+            Mockito.doAnswer { invocation ->
+                available.put(invocation.getArgument(0))
+                if (available.size >= 3) block.await()
+                null
+            }.`when`(queue).put(any())
+        }.use { fixture ->
+            List(3) { fixture.service.getNextId() }.forEach { assertEquals(4, it.version()) }
+            Mockito.verify(fixture.scrolls, Mockito.never()).lock(any())
+        }
+    }
+
+    private fun withService(
+        random: Boolean = false,
+        create: (HazelcastClientProvider) -> HazelcastIdGenerationService = { HazelcastIdGenerationService(it, random) },
+        configure: (IMap<Long, Range>, IQueue<UUID>, CountDownLatch, LinkedBlockingQueue<UUID>) -> Unit,
+    ): Fixture {
+        val clients = mock<HazelcastClientProvider>()
         val instance = mock<HazelcastInstance>()
         val scrolls = mock<IMap<Long, Range>>()
         val queue = mock<IQueue<UUID>>()
@@ -170,7 +189,7 @@ class HazelcastIdGenerationServiceTest {
             available.poll(invocation.getArgument(0), invocation.getArgument(1))
         }
         configure(scrolls, queue, block, available)
-        return Fixture(HazelcastIdGenerationService(clients, random), scrolls, available, block)
+        return Fixture(create(clients), scrolls, available, block)
     }
 
     private class Fixture(

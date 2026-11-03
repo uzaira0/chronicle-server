@@ -18,6 +18,7 @@ package com.openlattice.chronicle.configuration
 
 import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.LogSanitizer
+import com.openlattice.chronicle.filters.writeFilterError
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -191,10 +192,7 @@ public open class CorsValidationFilter(
      * Sends a 403 Forbidden response.
      */
     private fun sendForbidden(response: HttpServletResponse) {
-        response.status = HttpStatus.FORBIDDEN.value()
-        response.contentType = "application/json"
-        response.writer.write("""{"error": "$FORBIDDEN_ORIGIN_MESSAGE"}""")
-        response.writer.flush()
+        writeFilterError(response, HttpStatus.FORBIDDEN.value(), FORBIDDEN_ORIGIN_MESSAGE)
     }
 
     /**

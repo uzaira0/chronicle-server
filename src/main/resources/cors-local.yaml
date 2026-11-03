@@ -35,9 +35,6 @@ allowed-headers:
 
 exposed-headers:
   - "X-Request-Id"
-  - "X-RateLimit-Limit"
-  - "X-RateLimit-Remaining"
-  - "X-RateLimit-Reset"
   - "ETag"
 
 allow-credentials: true

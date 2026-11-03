@@ -8,9 +8,13 @@ import com.geekbeast.rhizome.configuration.Configuration
 import com.geekbeast.rhizome.configuration.ConfigurationKey
 import com.geekbeast.rhizome.configuration.SimpleConfigurationKey
 import com.geekbeast.rhizome.configuration.configuration.annotation.ReloadableConfiguration
-import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 
 private const val CONFIG_FILE_NAME = "chronicle-auth.yaml"
+internal const val SESSION_IDLE_MINUTES_ENV = "CHRONICLE_SESSION_IDLE_MINUTES"
+
+internal fun parseSessionIdleMinutes(value: String?): Long = value?.let {
+    requireNotNull(it.toLongOrNull()) { "$SESSION_IDLE_MINUTES_ENV must be a whole number of minutes" }
+} ?: 15
 
 @ReloadableConfiguration(uri = CONFIG_FILE_NAME)
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -32,12 +36,12 @@ public data class ChronicleAuthConfiguration(
     @param:JsonAlias("dashboard_password_hash")
     val dashboardPasswordHash: String? = null,
     /** Server-enforced inactivity expiry, bounded even when JWT absolute validity is longer. */
-    val sessionIdleMinutes: Long = System.getenv("CHRONICLE_SESSION_IDLE_MINUTES")?.toLong() ?: 15,
+    val sessionIdleMinutes: Long = parseSessionIdleMinutes(System.getenv(SESSION_IDLE_MINUTES_ENV)),
     val users: Set<ChronicleAuthUser> = emptySet(),
 ) : Configuration {
 
     init {
-        require(sessionIdleMinutes in 1..120) { "sessionIdleMinutes must be between 1 and 120" }
+        require(sessionIdleMinutes in 1..120) { "$SESSION_IDLE_MINUTES_ENV (sessionIdleMinutes) must be between 1 and 120" }
         require(roleClaimNamespace.isNotBlank()) { "roleClaimNamespace must not be blank" }
     }
 
@@ -46,13 +50,8 @@ public data class ChronicleAuthConfiguration(
         public val key = SimpleConfigurationKey(CONFIG_FILE_NAME)
     }
 
-    @SuppressFBWarnings(
-        value = ["IL_INFINITE_RECURSIVE_LOOP"],
-        justification = "Kotlin companion-object key accessed from getKey(); findbugs misreads " +
-            "companion-member access as self-recursion. Not recursive.",
-    )
     override fun getKey(): ConfigurationKey {
-        return key
+        return Companion.key
     }
 }
 
@@ -94,7 +93,8 @@ public data class ChronicleAuthUser(
     val appMetadata: Map<String, Any> = emptyMap(),
 ) {
 
-    private val resolvedId: String = requireNotNull(id) { "ChronicleAuthUser.id/user_id is required" }
+    // Tokens carry this id as `sub`, and the decoder refuses a blank subject.
+    private val resolvedId: String = requireNotNull(id?.takeIf { it.isNotBlank() }) { "ChronicleAuthUser.id/user_id is required" }
 
     public fun toChronicleUserProfile(): ChronicleUserProfile = ChronicleUserProfile(
         id = resolvedId,

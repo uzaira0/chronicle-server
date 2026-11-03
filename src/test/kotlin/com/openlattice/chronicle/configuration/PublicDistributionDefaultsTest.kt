@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.configuration
 
+import com.fasterxml.jackson.dataformat.yaml.YAMLMapper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -16,11 +17,7 @@ class PublicDistributionDefaultsTest {
             "/cors-local.yaml",
             "/mobile-security.yaml",
             "/webapp/index.html",
-        ).associateWith { path ->
-            requireNotNull(javaClass.getResourceAsStream(path)) { "$path is missing" }
-                .bufferedReader()
-                .use { it.readText() }
-        }
+        ).associateWith(::packagedResource)
 
         resources.forEach { (path, content) ->
             assertFalse("$path contains an institution-specific hostname", content.contains("bcm.edu", true))
@@ -34,18 +31,9 @@ class PublicDistributionDefaultsTest {
         assertTrue(mobileSecurity.contains("enabled: false"))
         assertTrue(mobileSecurity.contains("signing-secret: \"\""))
         assertTrue(mobileSecurity.contains("signing-required: false"))
-        val authResourceUrls = javaClass.classLoader.getResources("chronicle-auth.yaml").toList()
-        val packagedAuthResourceUrls = authResourceUrls.filterNot { resource ->
-            resource.toExternalForm().replace('\\', '/').contains("/resources/test/")
-        }
-        assertEquals(
-            "expected exactly one packaged main chronicle-auth.yaml; classpath resources=$authResourceUrls",
-            1,
-            packagedAuthResourceUrls.size,
-        )
-        val packagedAuth = packagedAuthResourceUrls.single().openStream().bufferedReader().use { it.readText() }
+        val packagedAuth = packagedResource("/chronicle-auth.yaml")
         assertTrue(
-            "packaged auth must have no usable configuration; resource=${packagedAuthResourceUrls.single()}",
+            "packaged auth must have no usable configuration",
             packagedAuth.contains("configurations: []"),
         )
         assertFalse(packagedAuth.contains("secret:"))
@@ -53,6 +41,48 @@ class PublicDistributionDefaultsTest {
         assertFalse(packagedAuth.contains("bcm.edu", true))
         assertFalse(packagedAuth.contains("chronicle-screentime", true))
         assertFalse(resources.getValue("/webapp/index.html").contains("http-equiv=\"refresh\""))
+        // Deployments render their own TLS stores and database login; the jar ships neither.
+        val jetty = packagedResource("/jetty.yaml")
+        listOf("keystore:", "truststore:", "keymanager-password:").forEach { key ->
+            assertFalse("packaged jetty.yaml must not carry $key", jetty.contains(key))
+        }
+        // rhizome's own tests jar keeps its test keystore on this classpath, so check the server's resources.
+        assertFalse(java.io.File("src/main/resources/security/rhizome.jks").exists())
+        val rhizome = packagedResource("/rhizome.yaml")
+        assertFalse("packaged rhizome.yaml must not carry a usable database login",
+            Regex("""(username|password): "[^"]+"""").containsMatchIn(rhizome))
+    }
+
+    /** Without a rendered rhizome.yaml every pool has a blank login, so startup cannot reach a database. */
+    @Test
+    fun `packaged database pools carry no login in any spelling`() {
+        val rhizome = YAMLMapper().readTree(packagedResource("/rhizome.yaml"))
+        val pools = listOf("postgres" to rhizome["postgres"]["hikari"]) +
+            rhizome["datasources"].fields().asSequence().toList().map { (name, source) -> "datasources.$name" to source["hikari"] }
+        pools.forEach { (name, hikari) ->
+            listOf("username", "password", "dataSource.user", "dataSource.password").forEach { key ->
+                assertEquals("$name $key", "", hikari[key]?.asText().orEmpty())
+            }
+        }
+    }
+
+    /** Deployments render their own stores; nothing under the server's resources is a key or its password. */
+    @Test
+    fun `packaged resources carry no key material or key passwords`() {
+        val keyExtensions = setOf("jks", "p12", "pfx", "keystore", "key", "pem")
+        val offenders = java.io.File("src/main/resources").walkTopDown().filter { it.isFile }.filter { file ->
+            file.extension.lowercase() in keyExtensions || file.readBytes().toString(Charsets.ISO_8859_1).let {
+                it.contains("PRIVATE KEY-----") || Regex("""(?i)(keystore|truststore|keymanager)-password\s*:""").containsMatchIn(it)
+            }
+        }.map { it.path }.toList()
+        assertEquals(emptyList<String>(), offenders)
+    }
+
+    private fun packagedResource(path: String): String {
+        val resources = javaClass.classLoader.getResources(path.removePrefix("/")).toList().filterNot { resource ->
+            resource.toExternalForm().replace('\\', '/').contains("/resources/test/")
+        }
+        return resources.first().openStream().bufferedReader().use { it.readText() }
     }
 
     @Test

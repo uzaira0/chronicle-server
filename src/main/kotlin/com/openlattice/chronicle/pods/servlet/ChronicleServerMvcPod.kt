@@ -19,43 +19,47 @@
 package com.openlattice.chronicle.pods.servlet
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.openlattice.chronicle.configuration.RateLimitFilter
+import com.openlattice.chronicle.configuration.CookiePolicy
 import com.openlattice.chronicle.constants.CustomMediaType
 import com.openlattice.chronicle.controllers.AdminController
 import com.openlattice.chronicle.controllers.AuthTokenController
+import com.openlattice.chronicle.controllers.CandidateController
 import com.openlattice.chronicle.controllers.ChronicleServerExceptionHandler
 import com.openlattice.chronicle.controllers.ExportController
 import com.openlattice.chronicle.controllers.NotificationController
 import com.openlattice.chronicle.controllers.PrincipalDirectoryController
 import com.openlattice.chronicle.controllers.StudyController
 import com.openlattice.chronicle.controllers.TestHookController
-import com.openlattice.chronicle.controllers.TokenRevocationController
-import com.openlattice.chronicle.controllers.legacy.ChronicleController
-import com.openlattice.chronicle.controllers.v2.ChronicleControllerV2
 import com.openlattice.chronicle.converters.PostgresDownloadCsvHttpMessageConverter
+import com.openlattice.chronicle.converters.PostgresDownloadJsonHttpMessageConverter
 import com.openlattice.chronicle.converters.TimeUseDiaryDownloadCsvHttpMessageConverter
 import com.openlattice.chronicle.converters.YamlHttpMessageConverter
 import com.openlattice.chronicle.i18n.Messages
-import com.openlattice.chronicle.configuration.RateLimitFilter
+import com.openlattice.chronicle.pods.AdvisorAutoProxyRegistrar
 import jakarta.servlet.Filter
+import java.util.Locale
 import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.annotation.Qualifier
-import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping
 import org.springframework.context.MessageSource
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Import
 import org.springframework.context.annotation.FilterType
 import org.springframework.http.MediaType
 import org.springframework.http.converter.HttpMessageConverters
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter
 import org.springframework.scheduling.annotation.EnableAsync
 import org.springframework.stereotype.Controller
+import org.springframework.validation.Validator
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean
 import org.springframework.web.bind.annotation.RestControllerAdvice
-import org.springframework.web.servlet.config.annotation.ContentNegotiationConfigurer
 import org.springframework.web.servlet.LocaleResolver
+import org.springframework.web.servlet.config.annotation.ContentNegotiationConfigurer
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurationSupport
 import org.springframework.web.servlet.i18n.AcceptHeaderLocaleResolver
-import jakarta.inject.Inject
-import java.util.Locale
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping
 
 @Configuration
 // basePackageClasses selects packages to scan; every controller under the listed controller
@@ -64,15 +68,12 @@ import java.util.Locale
 @ComponentScan(
     basePackageClasses = [
         AuthTokenController::class,
-        com.openlattice.chronicle.controllers.CandidateController::class,
-        ChronicleController::class,
+        CandidateController::class,
         ChronicleServerExceptionHandler::class,
-        ChronicleControllerV2::class,
         NotificationController::class,
         StudyController::class,
         AdminController::class,
         PrincipalDirectoryController::class,
-        TokenRevocationController::class,
         ExportController::class,
         TestHookController::class
     ],
@@ -82,20 +83,23 @@ import java.util.Locale
     )]
 )
 @EnableAsync
-@org.springframework.context.annotation.EnableAspectJAutoProxy(proxyTargetClass = true)
-public open class ChronicleServerMvcPod : WebMvcConfigurationSupport() {
-    @Inject
-    private lateinit var defaultObjectMapper: ObjectMapper
+// Controllers are proxied by class with every Advisor bean, the parent's @RequiresStudyAccess advisor included.
+@Import(AdvisorAutoProxyRegistrar::class)
+public open class ChronicleServerMvcPod(
+    private val defaultObjectMapper: ObjectMapper,
+) : WebMvcConfigurationSupport() {
 
     // Jackson 2 converters deprecated in Spring 7; Jackson 3 migration tracked separately
     @Suppress("DEPRECATION")
     override fun configureMessageConverters(builder: HttpMessageConverters.ServerBuilder) {
         builder.configureMessageConvertersList { converters ->
             for (converter in converters) {
-                if (converter is org.springframework.http.converter.json.MappingJackson2HttpMessageConverter) {
+                if (converter is MappingJackson2HttpMessageConverter) {
                     converter.objectMapper = defaultObjectMapper
                 }
             }
+            // Ahead of Jackson, which would write the download wrapper as an object instead of streaming its rows.
+            converters.add(0, PostgresDownloadJsonHttpMessageConverter(defaultObjectMapper))
             converters.add(PostgresDownloadCsvHttpMessageConverter())
             converters.add(TimeUseDiaryDownloadCsvHttpMessageConverter())
             converters.add(YamlHttpMessageConverter())
@@ -103,7 +107,7 @@ public open class ChronicleServerMvcPod : WebMvcConfigurationSupport() {
     }
 
     override fun configureContentNegotiation(configurer: ContentNegotiationConfigurer) {
-        configurer.parameterName(FILE_TYPE)
+        configurer.parameterName(CustomMediaType.FILE_TYPE_PARAMETER)
             .favorParameter(true)
             .mediaType("csv", CustomMediaType.TEXT_CSV)
             .mediaType("json", MediaType.APPLICATION_JSON)
@@ -120,9 +124,14 @@ public open class ChronicleServerMvcPod : WebMvcConfigurationSupport() {
         setDefaultLocale(Locale.ENGLISH)
     }
 
+    override fun getValidator(): Validator = controllerValidator()
+
     /** Exposes the message table used by [Messages] as the context's `messageSource`. */
     @Bean
     public open fun messageSource(): MessageSource = Messages.source
+
+    @Bean
+    public open fun cookiePolicy(environment: org.springframework.core.env.Environment): CookiePolicy = CookiePolicy(environment)
 
     @Bean
     public open fun rateLimitHandlerMappingBinding(
@@ -132,7 +141,12 @@ public open class ChronicleServerMvcPod : WebMvcConfigurationSupport() {
         (filter as? RateLimitFilter)?.bindHandlerMapping(mapping)
     }
 
-    internal companion object {
-        public const val FILE_TYPE = "fileType"
-    }
+}
+
+/**
+ * Validates request bodies and handler parameters. The `*Api` interfaces the controllers implement are Retrofit client
+ * stubs that declare no constraints, so each controller owns the constraints on its own parameters.
+ */
+internal fun controllerValidator(): LocalValidatorFactoryBean = LocalValidatorFactoryBean().apply {
+    validationPropertyMap["hibernate.validator.allow_parameter_constraint_override"] = "true"
 }

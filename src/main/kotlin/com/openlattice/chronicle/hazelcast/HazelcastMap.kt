@@ -19,6 +19,7 @@
  */
 package com.openlattice.chronicle.hazelcast
 
+import com.openlattice.chronicle.contract.JwtSessionContract
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.authorization.AceKey
@@ -79,7 +80,7 @@ public open class HazelcastMap<K, V> internal constructor(public val name: Strin
 //        @JvmField val EXTERNAL_TABLES = HazelcastMap<UUID, ExternalTable>("EXTERNAL_TABLES")
         @JvmField val FILTERED_APPS = HazelcastMap<UUID, KotlinDelegatedStringSet>("FILTERED_APPS")
         @JvmField val ID_GENERATION = HazelcastMap<Long, Range>("ID_GENERATION")
-        @JvmField val JWT_BLOCKLIST = HazelcastMap<String, Long>("JWT_BLOCKLIST")
+        @JvmField val JWT_BLOCKLIST = HazelcastMap<String, Long>(JwtSessionContract.blocklistMap)
 //        @JvmField val INDEXING_JOBS = HazelcastMap<UUID, DelegatedUUIDSet>("INDEXING_JOBS")
 //        @JvmField val INDEXING_LOCKS = HazelcastMap<UUID, Long>("INDEXING_LOCKS")
 //        @JvmField val INDEXING_PROGRESS = HazelcastMap<UUID, UUID>("INDEXING_PROGRESS")

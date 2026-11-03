@@ -16,6 +16,7 @@
  */
 package com.openlattice.chronicle.observability
 
+import com.openlattice.chronicle.configuration.MobileApiSignatureFilter
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -67,7 +68,7 @@ public class ApiMetricsFilter : OncePerRequestFilter() {
 
             val durationSeconds = (System.nanoTime() - startNanos) / 1_000_000_000.0
             val normalizedPath = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE)?.toString()
-                ?: com.openlattice.chronicle.configuration.MobileApiSignatureFilter.enrollmentMetricEndpoint(request)
+                ?: MobileApiSignatureFilter.enrollmentMetricEndpoint(request)
                 ?: UNMATCHED
             ChronicleMetrics.apiRequestDuration
                 .labels(normalizedPath, method)

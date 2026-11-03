@@ -112,11 +112,82 @@ class ErrorSanitizationConfigTest {
         assertTrue(sanitized.length <= defaultConfig.maxMessageLength)
     }
 
+    /** Text built to make each pattern backtrack still sanitizes in bounded time, and secrets in it are still redacted. */
+    @Test(timeout = 10_000)
+    fun testSanitizeMessageStaysBoundedOnAdversarialText() {
+        val adversarial = listOf(
+            "SELECT " + "a ".repeat(20_000),
+            "SELECT " + "a".repeat(20_000),
+            "WHERE " + "x ".repeat(20_000),
+            "SELECT ".repeat(50_000),
+            "WHERE ".repeat(50_000),
+            "/" + "a.".repeat(20_000),
+            "/a".repeat(20_000),
+            "C:\\" + "a".repeat(20_000),
+            "at a.b." + "c".repeat(20_000) + "(",
+            "at a.b.c(".repeat(20_000),
+            "[REDACTED] ".repeat(20_000) + "x",
+        )
+        for (text in adversarial) {
+            val sanitized = defaultConfig.sanitizeMessage("password=hunter2 $text")
+            assertFalse(sanitized.contains("hunter2"))
+            assertTrue(sanitized.length <= defaultConfig.maxMessageLength)
+        }
+    }
+
+    @Test
+    fun testSanitizeMessagePreservesLegacyRedactionCoverage() {
+        val examples = mapOf(
+            Regex("""(/[a-zA-Z0-9._-]+)+\.(kt|java|class|jar|xml|yaml|yml|properties|conf|json)""") to listOf(
+                "/opt/chronicle/Main.kt", "/srv/app/a-b_2/settings.properties", "/run/app/config.yaml",
+                "/opt/app/data.json", "/srv/app/lib.jar", "/opt/app/Worker.class", "/opt/app/config.xml",
+                "/opt/app/config.yml", "/opt/app/config.conf", "/opt/app/Main.java",
+            ),
+            Regex("""SELECT\s+\S+(?:\s+\S+)*\s+FROM\s+\w+""", RegexOption.IGNORE_CASE) to listOf(
+                "SELECT secret FROM participants", "select\tsecret\nfrom participants",
+                "SELECT subject, (SELECT secret FROM private_rows) FROM participants",
+                "SELECT secret FROM participants UNION SELECT secret FROM archived",
+                "SELECT 'participant-private', '" + "x".repeat(2_100) + "' FROM participants",
+            ),
+            Regex("""WHERE\s+\S+(?:\s+\S+)*?\s+(?:AND|OR)\b""", RegexOption.IGNORE_CASE) to listOf(
+                "WHERE subject = 'private' AND", "where\tsecret = 1\nor",
+                "WHERE note = 'WHERE private' AND",
+            ),
+            Regex("""at\s+[a-z]+\.[a-z]+\.[a-zA-Z0-9._$]+\([^)]+\)""") to listOf(
+                "at com.example.Worker.run(Worker.kt:42)", "at com.example.Worker.run(Native Method)",
+            ),
+        )
+        for ((legacy, messages) in examples) for (message in messages) {
+            val input = "Error: $message"
+            val expected = "Error: ${ErrorSanitizationConfig.REDACTED}"
+            assertEquals("legacy: $input", expected, legacy.replace(input, ErrorSanitizationConfig.REDACTED))
+            assertEquals(input, expected, defaultConfig.sanitizeMessage(input))
+        }
+    }
+
+    @Test
+    fun testSanitizeMessageCollapsesMarkersWithoutChangingLiteralControlCharacters() {
+        for ((input, expected) in listOf(
+            "left\u0001right" to "left\u0001right",
+            "[REDACTED]\u0001[REDACTED]" to "[REDACTED] \u0001[REDACTED]",
+            "before [REDACTED]\n[REDACTED] after" to "before [REDACTED] after",
+        )) {
+            assertEquals(input, expected, defaultConfig.sanitizeMessage(input))
+        }
+    }
+
     @Test
     fun testSanitizeMessagePreservesSafeContent() {
         val message = "Invalid study ID provided"
         val sanitized = defaultConfig.sanitizeMessage(message)
         assertEquals("Invalid study ID provided", sanitized)
+        for (plain in listOf(
+            "Select at least one data type", "Select from the available studies", "Choose where to save the export",
+            "Somewhere the upload stopped", "Choose .csv/.json for the export",
+            "Seleccione al menos un tipo de datos", "Look at the study settings (Modules)",
+        )) {
+            assertEquals(plain, plain, defaultConfig.sanitizeMessage(plain))
+        }
     }
 
     @Test

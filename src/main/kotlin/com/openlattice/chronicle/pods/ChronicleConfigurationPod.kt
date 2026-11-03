@@ -14,12 +14,11 @@ import com.openlattice.chronicle.configuration.VaultConfiguration
 import com.openlattice.chronicle.configuration.VaultSecretOverlayProcessor
 import com.openlattice.chronicle.configuration.VaultSecretProvider
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.upgrades.FlywayMigrationService
+import com.openlattice.chronicle.upgrades.RuntimeDatabaseValidationService
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Import
-import jakarta.inject.Inject
 
 /**
  *
@@ -27,19 +26,13 @@ import jakarta.inject.Inject
  */
 @Configuration
 @Import(VaultSecretOverlayProcessor::class)
-// reason: Spring @Configuration pod — each function is a required @Bean factory; splitting would fragment DI wiring
-@Suppress("TooManyFunctions")
-public open class ChronicleConfigurationPod {
+public open class ChronicleConfigurationPod(
+    private val configurationLoader: ConfigurationLoader,
+) {
 
     public companion object {
         private val logger = LoggerFactory.getLogger(ChronicleConfigurationPod::class.java)
     }
-
-    @Inject
-    private lateinit var dataSourceManager: DataSourceManager
-
-    @Inject
-    private lateinit var configurationLoader: ConfigurationLoader
 
     @Bean
     // reason: boundary catch — a missing/invalid vault.yaml must fall back to a disabled VaultConfiguration
@@ -55,8 +48,8 @@ public open class ChronicleConfigurationPod {
     }
 
     @Bean
-    public fun vaultSecretProvider(): VaultSecretProvider {
-        return VaultSecretProvider(vaultConfiguration())
+    public fun vaultSecretProvider(vaultConfiguration: VaultConfiguration): VaultSecretProvider {
+        return VaultSecretProvider(vaultConfiguration)
     }
 
     @Bean
@@ -65,9 +58,9 @@ public open class ChronicleConfigurationPod {
     }
 
     @Bean
-    public fun chronicleAuthConfiguration(): ChronicleAuthConfiguration {
+    public fun chronicleAuthConfiguration(vaultSecretProvider: VaultSecretProvider): ChronicleAuthConfiguration {
         val config = configurationLoader.logAndLoad("Chronicle Auth Configuration", ChronicleAuthConfiguration::class.java)
-        return overlayVaultSecrets(config)
+        return overlayVaultSecrets(config, vaultSecretProvider)
     }
 
     /**
@@ -75,8 +68,7 @@ public open class ChronicleConfigurationPod {
      * (path: {secretBasePath}/jwt → field: secret) onto the YAML-loaded auth configuration.
      * Falls back to the YAML/env var values when Vault is disabled or unavailable.
      */
-    private fun overlayVaultSecrets(config: ChronicleAuthConfiguration): ChronicleAuthConfiguration {
-        val vault = vaultSecretProvider()
+    private fun overlayVaultSecrets(config: ChronicleAuthConfiguration, vault: VaultSecretProvider): ChronicleAuthConfiguration {
         if (!vault.isAvailable()) return config
 
         val jwtSecret = vault.getJwtSecret()
@@ -135,17 +127,16 @@ public open class ChronicleConfigurationPod {
     }
 
     @Bean
-    public fun twilioConfiguration(): TwilioConfiguration {
+    public fun twilioConfiguration(vaultSecretProvider: VaultSecretProvider): TwilioConfiguration {
         val config = configurationLoader.logAndLoad("Twilio Configuration", TwilioConfiguration::class.java)
-        return overlayTwilioVaultSecrets(config).validated()
+        return overlayTwilioVaultSecrets(config, vaultSecretProvider).validated()
     }
 
     /**
      * When Vault is enabled, overlays Twilio credentials from Vault KV v2
      * (path: {secretBasePath}/twilio -> sid, token, from-phone).
      */
-    private fun overlayTwilioVaultSecrets(config: TwilioConfiguration): TwilioConfiguration {
-        val vault = vaultSecretProvider()
+    private fun overlayTwilioVaultSecrets(config: TwilioConfiguration, vault: VaultSecretProvider): TwilioConfiguration {
         if (!vault.isAvailable()) return config
 
         val sid = vault.getTwilioSid()
@@ -163,16 +154,18 @@ public open class ChronicleConfigurationPod {
     }
 
     @Bean
-    public fun storageResolver(): StorageResolver {
-        return StorageResolver(dataSourceManager, chronicleConfiguration().storageConfiguration)
+    public fun storageResolver(
+        chronicleConfiguration: ChronicleConfiguration,
+        dataSourceManager: DataSourceManager,
+    ): StorageResolver {
+        return StorageResolver(dataSourceManager, chronicleConfiguration.storageConfiguration)
     }
 
-    // Schema migrations: single fail-closed Flyway pass over db/migration, replacing the
-    // 40 per-class SqlMigrationUpgrade beans that previously lived here (each caught its own
-    // failures and let startup proceed — see docs/db/MIGRATION-LEDGER-AUDIT.md).
     @Bean
-    public fun flywayMigrationService(): PreHazelcastUpgradeService {
-        return FlywayMigrationService(storageResolver())
+    public fun runtimeDatabaseValidationService(
+        storageResolver: StorageResolver,
+    ): PreHazelcastUpgradeService {
+        return RuntimeDatabaseValidationService(storageResolver)
     }
 
 }

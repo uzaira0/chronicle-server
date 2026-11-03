@@ -18,66 +18,50 @@ package com.openlattice.chronicle.pods
 
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
+import com.openlattice.chronicle.authorization.CreatorPrincipalResolver
 import com.openlattice.chronicle.authorization.StudyAuthorizationService
-import com.openlattice.chronicle.authorization.aspects.OrganizationAuthorizationAspect
-import com.openlattice.chronicle.authorization.aspects.StudyAuthorizationAspect
-import com.openlattice.chronicle.services.organizations.OrganizationMemberService
+import com.openlattice.chronicle.authorization.aspects.StudyAuthorizationInterceptor
+import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
+import com.openlattice.chronicle.storage.StorageResolver
+import org.springframework.aop.Advisor
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
-import org.springframework.context.annotation.EnableAspectJAutoProxy
-import jakarta.inject.Inject
+import org.springframework.context.annotation.Import
 
 /**
- * Configuration pod for study-level authorization services and AOP aspects.
- * Enables AspectJ auto-proxying and configures the study authorization infrastructure.
+ * Configuration pod for study-level authorization services and the @RequiresStudyAccess advisor.
+ * [AdvisorAutoProxyRegistrar] makes the context's auto-proxy creator apply every Advisor bean.
  *
  * @author uzaira0
  */
 @Configuration
-@EnableAspectJAutoProxy
+@Import(AdvisorAutoProxyRegistrar::class)
 public open class StudyAuthorizationPod {
 
-    @Inject
-    private lateinit var authorizationManager: AuthorizationManager
-
-    @Inject
-    private lateinit var auditingManager: AuditingManager
-
     @Bean
-    public fun creatorPrincipalResolver(storageResolver: com.openlattice.chronicle.storage.StorageResolver,
-        configuration: com.openlattice.chronicle.configuration.ChronicleAuthConfiguration):
-        com.openlattice.chronicle.authorization.CreatorPrincipalResolver =
-        com.openlattice.chronicle.authorization.CreatorPrincipalResolver(storageResolver, configuration)
+    public fun creatorPrincipalResolver(
+        storageResolver: StorageResolver,
+        configuration: ChronicleAuthConfiguration,
+    ): CreatorPrincipalResolver = CreatorPrincipalResolver(storageResolver, configuration)
 
     /**
      * Creates the StudyAuthorizationService that provides role-based access control
      * for study operations.
      */
     @Bean
-    public fun studyAuthorizationService(): StudyAuthorizationService {
+    public fun studyAuthorizationService(
+        authorizationManager: AuthorizationManager,
+        auditingManager: AuditingManager,
+    ): StudyAuthorizationService {
         return StudyAuthorizationService(authorizationManager, auditingManager)
     }
 
     /**
-     * Creates the AOP aspect that intercepts methods annotated with @RequiresStudyAccess
-     * and enforces authorization checks.
+     * The advisor that intercepts methods annotated with @RequiresStudyAccess and enforces
+     * authorization checks. The MVC child context's creator finds it here (ancestors included).
      */
     @Bean
-    public fun studyAuthorizationAspect(): StudyAuthorizationAspect {
-        return StudyAuthorizationAspect(studyAuthorizationService())
-    }
-
-    /**
-     * Creates the AOP aspect that enforces @RequiresOrganizationAccess.
-     *
-     * The aspect's own @Aspect/@Component stereotype never took effect: the MVC pod scans only the
-     * controller packages, so nothing registered the bean and every organization-scoped endpoint
-     * ran unauthorized. It must be declared here alongside the study aspect.
-     */
-    @Bean
-    public fun organizationAuthorizationAspect(
-        organizationMemberService: OrganizationMemberService,
-    ): OrganizationAuthorizationAspect {
-        return OrganizationAuthorizationAspect(organizationMemberService)
-    }
+    public fun studyAuthorizationAdvisor(studyAuthorizationService: ObjectProvider<StudyAuthorizationService>): Advisor =
+        StudyAuthorizationInterceptor.advisor(studyAuthorizationService::getObject)
 }

@@ -10,7 +10,7 @@ import java.time.Duration
 
 /**
  * The OIDC token exchange and JWKS fetches must not hold a request thread forever when the
- * identity provider accepts the connection and never answers (launch audit L4).
+ * identity provider accepts the connection and never answers.
  */
 class BoundedRestTemplateTest {
     @Test

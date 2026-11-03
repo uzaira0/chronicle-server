@@ -21,7 +21,6 @@ import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import org.slf4j.MDC
-import org.springframework.security.core.context.SecurityContextHolder
 import org.springframework.web.filter.OncePerRequestFilter
 import java.util.Locale
 import java.util.UUID
@@ -37,12 +36,11 @@ import java.util.regex.Pattern
  * - spanId: W3C traceparent span ID (or generated if absent)
  * - studyId: stable one-way reference extracted from URL path
  * - participantId: stable one-way reference extracted from URL path
- * - userId: authenticated principal (if available)
  * - httpMethod: GET, POST, etc.
  * - httpPath: sanitized route shape with sensitive path segments redacted
  *
  * IMPORTANT: No PII is logged. StudyId and participantId are logged only as stable
- * one-way references. The userId is the Auth0/JWT subject claim (not a name or email).
+ * one-way references.
  * All values are sanitized via LogSanitizer to prevent log injection.
  */
 public class ObservabilityFilter : OncePerRequestFilter() {
@@ -121,19 +119,6 @@ public class ObservabilityFilter : OncePerRequestFilter() {
         if (participantMatcher.find()) {
             val rawId = participantMatcher.group(1)
             MDC.put("participantId", LogSanitizer.stableFingerprint(rawId, "participant"))
-        }
-
-        // Authenticated user ID (JWT subject, not PII like email/name)
-        try {
-            val auth = SecurityContextHolder.getContext().authentication
-            if (auth != null && auth.isAuthenticated) {
-                val principal = auth.name
-                if (principal != null && principal != "anonymousUser") {
-                    MDC.put("userId", LogSanitizer.sanitize(principal, 200))
-                }
-            }
-        } catch (_: Exception) {
-            // Security context not available yet — skip
         }
 
         // HTTP method and sanitized path

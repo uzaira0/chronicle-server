@@ -124,12 +124,6 @@ public object ChronicleMetrics {
         .labelNames("key_prefix", "outcome")
         .register()
 
-    public val honeyTokenTriggeredTotal: Counter = Counter.build()
-        .name("chronicle_honey_token_triggered_total")
-        .help("Total number of honey token (canary API key) uses. Any increment indicates potential unauthorized access.")
-        .labelNames("key_name", "source_ip")
-        .register()
-
     public val participantFormAccessTotal: Counter = Counter.build()
         .name("chronicle_participant_form_access_total")
         .help("Participant capability-session decisions by form kind and outcome")
@@ -155,49 +149,23 @@ public object ChronicleMetrics {
         .buckets(0.05, 0.25, 1.0, 5.0, 30.0, 120.0, 600.0)
         .register()
 
-    public val dataDeletionRetentionHoldsTotal: Counter = Counter.build()
-        .name("chronicle_data_deletion_retention_holds_total")
-        .help("Explicit retention hold lifecycle actions")
-        .labelNames("action")
+    /** Background work whose failure leaves data unmoved, a study unenforced, or a delivery dropped. */
+    public enum class BackgroundTask {
+        USAGE_MOVER, PARTICIPANT_STATS, STUDY_LIMITS, AUTO_ARCHIVE, DELETION_RESUME, WEBHOOK_DELIVERY, JOB,
+        SYSTEM_APPS, JOB_RECONCILE, COMPLIANCE, ORGANIZATION_BOOTSTRAP, SENSOR_MOVER;
+
+        internal val label: String = name.lowercase()
+    }
+
+    public val backgroundTaskFailuresTotal: Counter = Counter.build()
+        .name("chronicle_background_task_failures_total")
+        .help("Background task runs that failed, and webhook deliveries or jobs that gave up, by task")
+        .labelNames("task")
         .register()
 
-    public val retentionHoldsOverdue: Gauge = Gauge.build()
-        .name("chronicle_retention_holds_overdue")
-        .help("Unreleased retention holds past their review deadline")
-        .register()
-
-    public val dataQualityEvaluationsTotal: Counter = Counter.build()
-        .name("chronicle_data_quality_evaluations_total")
-        .help("Data-quality evaluation runs by trigger and outcome")
-        .labelNames("trigger", "outcome")
-        .register()
-
-    public val dataQualityAlertsTotal: Counter = Counter.build()
-        .name("chronicle_data_quality_alerts_total")
-        .help("New deduplicated local data-quality alerts")
-        .register()
-
-    public val exportArtifactBytes: Gauge = Gauge.build()
-        .name("chronicle_export_artifact_bytes")
-        .help("Bytes currently occupied by managed export artifacts")
-        .register()
-
-    public val exportStorageUsableBytes: Gauge = Gauge.build()
-        .name("chronicle_export_storage_usable_bytes")
-        .help("Usable bytes reported by the filesystem containing managed export artifacts")
-        .register()
-
-    public val exportStorageAdmissionRejectionsTotal: Counter = Counter.build()
-        .name("chronicle_export_storage_admission_rejections_total")
-        .help("Exports rejected before writing because storage capacity safeguards would be exceeded")
-        .labelNames("reason")
-        .register()
-
-    public val exportJobsTotal: Counter = Counter.build()
-        .name("chronicle_export_jobs_total")
-        .help("Export background-job transitions by finite outcome")
-        .labelNames("outcome")
-        .register()
+    public fun recordBackgroundTaskFailure(task: BackgroundTask) {
+        backgroundTaskFailuresTotal.labels(task.label).inc()
+    }
 
     // =========================================================================
     // STUDY METRICS

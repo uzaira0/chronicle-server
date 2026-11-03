@@ -9,24 +9,30 @@ import com.geekbeast.rhizome.hazelcast.serializers.RhizomeUtils.Pods
 import com.geekbeast.rhizome.pods.hazelcast.RegistryBasedHazelcastInstanceConfigurationPod
 import com.openlattice.chronicle.hazelcast.pods.SharedStreamSerializersPod
 import com.openlattice.chronicle.mapstores.MapstoresPod
+import com.openlattice.chronicle.pods.AuthenticationServicesPod
 import com.openlattice.chronicle.pods.ChronicleConfigurationPod
 import com.openlattice.chronicle.pods.ChronicleJobRunnersPod
 import com.openlattice.chronicle.pods.ChronicleServerServicesPod
 import com.openlattice.chronicle.pods.ChronicleServerServletsPod
+import com.openlattice.chronicle.pods.DataIngestionPod
+import com.openlattice.chronicle.pods.DataProcessingPod
+import com.openlattice.chronicle.pods.DataRetentionPod
+import com.openlattice.chronicle.pods.OrganizationServicesPod
+import com.openlattice.chronicle.pods.ParticipantAccessPod
 import com.openlattice.chronicle.pods.RLSSecurityPod
+import com.openlattice.chronicle.pods.SecurityServicesPod
 import com.openlattice.chronicle.pods.StudyAuthorizationPod
+import com.openlattice.chronicle.pods.StudyMonitoringPod
+import com.openlattice.chronicle.pods.StudyServicesPod
+import com.openlattice.chronicle.pods.servlet.ChronicleServerSecurityPod
+import com.openlattice.chronicle.pods.tables.PostgresDataTablesPod
+import com.openlattice.chronicle.pods.tables.PostgresEventTablesPod
+import com.openlattice.chronicle.pods.tables.PostgresTablesPod
 import com.openlattice.chronicle.serializers.FullQualifiedNameJacksonSerializer
-import com.openlattice.chronicle.storage.pods.ByteBlobServicePod
-import com.openlattice.ioc.providers.LateInitProvidersPod
 import com.geekbeast.jdbc.JdbcPod
 import com.geekbeast.postgres.PostgresPod
 import com.geekbeast.pods.TaskSchedulerPod
-import com.openlattice.chronicle.constants.ChronicleProfiles
 import com.openlattice.chronicle.hazelcast.pods.HazelcastQueuePod
-import com.openlattice.chronicle.pods.servlet.ChronicleServerSecurityPod
-import com.openlattice.chronicle.pods.tables.PostgresDataTablesPod
-import com.openlattice.chronicle.pods.tables.PostgresTablesPod
-import com.openlattice.chronicle.pods.tables.PostgresEventTablesPod
 import com.openlattice.chronicle.storage.PostgresDataTables
 
 /**
@@ -57,6 +63,15 @@ public open class ChronicleServer(vararg pods: Class<*>) : BaseRhizomeServer(
             ChronicleConfigurationPod::class.java,
             JdbcPod::class.java,
             ChronicleServerServicesPod::class.java,
+            AuthenticationServicesPod::class.java,
+            OrganizationServicesPod::class.java,
+            StudyServicesPod::class.java,
+            ParticipantAccessPod::class.java,
+            DataRetentionPod::class.java,
+            DataIngestionPod::class.java,
+            DataProcessingPod::class.java,
+            StudyMonitoringPod::class.java,
+            SecurityServicesPod::class.java,
             StudyAuthorizationPod::class.java,
             PostgresPod::class.java,
             PostgresTablesPod::class.java,
@@ -64,8 +79,6 @@ public open class ChronicleServer(vararg pods: Class<*>) : BaseRhizomeServer(
             PostgresDataTablesPod::class.java,
             TaskSchedulerPod::class.java,
             SharedStreamSerializersPod::class.java,
-            ByteBlobServicePod::class.java,
-            LateInitProvidersPod::class.java,
             HazelcastQueuePod::class.java,
             ChronicleJobRunnersPod::class.java,
             RLSSecurityPod::class.java,
@@ -73,8 +86,7 @@ public open class ChronicleServer(vararg pods: Class<*>) : BaseRhizomeServer(
 
         private val DEFAULT_PROFILES = arrayOf(
             PostgresDataTables.POSTGRES_DATA_ENVIRONMENT,
-            PostgresPod.PROFILE,
-            ChronicleProfiles.MEDIA_LOCAL_PROFILE)
+            PostgresPod.PROFILE)
 
 
         @Throws(Exception::class)

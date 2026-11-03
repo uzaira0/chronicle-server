@@ -4,12 +4,24 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.apache.logging.log4j.Level
 import org.apache.logging.log4j.core.impl.Log4jLogEvent
 import org.apache.logging.log4j.core.layout.PatternLayout
+import org.apache.logging.log4j.core.config.DefaultConfiguration
 import org.apache.logging.log4j.message.SimpleMessage
 import org.apache.logging.log4j.util.SortedArrayStringMap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import javax.xml.parsers.DocumentBuilderFactory
+import org.w3c.dom.Document
+
+internal fun productionLoggingConfiguration(document: Document): DefaultConfiguration = DefaultConfiguration().apply {
+    pluginPackages.add("com.openlattice.chronicle.util")
+    val properties = document.getElementsByTagName("Property")
+    for (index in 0 until properties.length) {
+        val property = properties.item(index)
+        getProperties()[property.attributes.getNamedItem("name").nodeValue] = property.textContent
+    }
+}
 
 class StructuredLoggingConfigurationTest {
 
@@ -37,8 +49,11 @@ class StructuredLoggingConfigurationTest {
             .setLevel(Level.ERROR)
             .setMessage(SimpleMessage("quoted=\"value\"\nsecond-line"))
             .setContextData(context)
+            .setThrown(IllegalStateException("private exception message"))
             .build()
-        val rendered = PatternLayout.newBuilder().withPattern(pattern).build().toSerializable(event)
+        val configuration = productionLoggingConfiguration(document)
+        val rendered = PatternLayout.newBuilder().withConfiguration(configuration)
+            .withPattern(configuration.strSubstitutor.replace(pattern)).build().toSerializable(event)
         val json = ObjectMapper().readTree(rendered)
 
         assertEquals("backend", json["service"].asText())
@@ -51,5 +66,8 @@ class StructuredLoggingConfigurationTest {
         assertFalse(json.has("participantId"))
         assertFalse(json.has("userId"))
         assertFalse(json.has("clientIp"))
+        assertTrue(rendered, rendered.contains(StructuredLoggingConfigurationTest::class.java.name))
+        assertTrue(rendered, rendered.contains("IllegalStateException"))
+        assertFalse(rendered.contains("private exception message"))
     }
 }

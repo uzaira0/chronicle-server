@@ -22,22 +22,8 @@ web-endpoint:
     require-ssl: false
     require-client-auth: false
     want-client-auth: false
-    certificate-alias: rhizomessl
 
-
-##
-# Keystore and truststore configuration.
-##
-
-keymanager-password: rhizome
-
-keystore:
-    path: security/rhizome.jks
-    password: rhizome
-
-truststore:
-    path: security/rhizome.jks
-    password: rhizome
+# No keystore ships in the jar: deployments render their own TLS config (selfhost/config/jetty.yaml.template).
 
 gzip:
     enabled: true

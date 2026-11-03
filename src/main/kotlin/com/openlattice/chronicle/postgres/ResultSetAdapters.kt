@@ -43,10 +43,8 @@ import com.openlattice.chronicle.notifications.NotificationType
 import com.openlattice.chronicle.organizations.Organization
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.sensorkit.SensorDataSample
 import com.openlattice.chronicle.services.jobs.ChronicleJob
 import com.openlattice.chronicle.services.notifications.Notification
-import com.openlattice.chronicle.services.surveys.IosDeviceUsageByCategory
 import com.openlattice.chronicle.services.upload.UsageEventColumn
 import com.openlattice.chronicle.services.upload.UsageEventQueueEntry
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
@@ -70,11 +68,9 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.DELETED_ROWS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DELIVERY_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DESCRIPTION
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DESTINATION
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ENDED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EXPIRATION_DATE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.FEATURES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.HTML
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_FIRST_DATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_LAST_DATE
@@ -90,13 +86,11 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.MESSAGE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.MODULES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.MSB
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NAME
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.NOTIFICATIONS_ENABLED
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NOTIFICATION_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NOTIFICATION_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ORGANIZATION_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ORGANIZATION_IDS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_LIMIT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_NOTES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_TAGS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPATION_STATUS
@@ -134,23 +128,14 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOADED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_DATA
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.URL
 import com.openlattice.chronicle.storage.PostgresEventColumns
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APPLICATION_LABEL
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_CATEGORY
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_PACKAGE_NAME
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_USAGE_TIME
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.BUNDLE_IDENTIFIER
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.EVENT_TYPE
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.ID
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.TIMESTAMP
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.TIMEZONE
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.UPLOADED_AT
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.USERNAME
 import com.openlattice.chronicle.storage.PostgresEventTables.Companion.UNIQUE_DATES
-import com.openlattice.chronicle.storage.tasks.SensorDataEntries
 import com.openlattice.chronicle.study.Study
-import com.openlattice.chronicle.study.StudyFeature
+import com.openlattice.chronicle.study.StudyDuration
 import com.openlattice.chronicle.study.StudyLimits
-import com.openlattice.chronicle.survey.AppUsage
 import com.openlattice.chronicle.survey.Questionnaire
 import org.slf4j.LoggerFactory
 import java.sql.Date
@@ -158,7 +143,6 @@ import java.sql.ResultSet
 import java.sql.SQLException
 import java.time.LocalDate
 import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.util.*
 import java.util.UUID
 
@@ -185,9 +169,6 @@ public class ResultSetAdapters private constructor() {
             val lsb: Long = rs.getLong(LSB.name)
             return Range(base, msb, lsb)
         }
-
-        @Throws(SQLException::class)
-        public fun deviceId(rs: ResultSet): UUID = rs.getObject(DEVICE_ID.name, UUID::class.java)
 
         @Throws(SQLException::class)
         // reason: vararg AclKey constructor requires spread; UUID arrays are small
@@ -363,24 +344,12 @@ public class ResultSetAdapters private constructor() {
 
 
         @Throws(SQLException::class)
-        public fun legacyStudySettings(rs: ResultSet): Pair<UUID, Pair<String, Map<String, Any>>> {
-            val studyId = studyId(rs)
-            val settings = mapper.readValue<Map<String, Any>>(rs.getString(SETTINGS.name))
-            return studyId to (title(rs) to settings)
-
-        }
-
-        @Throws(SQLException::class)
         public fun studyLimits(rs: ResultSet): StudyLimits {
             return StudyLimits(
-                mapper.readValue(rs.getString(STUDY_DURATION.name)),
+                rs.getString(STUDY_DURATION.name)?.let { mapper.readValue<StudyDuration>(it) },
                 mapper.readValue(rs.getString(DATA_RETENTION.name)),
                 rs.getObject(STUDY_ENDS.name, OffsetDateTime::class.java),
                 rs.getObject(DATA_EXPIRES.name, OffsetDateTime::class.java),
-                rs.getInt(PARTICIPANT_LIMIT.name),
-                EnumSet.noneOf(StudyFeature::class.java).apply {
-                    addAll(PostgresArrays.getTextArray(rs, FEATURES.name).map(StudyFeature::valueOf))
-                }
             )
         }
 
@@ -400,11 +369,11 @@ public class ResultSetAdapters private constructor() {
                 rs.getString(STUDY_VERSION.name) ?: "",
                 rs.getString(CONTACT.name) ?: "",
                 PostgresArrays.getUuidArray(rs, ORGANIZATION_IDS.name)?.toSet() ?: setOf(),
-                rs.getBoolean(NOTIFICATIONS_ENABLED.name),
                 rs.getString(STORAGE.name),
                 mapper.readValue(rs.getString(SETTINGS.name)),
                 mapper.readValue(rs.getString(MODULES.name)),
-                rs.getString(STUDY_PHONE_NUMBER.name) ?: ""
+                rs.getString(STUDY_PHONE_NUMBER.name) ?: "",
+                settingsRevision = rs.getLong("settings_revision"),
             )
         }
 
@@ -414,8 +383,6 @@ public class ResultSetAdapters private constructor() {
                 rs.getObject(ORGANIZATION_ID.name, UUID::class.java),
                 rs.getString(TITLE.name),
                 rs.getString(DESCRIPTION.name),
-                mapper.readValue(rs.getString(SETTINGS.name))
-
             )
         }
 
@@ -423,31 +390,6 @@ public class ResultSetAdapters private constructor() {
         public fun candidate(rs: ResultSet): Candidate {
             return Candidate(
                 rs.getObject(CANDIDATE_ID.name, UUID::class.java),
-            )
-        }
-
-        @Throws(SQLException::class)
-        public fun appUsage(rs: ResultSet): AppUsage {
-            val timezone = rs.getString(TIMEZONE.name)
-            val timestamp = rs.getObject(TIMESTAMP.name, OffsetDateTime::class.java)
-            val zoneId = ZoneId.of(timezone)
-            val uploadedAt = Optional.ofNullable(rs.getObject(PostgresEventColumns.UPLOADED_AT.name, OffsetDateTime::class.java))
-            uploadedAt.map { it.toInstant().atZone(zoneId).toOffsetDateTime() }
-            return AppUsage(
-                rs.getString(APP_PACKAGE_NAME.name),
-                rs.getString(APPLICATION_LABEL.name),
-                timestamp.toInstant().atZone(zoneId).toOffsetDateTime(),
-                users = listOf(),
-                timezone = timezone,
-                eventType = rs.getInt(EVENT_TYPE.name),
-                uploadedAt = uploadedAt
-            )
-        }
-
-        @Throws(SQLException::class)
-        public fun iosDeviceUsageByCategory(rs: ResultSet): IosDeviceUsageByCategory {
-            return IosDeviceUsageByCategory(
-                rs.getString(BUNDLE_IDENTIFIER.name), rs.getString(APP_CATEGORY.name), rs.getDouble(APP_USAGE_TIME.name)
             )
         }
 
@@ -484,15 +426,9 @@ public class ResultSetAdapters private constructor() {
         }
 
         @Throws(SQLException::class)
-        // reason: boundary catch — optional participant tags default to empty on any read/parse failure
-        @Suppress("TooGenericExceptionCaught")
         public fun participant(rs: ResultSet): Participant {
-            val tags = try {
-                PostgresArrays.getTextArray(rs, PARTICIPANT_TAGS.name).toSet()
-            } catch (e: Exception) {
-                logger.debug("Unable to read participant tags; defaulting to empty set", e)
-                emptySet()
-            }
+            val tags = (rs.getArray(PARTICIPANT_TAGS.name)?.array as? Array<*>)
+                ?.map { it as String }?.toSet() ?: emptySet()
             return Participant(
                 rs.getString(PARTICIPANT_ID.name),
                 Candidate(id = rs.getObject(CANDIDATE_ID.name, UUID::class.java)),
@@ -500,6 +436,10 @@ public class ResultSetAdapters private constructor() {
                 rs.getString(PARTICIPANT_NOTES.name),
                 tags,
                 rs.getObject("withdrawn_at", OffsetDateTime::class.java),
+                rs.getObject("processing_blocked_at", OffsetDateTime::class.java),
+                rs.getString("processing_block_reason"),
+                rs.getString("processing_blocked_by"),
+                rs.getLong("status_revision"),
             )
         }
 
@@ -599,16 +539,6 @@ public class ResultSetAdapters private constructor() {
                         }
                 }
             }
-        }
-
-        @Throws(SQLException::class)
-        public fun sensorDataSamples(rs: ResultSet): SensorDataEntries {
-            val studyId = rs.getObject(STUDY_ID.name, UUID::class.java)
-            val participantId = rs.getString(PARTICIPANT_ID.name)
-            val samples = mapper.readValue<List<SensorDataSample>>(rs.getString(UPLOAD_DATA.name))
-            val uploadedAt = rs.getObject(PostgresEventColumns.UPLOADED_AT.name, OffsetDateTime::class.java)
-            val deviceId = rs.getObject(DEVICE_ID.name, UUID::class.java)
-            return SensorDataEntries(studyId, participantId, samples, uploadedAt, deviceId)
         }
 
         @Throws(SQLException::class)

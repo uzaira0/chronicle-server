@@ -18,8 +18,8 @@ postgres:
   citus: false
   hikari:
     jdbcUrl: "jdbc:postgresql://postgres:5432/chronicle"
-    username: "oltest"
-    password: "test"
+    username: ""
+    password: ""
     maximumPoolSize: 20
 datasources:
   chronicle:
@@ -27,6 +27,6 @@ datasources:
     initialize-tables: true
     hikari:
       jdbcUrl: "jdbc:postgresql://postgres:5432/chronicle"
-      username: "oltest"
-      password: "test"
+      username: ""
+      password: ""
       maximumPoolSize: 20
