@@ -26,7 +26,7 @@ class SourceDeviceSerializationTest {
                 osVersion = "21",
                 sdkVersion = "21",
                 product = "product",
-                deviceId = "device-id"
+                randomDeviceId = "random-device-id"
             )
         )
 
@@ -48,7 +48,7 @@ class SourceDeviceSerializationTest {
                 model = "iPhone 15",
                 localizedModel = "iPhone",
                 version = "17.2",
-                deviceId = "ios-device-id",
+                randomDeviceId = "ios-random-device-id",
                 apnDeviceToken = "apn-token"
             )
         )

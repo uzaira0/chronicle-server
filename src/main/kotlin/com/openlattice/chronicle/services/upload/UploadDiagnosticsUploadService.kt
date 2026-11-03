@@ -1,24 +1,29 @@
 package com.openlattice.chronicle.services.upload
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+
+import com.openlattice.chronicle.android.UploadReceipt
 import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.DeletionStudyFence
 import java.sql.Connection
 import java.sql.PreparedStatement
-import java.sql.SQLException
 import java.sql.Types
 import java.time.OffsetDateTime
 import java.util.UUID
 
-/** Durable, idempotent storage for redacted Android upload-failure aggregates. */
+/** Durable, idempotent storage for redacted Android diagnostic occurrences, filtered one instant at a time. */
 public open class UploadDiagnosticsUploadService(
     private val storageResolver: StorageResolver,
 ) {
     internal companion object {
         public const val TABLE: String = "upload_diagnostics"
+        /** Ten times the phone's diagnostics batch (500 rows). */
+        const val MAX_EVENTS: Int = 5_000
         private val UPSERT_SQL = """
             INSERT INTO $TABLE (
-                study_id, participant_id, device_id, event_id, diagnostic_day,
+                study_id, participant_id, random_device_id, event_id, diagnostic_day,
                 module_family, issue_code, occurrence_count, first_occurred_at,
                 last_occurred_at, http_status, error_type, uploaded_at
             ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now()
@@ -28,7 +33,7 @@ public open class UploadDiagnosticsUploadService(
                   AND participant_block_token = chronicle_participant_block_token(?::uuid, ?::text)
                   AND event_id = ?::uuid
             )
-            ON CONFLICT (study_id, participant_id, device_id, event_id)
+            ON CONFLICT (study_id, participant_id, random_device_id, event_id)
             DO UPDATE SET
                 occurrence_count = GREATEST($TABLE.occurrence_count, EXCLUDED.occurrence_count),
                 first_occurred_at = LEAST($TABLE.first_occurred_at, EXCLUDED.first_occurred_at),
@@ -57,42 +62,41 @@ public open class UploadDiagnosticsUploadService(
         private val ERROR_TYPE = Regex("^[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
     }
 
-    /** Returns every accepted client event ID; the client deletes only acknowledged rows. */
+    /**
+     * Accepted IDs are exactly the events this commit stored; the rest were refused by the consent window or an
+     * erasure and are discarded. Nothing is held: a refused occurrence stays refused on retry.
+     */
     public fun upload(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         data: List<AndroidUploadDiagnosticEvent>,
-    ): List<String> {
-        if (data.isEmpty()) return emptyList()
-        require(data.size <= 500) { "Upload diagnostics batch too large" }
+    ): UploadReceipt {
+        val submitted = data.mapTo(linkedSetOf()) { UUID.fromString(it.id) }
+        if (data.isEmpty()) return UploadReceipt(emptySet(), emptySet(), 0)
+        require(data.size <= MAX_EVENTS) { "Upload diagnostics batch too large" }
         require(data.map { it.id }.distinct().size == data.size) {
             "Upload diagnostics batch contains duplicate event IDs"
         }
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            // Inside withCollectionHaltRecheck this is the pinned guard connection with
+        val stored = storageResolver.getPlatformStorage().connection.use { connection ->
+            // Inside withCollectionUploadRecheck this is the pinned guard connection with
             // autocommit already off; forcing it back on here made the guard's own commit()
             // throw and every non-empty batch answer 500. Restore what we found instead.
-            val previousAutoCommit = connection.autoCommit
-            connection.autoCommit = false
-            try {
+            connection.withTransaction {
                 // Serialize the cutoff read and insert against completion of a study purge.
                 DeletionStudyFence.shared(connection, studyId)
                 val cutoff = erasureCutoff(connection, studyId, participantId)
                 // Keep the cutoff for unseen events; the upsert also fences erased IDs regardless of device time.
-                val captures = com.openlattice.chronicle.storage.ParticipantCollectionGate.retainQueuedCaptures(
-                    connection, studyId, participantId, data, { it.lastOccurredAt })
-                val retained = if (cutoff == null) captures else captures.filter { !it.firstOccurredAt.isBefore(cutoff) }
-                if (retained.isNotEmpty()) persistBatch(connection, studyId, participantId, deviceId, retained)
+                ParticipantCollectionGate(connection).requireCollectionAvailable(studyId, participantId)
+                val retained = if (cutoff == null) data else data.filter { !it.firstOccurredAt.isBefore(cutoff) }
+                // Diagnostics are not research data: they never refresh the dashboard's last upload.
+                val persisted = if (retained.isEmpty()) emptyList() else persistBatch(connection, studyId, participantId, randomDeviceId, retained)
                 connection.commit()
-            } catch (error: SQLException) {
-                connection.rollback()
-                throw error
-            } finally {
-                connection.autoCommit = previousAutoCommit
+                persisted
             }
         }
-        return data.map { it.id }
+        val accepted = stored.mapTo(linkedSetOf()) { UUID.fromString(it.id) }
+        return UploadReceipt(accepted, submitted - accepted, 0)
     }
 
     private fun erasureCutoff(connection: Connection, studyId: UUID, participantId: String): OffsetDateTime? =
@@ -103,27 +107,28 @@ public open class UploadDiagnosticsUploadService(
             statement.executeQuery().use { rs -> if (rs.next()) rs.getObject(1, OffsetDateTime::class.java) else null }
         }
 
+    /** The events a row now holds; an erased event ID inserts nothing. */
     private fun persistBatch(
         connection: Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         data: List<AndroidUploadDiagnosticEvent>,
-    ) {
+    ): List<AndroidUploadDiagnosticEvent> =
         connection.prepareStatement(UPSERT_SQL).use { statement ->
-            data.forEach { event -> addBatchEntry(statement, studyId, participantId, deviceId, event) }
-            statement.executeBatch()
+            data.forEach { event -> addBatchEntry(statement, studyId, participantId, randomDeviceId, event) }
+            val counts = statement.executeBatch()
+            data.filterIndexed { index, _ -> counts[index] != 0 }
         }
-    }
 
     private fun addBatchEntry(
         statement: PreparedStatement,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         event: AndroidUploadDiagnosticEvent,
     ) {
-        bind(statement, studyId, participantId, deviceId, event)
+        bind(statement, studyId, participantId, randomDeviceId, event)
         statement.addBatch()
     }
 
@@ -131,16 +136,16 @@ public open class UploadDiagnosticsUploadService(
         statement: PreparedStatement,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         event: AndroidUploadDiagnosticEvent,
     ) {
         statement.setObject(1, studyId)
         statement.setString(2, participantId)
-        statement.setObject(3, deviceId)
+        statement.setObject(3, randomDeviceId)
         statement.setString(4, event.id)
         statement.setObject(5, event.day)
         statement.setString(6, event.moduleFamily)
-        statement.setString(7, event.issueCode)
+        statement.setString(7, event.recognizedIssueCode().name)
         statement.setInt(8, event.count)
         statement.setObject(9, event.firstOccurredAt)
         statement.setObject(10, event.lastOccurredAt)

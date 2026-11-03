@@ -6,7 +6,6 @@ import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.AndroidDiagnosticCodeSummary
 import com.openlattice.chronicle.study.AndroidDiagnosticsHistoryRow
 import com.openlattice.chronicle.study.AndroidDiagnosticsPage
-import com.openlattice.chronicle.study.DataQualityAlertHistoryItem
 import java.nio.charset.StandardCharsets
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -14,14 +13,14 @@ import java.time.format.DateTimeParseException
 import java.util.Base64
 import java.util.UUID
 
-/** Study-scoped, keyset-paginated full history for Android diagnostics and quality alerts. */
+/** Study-scoped, keyset-paginated full history for Android diagnostics. */
 public class UploadDiagnosticsQueryService(
     private val storageResolver: StorageResolver,
 ) {
     private data class Cursor(
         val day: LocalDate,
         val participantId: String,
-        val sortDeviceId: String,
+        val sortRandomDeviceId: String,
         val rowKind: Int,
         val tieBreaker: String,
     )
@@ -34,7 +33,7 @@ public class UploadDiagnosticsQueryService(
     public fun getPage(
         studyId: UUID,
         participantId: String? = null,
-        deviceId: UUID? = null,
+        randomDeviceId: UUID? = null,
         fromDay: LocalDate? = null,
         toDay: LocalDate? = null,
         moduleFamily: String? = null,
@@ -54,8 +53,8 @@ public class UploadDiagnosticsQueryService(
             diagnosticFilters += "participant_id = ?"
             diagnosticParameters += it
         }
-        deviceId?.let {
-            diagnosticFilters += "device_id = ?"
+        randomDeviceId?.let {
+            diagnosticFilters += "random_device_id = ?"
             diagnosticParameters += it
         }
         fromDay?.let {
@@ -75,28 +74,6 @@ public class UploadDiagnosticsQueryService(
             diagnosticParameters += it
         }
 
-        val alertFilters = mutableListOf("study_id = ?")
-        val alertParameters = mutableListOf<Any>(studyId)
-        participantId?.let {
-            alertFilters += "participant_id = ?"
-            alertParameters += it
-        }
-        fromDay?.let {
-            alertFilters += "created_at >= (?::date::timestamp AT TIME ZONE 'UTC')"
-            alertParameters += it
-        }
-        toDay?.let {
-            alertFilters += "created_at < ((?::date + 1)::timestamp AT TIME ZONE 'UTC')"
-            alertParameters += it
-        }
-        if (deviceId != null || moduleFamily != null) {
-            alertFilters += "FALSE"
-        }
-        issueCode?.let {
-            alertFilters += "alert_type = ?"
-            alertParameters += it
-        }
-
         val cursorFilter =
             if (after == null) {
                 ""
@@ -104,7 +81,7 @@ public class UploadDiagnosticsQueryService(
                 """
                 WHERE diagnostic_day < ? OR (diagnostic_day = ? AND (
                     participant_id > ? OR (participant_id = ? AND (
-                        sort_device_id > ? OR (sort_device_id = ? AND (
+                        sort_random_device_id > ? OR (sort_random_device_id = ? AND (
                             row_kind > ? OR (row_kind = ? AND tie_breaker > ?)
                         ))
                     ))
@@ -114,34 +91,22 @@ public class UploadDiagnosticsQueryService(
         val sql =
             """
             WITH diagnostic_keys AS (
-                SELECT participant_id, device_id, diagnostic_day,
+                SELECT participant_id, random_device_id, diagnostic_day,
                        NULL::uuid AS alert_id, 0::integer AS row_kind,
-                       device_id::text AS sort_device_id, ''::text AS tie_breaker
+                       random_device_id::text AS sort_random_device_id, ''::text AS tie_breaker
                 FROM upload_diagnostics
                 WHERE ${diagnosticFilters.joinToString(" AND ")}
-                GROUP BY participant_id, device_id, diagnostic_day
-            ), alert_keys AS (
-                SELECT participant_id, NULL::uuid AS device_id,
-                       (created_at AT TIME ZONE 'UTC')::date AS diagnostic_day,
-                       alert_id, 1::integer AS row_kind,
-                       ''::text AS sort_device_id, alert_id::text AS tie_breaker
-                FROM data_quality_alerts
-                WHERE ${alertFilters.joinToString(" AND ")}
-            ), all_keys AS (
-                SELECT * FROM diagnostic_keys
-                UNION ALL
-                SELECT * FROM alert_keys
+                GROUP BY participant_id, random_device_id, diagnostic_day
             ), page_keys AS (
-                SELECT * FROM all_keys
+                SELECT * FROM diagnostic_keys
                 $cursorFilter
-                ORDER BY diagnostic_day DESC, participant_id ASC, sort_device_id ASC,
+                ORDER BY diagnostic_day DESC, participant_id ASC, sort_random_device_id ASC,
                          row_kind ASC, tie_breaker ASC
                 LIMIT ?
             )
-            SELECT page_keys.participant_id, page_keys.device_id, page_keys.diagnostic_day,
+            SELECT page_keys.participant_id, page_keys.random_device_id, page_keys.diagnostic_day,
                    COALESCE(codes.codes_json, '[]'::jsonb) AS codes_json,
-                   alerts.alert_id, alerts.alert_type, alerts.score, alerts.created_at,
-                   page_keys.row_kind, page_keys.sort_device_id, page_keys.tie_breaker
+                   page_keys.row_kind, page_keys.sort_random_device_id, page_keys.tie_breaker
             FROM page_keys
             LEFT JOIN LATERAL (
                 SELECT jsonb_agg(jsonb_build_object(
@@ -158,14 +123,12 @@ public class UploadDiagnosticsQueryService(
                 WHERE page_keys.row_kind = 0
                   AND diagnostic.study_id = ?
                   AND diagnostic.participant_id = page_keys.participant_id
-                  AND diagnostic.device_id = page_keys.device_id
+                  AND diagnostic.random_device_id = page_keys.random_device_id
                   AND diagnostic.diagnostic_day = page_keys.diagnostic_day
                   ${if (moduleFamily != null) "AND diagnostic.module_family = ?" else ""}
                   ${if (issueCode != null) "AND diagnostic.issue_code = ?" else ""}
             ) AS codes ON true
-            LEFT JOIN data_quality_alerts AS alerts
-              ON page_keys.row_kind = 1 AND alerts.study_id = ? AND alerts.alert_id = page_keys.alert_id
-            ORDER BY page_keys.diagnostic_day DESC, page_keys.participant_id ASC, page_keys.sort_device_id ASC,
+            ORDER BY page_keys.diagnostic_day DESC, page_keys.participant_id ASC, page_keys.sort_random_device_id ASC,
                      row_kind ASC, tie_breaker ASC
             """.trimIndent()
 
@@ -174,7 +137,7 @@ public class UploadDiagnosticsQueryService(
                 connection.prepareStatement(sql).use { statement ->
                     statement.queryTimeout = 30
                     var index = 1
-                    (diagnosticParameters + alertParameters).forEach { value ->
+                    diagnosticParameters.forEach { value ->
                         when (value) {
                             is UUID -> statement.setObject(index++, value)
                             is LocalDate -> statement.setObject(index++, value)
@@ -186,8 +149,8 @@ public class UploadDiagnosticsQueryService(
                         statement.setObject(index++, after.day)
                         statement.setString(index++, after.participantId)
                         statement.setString(index++, after.participantId)
-                        statement.setString(index++, after.sortDeviceId)
-                        statement.setString(index++, after.sortDeviceId)
+                        statement.setString(index++, after.sortRandomDeviceId)
+                        statement.setString(index++, after.sortRandomDeviceId)
                         statement.setInt(index++, after.rowKind)
                         statement.setInt(index++, after.rowKind)
                         statement.setString(index++, after.tieBreaker)
@@ -196,39 +159,25 @@ public class UploadDiagnosticsQueryService(
                     statement.setObject(index++, studyId)
                     if (moduleFamily != null) statement.setString(index++, moduleFamily)
                     if (issueCode != null) statement.setString(index++, issueCode)
-                    statement.setObject(index, studyId)
                     statement.executeQuery().use { resultSet ->
                         buildList {
                             while (resultSet.next()) {
                                 val rowKind = resultSet.getInt("row_kind")
                                 val rowDay = resultSet.getObject("diagnostic_day", LocalDate::class.java)
                                 val rowParticipant = resultSet.getString("participant_id")
-                                val rowDevice = resultSet.getObject("device_id", UUID::class.java)
+                                val rowDevice = resultSet.getObject("random_device_id", UUID::class.java)
                                 val codes = if (rowKind == 0) parseCodes(resultSet.getString("codes_json")) else emptyList()
-                                val alertId = resultSet.getObject("alert_id", UUID::class.java)
-                                val alert =
-                                    if (alertId == null) {
-                                        null
-                                    } else {
-                                        DataQualityAlertHistoryItem(
-                                            alertId = alertId,
-                                            alertType = resultSet.getString("alert_type"),
-                                            score = resultSet.getDouble("score"),
-                                            createdAt = resultSet.getObject("created_at", OffsetDateTime::class.java),
-                                        )
-                                    }
                                 add(
                                     AndroidDiagnosticsHistoryRow(
                                         participantId = rowParticipant,
-                                        deviceId = rowDevice,
+                                        randomDeviceId = rowDevice,
                                         day = rowDay,
                                         codes = codes,
-                                        dataQualityAlert = alert,
                                     ) to
                                         Cursor(
                                             day = rowDay,
                                             participantId = rowParticipant,
-                                            sortDeviceId = resultSet.getString("sort_device_id"),
+                                            sortRandomDeviceId = resultSet.getString("sort_random_device_id"),
                                             rowKind = rowKind,
                                             tieBreaker = resultSet.getString("tie_breaker"),
                                         ),
@@ -270,7 +219,7 @@ public class UploadDiagnosticsQueryService(
         return listOf(
             cursor.day.toString(),
             encoded(cursor.participantId),
-            cursor.sortDeviceId,
+            cursor.sortRandomDeviceId,
             cursor.rowKind.toString(),
             encoded(cursor.tieBreaker),
         ).joinToString("~")
@@ -296,7 +245,7 @@ public class UploadDiagnosticsQueryService(
         return Cursor(
             day = day,
             participantId = decoded(parts[1]),
-            sortDeviceId = parts[2],
+            sortRandomDeviceId = parts[2],
             rowKind = rowKind,
             tieBreaker = decoded(parts[4]),
         )

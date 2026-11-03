@@ -60,9 +60,7 @@ public open class AppAudioContentUploadService(
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "Audio content upload batch too large: ${data.size} events (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} audio content events ",

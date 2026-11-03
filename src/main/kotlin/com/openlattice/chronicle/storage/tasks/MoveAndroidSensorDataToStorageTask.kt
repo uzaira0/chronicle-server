@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.storage.tasks
 
+import com.openlattice.chronicle.storage.withTransaction
 import com.fasterxml.jackson.core.JacksonException
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.geekbeast.mappers.mappers.ObjectMappers
@@ -15,7 +16,7 @@ import com.openlattice.chronicle.storage.DeletionTableLockOrder
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.UPLOAD_BUFFER
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.RANDOM_DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_DATA
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOADED_AT
@@ -43,12 +44,11 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
         private val executor: ListeningExecutorService =
             MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(1))
 
-        private const val QUARANTINED_UPLOAD_TYPE = "AndroidSensorRejected"
         private val QUARANTINE_MALFORMED_BUFFER_SQL = """
             INSERT INTO ${UPLOAD_BUFFER.name} (
                 ${STUDY_ID.name}, ${PARTICIPANT_ID.name}, ${UPLOAD_DATA.name},
-                ${UPLOADED_AT.name}, ${UPLOAD_TYPE.name}, ${DEVICE_ID.name}
-            ) VALUES (?, ?, ?::jsonb, ?, '$QUARANTINED_UPLOAD_TYPE', ?)
+                ${UPLOADED_AT.name}, ${UPLOAD_TYPE.name}, ${RANDOM_DEVICE_ID.name}
+            ) VALUES (?, ?, ?::jsonb, ?, '${UploadType.AndroidSensorRejected.name}', ?)
         """.trimIndent()
     }
 
@@ -68,12 +68,14 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
             ChronicleMetrics.sensorMaterializationQuarantinedRowsTotal.inc(result.quarantinedRows.toDouble())
         } catch (timeoutException: TimeoutException) {
             f.cancel(true)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.SENSOR_MOVER)
             ChronicleMetrics.sensorMaterializationRunsTotal.labels("timeout").inc()
             throw IllegalStateException(
                 "Timed out after $TIMEOUT_HOURS hour(s) when moving android sensor data",
                 timeoutException,
             )
         } catch (ex: Exception) {
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.SENSOR_MOVER)
             ChronicleMetrics.sensorMaterializationRunsTotal.labels("failure").inc()
             throw IllegalStateException("Exception when moving android sensor data", ex)
         } finally {
@@ -83,14 +85,10 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
 
     override fun getName(): String = Task.MOVE_ANDROID_SENSOR_DATA_TO_STORAGE.name
 
-    // reason: boundary catch — transaction must roll back, clean up, and rethrow any failure type from the batch move
-    @Suppress("TooGenericExceptionCaught")
     private fun moveToStorage(): MoveResult {
         val deps = getDependency()
-        deps.storageResolver.getPlatformStorage().connection.use { platform ->
-            val previousAutoCommit = platform.autoCommit
-            platform.autoCommit = false
-            try {
+        return deps.storageResolver.getPlatformStorage().connection.use { platform ->
+            platform.withTransaction {
                 val fencedStudies = DeletionTableLockOrder.lockDrain(platform, "android_sensor_data")
                 logger.info("Moving android sensor data from upload buffer to storage.")
                 val result = platform.createStatement().use { stmt ->
@@ -109,21 +107,7 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
                     result.insertedSamples,
                     result.quarantinedRows,
                 )
-                return result
-            } catch (ex: Exception) {
-                logger.error("Unable to move android sensor data from upload buffer.", ex)
-                try {
-                    platform.rollback()
-                } catch (rollbackFailure: Exception) {
-                    ex.addSuppressed(rollbackFailure)
-                }
-                throw ex
-            } finally {
-                try {
-                    platform.autoCommit = previousAutoCommit
-                } catch (restoreFailure: Exception) {
-                    logger.warn("Unable to restore sensor materialization connection auto-commit", restoreFailure)
-                }
+                result
             }
         }
     }
@@ -138,7 +122,7 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
         while (rs.next()) {
             val studyId = rs.getObject(STUDY_ID.name, UUID::class.java)
             val participantId = rs.getString(PARTICIPANT_ID.name)
-            val deviceId = rs.getObject(DEVICE_ID.name, UUID::class.java)
+            val randomDeviceId = rs.getObject(RANDOM_DEVICE_ID.name, UUID::class.java)
             val rawData = rs.getString(UPLOAD_DATA.name)
             val samples = try {
                 mapper.readValue<List<AndroidSensorSample>>(rawData)
@@ -147,22 +131,24 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
                     quarantinePs,
                     studyId,
                     participantId,
-                    deviceId,
+                    randomDeviceId,
                     rawData,
                     rs.getObject(UPLOADED_AT.name, OffsetDateTime::class.java),
                 )
                 totalQuarantined++
                 logger.error(
                     "Staged malformed legacy Android sensor buffer row for quarantine - studyId = {}, " +
-                        "participantRef = {}, deviceId = {}",
+                        "participantRef = {}, randomDeviceId = {}",
                     studyId,
                     LogSanitizer.stableFingerprint(participantId, "participant"),
-                    deviceId,
+                    randomDeviceId,
                     exception,
                 )
                 continue
             }
-            totalInserted += AndroidSensorDataWriter.write(ps, studyId, participantId, deviceId, samples)
+            totalInserted += AndroidSensorDataWriter.write(
+                ps, studyId, participantId, randomDeviceId, samples, rs.getObject(UPLOADED_AT.name, OffsetDateTime::class.java),
+            )
         }
         return MoveResult(totalInserted, totalQuarantined)
     }
@@ -171,7 +157,7 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
         ps: java.sql.PreparedStatement,
         studyId: UUID?,
         participantId: String,
-        deviceId: UUID?,
+        randomDeviceId: UUID?,
         rawData: String,
         uploadedAt: OffsetDateTime,
     ) {
@@ -179,7 +165,7 @@ public open class MoveAndroidSensorDataToStorageTask : HazelcastFixedRateTask<Mo
         ps.setString(2, participantId)
         ps.setString(3, rawData)
         ps.setObject(4, uploadedAt)
-        ps.setObject(5, deviceId)
+        ps.setObject(5, randomDeviceId)
         check(ps.executeUpdate() == 1) { "Malformed Android sensor buffer row was not quarantined" }
     }
 

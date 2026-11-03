@@ -1,5 +1,8 @@
 package com.openlattice.chronicle.services.upload
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.util.StopWatch
@@ -26,37 +29,34 @@ public open class AndroidSensorDataUploadService(
     public fun upload(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         data: List<AndroidSensorSample>
     ): Int {
-        require(data.size <= 10_000) { "Android sensor upload batch too large: ${data.size} samples (max 10,000)" }
-        require(data.all { it.values.size <= MAX_SENSOR_VALUES }) {
+        requireUploadBatchSize(data.size)
+        requireUploadRow(data.all { it.values.size <= MAX_SENSOR_VALUES }) {
             "Android sensor sample contains too many values (max $MAX_SENSOR_VALUES)"
         }
         val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
         StopWatch(
             log = "Writing ${data.size} android sensor samples to storage for " +
-                "studyRef = {}, participantRef = {}, deviceId = {}",
+                "studyRef = {}, participantRef = {}, randomDeviceId = {}",
             level = Level.INFO,
             logger = logger,
             LogSanitizer.stableFingerprint(studyId.toString(), "study"),
             participantRef,
-            LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
+            LogSanitizer.stableFingerprint(randomDeviceId.toString(), "device"),
         ).use {
             try {
                 storageResolver.getPlatformStorage().connection.use { connection ->
-                    val previousAutoCommit = connection.autoCommit
-                    connection.autoCommit = false
-                    try {
+                    connection.withTransaction {
                         DeletionStudyFence.shared(connection, studyId)
-                        val retained = com.openlattice.chronicle.storage.ParticipantCollectionGate.retainQueuedCaptures(
-                            connection, studyId, participantId, data, { it.timestamp })
+                        ParticipantCollectionGate(connection).requireCollectionAvailable(studyId, participantId)
                         val inserted = AndroidSensorDataWriter.write(
                             connection,
                             studyId,
                             participantId,
-                            deviceId,
-                            retained,
+                            randomDeviceId,
+                            data,
                         )
                         // Ack only after final-table data is durable. Retried sample ids are intentionally ignored.
                         connection.commit()
@@ -68,19 +68,6 @@ public open class AndroidSensorDataUploadService(
                             data.size,
                             inserted,
                         )
-                    } catch (ex: Exception) {
-                        try {
-                            connection.rollback()
-                        } catch (rollbackFailure: Exception) {
-                            ex.addSuppressed(rollbackFailure)
-                        }
-                        throw ex
-                    } finally {
-                        try {
-                            connection.autoCommit = previousAutoCommit
-                        } catch (restoreFailure: Exception) {
-                            logger.warn("Unable to restore sensor-upload connection auto-commit", restoreFailure)
-                        }
                     }
                 }
                 ChronicleMetrics.uploadTotal.labels("android_sensor").inc()

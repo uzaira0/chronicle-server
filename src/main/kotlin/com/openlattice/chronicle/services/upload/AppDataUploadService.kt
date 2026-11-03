@@ -1,37 +1,27 @@
 package com.openlattice.chronicle.services.upload
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.PostgresColumnDefinition
 import com.geekbeast.postgres.PostgresDatatype
 import com.geekbeast.util.StopWatch
-import com.google.common.collect.SetMultimap
 import com.openlattice.chronicle.postgres.postgresText
 import com.openlattice.chronicle.android.ChronicleUsageEvent
-import com.openlattice.chronicle.android.fromInteractionType
-import com.openlattice.chronicle.constants.EdmConstants.DATE_LOGGED_FQN
-import com.openlattice.chronicle.constants.EdmConstants.FULL_NAME_FQN
-import com.openlattice.chronicle.constants.EdmConstants.RECORD_TYPE_FQN
-import com.openlattice.chronicle.constants.EdmConstants.TIMEZONE_FQN
-import com.openlattice.chronicle.constants.EdmConstants.TITLE_FQN
-import com.openlattice.chronicle.constants.EdmConstants.USER_FQN
-import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.participants.ParticipantStats
 import com.openlattice.chronicle.postgres.ResultSetAdapters
-import com.openlattice.chronicle.services.enrollment.EnrollmentManager
-import com.openlattice.chronicle.services.legacy.LegacyEdmResolver
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.UPLOAD_BUFFER
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.getMoveSql
-import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.getScopedMoveSql
 import com.openlattice.chronicle.storage.PostgresColumns
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_DATA
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APPLICATION_LABEL
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_PACKAGE_NAME
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.ACTIVITY_CLASS
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.COLLECTED_AT
+import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.CLIENT_EVENT_ID
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.EVENT_TYPE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.FQNS_TO_COLUMNS
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.INTERACTION_TYPE
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.STUDY_ID
@@ -45,7 +35,6 @@ import com.openlattice.chronicle.storage.DeletionStudyFence
 import com.openlattice.chronicle.storage.ErasedUsageEventFilter
 import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.DeletionTableLockOrder
-import com.openlattice.chronicle.storage.odtFromUsageEventColumn
 import com.openlattice.chronicle.storage.zdtFromAndroidColumns
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.observability.ChronicleMetrics
@@ -62,10 +51,12 @@ import java.util.concurrent.Semaphore
 
 public open class AppDataUploadService(
     private val storageResolver: StorageResolver,
-    private val enrollmentManager: EnrollmentManager,
     private val studyManager: StudyManager,
 ) : AppDataUploadManager {
     internal companion object {
+        // A btree entry holds at most 2704 bytes on 8 kB pages; the rest covers tuple headers and
+        // the fixed-width key columns. Applies to the identity and activity_class indexes.
+        const val MAX_USAGE_EVENT_KEY_TEXT_BYTES = 2048
         private val logger = LoggerFactory.getLogger(AppDataUploadService::class.java)
         private val mapper = ObjectMappers.getJsonMapper()
         private val semaphore = Semaphore(10)
@@ -77,10 +68,10 @@ public open class AppDataUploadService(
          * 2. participant id
          * 3. upload data
          * 4. uploaded at
-         * 5. device id
+         * 5. random device id
          */
         private val INSERT_USAGE_EVENTS_SQL = """
-                    INSERT INTO ${UPLOAD_BUFFER.name} (${STUDY_ID.name},${PARTICIPANT_ID.name},${UPLOAD_DATA.name}, ${PostgresColumns.UPLOADED_AT.name}, ${UPLOAD_TYPE.name}, ${PostgresColumns.DEVICE_ID.name})
+                    INSERT INTO ${UPLOAD_BUFFER.name} (${STUDY_ID.name},${PARTICIPANT_ID.name},${UPLOAD_DATA.name}, ${PostgresColumns.UPLOADED_AT.name}, ${UPLOAD_TYPE.name}, ${PostgresColumns.RANDOM_DEVICE_ID.name})
                     VALUES (?,?,?::jsonb,?,'${UploadType.Android.name}',?)
                 """.trimIndent()
 
@@ -112,11 +103,11 @@ public open class AppDataUploadService(
     override fun uploadAndroidUsageEvents(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         data: List<ChronicleUsageEvent>,
         uploadedAt: OffsetDateTime,
-    ): Int {
-        require(data.size <= 10_000) { "Upload batch too large: ${data.size} events (max 10,000)" }
+    ): Set<UUID> {
+        requireUploadBatchSize(data.size)
         require('\u0000' !in participantId) { "Participant id contains an unsupported character" }
         val normalizedData = data.map { event ->
             event.copy(appPackageName = event.appPackageName.postgresText(),
@@ -124,22 +115,18 @@ public open class AppDataUploadService(
                 user = event.user.postgresText(), applicationLabel = event.applicationLabel.postgresText())
         }
         normalizedData.forEach { event ->
-            require(listOf(event.timezone, event.participantId).filterNotNull().none { '\u0000' in it }) {
+            requireUploadRow(listOf(event.timezone, event.participantId).filterNotNull().none { '\u0000' in it }) {
                 "Upload text contains an unsupported character"
             }
-            try {
-                java.time.ZoneId.of(event.timezone)
-            } catch (_: java.time.DateTimeException) {
-                throw IllegalArgumentException("Upload time zone is invalid")
-            }
-            require(listOfNotNull(event.timestamp, event.collectedAt, uploadedAt).all { it.year in 1..9999 }) {
+            // A zone id this server's time-zone data does not know (a newer phone's) is stored as given.
+            requireUploadRow(listOf(event.timestamp, uploadedAt).all { it.year in 1..9999 }) {
                 "Upload timestamp is outside the supported range"
             }
         }
         val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
-        timedUpload(studyId, participantRef, deviceId, data.size) {
+        timedUpload(studyId, participantRef, randomDeviceId, data.size) {
             try {
-                val (flavor, hds) = storageResolver.resolveAndGetFlavor(studyId)
+                storageResolver.resolveAndGetFlavor(studyId)
 
                 // The sole production caller is StudyController, whose mobile-upload gate owns
                 // participation and datasource authorization and maps every rejection to HTTP 403.
@@ -149,15 +136,12 @@ public open class AppDataUploadService(
                     "attempting to log data - studyRef = {}, participantRef = {}, deviceRef = {}",
                     LogSanitizer.stableFingerprint(studyId.toString(), "study"),
                     participantRef,
-                    LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
+                    LogSanitizer.stableFingerprint(randomDeviceId.toString(), "device"),
                 )
 
-                val mappedData = filter(mapToStorageModel(normalizedData))
-                val expectedSize = data.size
-                // Events rejected by filter() (null date logged, or a package name containing '[')
-                // are never persisted, so acknowledging data.size would tell the client that
-                // records it must stop retrying were stored when they were not.
-                val stored = doWrite(studyId, participantId, deviceId, mappedData, expectedSize, uploadedAt)
+                val accepted = withoutUnstorableEvents(studyId, participantId, participantRef, normalizedData)
+                // Malformed rows, the capture cutoff and erasure drop events; only the stored ones are reported back.
+                val stored = doWrite(studyId, participantId, randomDeviceId, mapToStorageModel(accepted), data.size, uploadedAt)
 
                 // Record upload metrics
                 ChronicleMetrics.uploadTotal.labels("android_usage").inc()
@@ -168,7 +152,7 @@ public open class AppDataUploadService(
                     "error logging data - studyRef = {}, participantRef = {}, deviceRef = {}",
                     LogSanitizer.stableFingerprint(studyId.toString(), "study"),
                     participantRef,
-                    LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
+                    LogSanitizer.stableFingerprint(randomDeviceId.toString(), "device"),
                     exception
                 )
                 ChronicleMetrics.uploadErrors.labels("android_usage", exception.javaClass.simpleName).inc()
@@ -177,87 +161,15 @@ public open class AppDataUploadService(
         }
     }
 
-    /**
-     * This routine implements once and only once append of client data.
-     *
-     * Assumptions:
-     * - Client generates a UUID uniformly at random for each event and stores it in the id field.
-     * - Client will retry upload until receives successful acknowledgement from the server.
-     *
-     * Data is first written into a postgres table which is periodically flushed to Postgres event storage for long term storage.
-     *
-     * The probability of the same UUID being generated twice for the same organization id/participant id/device
-     * id/timestamp is unlikely to happen in the lifetime of our universe.
-     */
-    // reason: boundary catch — logs and rethrows any failure type from the upload path; must not leak any failure type past this point
-    @Suppress("TooGenericExceptionCaught")
-    override fun upload(
-        studyId: UUID,
-        participantId: String,
-        deviceId: UUID,
-        data: List<SetMultimap<UUID, Any>>,
-        uploadedAt: OffsetDateTime,
-    ): Int {
-        require(data.size <= 10_000) { "Upload batch too large: ${data.size} entries (max 10,000)" }
-        val participantRef = LogSanitizer.stableFingerprint(participantId, "participant")
-        timedUpload(studyId, participantRef, deviceId, data.size) {
-            try {
-                val (flavor, hds) = storageResolver.resolveAndGetFlavor(studyId)
-
-                val status = enrollmentManager.getParticipationStatus(studyId, participantId)
-                if (ParticipationStatus.NOT_ENROLLED == status) {
-                    logger.warn(
-                        "participant is not enrolled, ignoring upload - studyId = {}, participantRef = {}, dataSourceId = {}",
-                        studyId,
-                        participantRef,
-                        deviceId
-                    )
-                    return 0
-                }
-                val deviceEnrolled = enrollmentManager.isKnownDatasource(studyId, participantId, deviceId)
-
-                if (!deviceEnrolled) {
-                    logger.error(
-                        "data source not found, ignoring upload - studyRef = {}, participantRef = {}, deviceRef = {}",
-                        LogSanitizer.stableFingerprint(studyId.toString(), "study"),
-                        participantRef,
-                        LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
-                    )
-                    return 0
-                }
-
-                logger.info(
-                    "attempting to log data - studyRef = {}, participantRef = {}, deviceRef = {}",
-                    LogSanitizer.stableFingerprint(studyId.toString(), "study"),
-                    participantRef,
-                    LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
-                )
-
-                val mappedData = filter(mapLegacyDataToStorageModel(data))
-                val expectedSize = data.size
-
-                return doWrite(studyId, participantId, deviceId, mappedData, expectedSize, uploadedAt)
-            } catch (exception: Exception) {
-                logger.error(
-                    "error logging data - studyRef = {}, participantRef = {}, deviceRef = {}",
-                    LogSanitizer.stableFingerprint(studyId.toString(), "study"),
-                    participantRef,
-                    LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
-                    exception
-                )
-                throw exception
-            }
-        }
-    }
 
     private fun doWrite(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         mappedData: Sequence<Map<String, UsageEventColumn>>,
         expectedSize: Int,
         uploadedAt: OffsetDateTime,
-    ): Int {
+    ): Set<UUID> {
         val dataList = mappedData.toList()
         StopWatch(
             log = "Writing ${dataList.size} entites (expected: $expectedSize) to Postgres upload buffer",
@@ -265,56 +177,39 @@ public open class AppDataUploadService(
             logger = logger,
         ).use {
             val platformStorage = storageResolver.getPlatformStorage()
-            platformStorage.connection.use { connection ->
-                val originalAutoCommit = connection.autoCommit
-                connection.autoCommit = false
-                try {
+            return platformStorage.connection.use { connection ->
+                connection.withTransaction {
                     PinnedPlatformConnection.committing(platformStorage, connection) {
                     DeletionStudyFence.shared(connection, studyId)
-                    val captures = com.openlattice.chronicle.storage.ParticipantCollectionGate.retainQueuedCaptures(
-                        connection, studyId, participantId, dataList,
-                        { odtFromUsageEventColumn(it[TIMESTAMP.name]?.value) })
-                    val queued = captures.map { UsageEventQueueEntry(studyId, participantId, it, uploadedAt) }
+                    ParticipantCollectionGate(connection).requireCollectionAvailable(studyId, participantId)
+                    val queued = dataList.map { UsageEventQueueEntry(studyId, participantId, it, uploadedAt) }
                     val retainedData = ErasedUsageEventFilter.retainPermitted(connection, queued).map { it.data }
                     if (retainedData.isNotEmpty()) connection.prepareStatement(INSERT_USAGE_EVENTS_SQL).use { ps ->
                         ps.setObject(1, studyId)
                         ps.setString(2, participantId)
                         ps.setString(3, mapper.writeValueAsString(retainedData))
                         ps.setObject(4, uploadedAt)
-                        ps.setObject(5, deviceId)
+                        ps.setObject(5, randomDeviceId)
                         ps.executeUpdate()
                     }
-                    if (retainedData.isNotEmpty()) updateParticipantStats(retainedData, studyId, participantId)
+                    if (retainedData.isNotEmpty()) updateParticipantStats(retainedData, studyId, participantId, uploadedAt)
+                    retainedData.mapNotNullTo(linkedSetOf()) { row ->
+                        (row[CLIENT_EVENT_ID.name]?.value as? String)?.let(UUID::fromString)
                     }
-                } catch (failure: Exception) {
-                    connection.rollback()
-                    throw failure
-                } finally {
-                    connection.autoCommit = originalAutoCommit
+                    }
                 }
             }
         }
-
-        // We may write fewer entities than provided; we return the number processed so the client knows all is good.
-        if (expectedSize != dataList.size) {
-            //Should probably be an assertion as this should never happen.
-            logger.warn("Wrote ${dataList.size} entities, but expected to write $expectedSize entities")
-        }
-
-        // Acknowledge handled events, including pre-purge rows intentionally discarded.
-        // The prepared statement's update count is the number of buffer rows (always 1) and says
-        // nothing about how many events survived filter().
-        return dataList.size
     }
 
-    private inline fun <T> timedUpload(studyId: UUID, participantRef: String, deviceId: UUID, entries: Int, body: () -> T): T =
+    private inline fun <T> timedUpload(studyId: UUID, participantRef: String, randomDeviceId: UUID, entries: Int, body: () -> T): T =
         StopWatch(
             log = "logging $entries entries for studyRef = {}, participantRef = {}, deviceRef = {}",
             level = Level.INFO,
             logger = logger,
             LogSanitizer.stableFingerprint(studyId.toString(), "study"),
             participantRef,
-            LogSanitizer.stableFingerprint(deviceId.toString(), "device"),
+            LogSanitizer.stableFingerprint(randomDeviceId.toString(), "device"),
         ).use { body() }
 
     // reason: boundary catch — transactional buffer-to-storage move must log and rethrow any
@@ -323,7 +218,7 @@ public open class AppDataUploadService(
     override fun moveToEventStorage() {
         try {
             semaphore.tryRunWithPermit {
-                moveToEventStorageBatch(null)
+                moveToEventStorageBatch()
             }
         } catch (ex: Exception) {
             logger.error("Unable to move data from the Postgres upload buffer to event storage.", ex)
@@ -332,68 +227,38 @@ public open class AppDataUploadService(
     }
 
     /**
-     * Drains every currently buffered Android usage row for one exact subject.
-     *
-     * The scoped claim waits for row locks instead of skipping them. Consequently, a concurrent
-     * background/global claimant must commit (including its destination write) before this method
-     * can observe an empty subject queue and return.
+     * Test hook only: drains every buffered Android usage row before returning. Each batch first takes the drain
+     * table locks ([DeletionTableLockOrder.lockDrain]), so a background drain already holding rows commits first.
      */
-    @Suppress("TooGenericExceptionCaught")
-    public fun moveToEventStorage(studyId: UUID, participantId: String) {
-        require(participantId.isNotBlank()) { "participantId must not be blank" }
-        val scope = UploadBufferScope(studyId, participantId)
+    public fun drainEventStorage() {
         semaphore.acquire()
         try {
-            do {
-                val claimedRows = moveToEventStorageBatch(scope)
-            } while (claimedRows > 0)
-            checkSubjectMutationAllowed(scope)
-        } catch (ex: Exception) {
-            logger.error(
-                "Unable to move scoped data from the Postgres upload buffer to event storage for study {}.",
-                LogSanitizer.stableFingerprint(studyId.toString(), "study"),
-                ex,
-            )
-            throw ex
+            do { val claimed = moveToEventStorageBatch() } while (claimed > 0)
         } finally {
             semaphore.release()
         }
     }
 
     @Suppress("TooGenericExceptionCaught", "NestedBlockDepth")
-    private fun moveToEventStorageBatch(scope: UploadBufferScope?): Int {
-        logger.info(
-            "Moving data from the Postgres upload buffer to event storage{}.",
-            if (scope == null) "" else " for study ${scope.studyId}",
-        )
+    private fun moveToEventStorageBatch(): Int {
+        logger.info("Moving data from the Postgres upload buffer to event storage.")
         var claimedRows = 0
         val platformStorage = storageResolver.getPlatformStorage()
         storageResolver.requireDefaultDeletionStorageColocated()
         platformStorage.connection.use { platform ->
-            val previousAutoCommit = platform.autoCommit
-            platform.autoCommit = false
-            try {
+            platform.withTransaction {
                 PinnedPlatformConnection.committing(platformStorage, platform) {
-                val fencedStudies = DeletionTableLockOrder.lockDrain(platform, "chronicle_usage_events", MOVE_BATCH_SIZE, scope?.studyId,
-                    scope?.participantId)
-                val moveSql = if (scope == null) {
-                    getMoveSql(MOVE_BATCH_SIZE, UploadType.Android, fencedStudies)
-                } else {
-                    getScopedMoveSql(MOVE_BATCH_SIZE, UploadType.Android, fencedStudies)
-                }
-                platform.prepareStatement(moveSql).use { statement ->
-                    if (scope != null) {
-                        statement.setObject(1, scope.studyId)
-                        statement.setString(2, scope.participantId)
-                    }
+                val fencedStudies = DeletionTableLockOrder.lockDrain(platform, "chronicle_usage_events", MOVE_BATCH_SIZE)
+                platform.prepareStatement(getMoveSql(MOVE_BATCH_SIZE, UploadType.Android, fencedStudies)).use { statement ->
                     statement.executeQuery().use { resultSet ->
                         while (resultSet.next()) {
                             claimedRows += 1
                             ResultSetAdapters.forEachUsageEventChunk(resultSet) { entries ->
-                                val (flavor, _) = storageResolver.resolveAndGetFlavor(entries.first().studyId)
+                                val flavor = storageResolver.resolveAndGetFlavor(entries.first().studyId).flavor
                                 UsageEventStorageWriter.writeByFlavor(storageResolver, mapOf(flavor to entries), logger) { written ->
                                     written.groupBy { it.studyId to it.participantId }.forEach { (key, values) ->
-                                        updateParticipantStats(values.map { it.data }, key.first, key.second)
+                                        updateParticipantStats(values.map { it.data }, key.first, key.second,
+                                            values.maxOf { it.uploadedAt })
                                     }
                                 }
                             }
@@ -401,62 +266,42 @@ public open class AppDataUploadService(
                     }
                 }
                 }
-            } catch (ex: Exception) {
-                try {
-                    platform.rollback()
-                } catch (rollbackFailure: Exception) {
-                    ex.addSuppressed(rollbackFailure)
-                }
-                throw ex
-            } finally {
-                try {
-                    platform.autoCommit = previousAutoCommit
-                } catch (restoreFailure: Exception) {
-                    logger.warn("Unable to restore upload-buffer connection auto-commit", restoreFailure)
-                }
             }
         }
         logger.info("Successfully moved {} upload-buffer row(s) to event storage.", claimedRows)
         return claimedRows
     }
 
-    private fun checkSubjectMutationAllowed(scope: UploadBufferScope) {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.prepareStatement(
-                "SELECT chronicle_participant_mutation_allowed(?, ?)",
-            ).use { statement ->
-                statement.setObject(1, scope.studyId)
-                statement.setString(2, scope.participantId)
-                statement.executeQuery().use { resultSet ->
-                    check(resultSet.next()) { "Deletion mutation guard returned no result" }
-                    check(resultSet.getBoolean(1)) {
-                        "Upload-buffer flush is blocked by an erasure operation"
-                    }
-                }
-            }
-        }
-    }
-
-    private data class UploadBufferScope(
-        val studyId: UUID,
-        val participantId: String,
-    )
-
     /**
-     * This filters out events that have a null date logged and handles both String date time times from legacy events
-     * and typed OffsetDateTime objects from non-legacy events.
+     * Drops events that could never be stored, counting and logging each discard: a package name
+     * holding '[', or key text too large for the table's btree indexes (it would fail every drain).
      */
-    private fun filter(mappedData: Sequence<Map<String, UsageEventColumn>>): Sequence<Map<String, UsageEventColumn>> {
-        return mappedData.filter { mappedUsageEventCols ->
-            val eventDate = mappedUsageEventCols[FQNS_TO_COLUMNS.getValue(DATE_LOGGED_FQN).name]?.value
-            val dateLogged = odtFromUsageEventColumn(eventDate)
-
-            val appPackageName = checkNotNull(mappedUsageEventCols[APP_PACKAGE_NAME.name]?.value as? String) {
-                "Application package name cannot be null."
-            }
-
-            dateLogged != null && !appPackageName.contains("[")
+    private fun withoutUnstorableEvents(
+        studyId: UUID,
+        participantId: String,
+        participantRef: String,
+        events: List<ChronicleUsageEvent>,
+    ): List<ChronicleUsageEvent> {
+        fun bytes(vararg values: String?) = values.sumOf { it?.toByteArray(Charsets.UTF_8)?.size ?: 0 }
+        val subjectBytes = bytes(studyId.toString(), participantId)
+        val (malformed, wellFormed) = events.partition { '[' in it.appPackageName }
+        val (accepted, oversized) = wellFormed.partition {
+            // chronicle_usage_events_identity (V1) indexes all of these text fields in one key.
+            subjectBytes + bytes(it.appPackageName, it.activityClass, it.interactionType, it.timezone, it.user,
+                it.applicationLabel) <= MAX_USAGE_EVENT_KEY_TEXT_BYTES
         }
+        for ((discarded, reason) in listOf(malformed to "malformed_package_name", oversized to "index_key_too_large")) {
+            if (discarded.isEmpty()) continue
+            logger.error(
+                "discarded {} usage events ({}) - studyRef = {}, participantRef = {}",
+                discarded.size,
+                reason,
+                LogSanitizer.stableFingerprint(studyId.toString(), "study"),
+                participantRef,
+            )
+            ChronicleMetrics.uploadErrors.labels("android_usage", reason).inc(discarded.size.toDouble())
+        }
+        return accepted
     }
 
     private fun <T> getUsageEventColumn(
@@ -479,40 +324,17 @@ public open class AppDataUploadService(
                 getUsageEventColumn(TIMEZONE) { usageEvent.timezone },
                 getUsageEventColumn(USERNAME) { usageEvent.user },
                 getUsageEventColumn(APPLICATION_LABEL) { usageEvent.applicationLabel },
-                getUsageEventColumn(COLLECTED_AT) { usageEvent.collectedAt }
+                getUsageEventColumn(CLIENT_EVENT_ID) { usageEvent.clientEventId?.toString() },
             )
         }
     }
 
-    private fun mapLegacyDataToStorageModel(data: List<SetMultimap<UUID, Any>>): Sequence<Map<String, UsageEventColumn>> {
-        return data.asSequence().map { usageEvent ->
-            val usageEventCols = USAGE_EVENT_COLUMNS.associateTo(mutableMapOf()) { fqn ->
-                val col = FQNS_TO_COLUMNS.getValue(fqn)
-                val colIndex = getInsertUsageEventColumnIndex(col)
-                val ptId = LegacyEdmResolver.getPropertyTypeId(fqn)
-                val value = usageEvent[ptId].firstOrNull().let { if (it is String) it.postgresText() else it }
-                col.name to UsageEventColumn(col.name, col.datatype, colIndex, value)
-            }
-
-            //Compute event type column for legacy clients.
-            val col = EVENT_TYPE
-            val colIndex = getInsertUsageEventColumnIndex(col)
-            val value = fromInteractionType((usageEventCols[INTERACTION_TYPE.name]?.value ?: "None") as String)
-            usageEventCols[col.name] = UsageEventColumn(col.name, col.datatype, colIndex, value)
-            usageEventCols[ACTIVITY_CLASS.name] = UsageEventColumn(
-                ACTIVITY_CLASS.name,
-                ACTIVITY_CLASS.datatype,
-                getInsertUsageEventColumnIndex(ACTIVITY_CLASS),
-                null
-            )
-            usageEventCols
-        }
-    }
 
     private fun updateParticipantStats(
         data: List<Map<String, UsageEventColumn>>,
         studyId: UUID,
         participantId: String,
+        uploadedAt: OffsetDateTime,
     ) {
         // unique dates
         val dates = data
@@ -540,7 +362,7 @@ public open class AppDataUploadService(
         val participantStats = ParticipantStats(
             studyId = studyId,
             participantId = participantId,
-            androidLastPing = OffsetDateTime.now(),
+            androidLastPing = uploadedAt,
             androidUniqueDates = uniqueDates,
             androidFirstDate = minDate,
             androidLastDate = maxDate,
@@ -590,13 +412,4 @@ public data class UsageEventColumn(
     val datatype: PostgresDatatype,
     val colIndex: Int,
     val value: Any?,
-)
-
-private val USAGE_EVENT_COLUMNS = listOf(
-    FULL_NAME_FQN,
-    RECORD_TYPE_FQN,
-    DATE_LOGGED_FQN,
-    TIMEZONE_FQN,
-    USER_FQN,
-    TITLE_FQN
 )

@@ -23,14 +23,11 @@ import com.hazelcast.nio.ObjectDataInput
 import com.hazelcast.nio.ObjectDataOutput
 import com.openlattice.chronicle.hazelcast.StreamSerializerTypeIds
 import com.geekbeast.hazelcast.serializers.TestableSelfRegisteringStreamSerializer
-import com.geekbeast.rhizome.hazelcast.serializers.SetStreamSerializers
-import com.hazelcast.internal.serialization.impl.defaultserializers.JavaDefaultSerializers
 import com.openlattice.chronicle.study.StudyDuration
-import com.openlattice.chronicle.study.StudyFeature
 import com.openlattice.chronicle.study.StudyLimits
 import org.springframework.stereotype.Component
 import java.io.IOException
-import java.util.*
+import java.time.OffsetDateTime
 
 /**
  * @author Matthew Tamayo-Rios &lt;matthew@openlattice.com&gt;
@@ -38,9 +35,6 @@ import java.util.*
 @Component
 public open class StudyLimitsStreamSerializer : TestableSelfRegisteringStreamSerializer<StudyLimits> {
     public companion object {
-        private val lookup = StudyFeature.values()
-        private val odtSerializer = JavaDefaultSerializers.OffsetDateTimeSerializer()
-
         @JvmStatic
         @Throws(IOException::class)
         public fun serializeStudyDuration(out: ObjectDataOutput, studyDuration: StudyDuration) {
@@ -58,18 +52,6 @@ public open class StudyLimitsStreamSerializer : TestableSelfRegisteringStreamSer
                 input.readInt()
             )
         }
-
-        @JvmStatic
-        @Throws(IOException::class)
-        public fun serialize(out: ObjectDataOutput, value: StudyFeature) {
-            out.writeInt(value.ordinal)
-        }
-
-        @JvmStatic
-        @Throws(IOException::class)
-        public fun deserialize(input: ObjectDataInput): StudyFeature {
-            return lookup[input.readInt()]
-        }
     }
 
     override fun generateTestValue(): StudyLimits {
@@ -83,25 +65,18 @@ public open class StudyLimitsStreamSerializer : TestableSelfRegisteringStreamSer
     }
 
     override fun write(out: ObjectDataOutput, obj: StudyLimits) {
-        out.writeInt(obj.participantLimit)
-        SetStreamSerializers.serialize(out, obj.features) { studyFeature -> serialize(out, studyFeature) }
-        serializeStudyDuration(out, obj.studyDuration)
+        out.writeBoolean(obj.studyDuration != null)
+        obj.studyDuration?.let { serializeStudyDuration(out, it) }
         serializeStudyDuration(out, obj.dataRetentionDuration)
-        odtSerializer.write(out, obj.studyEnds)
-        odtSerializer.write(out, obj.studyDataExpires)
-
+        out.writeObject(obj.studyEnds)
+        out.writeObject(obj.studyDataExpires)
     }
 
     override fun read(input: ObjectDataInput): StudyLimits {
-        val participantLimit = input.readInt()
-        // copyOf(Collection) throws on an empty set, and features may legitimately be empty.
-        val studyFeatures = EnumSet.noneOf(StudyFeature::class.java).apply {
-            addAll(SetStreamSerializers.deserialize(input) { deserialize(input) })
-        }
-        val studyDuration = deserializeStudyDuration(input)
+        val studyDuration = if (input.readBoolean()) deserializeStudyDuration(input) else null
         val dataRetention = deserializeStudyDuration(input)
-        val studyEnds = odtSerializer.read(input)
-        val studyDataExpires = odtSerializer.read(input)
-        return StudyLimits(studyDuration, dataRetention, studyEnds, studyDataExpires, participantLimit, studyFeatures)
+        val studyEnds = input.readObject<OffsetDateTime?>()
+        val studyDataExpires = input.readObject<OffsetDateTime?>()
+        return StudyLimits(studyDuration, dataRetention, studyEnds, studyDataExpires)
     }
 }

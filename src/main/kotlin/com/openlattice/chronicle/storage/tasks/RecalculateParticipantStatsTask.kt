@@ -1,7 +1,8 @@
 package com.openlattice.chronicle.storage.tasks
 
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.postgres.streams.BasePostgresIterable
-import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
+import com.openlattice.chronicle.storage.StreamingReadTransaction
 import com.geekbeast.tasks.HazelcastFixedRateTask
 import com.geekbeast.tasks.Task
 import com.google.common.util.concurrent.ListeningExecutorService
@@ -13,11 +14,10 @@ import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.PostgresEventTables.Companion.participantStatsAndroidPostgresSql
-import com.openlattice.chronicle.storage.PostgresEventTables.Companion.participantStatsIosPostgresSql
+import com.openlattice.chronicle.storage.ScreenTimeUsageCaptures
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.zaxxer.hikari.HikariDataSource
 import org.slf4j.LoggerFactory
-import java.security.InvalidParameterException
 import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -30,6 +30,7 @@ import java.util.concurrent.TimeoutException
 public open class RecalculateParticipantStatsTask : HazelcastFixedRateTask<RecalculateParticipantStatsTaskDependencies> {
     internal companion object {
         private val logger = LoggerFactory.getLogger(RecalculateParticipantStatsTask::class.java)
+        private const val TIMEOUT_HOURS = 4L
 
         private val executor: ListeningExecutorService =
             MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(1))
@@ -50,12 +51,14 @@ public open class RecalculateParticipantStatsTask : HazelcastFixedRateTask<Recal
             }
         }
         try {
-            f.get(4, TimeUnit.HOURS)
+            f.get(TIMEOUT_HOURS, TimeUnit.HOURS)
         } catch (timeoutException: TimeoutException) {
-            logger.error("Timed out after one hour when recalculating participant stats", timeoutException)
+            logger.error("Timed out after $TIMEOUT_HOURS hours when recalculating participant stats", timeoutException)
             f.cancel(true)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.PARTICIPANT_STATS)
         } catch (ex: Exception) {
             logger.error("Exception when recalculating participant stats.", ex)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.PARTICIPANT_STATS)
         }
     }
 
@@ -66,11 +69,15 @@ public open class RecalculateParticipantStatsTask : HazelcastFixedRateTask<Recal
     private fun recalculateParticipantStats() {
         logger.info("Starting recalculation of participant stats...")
         with(getDependency()) {
-            val (_, events) = storageResolver.getDefaultEventStorage()
-            val studyIds = studyService.getAllStudyIds()
-            recalculateParticipantStats(studyService, studyIds, events, ParticipantStat.Ios)
-            recalculateParticipantStats(studyService, studyIds, events, ParticipantStat.Android)
+            val events = storageResolver.getDefaultEventStorage().dataSource
+            recalculateParticipantStats(studyService, studyService.getAllStudyIds(), events)
         }
+    }
+
+    /** Rebuilds the iOS then Android unique-date stats of every study in [studyIds] from the stored events. */
+    internal fun recalculateParticipantStats(studyService: StudyManager, studyIds: Iterable<UUID>, hds: HikariDataSource) {
+        recalculateParticipantStats(studyService, studyIds, hds, ParticipantStat.Ios)
+        recalculateParticipantStats(studyService, studyIds, hds, ParticipantStat.Android)
     }
 
     private fun recalculateParticipantStats(
@@ -83,7 +90,7 @@ public open class RecalculateParticipantStatsTask : HazelcastFixedRateTask<Recal
         studyIds.asSequence().forEach { studyId ->
             logger.info("Recalculating participant stats for study $studyId")
             BasePostgresIterable(
-                PreparedStatementHolderSupplier(
+                StreamingReadTransaction(
                     hds,
                     sql,
                     fetchSize = 65536,
@@ -111,13 +118,6 @@ public open class RecalculateParticipantStatsTask : HazelcastFixedRateTask<Recal
                                 participantId = it.key.participantId,
                                 androidUniqueDates = it.value
                             )
-//This one won't get used for a while.
-                            ParticipantStat.Tud -> ParticipantStats(
-                                studyId = it.key.studyId,
-                                participantId = it.key.participantId,
-                                tudUniqueDates = it.value
-                            )
-
                         }
                     )
                 }
@@ -129,11 +129,9 @@ public open class RecalculateParticipantStatsTask : HazelcastFixedRateTask<Recal
         statType: ParticipantStat
     ): String {
         return when (statType) {
-            ParticipantStat.Ios -> participantStatsIosPostgresSql
+            ParticipantStat.Ios -> ScreenTimeUsageCaptures.CAPTURE_DAYS_SQL
 
             ParticipantStat.Android -> participantStatsAndroidPostgresSql
-
-            ParticipantStat.Tud -> throw InvalidParameterException("Not yet implemented for time use diary.")
         }
     }
 }
@@ -141,5 +139,4 @@ public open class RecalculateParticipantStatsTask : HazelcastFixedRateTask<Recal
 internal enum class ParticipantStat {
     Android,
     Ios,
-    Tud
 }

@@ -47,9 +47,7 @@ public open class AppNetworkUsageUploadService(
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "App network usage upload batch too large: ${data.size} events (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} app network usage events ",

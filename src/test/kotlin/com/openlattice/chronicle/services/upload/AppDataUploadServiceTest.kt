@@ -1,57 +1,51 @@
 package com.openlattice.chronicle.services.upload
 
+import com.openlattice.chronicle.storage.ResolvedStorage
+
+import com.openlattice.chronicle.ScopedLogCapture
+import com.openlattice.chronicle.observability.ChronicleMetrics
+import org.apache.logging.log4j.Level
+
+import com.zaxxer.hikari.HikariDataSource
+import java.sql.Connection
+import java.sql.PreparedStatement
+import com.geekbeast.configuration.postgres.PostgresFlavor
+import java.sql.ResultSet
+
 import com.openlattice.chronicle.android.ChronicleUsageEvent
-import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.storage.StorageResolver
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito
 import java.time.OffsetDateTime
-import java.io.File
 import java.util.UUID
 import java.util.concurrent.Semaphore
 
 /**
- * Phase 9B: backend upload guards must remain stable.
- *
- * This pins the input-validation guard that protects the Android usage upload path —
+ * Pins the input-validation guard that protects the Android usage upload path —
  * the batch-size limit — at the service boundary, with mocked storage so no
  * Testcontainers DB is needed. Enrollment/datasource authorization is owned by
  * StudyController's shared mobile-upload gate. The deeper
  * persistence behavior (upload-buffer insert, move-to-storage, activity_class) is
  * exercised by the Testcontainers `DataUploadE2ETest`.
- *
- * Phase 9 introduces no change to upload code; this test exists so the guards
- * cannot regress unnoticed.
  */
 class AppDataUploadServiceTest {
 
-    @Test
-    fun duplicateTableLogUsesParticipantFingerprints() {
-        val source = sequenceOf(
-            File("src/main/kotlin/com/openlattice/chronicle/storage/UsageEventStorageWriter.kt"),
-            File("chronicle-server/src/main/kotlin/com/openlattice/chronicle/storage/UsageEventStorageWriter.kt"),
-        ).first { it.isFile }.readText()
-        val logCall = source.substringAfter("log = \"Creating duplicates table").substringBefore(").use {")
-        assertTrue(logCall.contains("participantRefs"))
-        assertTrue(logCall.contains("LogSanitizer.stableFingerprints(participants, \"participant\")"))
-    }
-
     private val storageResolver = Mockito.mock(StorageResolver::class.java)
-    private val enrollmentManager = Mockito.mock(EnrollmentManager::class.java)
     private val studyManager = Mockito.mock(StudyManager::class.java)
 
     private lateinit var service: AppDataUploadService
 
     @Before
     fun setUp() {
-        service = AppDataUploadService(storageResolver, enrollmentManager, studyManager)
+        service = AppDataUploadService(storageResolver, studyManager)
     }
 
     private fun usageEvent(): ChronicleUsageEvent = ChronicleUsageEvent(
@@ -69,11 +63,11 @@ class AppDataUploadServiceTest {
     fun malformedValuesAreRejectedBeforeAnyStorageOrStatsWork() {
         val valid = usageEvent()
         val invalid = listOf(
-            valid.copy(timezone = "Invalid/Zone"),
-            valid.copy(timestamp = OffsetDateTime.MAX), valid.copy(collectedAt = OffsetDateTime.MIN),
+            valid.copy(timezone = "UTC\u0000"),
+            valid.copy(timestamp = OffsetDateTime.MAX),
         )
         for (event in invalid) {
-            assertThrows(IllegalArgumentException::class.java) {
+            assertThrows(UploadRowRejectedException::class.java) {
                 service.uploadAndroidUsageEvents(UUID.randomUUID(), "p1", UUID.randomUUID(), listOf(event))
             }
         }
@@ -82,42 +76,82 @@ class AppDataUploadServiceTest {
 
     @Test
     fun uploadAcknowledgesOnlyTheEventsItActuallyStored() {
-        // filter() silently drops events whose package name contains '[' (and events with no
-        // date logged). The service used to return data.size regardless, telling the client
-        // that records which were never persisted had been stored.
+        // Events whose package name contains '[' are dropped. The receipt must name only the stored
+        // events, and the drop must reach the error log and the upload-error counter.
         val studyId = UUID.randomUUID()
-        val hds = Mockito.mock(com.zaxxer.hikari.HikariDataSource::class.java)
-        val connection = Mockito.mock(java.sql.Connection::class.java)
-        val statement = Mockito.mock(java.sql.PreparedStatement::class.java)
-        val permitted = Mockito.mock(java.sql.ResultSet::class.java)
+        val hds = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val permitted = Mockito.mock(ResultSet::class.java)
         Mockito.`when`(storageResolver.resolveAndGetFlavor(studyId))
-            .thenReturn(com.geekbeast.configuration.postgres.PostgresFlavor.VANILLA to hds)
+            .thenReturn(ResolvedStorage(PostgresFlavor.VANILLA, hds))
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(hds)
         Mockito.`when`(hds.connection).thenReturn(connection)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
         Mockito.`when`(statement.executeUpdate()).thenReturn(1)
         Mockito.`when`(statement.executeQuery()).thenReturn(permitted)
-        Mockito.`when`(permitted.next()).thenReturn(false)
+        stubOpenCollection(connection)
         Mockito.`when`(permitted.getInt(1)).thenReturn(1)
 
-        val stored = service.uploadAndroidUsageEvents(
-            studyId,
-            "p1",
-            UUID.randomUUID(),
-            listOf(usageEvent(), usageEvent().copy(appPackageName = "com.example.app[bad]")),
-        )
+        val kept = usageEvent().copy(clientEventId = UUID.randomUUID())
+        val malformedCounter = ChronicleMetrics.uploadErrors.labels("android_usage", "malformed_package_name")
+        val before = malformedCounter.get()
+        val stored = ScopedLogCapture(AppDataUploadService::class.java, Level.ERROR).use { errors ->
+            service.uploadAndroidUsageEvents(
+                studyId,
+                "p1",
+                UUID.randomUUID(),
+                listOf(kept, kept.copy(appPackageName = "com.example.app[bad]", clientEventId = UUID.randomUUID())),
+            ).also { assertTrue(errors.messages.any { "discarded 1 usage event" in it }) }
+        }
 
-        assertEquals(1, stored)
+        assertEquals(setOf(kept.clientEventId), stored)
+        assertEquals(1.0, malformedCounter.get() - before, 0.0)
     }
 
     @Test
-    fun uploadRejectsBatchLargerThanTenThousand() {
+    fun eventsTooLargeForTheIndexKeysAreDiscardedNotBuffered() {
+        // An index key over the btree limit fails every drain of the batch that holds it and
+        // stalls the mover for every study. Such events never reach the upload buffer.
+        val studyId = UUID.randomUUID()
+        val hds = Mockito.mock(HikariDataSource::class.java)
+        val connection = Mockito.mock(Connection::class.java)
+        val statement = Mockito.mock(PreparedStatement::class.java)
+        val permitted = Mockito.mock(ResultSet::class.java)
+        Mockito.`when`(storageResolver.resolveAndGetFlavor(studyId)).thenReturn(ResolvedStorage(PostgresFlavor.VANILLA, hds))
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(hds)
+        Mockito.`when`(hds.connection).thenReturn(connection)
+        Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
+        Mockito.`when`(statement.executeUpdate()).thenReturn(1)
+        Mockito.`when`(statement.executeQuery()).thenReturn(permitted)
+        stubOpenCollection(connection)
+        Mockito.`when`(permitted.getInt(1)).thenReturn(1)
+
+        val kept = usageEvent().copy(clientEventId = UUID.randomUUID())
+        val longLabel = kept.copy(applicationLabel = "x".repeat(1024), clientEventId = UUID.randomUUID())
+        val btreeMaxItemBytes = 2704
+        val oversized = listOf(
+            kept.copy(applicationLabel = "x".repeat(btreeMaxItemBytes), clientEventId = UUID.randomUUID()),
+            kept.copy(activityClass = "é".repeat(btreeMaxItemBytes / 2), clientEventId = UUID.randomUUID()),
+            // Each field fits on its own; together they overflow the one identity key (chronicle_usage_events_identity).
+            longLabel.copy(activityClass = "c".repeat(1100), clientEventId = UUID.randomUUID()),
+        )
+        val counter = ChronicleMetrics.uploadErrors.labels("android_usage", "index_key_too_large")
+        val before = counter.get()
+        val stored = service.uploadAndroidUsageEvents(studyId, "p1", UUID.randomUUID(), listOf(kept, longLabel) + oversized)
+
+        assertEquals(setOf(kept.clientEventId, longLabel.clientEventId), stored)
+        assertEquals(3.0, counter.get() - before, 0.0)
+    }
+
+    @Test
+    fun uploadRejectsBatchLargerThanTheRowCap() {
         // The service rejects an oversized batch before touching storage — the guard
         // is a hard input bound, not a best-effort check.
-        val tooLarge = (0..10_000).map { usageEvent() } // 10_001 events
+        val tooLarge = (0..MAX_UPLOAD_ROWS).map { usageEvent() }
         try {
             service.uploadAndroidUsageEvents(UUID.randomUUID(), "p1", UUID.randomUUID(), tooLarge)
-            fail("Expected upload of ${tooLarge.size} events to be rejected (max 10,000)")
+            fail("Expected upload of ${tooLarge.size} events to be rejected (max $MAX_UPLOAD_ROWS)")
         } catch (e: IllegalArgumentException) {
             assertTrue(
                 "Rejection message should mention the batch is too large, was: ${e.message}",
@@ -129,17 +163,16 @@ class AppDataUploadServiceTest {
     }
 
     @Test
-    fun uploadAcceptsExactlyTenThousandEventsAtTheBatchBoundary() {
-        // Exactly 10,000 passes the size guard; it then fails later (mocked storage),
-        // proving the limit is inclusive of 10,000 and not off-by-one.
-        val atLimit = (1..10_000).map { usageEvent() }
-        try {
-            service.uploadAndroidUsageEvents(UUID.randomUUID(), "p1", UUID.randomUUID(), atLimit)
-        } catch (e: IllegalArgumentException) {
-            fail("A batch of exactly 10,000 events must pass the size guard, was rejected: ${e.message}")
-        } catch (_: Exception) {
-            // Expected: storage is mocked, so the call fails after the size guard.
+    fun uploadAcceptsABatchAtTheRowCap() {
+        val studyId = UUID.randomUUID()
+        val unavailable = IllegalStateException("synthetic storage failure")
+        Mockito.`when`(storageResolver.resolveAndGetFlavor(studyId)).thenThrow(unavailable)
+        val atLimit = (1..MAX_UPLOAD_ROWS).map { usageEvent() }
+        val failure = assertThrows(IllegalStateException::class.java) {
+            service.uploadAndroidUsageEvents(studyId, "p1", UUID.randomUUID(), atLimit)
         }
+        assertSame(unavailable, failure)
+        Mockito.verify(storageResolver).resolveAndGetFlavor(studyId)
     }
 
     @Test
@@ -152,13 +185,18 @@ class AppDataUploadServiceTest {
         }
     }
 
+    /**
+     * The admin "move to storage" drain fails loudly when platform storage is down, and every failed drain
+     * returns its permit: more failures than there are permits still reach storage instead of silently skipping.
+     */
     @Test
-    fun batchLimitConstantIsBounded() {
-        // Guards the magic number used by the size check so the bound stays explicit
-        // and small enough to protect the backend.
-        val maxBatch = 10_000
-        assertTrue("Usage upload batch limit must stay bounded", maxBatch in 1..100_000)
-        assertEquals(10_000, maxBatch)
+    fun drainFailureReachesTheCallerAndNeverStrandsADrainPermit() {
+        val outage = IllegalStateException("platform storage unavailable")
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenThrow(outage)
+        repeat(11) {
+            assertSame(outage, assertThrows(IllegalStateException::class.java) { service.moveToEventStorage() })
+        }
+        Mockito.verify(storageResolver, Mockito.times(11)).getPlatformStorage()
     }
 
     @Test

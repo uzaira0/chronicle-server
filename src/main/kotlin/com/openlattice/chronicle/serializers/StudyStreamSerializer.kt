@@ -60,11 +60,11 @@ public open class StudyStreamSerializer : TestableSelfRegisteringStreamSerialize
             out.writeString(study.version)
             out.writeString(study.contact)
             SetStreamSerializers.fastUUIDSetSerialize(out, study.organizationIds)
-            out.writeBoolean(study.notificationsEnabled)
             out.writeString(study.storage)
             out.writeByteArray(mapper.writeValueAsBytes(study.settings))
             out.writeByteArray(mapper.writeValueAsBytes(study.modules))
             out.writeString(study.phoneNumber)
+            out.writeLong(study.settingsRevision)
         }
 
         @JvmStatic
@@ -84,11 +84,11 @@ public open class StudyStreamSerializer : TestableSelfRegisteringStreamSerialize
                 version = input.readString()!!,
                 contact = input.readString()!!,
                 organizationIds = SetStreamSerializers.fastUUIDSetDeserialize(input),
-                notificationsEnabled = input.readBoolean(),
                 storage = input.readString()!!,
                 settings = mapper.readValue(input.readByteArray()!!),
                 modules = mapper.readValue(input.readByteArray()!!),
-                phoneNumber = input.readString()!!
+                phoneNumber = input.readString()!!,
+                settingsRevision = input.readLong(),
             )
         }
     }

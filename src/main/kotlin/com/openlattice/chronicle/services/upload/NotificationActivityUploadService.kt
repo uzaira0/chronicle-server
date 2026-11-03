@@ -63,9 +63,7 @@ public open class NotificationActivityUploadService(
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "Notification activity upload batch too large: ${data.size} events (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} notification activity events ",

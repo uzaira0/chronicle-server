@@ -3,7 +3,9 @@ package com.openlattice.chronicle.services.upload
 import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.BatterySample
 import com.openlattice.chronicle.collection.IosBatterySample
+import com.openlattice.chronicle.mapstores.stats.ParticipantStatsMapstore
 import com.openlattice.chronicle.postgres.bindCollectionEvent
+import com.openlattice.chronicle.sources.SourceDeviceType
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
@@ -32,9 +34,10 @@ public open class BatteryTelemetryUploadService(
             INSERT INTO ${ChroniclePostgresTables.BATTERY_TELEMETRY.name} (
                 study_id, participant_id, sample_id, sample_timestamp, timezone,
                 level_percent, charging_state, plug_type, health,
-                temperature_deci_c, voltage_millivolts, uploaded_at
+                temperature_deci_c, voltage_millivolts, uploaded_at,
+                random_device_id, device_type, producer_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(), ?, ?, ?)
             ON CONFLICT (study_id, participant_id, sample_id) DO NOTHING
         """.trimIndent()
 
@@ -43,9 +46,10 @@ public open class BatteryTelemetryUploadService(
         private val INSERT_IOS_BATTERY_TELEMETRY_SQL = """
             INSERT INTO ${ChroniclePostgresTables.BATTERY_TELEMETRY.name} (
                 study_id, participant_id, sample_id, sample_timestamp, timezone,
-                level_percent, charging_state, low_power_mode, uploaded_at
+                level_percent, charging_state, low_power_mode, uploaded_at,
+                random_device_id, device_type, producer_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, now())
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), ?, ?, ?)
             ON CONFLICT (study_id, participant_id, sample_id) DO NOTHING
         """.trimIndent()
     }
@@ -62,14 +66,13 @@ public open class BatteryTelemetryUploadService(
     public fun upload(
         studyId: UUID,
         participantId: String,
+        randomDeviceId: UUID,
         data: List<BatterySample>,
     ): Int {
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "Battery telemetry upload batch too large: ${data.size} samples (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} battery telemetry samples ",
@@ -88,10 +91,15 @@ public open class BatteryTelemetryUploadService(
                         ps.setString(9, sample.health.name)
                         ps.setInt(10, sample.temperatureDeciC)
                         ps.setInt(11, sample.voltageMillivolts)
+                        ps.setObject(12, randomDeviceId)
+                        ps.setString(13, SourceDeviceType.Android.name)
+                        ps.setString(14, sample.producerVersion)
                         ps.addBatch()
                     }
                     ps.executeBatch()
                 }
+                if (retained.isNotEmpty()) ParticipantStatsMapstore(storageResolver.getPlatformStorage())
+                    .recordAndroidUploadUsing(connection, studyId, participantId)
             }
         }
 
@@ -107,14 +115,13 @@ public open class BatteryTelemetryUploadService(
     public fun uploadIos(
         studyId: UUID,
         participantId: String,
+        randomDeviceId: UUID,
         data: List<IosBatterySample>,
     ): Int {
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "Battery telemetry upload batch too large: ${data.size} samples (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} iOS battery telemetry samples ",
@@ -130,6 +137,9 @@ public open class BatteryTelemetryUploadService(
                         ps.setInt(6, sample.levelPercent)
                         ps.setString(7, sample.chargingState.name)
                         ps.setObject(8, sample.lowPowerMode)
+                        ps.setObject(9, randomDeviceId)
+                        ps.setString(10, SourceDeviceType.Ios.name)
+                        ps.setString(11, sample.producerVersion)
                         ps.addBatch()
                     }
                     ps.executeBatch()

@@ -62,9 +62,7 @@ public open class DeviceSettingsUploadService(
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "Device settings upload batch too large: ${data.size} snapshots (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} device settings snapshots ",

@@ -1,7 +1,11 @@
 package com.openlattice.chronicle.services.upload
 
+import java.sql.PreparedStatement
+import java.time.ZoneOffset
+import java.time.Instant
 import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AndroidHealthMetricEvent
+import com.openlattice.chronicle.services.studies.AuthorizedHealthScope
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.ParticipantPurgeCutoff
@@ -40,16 +44,16 @@ public open class HealthMetricsUploadService(
     }
 
     public fun upload(
-        studyId: UUID,
-        participantId: String,
+        scope: AuthorizedHealthScope,
         data: List<AndroidHealthMetricEvent>,
     ): Int {
+        scope.requirePermitted(data)
+        val studyId = scope.studyId
+        val participantId = scope.participantId
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "Health metrics upload batch too large: ${data.size} records (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} health metrics ",
@@ -57,8 +61,8 @@ public open class HealthMetricsUploadService(
             logger = logger,
         ).use {
             ParticipantPurgeCutoff.withPermittedBatch(
-                storageResolver.getPlatformStorage(), studyId, participantId, data, { java.time.Instant.ofEpochMilli(it.endMillis).atOffset(
-                    java.time.ZoneOffset.UTC) },
+                storageResolver.getPlatformStorage(), studyId, participantId, data, { Instant.ofEpochMilli(it.endMillis).atOffset(
+                    ZoneOffset.UTC) },
             ) { connection, retained ->
                 connection.prepareStatement(INSERT_HEALTH_METRICS_SQL).use { ps ->
                     batchInsert(ps, studyId, participantId, retained)
@@ -70,7 +74,7 @@ public open class HealthMetricsUploadService(
     }
 
     private fun batchInsert(
-        ps: java.sql.PreparedStatement,
+        ps: PreparedStatement,
         studyId: UUID,
         participantId: String,
         data: List<AndroidHealthMetricEvent>,

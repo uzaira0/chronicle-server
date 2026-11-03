@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.services.upload
 
+import com.openlattice.chronicle.UsageEnrollmentFixtures.UPLOAD_ROW_CAP
 import com.openlattice.chronicle.android.AndroidSensorSample
 import com.openlattice.chronicle.android.AndroidSensorType
 import com.fasterxml.jackson.module.kotlin.readValue
@@ -9,6 +10,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -43,8 +46,6 @@ class AndroidSensorDataUploadServiceTest {
         AndroidSensorType.significantMotion to 1,
         AndroidSensorType.tiltDetector to 1,
         AndroidSensorType.screenOrientation to 1,
-        AndroidSensorType.samsungGripWifi to 16,
-        AndroidSensorType.samsungMotion to 4,
     )
 
     @Before
@@ -110,12 +111,12 @@ class AndroidSensorDataUploadServiceTest {
     }
 
     @Test
-    fun uploadRejectsBatchLargerThanTenThousand() {
+    fun uploadRejectsBatchLargerThanTheRowCap() {
         val sample = Mockito.mock(AndroidSensorSample::class.java)
-        val tooLarge = List(10_001) { sample }
+        val tooLarge = List(UPLOAD_ROW_CAP + 1) { sample }
         try {
             service.upload(UUID.randomUUID(), "p1", UUID.randomUUID(), tooLarge)
-            fail("Expected upload of ${tooLarge.size} samples to be rejected (max 10,000)")
+            fail("Expected upload of ${tooLarge.size} samples to be rejected (max $UPLOAD_ROW_CAP)")
         } catch (e: IllegalArgumentException) {
             assertTrue(
                 "Rejection should mention the batch is too large, was: ${e.message}",
@@ -129,7 +130,7 @@ class AndroidSensorDataUploadServiceTest {
     @Test
     fun uploadRejectsOversizedSensorValueVectorBeforeStorageAccess() {
         val oversized = sample(
-            sensor = AndroidSensorType.samsungGripWifi,
+            sensor = AndroidSensorType.accelerometer,
             values = List(17) { it.toFloat() },
         )
 
@@ -143,16 +144,17 @@ class AndroidSensorDataUploadServiceTest {
     }
 
     @Test
-    fun uploadAcceptsExactlyTenThousandSamplesAtTheBatchBoundary() {
+    fun uploadAcceptsABatchAtTheRowCap() {
         val sample = Mockito.mock(AndroidSensorSample::class.java)
-        val atLimit = List(10_000) { sample }
-        try {
+        val atLimit = List(UPLOAD_ROW_CAP) { sample }
+        // The size guard passes, so the batch reaches storage; only that storage failure may come back.
+        val unavailable = IllegalStateException("synthetic storage failure")
+        Mockito.`when`(storageResolver.getPlatformStorage()).thenThrow(unavailable)
+        val failure = assertThrows(IllegalStateException::class.java) {
             service.upload(UUID.randomUUID(), "p1", UUID.randomUUID(), atLimit)
-        } catch (e: IllegalArgumentException) {
-            fail("A batch of exactly 10,000 samples must pass the size guard, was rejected: ${e.message}")
-        } catch (_: Exception) {
-            // Expected: storage is mocked, so the call fails after the size guard passes.
         }
+        assertSame(unavailable, failure)
+        Mockito.verify(storageResolver).getPlatformStorage()
     }
 
     @Test
@@ -165,7 +167,8 @@ class AndroidSensorDataUploadServiceTest {
         Mockito.`when`(connection.autoCommit).thenReturn(true, false)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
         Mockito.`when`(statement.connection).thenReturn(connection)
-        Mockito.`when`(statement.executeQuery()).thenReturn(Mockito.mock(java.sql.ResultSet::class.java))
+        stubOpenCollection(connection)
+        stubNoPurgeCutoff(connection)
         Mockito.`when`(statement.executeBatch()).thenReturn(intArrayOf(1))
         val sample = sample(AndroidSensorType.accelerometer)
 
@@ -188,7 +191,8 @@ class AndroidSensorDataUploadServiceTest {
         Mockito.`when`(connection.autoCommit).thenReturn(true, false)
         Mockito.`when`(connection.prepareStatement(Mockito.anyString())).thenReturn(statement)
         Mockito.`when`(statement.connection).thenReturn(connection)
-        Mockito.`when`(statement.executeQuery()).thenReturn(Mockito.mock(java.sql.ResultSet::class.java))
+        stubOpenCollection(connection)
+        stubNoPurgeCutoff(connection)
         Mockito.`when`(statement.executeBatch()).thenThrow(SQLException("simulated insert failure"))
 
         try {

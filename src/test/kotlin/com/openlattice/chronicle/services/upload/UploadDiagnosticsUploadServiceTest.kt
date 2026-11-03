@@ -1,7 +1,11 @@
 package com.openlattice.chronicle.services.upload
 
 import com.openlattice.chronicle.collection.AndroidUploadDiagnosticEvent
+import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.exceptions.CollectionUnavailableException
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+import com.openlattice.chronicle.study.StudyLifecycleStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -19,11 +23,11 @@ class UploadDiagnosticsUploadServiceTest {
     private val storageResolver = Mockito.mock(StorageResolver::class.java)
     private val service = UploadDiagnosticsUploadService(storageResolver)
     private val studyId = UUID.randomUUID()
-    private val deviceId = UUID.randomUUID()
+    private val randomDeviceId = UUID.randomUUID()
 
     @Test
     fun `empty upload is a storage-free no-op`() {
-        assertEquals(emptyList<String>(), service.upload(studyId, "participant", deviceId, emptyList()))
+        assertEquals(emptySet<UUID>(), service.upload(studyId, "participant", randomDeviceId, emptyList()).acceptedIds)
         Mockito.verifyNoInteractions(storageResolver)
     }
 
@@ -32,10 +36,10 @@ class UploadDiagnosticsUploadServiceTest {
         val event = fixture()
 
         assertThrows(IllegalArgumentException::class.java) {
-            service.upload(studyId, "participant", deviceId, List(501) { fixture() })
+            service.upload(studyId, "participant", randomDeviceId, List(UploadDiagnosticsUploadService.MAX_EVENTS + 1) { fixture() })
         }
         assertThrows(IllegalArgumentException::class.java) {
-            service.upload(studyId, "participant", deviceId, listOf(event, event))
+            service.upload(studyId, "participant", randomDeviceId, listOf(event, event))
         }
         Mockito.verifyNoInteractions(storageResolver)
     }
@@ -46,7 +50,7 @@ class UploadDiagnosticsUploadServiceTest {
     private val stateStatement = Mockito.mock(PreparedStatement::class.java)
     private val upsertStatement = Mockito.mock(PreparedStatement::class.java)
 
-    private fun storage(erasureCutoff: OffsetDateTime?, captureCutoff: OffsetDateTime? = null) {
+    private fun storage(erasureCutoff: OffsetDateTime?, captureCutoff: OffsetDateTime? = null): ResultSet {
         val dataSource = Mockito.mock(HikariDataSource::class.java)
         val resultSet = Mockito.mock(ResultSet::class.java)
         Mockito.`when`(storageResolver.getPlatformStorage()).thenReturn(dataSource)
@@ -56,7 +60,7 @@ class UploadDiagnosticsUploadServiceTest {
             when {
                 sql.contains("pg_advisory_xact_lock_shared") -> lockStatement
                 sql.contains("SELECT max(cutoff)") -> cutoffStatement
-                sql.contains("LEFT JOIN LATERAL") -> stateStatement
+                sql == ParticipantCollectionGate.WINDOW_QUERY -> stateStatement
                 else -> upsertStatement
             }
         }
@@ -68,10 +72,26 @@ class UploadDiagnosticsUploadServiceTest {
         Mockito.`when`(resultSet.getObject(1, OffsetDateTime::class.java)).thenReturn(erasureCutoff)
         val state = Mockito.mock(ResultSet::class.java)
         Mockito.`when`(stateStatement.executeQuery()).thenReturn(state)
-        Mockito.`when`(state.next()).thenReturn(captureCutoff != null)
-        Mockito.`when`(state.getString("participation_status")).thenReturn("PAUSED")
+        Mockito.`when`(state.next()).thenReturn(true)
+        Mockito.`when`(state.getString("lifecycle_status")).thenReturn(StudyLifecycleStatus.ACTIVE.name)
+        stubNoClosedCaptureWindows(state)
+        Mockito.`when`(state.getString("participation_status")).thenReturn(
+            if (captureCutoff == null) ParticipationStatus.ENROLLED.name else ParticipationStatus.PAUSED.name)
         Mockito.`when`(state.getObject("capture_cutoff", OffsetDateTime::class.java)).thenReturn(captureCutoff)
         Mockito.`when`(upsertStatement.executeBatch()).thenReturn(intArrayOf(1))
+        Mockito.`when`(upsertStatement.connection).thenReturn(connection)
+        stubUploadReceiptTime(connection)
+        return state
+    }
+
+    @Test
+    fun `missing enrollment cannot acknowledge or persist diagnostics`() {
+        val state = storage(erasureCutoff = null)
+        Mockito.`when`(state.next()).thenReturn(false)
+        assertThrows(CollectionUnavailableException::class.java) {
+            service.upload(studyId, "participant", randomDeviceId, listOf(fixture()))
+        }
+        Mockito.verify(upsertStatement, Mockito.never()).executeBatch()
     }
 
     @Test
@@ -80,7 +100,7 @@ class UploadDiagnosticsUploadServiceTest {
         val event = fixture()
 
         repeat(2) {
-            assertEquals(listOf(event.id), service.upload(studyId, "participant", deviceId, listOf(event)))
+            assertEquals(setOf(UUID.fromString(event.id)), service.upload(studyId, "participant", randomDeviceId, listOf(event)).acceptedIds)
         }
 
         Mockito.verify(connection, Mockito.times(2)).commit()
@@ -91,34 +111,35 @@ class UploadDiagnosticsUploadServiceTest {
     }
 
     @Test
-    fun `events older than a completed erasure are acknowledged but never stored again`() {
+    fun `events older than a completed erasure are discarded and never stored again`() {
         storage(erasureCutoff = OffsetDateTime.parse("2026-08-27T00:00:00Z"))
         val erased = fixture()
         val later = fixture(firstOccurredAt = OffsetDateTime.parse("2026-08-27T01:00:00Z"))
 
-        assertEquals(listOf(erased.id), service.upload(studyId, "participant", deviceId, listOf(erased)))
+        assertEquals(setOf(UUID.fromString(erased.id)),
+            service.upload(studyId, "participant", randomDeviceId, listOf(erased)).discardedIds)
         Mockito.verify(upsertStatement, Mockito.never()).executeBatch()
 
-        assertEquals(listOf(erased.id, later.id), service.upload(studyId, "participant", deviceId, listOf(erased, later)))
+        val receipt = service.upload(studyId, "participant", randomDeviceId, listOf(erased, later))
+        assertEquals(setOf(UUID.fromString(later.id)), receipt.acceptedIds)
+        assertEquals(setOf(UUID.fromString(erased.id)), receipt.discardedIds)
         Mockito.verify(upsertStatement, Mockito.times(1)).addBatch()
         Mockito.verify(upsertStatement).setString(4, later.id)
         Mockito.verify(upsertStatement, Mockito.never()).setString(4, erased.id)
     }
 
+    /** One clock: a paused phone's queued diagnostics are never judged by their phone stamps. */
     @Test
-    fun `stopped diagnostics acknowledge every id but persist only pre-stop events`() {
+    fun `stopped diagnostics store every queued event whatever its phone stamp`() {
         val cutoff = OffsetDateTime.parse("2026-08-27T00:00:00Z")
         storage(erasureCutoff = null, captureCutoff = cutoff)
-        val before = fixture()
-        val atStop = fixture(firstOccurredAt = cutoff.minusSeconds(1))
-        val later = fixture(firstOccurredAt = cutoff)
+        Mockito.`when`(upsertStatement.executeBatch()).thenReturn(intArrayOf(1, 1, 1))
+        val queued = listOf(fixture(), fixture(firstOccurredAt = cutoff), fixture(firstOccurredAt = cutoff.plusHours(1)))
 
-        assertEquals(listOf(before.id, atStop.id, later.id),
-            service.upload(studyId, "participant", deviceId, listOf(before, atStop, later)))
-        Mockito.verify(upsertStatement).addBatch()
-        Mockito.verify(upsertStatement).setString(4, before.id)
-        Mockito.verify(upsertStatement, Mockito.never()).setString(4, atStop.id)
-        Mockito.verify(upsertStatement, Mockito.never()).setString(4, later.id)
+        val receipt = service.upload(studyId, "participant", randomDeviceId, queued)
+        assertEquals(queued.map { UUID.fromString(it.id) }.toSet(), receipt.acceptedIds)
+        assertEquals(emptySet<UUID>(), receipt.discardedIds)
+        Mockito.verify(upsertStatement, Mockito.times(3)).addBatch()
         Mockito.verify(connection).commit()
     }
 
@@ -126,8 +147,8 @@ class UploadDiagnosticsUploadServiceTest {
     fun `error type that is not a class name is stored as null`() {
         storage(erasureCutoff = null)
 
-        service.upload(studyId, "participant", deviceId, listOf(fixture(errorType = "https://example.org/patient/123")))
-        service.upload(studyId, "participant", deviceId, listOf(fixture(errorType = "java.net.ConnectException")))
+        service.upload(studyId, "participant", randomDeviceId, listOf(fixture(errorType = "https://example.org/patient/123")))
+        service.upload(studyId, "participant", randomDeviceId, listOf(fixture(errorType = "java.net.ConnectException")))
 
         Mockito.verify(upsertStatement).setString(12, null)
         Mockito.verify(upsertStatement).setString(12, "java.net.ConnectException")
@@ -144,7 +165,7 @@ class UploadDiagnosticsUploadServiceTest {
         issueCode = "CONNECTION_FAILURE",
         count = 1,
         firstOccurredAt = firstOccurredAt,
-        lastOccurredAt = firstOccurredAt.plusSeconds(1),
+        lastOccurredAt = firstOccurredAt,
         errorType = errorType,
     )
 }

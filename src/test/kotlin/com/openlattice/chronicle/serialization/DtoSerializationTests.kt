@@ -1,16 +1,14 @@
 package com.openlattice.chronicle.serialization
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.exc.InvalidFormatException
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.android.AndroidDeviceSensorAvailability
 import com.openlattice.chronicle.android.AndroidSensorSample
 import com.openlattice.chronicle.android.AndroidSensorSetting
 import com.openlattice.chronicle.android.AndroidSensorType
-import com.openlattice.chronicle.android.ChronicleData
 import com.openlattice.chronicle.android.ChronicleUsageEvent
-import com.openlattice.chronicle.anonymization.AnonymizationConfig
-import com.openlattice.chronicle.anonymization.DateGeneralization
 import com.openlattice.chronicle.apikey.ApiKeyCreateRequest
 import com.openlattice.chronicle.apikey.ApiKeyCreateResponse
 import com.openlattice.chronicle.apikey.ApiKeyInfo
@@ -36,47 +34,29 @@ import com.openlattice.chronicle.collection.AudioOutputRoute
 import com.openlattice.chronicle.collection.AudioPlaybackState
 import com.openlattice.chronicle.collection.AudioRingerMode
 import com.openlattice.chronicle.collection.NotificationEventType
-import com.openlattice.chronicle.dashboard.StudyEvent
-import com.openlattice.chronicle.dashboard.StudyRealtimeStats
-import com.openlattice.chronicle.export.ExportFormat
-import com.openlattice.chronicle.export.ExportJobInfo
-import com.openlattice.chronicle.export.ExportJobStatus
-import com.openlattice.chronicle.export.ExportRequest
-import com.openlattice.chronicle.import.ImportStudiesConfiguration
 import com.openlattice.chronicle.notifications.DeliveryType
 import com.openlattice.chronicle.notifications.NotificationType
 import com.openlattice.chronicle.notifications.ParticipantNotification
 import com.openlattice.chronicle.notifications.StudyNotificationSettings
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
-import com.openlattice.chronicle.organizations.Organization
-import com.openlattice.chronicle.organizations.OrganizationQuotas
-import com.openlattice.chronicle.organizations.OrganizationSettings
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.pipeline.PipelineConfig
-import com.openlattice.chronicle.pipeline.PipelineRunInfo
-import com.openlattice.chronicle.pipeline.PipelineRunStatus
-import com.openlattice.chronicle.pipeline.PipelineStep
-import com.openlattice.chronicle.pipeline.PipelineStepType
 import com.openlattice.chronicle.data.ParticipationStatus
-import com.openlattice.chronicle.sensorkit.SensorSetting
-import com.openlattice.chronicle.sensorkit.SensorType
-import com.openlattice.chronicle.settings.AppUsageFrequency
 import com.openlattice.chronicle.sources.AndroidDevice
 import com.openlattice.chronicle.sources.IOSDevice
 import com.openlattice.chronicle.study.ComplianceViolation
-import com.openlattice.chronicle.study.DataQualityConfig
-import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudyCloneRequest
 import com.openlattice.chronicle.study.StudyDuration
 import com.openlattice.chronicle.study.StudyFeature
 import com.openlattice.chronicle.study.StudyLimits
-import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.study.StudyUpdate
 import com.openlattice.chronicle.study.ViolationReason
-import com.openlattice.chronicle.survey.AppUsage
+import com.openlattice.chronicle.survey.AppUsageAnswer
+import com.openlattice.chronicle.survey.AppUsageBlock
+import com.openlattice.chronicle.survey.AppUsageDayApp
+import com.openlattice.chronicle.survey.AppUsageDayState
+import com.openlattice.chronicle.survey.AppUsageDaySurvey
 import com.openlattice.chronicle.survey.DeviceUsage
 import com.openlattice.chronicle.survey.Question
 import com.openlattice.chronicle.survey.Questionnaire
@@ -92,11 +72,12 @@ import com.openlattice.chronicle.webhooks.WebhookDeliveryState
 import com.openlattice.chronicle.webhooks.WebhookEventType
 import com.openlattice.chronicle.webhooks.WebhookRegistration
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.slf4j.LoggerFactory
+import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.*
@@ -150,7 +131,6 @@ class DtoSerializationTests {
         val limits = StudyLimits(
             studyDuration = StudyDuration(years = 2),
             dataRetentionDuration = StudyDuration(days = 180),
-            participantLimit = 50
         )
         assertRoundTrip(limits, "StudyLimits")
     }
@@ -166,39 +146,26 @@ class DtoSerializationTests {
         val json = """
             {
                 "studyDuration": {"years": 1, "months": 0, "days": 0},
-                "dataRetentionDuration": {"years": 0, "months": 0, "days": 90},
-                "participantLimit": 25
+                "dataRetentionDuration": {"years": 0, "months": 0, "days": 90}
             }
         """.trimIndent()
         val limits: StudyLimits = mapper.readValue(json)
-        assertEquals(1, limits.studyDuration.years.toInt())
+        assertEquals(1, limits.studyDuration?.years?.toInt())
         assertEquals(90, limits.dataRetentionDuration.days.toInt())
-        assertEquals(25, limits.participantLimit)
+    }
+
+    @Test
+    fun limitsWithoutADurationHaveNoEnd() {
+        val limits: StudyLimits = mapper.readValue("""{"dataRetentionDuration": {"days": 30}}""")
+        assertNull(limits.studyDuration)
+        assertNull(limits.studyEnds)
+        assertNull(limits.studyDataExpires)
     }
 
     @Test
     fun testStudyLimitsFactoryMethodSerialization() {
         val limits = TestDataFactory.studyLimits()
         assertRoundTrip(limits, "StudyLimits(factory)")
-    }
-
-    @Test
-    fun testStudyLimitsWithFeatures() {
-        val limits = StudyLimits(
-            features = EnumSet.of(StudyFeature.APP_USAGE, StudyFeature.TIME_USE_DIARY, StudyFeature.ANDROID_SENSOR)
-        )
-        val json = mapper.writeValueAsString(limits)
-        val deserialized: StudyLimits = mapper.readValue(json)
-        assertEquals(limits.features, deserialized.features)
-        assertTrue(deserialized.features.contains(StudyFeature.ANDROID_SENSOR))
-    }
-
-    @Test
-    fun testStudyLimitsWithAllFeatures() {
-        val limits = StudyLimits(
-            features = EnumSet.allOf(StudyFeature::class.java)
-        )
-        assertRoundTrip(limits, "StudyLimits(allFeatures)")
     }
 
     // ======================== StudyUpdate ========================
@@ -226,6 +193,16 @@ class DtoSerializationTests {
     }
 
     @Test
+    fun studyUpdateModulesAcceptOnlyKnownFeatures() {
+        val update: StudyUpdate = mapper.readValue("""{"modules": {"CHRONICLE_DATA_COLLECTION": {}}}""")
+        assertEquals(setOf(StudyFeature.CHRONICLE_DATA_COLLECTION), update.modules?.keys)
+        // An unknown key stored on the study would break every later read of it, so the request fails instead.
+        assertThrows(InvalidFormatException::class.java) {
+            mapper.readValue<StudyUpdate>("""{"modules": {"NOT_A_FEATURE": {}}}""")
+        }
+    }
+
+    @Test
     fun testStudyUpdateDefaultsSerialization() {
         val update = StudyUpdate()
         assertRoundTrip(update, "StudyUpdate(defaults)")
@@ -241,7 +218,6 @@ class DtoSerializationTests {
             group = "group-1",
             version = "v2",
             contact = "admin@test.com",
-            notificationsEnabled = true,
             storage = "chronicle"
         )
         assertRoundTrip(update, "StudyUpdate(allFields)")
@@ -249,11 +225,10 @@ class DtoSerializationTests {
 
     @Test
     fun testStudyUpdateFromFrontendJson() {
-        val json = """{"title":"New Title","contact":"new@test.com","notificationsEnabled":true}"""
+        val json = """{"title":"New Title","contact":"new@test.com"}"""
         val update: StudyUpdate = mapper.readValue(json)
         assertEquals("New Title", update.title)
         assertEquals("new@test.com", update.contact)
-        assertEquals(true, update.notificationsEnabled)
         assertNull(update.description)
     }
 
@@ -302,48 +277,12 @@ class DtoSerializationTests {
         assertTrue(deserialized.isEmpty())
     }
 
-    @Test
-    fun testStudySettingsWithAllTypesRoundTrip() {
-        val settings = StudySettings(mapOf(
-            StudySettingType.Notifications to StudyNotificationSettings(
-                labFriendlyName = "Test Lab",
-                studyFriendlyName = "Test Study"
-            ),
-            StudySettingType.Survey to SurveySettings(appUsageThresholdInSeconds = 300),
-            StudySettingType.TimeUseDiary to TimeUseDiarySettings(language = "fr"),
-            StudySettingType.AndroidSensor to AndroidSensorSetting(
-                sensors = setOf(AndroidSensorType.accelerometer, AndroidSensorType.gyroscope)
-            ),
-            StudySettingType.DataQuality to DataQualityConfig(expectedDaysPerWeek = 7),
-            StudySettingType.DataCollection to ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY),
-            StudySettingType.Pipeline to PipelineConfig(enabled = true),
-        ))
-        val json = mapper.writeValueAsString(settings)
-        val deserialized: StudySettings = mapper.readValue(json)
-        assertEquals(settings.size, deserialized.size)
-        assertTrue(deserialized[StudySettingType.Notifications] is StudyNotificationSettings)
-        assertTrue(deserialized[StudySettingType.Survey] is SurveySettings)
-        assertTrue(deserialized[StudySettingType.TimeUseDiary] is TimeUseDiarySettings)
-        assertTrue(deserialized[StudySettingType.AndroidSensor] is AndroidSensorSetting)
-        assertTrue(deserialized[StudySettingType.DataQuality] is DataQualityConfig)
-        assertTrue(deserialized[StudySettingType.Pipeline] is PipelineConfig)
-        // R1: the DataCollection slot round-trips (via @class) back to the concrete
-        // ChronicleDataCollectionSettings carrying appUsageFrequency — the exact cast
-        // SurveyController.getAppUsageFrequency relies on to serve HOURLY studies.
-        assertTrue(deserialized[StudySettingType.DataCollection] is ChronicleDataCollectionSettings)
-        assertEquals(
-            AppUsageFrequency.HOURLY,
-            (deserialized[StudySettingType.DataCollection] as? ChronicleDataCollectionSettings)?.appUsageFrequency
-        )
-    }
-
     // ======================== StudyCloneRequest ========================
 
     @Test
     fun testStudyCloneRequestSerialization() {
         val request = StudyCloneRequest(
             newTitle = "Cloned Study",
-            includeParticipants = true,
             includeSettings = true
         )
         assertRoundTrip(request, "StudyCloneRequest")
@@ -357,10 +296,9 @@ class DtoSerializationTests {
 
     @Test
     fun testStudyCloneRequestFromJson() {
-        val json = """{"newTitle":"Copy","includeParticipants":true}"""
+        val json = """{"newTitle":"Copy"}"""
         val request: StudyCloneRequest = mapper.readValue(json)
         assertEquals("Copy", request.newTitle)
-        assertTrue(request.includeParticipants)
         assertTrue(request.includeSettings) // default
     }
 
@@ -381,24 +319,6 @@ class DtoSerializationTests {
             val violation = ComplianceViolation(reason = reason, description = "Test for $reason")
             assertRoundTrip(violation, "ComplianceViolation($reason)")
         }
-    }
-
-    // ======================== DataQualityConfig ========================
-
-    @Test
-    fun testDataQualityConfigSerialization() {
-        val config = DataQualityConfig(
-            expectedDaysPerWeek = 7,
-            alertThresholdPercent = 80,
-            evaluationWindowDays = 30
-        )
-        assertRoundTrip(config, "DataQualityConfig")
-    }
-
-    @Test
-    fun testDataQualityConfigDefaultsSerialization() {
-        val config = DataQualityConfig()
-        assertRoundTrip(config, "DataQualityConfig(defaults)")
     }
 
     // ======================== AndroidSensorSetting ========================
@@ -504,9 +424,7 @@ class DtoSerializationTests {
             "notifyResearchers": true,
             "notifyOnEnrollment": false,
             "researcherPhoneNumbers": "",
-            "noDataUploaded": {"years": 0, "months": 0, "days": 2},
-            "noTudSubmitted": {"years": 0, "months": 0, "days": 3},
-            "noAppUsageSurveySubmitted": {"years": 0, "months": 0, "days": 1}
+            "noDataUploaded": {"years": 0, "months": 0, "days": 2}
         }"""
         val settings: StudyNotificationSettings = mapper.readValue(json)
         assertEquals("Research Lab", settings.labFriendlyName)
@@ -520,8 +438,6 @@ class DtoSerializationTests {
             labFriendlyName = "Lab",
             studyFriendlyName = "Study",
             noDataUploaded = StudyDuration(days = 7),
-            noTudSubmitted = StudyDuration(days = 14),
-            noAppUsageSurveySubmitted = StudyDuration(days = 3)
         )
         assertRoundTrip(settings, "StudyNotificationSettings(customDurations)")
     }
@@ -604,39 +520,6 @@ class DtoSerializationTests {
 
     // ======================== SensorSetting ========================
 
-    @Test
-    fun testSensorSettingSerialization() {
-        val setting = SensorSetting(setOf(SensorType.deviceUsage, SensorType.keyboardMetrics))
-        val json = mapper.writeValueAsString(setting)
-        logger.info("SensorSetting JSON: {}", json)
-        val deserialized: SensorSetting = mapper.readValue(json)
-        assertTrue(deserialized.contains(SensorType.deviceUsage))
-        assertTrue(deserialized.contains(SensorType.keyboardMetrics))
-        assertEquals(2, deserialized.size)
-    }
-
-    @Test
-    fun testSensorSettingEmptySerialization() {
-        val setting = SensorSetting.NO_SENSORS
-        val json = mapper.writeValueAsString(setting)
-        val deserialized: SensorSetting = mapper.readValue(json)
-        assertTrue(deserialized.isEmpty())
-    }
-
-    @Test
-    fun testSensorSettingAllSensorTypes() {
-        val setting = SensorSetting(EnumSet.allOf(SensorType::class.java))
-        val json = mapper.writeValueAsString(setting)
-        val deserialized: SensorSetting = mapper.readValue(json)
-        assertEquals(SensorType.values().size, deserialized.size)
-    }
-
-    @Test
-    fun testSensorSettingClassMarkerPresent() {
-        val setting = SensorSetting(setOf(SensorType.phoneUsage))
-        assertRoundTrip(setting, "SensorSetting(classMarkerCompatible)")
-    }
-
     // ======================== AndroidDevice ========================
 
     @Test
@@ -655,7 +538,7 @@ class DtoSerializationTests {
             osVersion = "14",
             sdkVersion = "34",
             product = "panther",
-            deviceId = "abc-123",
+            randomDeviceId = "abc-123",
             additionalInfo = mapOf("screenSize" to "6.3", "ram" to 8),
             fcmRegistrationToken = "fcm-token-xyz"
         )
@@ -680,7 +563,7 @@ class DtoSerializationTests {
             model = "iPhone 15",
             localizedModel = "iPhone",
             version = "17.0",
-            deviceId = "test-device-id",
+            randomDeviceId = "test-random-device-id",
             apnDeviceToken = "test-token"
         )
         assertRoundTrip(device, "IOSDevice")
@@ -694,7 +577,7 @@ class DtoSerializationTests {
             model = "iPad Pro",
             localizedModel = "iPad Pro",
             version = "17.1",
-            deviceId = "device-456"
+            randomDeviceId = "device-456"
         )
         assertRoundTrip(device, "IOSDevice(minimal)")
     }
@@ -707,7 +590,7 @@ class DtoSerializationTests {
             model = "iPhone 15",
             localizedModel = "iPhone",
             version = "17.0",
-            deviceId = "test-id"
+            randomDeviceId = "test-id"
         )
         val json = mapper.writeValueAsString(device)
         assertTrue("@class should be present", json.contains("@class"))
@@ -798,49 +681,31 @@ class DtoSerializationTests {
 
     // ======================== ChronicleData ========================
 
-    @Test
-    fun testChronicleDataSerialization() {
-        val studyId = UUID.randomUUID()
-        val data = TestDataFactory.chronicleUsageEvents(studyId, "P003", 5)
-        val json = mapper.writeValueAsString(data)
-        logger.info("ChronicleData JSON length: {}", json.length)
-        val deserialized: ChronicleData = mapper.readValue(json)
-        assertEquals(data.size, deserialized.size)
-        data.zip(deserialized).forEach { (expected, actual) ->
-            assertTrue(expected is ChronicleUsageEvent)
-            assertTrue(actual is ChronicleUsageEvent)
-            assertEquals(
-                (expected as ChronicleUsageEvent).activityClass,
-                (actual as ChronicleUsageEvent).activityClass
-            )
-        }
-    }
-
-    @Test
-    fun testChronicleDataEmptySerialization() {
-        val data = ChronicleData(emptyList())
-        val json = mapper.writeValueAsString(data)
-        val deserialized: ChronicleData = mapper.readValue(json)
-        assertEquals(0, deserialized.size)
-    }
-
     // ======================== AndroidDeviceSensorAvailability ========================
 
     @Test
     fun testAndroidDeviceSensorAvailabilitySerialization() {
         val availability = AndroidDeviceSensorAvailability(
             participantId = "P001",
-            deviceId = "device-123",
+            randomDeviceId = "device-123",
             availableSensors = setOf(AndroidSensorType.accelerometer, AndroidSensorType.gyroscope),
-            unavailableSensors = setOf(AndroidSensorType.proximity),
             reportedAt = OffsetDateTime.now(ZoneOffset.UTC),
-            // Populated static display context (V33) — round-trips the four capture-once fields.
+            // Populated static display context — round-trips the four capture-once fields.
             screenWidthPixels = 1080,
             screenHeightPixels = 2340,
             screenDensityDpi = 440,
             displayRotation = 1
         )
         assertRoundTrip(availability, "AndroidDeviceSensorAvailability")
+    }
+
+    @Test
+    fun sensorAvailabilityCarriesOneListOfTheSensorsTheDeviceHas() {
+        val older = """{"availableSensors":["gyroscope"],"unavailableSensors":["proximity"]}"""
+        val availability: AndroidDeviceSensorAvailability = mapper.readValue(older)
+        assertEquals(setOf(AndroidSensorType.gyroscope), availability.availableSensors)
+        val written = mapper.readTree(mapper.writeValueAsString(availability)).fieldNames().asSequence().toSet()
+        assertTrue(written.toString(), "availableSensors" in written && "unavailableSensors" !in written)
     }
 
     @Test
@@ -1008,34 +873,16 @@ class DtoSerializationTests {
         assertRoundTrip(update, "QuestionnaireUpdate(partial)")
     }
 
-    // ======================== AppUsage (survey) ========================
+    // ======================== App-usage survey day ========================
 
     @Test
-    fun testAppUsageSerialization() {
-        val usage = AppUsage(
-            appPackageName = "com.example.app",
-            appLabel = "Example App",
-            timestamp = OffsetDateTime.now(ZoneOffset.UTC),
-            eventType = 1,
-            users = listOf("user1", "user2"),
-            timezone = "America/Chicago",
-            uploadedAt = Optional.of(OffsetDateTime.now(ZoneOffset.UTC))
-        )
-        assertRoundTrip(usage, "AppUsage")
-    }
-
-    @Test
-    fun testAppUsageBlankLabelDefaultsToPackageName() {
-        val usage = AppUsage(
-            appPackageName = "com.example.app",
-            appLabel = "",
-            timestamp = OffsetDateTime.now(ZoneOffset.UTC),
-            eventType = 1,
-            timezone = "UTC",
-            uploadedAt = Optional.empty()
-        )
-        // Init block should set blank label to package name
-        assertEquals("com.example.app", usage.appLabel)
+    fun testAppUsageDaySerialization() {
+        val start = OffsetDateTime.parse("2026-04-04T00:00:00-03:00")
+        val day = AppUsageDaySurvey(LocalDate.parse("2026-04-04"), "America/Santiago", AppUsageDayState.NEW_APPS, listOf(
+            AppUsageDayApp("com.example.app", "Example App", listOf(AppUsageBlock(start, start.plusHours(25), listOf("Child")))),
+        ))
+        assertRoundTrip(day, "AppUsageDaySurvey")
+        assertRoundTrip(AppUsageAnswer("com.example.app", start, listOf("I don't know")), "AppUsageAnswer")
     }
 
     // ======================== DeviceUsage (survey) ========================
@@ -1112,142 +959,6 @@ class DtoSerializationTests {
         assertRoundTrip(response, "TimeUseDiaryResponse(nullDates)")
     }
 
-    // ======================== StudyEvent ========================
-
-    @Test
-    fun testStudyEventSerialization() {
-        val event = StudyEvent(
-            studyId = UUID.randomUUID(),
-            eventType = "PARTICIPANT_ENROLLED",
-            participantId = "P001",
-            metadata = mapOf("source" to "web", "deviceType" to "Android")
-        )
-        assertRoundTrip(event, "StudyEvent")
-    }
-
-    @Test
-    fun testStudyEventMinimalSerialization() {
-        val event = StudyEvent(
-            studyId = UUID.randomUUID(),
-            eventType = "DATA_SUBMITTED"
-        )
-        assertRoundTrip(event, "StudyEvent(minimal)")
-    }
-
-    // ======================== StudyRealtimeStats ========================
-
-    @Test
-    fun testStudyRealtimeStatsSerialization() {
-        val stats = StudyRealtimeStats(
-            studyId = UUID.randomUUID(),
-            activeParticipants24h = 42,
-            dataSubmissions24h = 1500,
-            totalParticipants = 100,
-            lastDataReceived = OffsetDateTime.now(ZoneOffset.UTC),
-            submissionsByType = mapOf("usage" to 1000L, "tud" to 500L)
-        )
-        assertRoundTrip(stats, "StudyRealtimeStats")
-    }
-
-    @Test
-    fun testStudyRealtimeStatsDefaultsSerialization() {
-        val stats = StudyRealtimeStats(studyId = UUID.randomUUID())
-        assertRoundTrip(stats, "StudyRealtimeStats(defaults)")
-    }
-
-    // ======================== PipelineConfig ========================
-
-    @Test
-    fun testPipelineConfigSerialization() {
-        val config = PipelineConfig(
-            steps = listOf(
-                PipelineStep(type = PipelineStepType.DEIDENTIFICATION, order = 0, params = mapOf("salt" to "abc")),
-                PipelineStep(type = PipelineStepType.AGGREGATION, order = 1),
-                PipelineStep(type = PipelineStepType.TIME_BUCKETING, order = 2, params = mapOf("minutes" to "30")),
-            ),
-            outputTable = "processed_data",
-            timeBucketMinutes = 30,
-            enabled = true
-        )
-        assertRoundTrip(config, "PipelineConfig")
-    }
-
-    @Test
-    fun testPipelineConfigDefaultsSerialization() {
-        val config = PipelineConfig()
-        assertRoundTrip(config, "PipelineConfig(defaults)")
-    }
-
-    // ======================== PipelineStep ========================
-
-    @Test
-    fun testPipelineStepSerialization() {
-        val step = PipelineStep(
-            type = PipelineStepType.CUSTOM_SQL,
-            order = 5,
-            params = mapOf("query" to "SELECT * FROM events", "timeout" to "30")
-        )
-        assertRoundTrip(step, "PipelineStep")
-    }
-
-    @Test
-    fun testPipelineStepDefaultsSerialization() {
-        val step = PipelineStep()
-        assertRoundTrip(step, "PipelineStep(defaults)")
-    }
-
-    @Test
-    fun testPipelineStepAllTypesSerialization() {
-        PipelineStepType.values().forEach { type ->
-            val step = PipelineStep(type = type, order = type.ordinal)
-            assertRoundTrip(step, "PipelineStep($type)")
-        }
-    }
-
-    // ======================== PipelineRunInfo ========================
-
-    @Test
-    fun testPipelineRunInfoSerialization() {
-        val info = PipelineRunInfo(
-            runId = UUID.randomUUID(),
-            studyId = UUID.randomUUID(),
-            status = PipelineRunStatus.RUNNING,
-            stepsCompleted = 2,
-            totalSteps = 5,
-            inputRows = 10000,
-            outputRows = 8500,
-            startedAt = OffsetDateTime.now(ZoneOffset.UTC)
-        )
-        assertRoundTrip(info, "PipelineRunInfo")
-    }
-
-    @Test
-    fun testPipelineRunInfoCompletedSerialization() {
-        val info = PipelineRunInfo(
-            runId = UUID.randomUUID(),
-            studyId = UUID.randomUUID(),
-            status = PipelineRunStatus.COMPLETED,
-            stepsCompleted = 3,
-            totalSteps = 3,
-            inputRows = 5000,
-            outputRows = 4500,
-            startedAt = OffsetDateTime.now(ZoneOffset.UTC).minusHours(1),
-            completedAt = OffsetDateTime.now(ZoneOffset.UTC)
-        )
-        assertRoundTrip(info, "PipelineRunInfo(completed)")
-    }
-
-    @Test
-    fun testPipelineRunInfoFailedSerialization() {
-        val info = PipelineRunInfo(
-            runId = UUID.randomUUID(),
-            studyId = UUID.randomUUID(),
-            status = PipelineRunStatus.FAILED,
-            errorMessage = "Out of memory during aggregation step"
-        )
-        assertRoundTrip(info, "PipelineRunInfo(failed)")
-    }
-
     // ======================== Webhook models ========================
 
     @Test
@@ -1263,7 +974,7 @@ class DtoSerializationTests {
 
     @Test
     fun testWebhookCreateRequestMinimalSerialization() {
-        val request = WebhookCreateRequest(url = "https://example.com/hook")
+        val request = WebhookCreateRequest(url = "https://example.com/hook", secret = "", eventTypes = emptySet())
         assertRoundTrip(request, "WebhookCreateRequest(minimal)")
     }
 
@@ -1273,10 +984,9 @@ class DtoSerializationTests {
             webhookId = UUID.randomUUID(),
             studyId = UUID.randomUUID(),
             url = "https://example.com/webhook",
-            secret = "secret",
-            eventTypes = setOf(WebhookEventType.EXPORT_COMPLETED),
+            eventTypes = setOf(WebhookEventType.STUDY_STATUS_CHANGED),
             enabled = true,
-            description = "Export notifications",
+            description = "Status notifications",
             createdAt = OffsetDateTime.now(ZoneOffset.UTC)
         )
         assertRoundTrip(reg, "WebhookRegistration")
@@ -1331,7 +1041,7 @@ class DtoSerializationTests {
 
     @Test
     fun testApiKeyCreateRequestDefaultsSerialization() {
-        val request = ApiKeyCreateRequest()
+        val request = ApiKeyCreateRequest(name = "")
         assertRoundTrip(request, "ApiKeyCreateRequest(defaults)")
     }
 
@@ -1392,192 +1102,12 @@ class DtoSerializationTests {
         assertRoundTrip(response, "ApiKeyCreateResponse")
     }
 
-    // ======================== Export models ========================
-
-    @Test
-    fun testExportRequestSerialization() {
-        val request = ExportRequest(
-            dataTypes = setOf(ParticipantDataType.UsageEvents, ParticipantDataType.AndroidSensor),
-            participantIds = setOf("P001", "P002"),
-            startDate = OffsetDateTime.now(ZoneOffset.UTC).minusDays(30),
-            endDate = OffsetDateTime.now(ZoneOffset.UTC),
-            format = ExportFormat.CSV
-        )
-        assertRoundTrip(request, "ExportRequest")
-    }
-
-    @Test
-    fun testExportRequestDefaultsSerialization() {
-        val request = ExportRequest()
-        assertRoundTrip(request, "ExportRequest(defaults)")
-    }
-
-    @Test
-    fun testExportRequestFromJson() {
-        val json = """{"dataTypes":["UsageEvents","Preprocessed"],"format":"JSON"}"""
-        val request: ExportRequest = mapper.readValue(json)
-        assertEquals(2, request.dataTypes.size)
-        assertEquals(ExportFormat.JSON, request.format)
-        assertTrue(request.participantIds.isEmpty())
-    }
-
-    @Test
-    fun testExportJobInfoSerialization() {
-        val info = ExportJobInfo(
-            exportId = UUID.randomUUID(),
-            studyId = UUID.randomUUID(),
-            status = ExportJobStatus.COMPLETED,
-            format = ExportFormat.EXCEL,
-            createdAt = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(15),
-            completedAt = OffsetDateTime.now(ZoneOffset.UTC),
-            downloadToken = "tok_abc123",
-            rowCount = 50000
-        )
-        assertRoundTrip(info, "ExportJobInfo")
-    }
-
-    @Test
-    fun testExportJobInfoFailedSerialization() {
-        val info = ExportJobInfo(
-            exportId = UUID.randomUUID(),
-            studyId = UUID.randomUUID(),
-            status = ExportJobStatus.FAILED,
-            format = ExportFormat.CSV,
-            createdAt = OffsetDateTime.now(ZoneOffset.UTC),
-            errorMessage = "Timeout after 10 minutes"
-        )
-        assertRoundTrip(info, "ExportJobInfo(failed)")
-    }
-
-    @Test
-    fun testExportJobInfoFilePathIgnoredInJson() {
-        val info = ExportJobInfo(
-            exportId = UUID.randomUUID(),
-            studyId = UUID.randomUUID(),
-            status = ExportJobStatus.COMPLETED,
-            format = ExportFormat.CSV,
-            createdAt = OffsetDateTime.now(ZoneOffset.UTC),
-            filePath = "/tmp/exports/data.csv"
-        )
-        val json = mapper.writeValueAsString(info)
-        assertFalse("filePath should be @JsonIgnore", json.contains("filePath"))
-        assertFalse("File path value should not be in JSON", json.contains("/tmp/exports"))
-    }
-
-    // ======================== AnonymizationConfig ========================
-
-    @Test
-    fun testAnonymizationConfigSerialization() {
-        val config = AnonymizationConfig(
-            pseudonymizeParticipantIds = true,
-            redactedFields = setOf("email", "phoneNumber", "name"),
-            kAnonymityThreshold = 10,
-            dateGeneralization = DateGeneralization.WEEK
-        )
-        assertRoundTrip(config, "AnonymizationConfig")
-    }
-
-    @Test
-    fun testAnonymizationConfigDefaultsSerialization() {
-        val config = AnonymizationConfig()
-        assertRoundTrip(config, "AnonymizationConfig(defaults)")
-    }
-
-    @Test
-    fun testAnonymizationConfigAllDateGeneralizations() {
-        DateGeneralization.values().forEach { gen ->
-            val config = AnonymizationConfig(dateGeneralization = gen)
-            assertRoundTrip(config, "AnonymizationConfig($gen)")
-        }
-    }
-
-    // ======================== ImportStudiesConfiguration ========================
-
-    @Test
-    fun testImportStudiesConfigurationSerialization() {
-        val config = ImportStudiesConfiguration(
-            dataSourceName = "legacy-db",
-            candidatesTable = "old_candidates",
-            studiesTable = "old_studies",
-            studySettingsTable = "old_settings"
-        )
-        assertRoundTrip(config, "ImportStudiesConfiguration")
-    }
-
-    @Test
-    fun testImportStudiesConfigurationFullSerialization() {
-        val config = ImportStudiesConfiguration(
-            dataSourceName = "migration-source",
-            candidatesTable = "src.candidates",
-            studiesTable = "src.studies",
-            studySettingsTable = "src.study_settings",
-            timeUseDiaryTable = "src.tud",
-            participantStatsTable = "src.stats",
-            appUsageSurveyTable = "src.surveys",
-            systemAppsTable = "src.system_apps",
-            usersTable = "src.users",
-            legacyUsersTable = "src.legacy_users",
-            timeUseDiarySummarizedTable = "src.tud_summary"
-        )
-        assertRoundTrip(config, "ImportStudiesConfiguration(full)")
-    }
-
     // ======================== Organization models ========================
-
-    @Test
-    fun testOrganizationQuotasSerialization() {
-        val quotas = OrganizationQuotas(
-            organizationId = UUID.randomUUID(),
-            maxStudies = 50,
-            maxParticipantsPerStudy = 5000,
-            maxApiKeysPerStudy = 10,
-            maxWebhooksPerStudy = 5
-        )
-        assertRoundTrip(quotas, "OrganizationQuotas")
-    }
-
-    @Test
-    fun testOrganizationQuotasDefaultsSerialization() {
-        val quotas = OrganizationQuotas()
-        assertRoundTrip(quotas, "OrganizationQuotas(defaults)")
-    }
-
-    @Test
-    fun testOrganizationSettingsSerialization() {
-        val settings = OrganizationSettings(
-            chronicleDataCollection = ChronicleDataCollectionSettings(AppUsageFrequency.HOURLY)
-        )
-        assertRoundTrip(settings, "OrganizationSettings")
-    }
-
-    @Test
-    fun testOrganizationSettingsDefaultsSerialization() {
-        val settings = OrganizationSettings()
-        assertRoundTrip(settings, "OrganizationSettings(defaults)")
-    }
-
-    @Test
-    fun testChronicleDataCollectionSettingsSerialization() {
-        AppUsageFrequency.values().forEach { freq ->
-            val settings = ChronicleDataCollectionSettings(freq)
-            assertRoundTrip(settings, "ChronicleDataCollectionSettings($freq)")
-        }
-    }
 
     @Test
     fun testOrganizationSerialization() {
         val org = TestDataFactory.organization()
         assertRoundTrip(org, "Organization")
-    }
-
-    @Test
-    fun testOrganizationWithSettingsSerialization() {
-        val org = Organization(
-            title = "Test Organization",
-            description = "An org for testing",
-            settings = mapOf("theme" to "dark", "maxStudies" to 10)
-        )
-        assertRoundTrip(org, "Organization(withSettings)")
     }
 
     // ======================== Authorization models ========================

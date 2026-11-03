@@ -1,271 +1,150 @@
 package com.openlattice.chronicle.services.upload
 
-import com.fasterxml.jackson.module.kotlin.readValue
-import com.openlattice.chronicle.sensorkit.SensorType
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import com.openlattice.chronicle.services.delete.ServerSweepTestFixture
+import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.IOS_SCREEN_TIME_USAGE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOADED_AT
 import java.time.OffsetDateTime
 import java.util.UUID
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
+import org.junit.Test
 
-class ScreenTimeUsageUploadServiceTest {
-    @Test
-    fun mapsScreenTimeEnvelopeToIosDeviceUsageSamples() {
-        val start = OffsetDateTime.parse("2026-06-24T01:00:00Z")
-        val end = OffsetDateTime.parse("2026-06-24T01:05:00Z")
-        val record = ScreenTimeUsageRecord(
-            id = UUID.randomUUID(),
-            source = ScreenTimeCaptureSource.shortcutSnapshot,
-            confidence = ScreenTimeConfidence.externalShortcut,
-            capturedAt = end,
-            observationStart = start,
-            observationEnd = end,
-            timezoneIdentifier = "UTC",
-            appName = "Maps",
-            bundleIdentifier = "com.apple.Maps",
-            categoryName = "Travel",
-            durationSeconds = 300,
-            pickupCount = 2,
-        )
-        val envelope = ScreenTimeUsageEnvelope(
-            deviceId = "device-1",
-            studyId = UUID.randomUUID().toString(),
-            participantId = "participant-1",
-            generatedAt = end,
-            records = listOf(record),
-        )
+/** What one upload stores in `ios_screen_time_usage`, against the migrated schema. */
+class ScreenTimeUsageUploadServiceTest : ServerSweepTestFixture() {
+    private val start = OffsetDateTime.parse("2026-06-24T01:00:00Z")
+    private val end = start.plusHours(1)
+    private val device = UUID.randomUUID()
 
-        val samples = ScreenTimeUsageUploadService.toSensorDataSamples(envelope, "device-1")
-        val payload: IosScreenTimeDeviceUsageData = SensorDataUploadService.mapper.readValue(samples.single().data)
+    private fun app(name: String?, bundle: String? = null) = ScreenTimeUsageRecord(
+        id = UUID.randomUUID(),
+        rowKind = ScreenTimeUsageRowKind.application,
+        capturedAt = end.plusMinutes(5),
+        observationStart = start,
+        observationEnd = end,
+        timezoneIdentifier = "America/Santiago",
+        appName = name,
+        bundleIdentifier = bundle,
+        categoryName = "Social",
+        durationSeconds = 120,
+    )
 
-        assertEquals(SensorType.deviceUsage, samples.single().sensor)
-        assertEquals(start, samples.single().startDate)
-        assertEquals(end, samples.single().endDate)
-        assertEquals(300.0, samples.single().duration, 0.001)
-        assertEquals(2, payload.totalScreenWakes)
-        assertEquals(2, payload.totalUnlocks)
-        assertEquals(300.0, payload.appUsage.getValue("Maps").single().usageTime, 0.001)
-        assertEquals("com.apple.Maps", payload.appUsage.getValue("Maps").single().bundleIdentifier)
-        assertEquals("shortcutSnapshot", payload.screenTimeSource)
-        assertEquals("externalShortcut", payload.screenTimeConfidence)
-        assertEquals("Maps", payload.screenTimeAppLabel)
-        assertEquals("com.apple.Maps", payload.screenTimeBundleIdentifier)
+    private fun envelope(study: UUID, vararg records: ScreenTimeUsageRecord) = ScreenTimeUsageEnvelope(
+        randomDeviceId = "device-1", studyId = study.toString(), participantId = PARTICIPANT, generatedAt = end,
+        records = records.toList(),
+    )
+
+    private fun withStudy(test: (UUID, ScreenTimeUsageUploadService) -> Unit) {
+        val study = UUID.randomUUID()
+        seed(study, PARTICIPANT)
+        pool("screen-time-upload").use { test(study, ScreenTimeUsageUploadService(resolver(it))) }
     }
 
-    @Test
-    fun mapsWebDomainRowsToDeviceUsageWebUsage() {
-        val start = OffsetDateTime.parse("2026-06-24T01:00:00Z")
-        val end = OffsetDateTime.parse("2026-06-24T01:01:00Z")
-        val envelope = ScreenTimeUsageEnvelope(
-            deviceId = "device-1",
-            studyId = UUID.randomUUID().toString(),
-            participantId = "participant-1",
-            generatedAt = end,
-            records = listOf(
-                ScreenTimeUsageRecord(
-                    id = UUID.randomUUID(),
-                    source = ScreenTimeCaptureSource.shortcutSnapshot,
-                    confidence = ScreenTimeConfidence.externalShortcut,
-                    capturedAt = end,
-                    observationStart = start,
-                    observationEnd = end,
-                    timezoneIdentifier = "UTC",
-                    webDomain = "example.com",
-                    durationSeconds = 60,
-                )
-            ),
-        )
-
-        val samples = ScreenTimeUsageUploadService.toSensorDataSamples(envelope, "device-1")
-        val payload: IosScreenTimeDeviceUsageData = SensorDataUploadService.mapper.readValue(samples.single().data)
-
-        assertTrue(payload.appUsage.isEmpty())
-        assertEquals(60.0, payload.webUsage.getValue("example.com"), 0.001)
-        assertEquals("shortcutSnapshot", payload.screenTimeSource)
-        assertEquals("externalShortcut", payload.screenTimeConfidence)
-        assertEquals("example.com", payload.screenTimeWebDomain)
+    private fun storedApps(study: UUID): List<String?> = postgres.createConnection("").use { connection ->
+        connection.prepareStatement(
+            "SELECT coalesce(app_name, web_domain) FROM ios_screen_time_usage WHERE study_id = ?",
+        ).use {
+            it.setObject(1, study)
+            it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getString(1) else null }.toList() }
+        }
     }
 
-    @Test
-    fun preservesShortcutAppLabelWithoutUsingItAsBundleIdentifier() {
-        val start = OffsetDateTime.parse("2026-06-24T01:00:00Z")
-        val end = OffsetDateTime.parse("2026-06-24T01:39:00Z")
-        val envelope = ScreenTimeUsageEnvelope(
-            deviceId = "device-1",
-            studyId = UUID.randomUUID().toString(),
-            participantId = "participant-1",
-            generatedAt = end,
-            records = listOf(
-                ScreenTimeUsageRecord(
-                    id = UUID.randomUUID(),
-                    source = ScreenTimeCaptureSource.shortcutSnapshot,
-                    confidence = ScreenTimeConfidence.externalShortcut,
-                    rowKind = ScreenTimeUsageRowKind.application,
-                    capturedAt = end,
-                    observationStart = start,
-                    observationEnd = end,
-                    timezoneIdentifier = "UTC",
-                    appName = "Shortcuts",
-                    durationSeconds = 2340,
-                    rawSourceLabel = "shortcuts-text-import",
-                )
-            ),
-        )
-
-        val samples = ScreenTimeUsageUploadService.toSensorDataSamples(envelope, "device-1")
-        val payload: IosScreenTimeDeviceUsageData = SensorDataUploadService.mapper.readValue(samples.single().data)
-        val usage = payload.appUsage.getValue("Shortcuts").single()
-
-        assertEquals(2340.0, usage.usageTime, 0.001)
-        assertEquals("shortcuts-text-import", usage.bundleIdentifier)
-        assertEquals("shortcutSnapshot", payload.screenTimeSource)
-        assertEquals("externalShortcut", payload.screenTimeConfidence)
-        assertEquals("application", payload.screenTimeRowKind)
-        assertEquals("Shortcuts", payload.screenTimeAppLabel)
-        assertEquals("shortcuts-text-import", payload.screenTimeRawSourceLabel)
+    @Test fun everyRecordFieldIsStoredAsSent() = withStudy { study, service ->
+        val record = app("Chronicle for Research").copy(notificationCount = 3, pickupCount = 4)
+        assertEquals(1, service.upload(study, PARTICIPANT, device, envelope(study, record)))
+        postgres.createConnection("").use { connection ->
+            connection.prepareStatement("SELECT * FROM ios_screen_time_usage WHERE study_id = ?").use {
+                it.setObject(1, study)
+                it.executeQuery().use { row ->
+                    row.next()
+                    assertEquals(PARTICIPANT, row.getString("participant_id"))
+                    assertEquals(device, row.getObject("random_device_id", UUID::class.java))
+                    assertEquals(record.id, row.getObject("record_id", UUID::class.java))
+                    assertEquals("application", row.getString("row_kind"))
+                    assertEquals(record.capturedAt.toInstant(), row.getObject("captured_at", OffsetDateTime::class.java).toInstant())
+                    assertEquals(start.toInstant(), row.getObject("observation_start", OffsetDateTime::class.java).toInstant())
+                    assertEquals(end.toInstant(), row.getObject("observation_end", OffsetDateTime::class.java).toInstant())
+                    assertEquals("America/Santiago", row.getString("timezone"))
+                    assertEquals("Chronicle for Research", row.getString("app_name"))
+                    assertEquals("a missing bundle id stays missing", null, row.getString("bundle_identifier"))
+                    assertEquals(null, row.getString("web_domain"))
+                    assertEquals("Social", row.getString("category_name"))
+                    assertEquals(120, row.getInt("duration_seconds"))
+                    assertEquals(3, row.getInt("notification_count"))
+                    assertEquals(4, row.getInt("pickup_count"))
+                    assertNotNull(row.getObject("uploaded_at"))
+                }
+            }
+        }
     }
 
-    @Test
-    fun preservesDirectExportAppLabelAndRawSourceWhenBundleIdentifierIsMissing() {
-        val start = OffsetDateTime.parse("2026-06-24T01:00:00Z")
-        val end = OffsetDateTime.parse("2026-06-24T02:00:00Z")
-        val envelope = ScreenTimeUsageEnvelope(
-            deviceId = "device-1",
-            studyId = UUID.randomUUID().toString(),
-            participantId = "participant-1",
-            generatedAt = end,
-            records = listOf(
-                ScreenTimeUsageRecord(
-                    id = UUID.randomUUID(),
-                    source = ScreenTimeCaptureSource.deviceActivityExport,
-                    confidence = ScreenTimeConfidence.appleDeviceActivity,
-                    rowKind = ScreenTimeUsageRowKind.application,
-                    capturedAt = end,
-                    observationStart = start,
-                    observationEnd = end,
-                    timezoneIdentifier = "UTC",
-                    appName = "Chronicle for Research",
-                    durationSeconds = 90,
-                    rawSourceLabel = "DeviceActivityData application",
-                )
-            ),
-        )
-
-        val samples = ScreenTimeUsageUploadService.toSensorDataSamples(envelope, "device-1")
-        val payload: IosScreenTimeDeviceUsageData = SensorDataUploadService.mapper.readValue(samples.single().data)
-        val usage = payload.appUsage.getValue("Chronicle for Research").single()
-
-        assertEquals(90.0, usage.usageTime, 0.001)
-        assertEquals("DeviceActivityData application", usage.bundleIdentifier)
-        assertEquals("deviceActivityExport", payload.screenTimeSource)
-        assertEquals("appleDeviceActivity", payload.screenTimeConfidence)
-        assertEquals("application", payload.screenTimeRowKind)
-        assertEquals("Chronicle for Research", payload.screenTimeAppLabel)
-        assertEquals("DeviceActivityData application", payload.screenTimeRawSourceLabel)
+    /** An app row names an app and no domain; a web-domain row names a domain and no app. */
+    @Test fun labelsContradictingTheRowKindRejectTheRow() = withStudy { study, service ->
+        val web = app(null).copy(rowKind = ScreenTimeUsageRowKind.webDomain, webDomain = "example.com")
+        listOf(
+            app("Maps").copy(webDomain = "example.com"),
+            app(null),
+            app(" ", ""),
+            web.copy(webDomain = null),
+            web.copy(appName = "Safari"),
+            web.copy(bundleIdentifier = "com.apple.mobilesafari"),
+        ).forEach { invalid ->
+            assertThrows(invalid.toString(), UploadRowRejectedException::class.java) {
+                service.upload(study, PARTICIPANT, device, envelope(study, app("Instagram", "com.burbn.instagram"), invalid))
+            }
+        }
+        assertEquals("a refused batch stores none of its rows", emptyList<String>(), storedApps(study))
+        assertEquals(3, service.upload(study, PARTICIPANT, device,
+            envelope(study, app("Instagram"), app(null, "com.burbn.instagram"), web)))
     }
 
-    @Test
-    fun directExportRowsUseStableIdsForRetriesAndDistinctIdsForLaterCaptures() {
-        val start = OffsetDateTime.parse("2026-06-24T01:00:00Z")
-        val end = OffsetDateTime.parse("2026-06-24T02:00:00Z")
-        val first = ScreenTimeUsageRecord(
-            id = UUID.randomUUID(),
-            source = ScreenTimeCaptureSource.deviceActivityExport,
-            confidence = ScreenTimeConfidence.appleDeviceActivity,
-            rowKind = ScreenTimeUsageRowKind.application,
-            capturedAt = OffsetDateTime.parse("2026-06-24T02:05:00Z"),
-            observationStart = start,
-            observationEnd = end,
-            timezoneIdentifier = "UTC",
-            appName = "Instagram",
-            bundleIdentifier = "com.burbn.instagram",
-            categoryName = "Social",
-            durationSeconds = 120,
-        )
-        val second = first.copy(
-            id = UUID.randomUUID(),
-            capturedAt = OffsetDateTime.parse("2026-06-24T02:20:00Z"),
-        )
-        val retry = first.copy(id = UUID.randomUUID())
-
-        val samples = ScreenTimeUsageUploadService.toSensorDataSamples(
-            ScreenTimeUsageEnvelope(
-                deviceId = "device-1",
-                studyId = UUID.randomUUID().toString(),
-                participantId = "participant-1",
-                generatedAt = end,
-                records = listOf(first, second, retry),
-            ),
-            "device-1",
-        )
-
-        assertTrue(samples[0].id != samples[1].id)
-        assertEquals(samples[0].id, samples[2].id)
-        assertEquals(8, samples[0].id.version())
-        assertEquals(first.capturedAt, samples[0].dateRecorded)
-        assertEquals(second.capturedAt, samples[1].dateRecorded)
+    @Test fun appleLabelsWithMissingBundleIdsAndEmptyDomainsAreStored() = withStudy { study, service ->
+        val application = app("Application")
+        val web = app(null).copy(rowKind = ScreenTimeUsageRowKind.webDomain, webDomain = "")
+        assertEquals(2, service.upload(study, PARTICIPANT, device, envelope(study, application, web)))
+        assertEquals(setOf("Application", ""), storedApps(study).toSet())
     }
 
-    @Test
-    fun filtersCategorySummariesAndThresholdEstimatesFromDeviceUsageSamples() {
-        val start = OffsetDateTime.parse("2026-06-24T01:00:00Z")
-        val end = OffsetDateTime.parse("2026-06-24T02:00:00Z")
-        val valid = ScreenTimeUsageRecord(
-            id = UUID.randomUUID(),
-            source = ScreenTimeCaptureSource.deviceActivityExport,
-            confidence = ScreenTimeConfidence.appleDeviceActivity,
-            rowKind = ScreenTimeUsageRowKind.application,
-            capturedAt = end,
-            observationStart = start,
-            observationEnd = end,
-            timezoneIdentifier = "UTC",
-            appName = "Instagram",
-            bundleIdentifier = "com.burbn.instagram",
-            categoryName = "Social",
-            durationSeconds = 120,
-        )
-        val categorySummary = ScreenTimeUsageRecord(
-            id = UUID.randomUUID(),
-            source = ScreenTimeCaptureSource.deviceActivityExport,
-            confidence = ScreenTimeConfidence.appleDeviceActivity,
-            rowKind = ScreenTimeUsageRowKind.categorySummary,
-            capturedAt = end,
-            observationStart = start,
-            observationEnd = end,
-            timezoneIdentifier = "UTC",
-            categoryName = "Social",
-            durationSeconds = 120,
-            rawSourceLabel = "DeviceActivityData category",
-        )
-        val thresholdEstimate = ScreenTimeUsageRecord(
-            id = UUID.randomUUID(),
-            source = ScreenTimeCaptureSource.monitorThreshold,
-            confidence = ScreenTimeConfidence.thresholdEstimate,
-            rowKind = ScreenTimeUsageRowKind.thresholdEvent,
-            capturedAt = end,
-            observationStart = start,
-            observationEnd = end,
-            timezoneIdentifier = "UTC",
-            durationSeconds = 60,
-            thresholdSeconds = 60,
-            rawSourceLabel = "chronicle.screenTime.window.0:chronicle.screenTime.window.0.threshold.1",
-        )
+    @Test fun everyColumnButTheReceiptInstantIsBoundOnce() {
+        val bound = ScreenTimeUsageUploadService.BINDINGS.map { it.first }
+        assertEquals(bound.distinct(), bound)
+        assertEquals((IOS_SCREEN_TIME_USAGE.columns - UPLOADED_AT).toSet(), bound.toSet())
+    }
 
-        val samples = ScreenTimeUsageUploadService.toSensorDataSamples(
-            ScreenTimeUsageEnvelope(
-                deviceId = "device-1",
-                studyId = UUID.randomUUID().toString(),
-                participantId = "participant-1",
-                generatedAt = end,
-                records = listOf(valid, categorySummary, thresholdEstimate),
+    @Test fun theTableHoldsOnlyWhatTheBareAppSends() {
+        val columns = postgres.createConnection("").use { connection ->
+            connection.prepareStatement(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'ios_screen_time_usage'",
+            ).use { it.executeQuery().use { rows -> generateSequence { if (rows.next()) rows.getString(1) else null }.toSet() } }
+        }
+        assertEquals(
+            setOf(
+                "study_id", "participant_id", "random_device_id", "record_id", "row_kind", "captured_at",
+                "observation_start", "observation_end", "timezone", "app_name", "bundle_identifier", "web_domain",
+                "category_name", "duration_seconds", "notification_count", "pickup_count", "uploaded_at",
+                "capture_labels_hash",
             ),
-            "device-1",
+            columns,
         )
-        val payload: IosScreenTimeDeviceUsageData = SensorDataUploadService.mapper.readValue(samples.single().data)
+    }
 
-        assertEquals(1, samples.size)
-        assertEquals("com.burbn.instagram", payload.appUsage.getValue("Instagram").single().bundleIdentifier)
-        assertEquals("Instagram", payload.screenTimeAppLabel)
-        assertEquals("application", payload.screenTimeRowKind)
+    @Test fun anUnknownTimezoneRejectsTheRowBeforeAnyWrite() = withStudy { study, service ->
+        assertThrows(UploadRowRejectedException::class.java) {
+            service.upload(study, PARTICIPANT, device,
+                envelope(study, app("Maps"), app("Instagram").copy(timezoneIdentifier = "Invalid/Timezone")))
+        }
+        assertEquals(emptyList<String>(), storedApps(study))
+    }
+
+    @Test fun captureLabelHashesPreserveFieldBoundariesAndMissingValues() = withStudy { study, service ->
+        val records = arrayOf(app("a", "bc"), app("ab", "c"), app("same"), app("same", ""))
+        assertEquals(4, service.upload(study, PARTICIPANT, device, envelope(study, *records)))
+        assertEquals(4, service.upload(study, PARTICIPANT, device,
+            envelope(study, *records.map { it.copy(id = UUID.randomUUID()) }.toTypedArray())))
+        assertEquals(4, storedApps(study).size)
+    }
+
+    private companion object {
+        const val PARTICIPANT = "screen-time-service"
     }
 }

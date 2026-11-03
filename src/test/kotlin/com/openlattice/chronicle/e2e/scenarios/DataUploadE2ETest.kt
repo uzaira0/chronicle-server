@@ -5,13 +5,16 @@ import com.openlattice.chronicle.e2e.dsl.chronicleScenario
 import com.openlattice.chronicle.e2e.dsl.di.ProvidersBundle
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.study.ParticipantDataType
+import com.openlattice.chronicle.storage.rls.RLSFixtureContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.Rule
 import java.time.OffsetDateTime
 
 class DataUploadE2ETest : ChronicleServerTests() {
+    @get:Rule val fixtureContext = RLSFixtureContext()
     private val providers = ProvidersBundle.fromSpringContext(testServer.context)
     // Read through the study service to assert the aggregate cache update directly.
     private val studyManager = testServer.context.getBean(StudyManager::class.java)
@@ -69,6 +72,7 @@ internal fun assertUsageStats(
     events: com.openlattice.chronicle.android.ChronicleData? = null,
 ) {
     if (events == null) {
+        assertNull("Enrollment alone cannot populate Last upload", stats?.androidLastPing)
         assertNull("Enrollment alone cannot populate first capture", stats?.androidFirstDate)
         assertNull("Enrollment alone cannot populate last capture", stats?.androidLastDate)
         assertTrue("Enrollment alone cannot populate capture dates", stats?.androidUniqueDates.isNullOrEmpty())

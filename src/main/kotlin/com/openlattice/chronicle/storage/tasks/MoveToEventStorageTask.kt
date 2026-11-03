@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.storage.tasks
 
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.tasks.HazelcastFixedRateTask
 import com.geekbeast.tasks.Task
 import com.google.common.util.concurrent.ListeningExecutorService
@@ -42,8 +43,10 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
         } catch (timeoutException: TimeoutException) {
             logger.error("Timed out after one hour when moving events to event storage.", timeoutException)
             f.cancel(true)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.USAGE_MOVER)
         } catch (ex: Exception) {
             logger.error("Exception when moving events to event storage.", ex)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.USAGE_MOVER)
         }
     }
 
@@ -66,7 +69,7 @@ public open class MoveToEventStorageTask : HazelcastFixedRateTask<MoveToEventSto
                             stmt.executeQuery(ChroniclePostgresTables.getMoveSql(128, UploadType.Android, fencedStudies)).use { rs ->
                                 while (rs.next()) {
                                     ResultSetAdapters.forEachUsageEventChunk(rs) { entries ->
-                                        val (flavor, _) = storageResolver.resolveAndGetFlavor(entries.first().studyId)
+                                        val flavor = storageResolver.resolveAndGetFlavor(entries.first().studyId).flavor
                                         UsageEventStorageWriter.writeByFlavor(storageResolver, mapOf(flavor to entries), logger)
                                     }
                                 }

@@ -1,6 +1,8 @@
 package com.openlattice.chronicle.storage.tasks
 
+import com.fasterxml.jackson.dataformat.yaml.YAMLMapper
 import com.openlattice.chronicle.auditing.AuditingManager
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.storage.StorageResolver
@@ -14,6 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 
@@ -83,37 +86,6 @@ class BackgroundTaskRLSContextTest {
     }
 
     @Test
-    fun `export worker is restricted to exactly one study and restores its caller`() {
-        val outer = RLSConnectionContext(
-            principalId = "request-user",
-            authorizedStudyIds = setOf(UUID.randomUUID()),
-            isAdmin = true,
-        )
-        val exportStudy = UUID.randomUUID()
-        RLSRequestContext.set(outer)
-
-        RLSRequestContext.withExportWorkerContext("export-owner", exportStudy) {
-            val current = requireNotNull(RLSRequestContext.current())
-            assertEquals("export-owner", current.principalId)
-            assertEquals(setOf(exportStudy), current.authorizedStudyIds)
-            assertTrue(!current.isAdmin)
-        }
-
-        assertEquals(outer, RLSRequestContext.current())
-    }
-
-    @Test
-    fun `export worker context clears after an exception`() {
-        assertThrows(ProbeComplete::class.java) {
-            RLSRequestContext.withExportWorkerContext("export-owner", UUID.randomUUID()) {
-                throw ProbeComplete()
-            }
-        }
-
-        assertNull(RLSRequestContext.current())
-    }
-
-    @Test
     fun `deletion orchestrator establishes worker context before borrowing storage`() {
         val seen = AtomicReference<RLSConnectionContext?>()
         val storageResolver = mock<StorageResolver>()
@@ -132,16 +104,40 @@ class BackgroundTaskRLSContextTest {
     }
 
     @Test
-    fun `ios mover establishes system context inside its executor thread`() {
-        val seen = AtomicReference<RLSConnectionContext?>()
-        val dependencies = probingDependencies(seen)
-        val mover = object : MoveToIosEventStorageTask() {
-            override fun getDependency(): MoveToEventStorageTaskDependencies = dependencies
+    fun `a failed mover run is counted for the background-task alert`() {
+        for ((task, mover) in listOf(
+            ChronicleMetrics.BackgroundTask.USAGE_MOVER to object : MoveToEventStorageTask() {
+                override fun getDependency() = probingDependencies(AtomicReference())
+            },
+        )) {
+            val failures = ChronicleMetrics.backgroundTaskFailuresTotal.labels(task.name.lowercase())
+            val before = failures.get()
+
+            mover.runTask()
+
+            assertEquals(before + 1, failures.get(), 0.0)
         }
 
-        mover.runTask()
-
-        assertSystemContext(seen.get())
+        // The shipped Prometheus scrape keeps the counter and the shipped alert sums it by task.
+        val sample = ChronicleMetrics.backgroundTaskFailuresTotal.collect().flatMap { it.samples }
+            .single { it.labelValues == listOf("usage_mover") && it.name.endsWith("_total") }
+        val mapper = YAMLMapper()
+        // The scrape config ships as a YAML heredoc; parsing it avoids executing the privileged renderer.
+        val scrape = mapper.readTree(File("../selfhost/monitoring/render-config.sh").readLines()
+            .dropWhile { it != "global:" }.takeWhile { it != "EOF" }.joinToString("\n"))
+        val backend = scrape["scrape_configs"].single { it["job_name"].asText() == "chronicle-backend" }
+        val keeps = backend["metric_relabel_configs"].filter { it["action"].asText() == "keep" }
+        assertTrue("backend scrape has no metric allowlist", keeps.isNotEmpty())
+        keeps.forEach { rule ->
+            assertEquals(listOf("__name__"), rule["source_labels"].map { it.asText() })
+            assertTrue("scrape drops ${sample.name}", Regex(rule["regex"].asText()).matches(sample.name))
+        }
+        val rules = mapper.readTree(File("../selfhost/monitoring/grafana-alerting/rules.yml"))
+        assertTrue(
+            "no shipped alert sums ${sample.name} by task",
+            rules["groups"].flatMap { it["rules"] }.flatMap { it["data"] }
+                .any { it["model"]["expr"]?.asText() == "sum by (task) (increase(${sample.name}[1h]))" },
+        )
     }
 
     @Test
@@ -175,6 +171,7 @@ class BackgroundTaskRLSContextTest {
         assertEquals("chronicle-background", actual.principalId)
         assertTrue(actual.isAdmin)
         assertTrue(actual.authorizedStudyIds.isEmpty())
+        assertEquals(false, actual.isDeletionWorker)
     }
 
     private fun assertDeletionWorkerContext(context: RLSConnectionContext?) {
@@ -182,5 +179,6 @@ class BackgroundTaskRLSContextTest {
         assertEquals("chronicle-deletion-worker", actual.principalId)
         assertTrue(actual.isAdmin)
         assertTrue(actual.authorizedStudyIds.isEmpty())
+        assertTrue(actual.isDeletionWorker)
     }
 }

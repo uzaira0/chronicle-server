@@ -2,6 +2,10 @@ package com.openlattice.chronicle.services.upload
 
 import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.collection.AndroidInteractionEvent
+import com.openlattice.chronicle.collection.CollectionModuleId
+import com.openlattice.chronicle.collection.InteractionEventType
+import com.openlattice.chronicle.collection.InteractionPolicy
+import com.openlattice.chronicle.services.studies.CollectionSettingsRepository
 import com.openlattice.chronicle.postgres.bindCollectionEvent
 import com.openlattice.chronicle.postgres.setBooleanOrNull
 import com.openlattice.chronicle.postgres.setDoubleOrNull
@@ -72,9 +76,7 @@ public open class InteractionEventsUploadService(
         if (data.isEmpty()) {
             return 0
         }
-        require(data.size <= 10_000) {
-            "Interaction events upload batch too large: ${data.size} events (max 10,000)"
-        }
+        requireUploadBatchSize(data.size)
 
         StopWatch(
             log = "Writing ${data.size} interaction events ",
@@ -84,14 +86,30 @@ public open class InteractionEventsUploadService(
             ParticipantPurgeCutoff.withPermittedBatch(
                 storageResolver.getPlatformStorage(), studyId, participantId, data, { it.timestamp },
             ) { connection, retained ->
+                val settings = checkNotNull(CollectionSettingsRepository(connection).latest(studyId)) {
+                    "Interaction capture settings are unavailable"
+                }
+                val policy = settings.modules[CollectionModuleId.INTERACTION_EVENTS]?.interactionPolicy ?: InteractionPolicy.DEFAULT
+                val permitted = retained.map { applyCapturePolicy(it, policy) }
                 connection.prepareStatement(INSERT_INTERACTION_EVENTS_SQL).use { ps ->
-                    retained.forEach { event -> bindEvent(ps, studyId, participantId, event) }
+                    permitted.forEach { event -> bindEvent(ps, studyId, participantId, event) }
                     ps.executeBatch()
                 }
             }
         }
 
         return data.size
+    }
+
+    private fun applyCapturePolicy(event: AndroidInteractionEvent, policy: InteractionPolicy): AndroidInteractionEvent {
+        requireUploadRow(if (event.eventType == InteractionEventType.SCROLL) policy.captureScrolls else policy.captureClicks) {
+            "The study does not permit this interaction event type"
+        }
+        return if (policy.captureElementPosition) event else event.copy(
+            positionSource = null, nodeBoundsLeft = null, nodeBoundsTop = null, nodeBoundsRight = null, nodeBoundsBottom = null,
+            displayId = null, rawX = null, rawY = null, screenWidth = null, screenHeight = null,
+            normalizedX = null, normalizedY = null, orientation = null, screenDensityDpi = null,
+        )
     }
 
     private fun bindEvent(
