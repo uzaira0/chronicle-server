@@ -1,0 +1,14 @@
+id: named-storage-result
+language: Kotlin
+severity: error
+message: Return named storage or validated-checkpoint fields instead of a positional domain Pair.
+note: 'Blind spots: This checks only the two declared storage/checkpoint Pair types; aliases, fully qualified spellings, inferred types, and other domain tuple types require review.'
+files: ["src/main/**"]
+rule:
+  any:
+    - pattern:
+        context: 'fun storage(): Pair<PostgresFlavor, HikariDataSource> = TODO()'
+        selector: user_type
+    - pattern:
+        context: 'fun checkpoint(): Pair<RestoreContinuityCheckpoint, Set<UUID>> = TODO()'
+        selector: user_type

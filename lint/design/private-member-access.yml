@@ -1,0 +1,41 @@
+id: server-test-private-member-access
+language: Kotlin
+severity: error
+message: Compose tests through public behavior and injected dependencies instead of opening private members.
+note: >-
+  Blind spots: This checks direct accessibility changes and direct Spring ReflectionTestUtils
+  calls spelled with the full package or an ordinary unaliased class import. Aliased, wildcard
+  and static imports, escaped identifiers, indirect wrappers without a visible opening operation,
+  and trySetAccessible are not resolved. It does not infer receiver types or local shadowing.
+  Public Method, constructor, annotation and schema metadata inspection that leaves accessibility
+  unchanged is allowed. A direct accessibility change is rejected even for a public member.
+  A bounded RHS branch handles the pinned Kotlin parse shape that attaches the next parenthesized
+  statement to true across a newline; it does not reparse source or recover missing nodes.
+files: ['src/test/**']
+rule:
+  any:
+    - pattern: isAccessible = true
+    - pattern: $MEMBER.isAccessible = true
+    - pattern: $MEMBER.setAccessible(true)
+    - all:
+        - pattern: $MEMBER.isAccessible = $RIGHT
+        - has:
+            all:
+              - pattern: $RIGHT
+              - regex: '^true[ \t]*\r?\n[ \t]*[(]'
+    - all:
+        - kind: call_expression
+        - has:
+            kind: navigation_expression
+            regex: '^org\s*[.]\s*springframework\s*[.]\s*test\s*[.]\s*util\s*[.]\s*ReflectionTestUtils\s*[.]\s*(setField|getField|invokeMethod)$'
+    - all:
+        - kind: call_expression
+        - has:
+            kind: navigation_expression
+            regex: '^ReflectionTestUtils\s*[.]\s*(setField|getField|invokeMethod)$'
+        - inside:
+            kind: source_file
+            stopBy: end
+            has:
+              regex: '^import[ \t]+org[.]springframework[.]test[.]util[.]ReflectionTestUtils[ \t]*;?$'
+              stopBy: end

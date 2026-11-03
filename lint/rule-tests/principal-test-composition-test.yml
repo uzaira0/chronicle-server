@@ -1,0 +1,7 @@
+id: principal-test-composition
+valid:
+  - 'fun setup() { Principals.init(manager, hazelcast, resolver) }'
+  - 'fun setup() { val map = HazelcastMap.RESOLVED_PRINCIPAL_TREES.getMap(hazelcast) }'
+invalid:
+  - 'fun setup() { Principals::class.java.getDeclaredField("principals").apply { isAccessible = true }.set(null, map) }'
+  - 'fun setup() { injectStaticMock(Principals::class.java, "principals") { mock() } }'

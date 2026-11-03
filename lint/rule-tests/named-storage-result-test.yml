@@ -1,0 +1,22 @@
+id: named-storage-result
+valid:
+  - 'fun storage(): ResolvedStorage = resolver.getDefaultPlatformStorage()'
+  - 'fun mappings(): Map<String, HikariDataSource> = pools'
+  - 'private fun checkpoint(): ValidatedRestoreCheckpoint = validated'
+  - 'fun counts(): Map<UUID, Long> = counts'
+invalid:
+  - 'fun storage(): Pair<PostgresFlavor, HikariDataSource> = flavor to pool'
+  - 'fun storage(): Pair<PostgresFlavor, HikariDataSource> { return flavor to pool }'
+  - |
+    private fun loadAndValidateCheckpoint(): Pair<RestoreContinuityCheckpoint, Set<UUID>> =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            val checkpoint = checkpointRepository.readValidated(connection)
+            validateCheckpointRelations(connection)
+            checkpoint to loadAlreadyProtectedCompletedOperationIds(connection)
+        }
+  - 'private fun checkpoint(): Pair<RestoreContinuityCheckpoint, Set<UUID>> { return checkpoint to protectedOperationIds }'
+  - |
+    private fun checkpoint(): Pair<
+        RestoreContinuityCheckpoint,
+        Set<UUID>
+    > = checkpoint to protectedOperationIds

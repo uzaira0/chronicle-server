@@ -1,0 +1,12 @@
+title = "Chronicle server gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic JWT signing secret for the MFA secure-default test client"
+condition = "AND"
+# Global path allowlists skip whole files; apply both conditions to this rule instead.
+targetRules = ["generic-api-key"]
+paths = ['''^src/test/kotlin/com/openlattice/chronicle/security/MfaSecureDefaultTest\.kt$''']
+regexes = ['''^mfa-default-test-signing-secret-0123456789$''']

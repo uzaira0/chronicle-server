@@ -1,0 +1,10 @@
+id: principal-test-composition
+language: Kotlin
+severity: error
+message: Compose test principals with Principals.init and owned Hazelcast maps instead of private field reflection.
+note: 'Blind spots: This checks direct Principals field reflection and the historical injection helper; aliases and other wrappers require review.'
+files: ["src/test/**"]
+rule:
+  any:
+    - pattern: Principals::class.java.getDeclaredField($$$ARGS)
+    - pattern: injectStaticMock(Principals::class.java, $$$ARGS)

@@ -1,0 +1,149 @@
+id: server-test-private-member-access
+valid:
+  # V01: Compiled controller annotations remain legitimate metadata.
+  - |
+    fun endpoints() = Controller::class.java.declaredMethods
+        .filter { it.isAnnotationPresent(GetMapping::class.java) }
+  # V02: A public Method lookup does not open a private member.
+  - |
+    fun handler() = Controller::class.java.getDeclaredMethod("response")
+  # V03: Actual public endpoint argument metadata remains available.
+  - |
+    fun parameter() = MethodParameter(
+        ProbeController::class.java.getMethod("rows", List::class.java), 0,
+    )
+  # V04: Public constructor lookup and invocation are permitted.
+  - |
+    fun store(type: Class<*>) = type.getConstructor(HikariDataSource::class.java)
+        .newInstance(source)
+  # V05: Public @JvmField schema enumeration needs no accessibility change.
+  - |
+    fun tables() = ChroniclePostgresTables::class.java.fields
+        .filter { Modifier.isStatic(it.modifiers) && Modifier.isFinal(it.modifiers) }
+        .filter { PostgresTableDefinition::class.java.isAssignableFrom(it.type) }
+        .map { it.get(null) as PostgresTableDefinition }
+  # V06: Kotlin constructor optionality/nullability is metadata.
+  - |
+    fun contract() = Model::class.primaryConstructor!!.parameters
+        .map { Triple(it.name, it.isOptional, it.type.isMarkedNullable) }
+  # V07: Kotlin public property names are metadata.
+  - |
+    fun names() = SurveySettings::class.memberProperties.map { it.name }.toSet()
+  # V08: Actual injection/composition has no private access operation.
+  - |
+    fun fixture(resolver: StorageResolver) = MapstoresPod(resolver).studyMapstore()
+  # V09: Closing accessibility is not an opening operation.
+  - 'fun close(field: Field) { field.isAccessible = false }'
+  # V10: The Java closing spelling remains valid.
+  - 'fun close(field: Field) { field.setAccessible(false) }'
+  # V11: An unrelated class with the same short name is not a Spring import.
+  - |
+    object ReflectionTestUtils { fun setField(target: Any, name: String, value: Any) = Unit }
+    fun fixture() { ReflectionTestUtils.setField(target, "publicValue", value) }
+  # V12: Importing Spring does not prohibit unrelated receiver method names.
+  - |
+    import org.springframework.test.util.ReflectionTestUtils
+    fun fixture() { publicFixture.setField("publicValue", value) }
+  # V13: A different fully qualified class is not the Spring utility.
+  - 'fun fixture() { example.ReflectionTestUtils.setField(target, "publicValue", value) }'
+  # V14: Test-owned private nested controller type, public handler metadata.
+  - |
+    class Fixture {
+        private class Controller { fun response() = "complete" }
+        fun handler() = HandlerMethod(Controller(), Controller::class.java.getDeclaredMethod("response"))
+    }
+  # V15: The pinned-parser continuation shape must not turn false into true.
+  - |
+    fun fixture() {
+        fields.map {
+            it.isAccessible = false
+            (it.get(null) as Value).name
+        }
+    }
+  # V16: A different property is not an accessibility operation.
+  - |
+    fun fixture() {
+        values.map {
+            it.enabled = true
+            (it.get(null) as Value).name
+        }
+    }
+invalid:
+  # I01: The implicit apply receiver spelling used by current fixtures.
+  - 'fun fixture() { Target::class.java.getDeclaredField("cache").apply { isAccessible = true } }'
+  # I02: Explicit Kotlin property spelling.
+  - 'fun fixture(field: Field) { field.isAccessible = true }'
+  # I03: Direct Java setter spelling must not bypass enforcement.
+  - 'fun fixture(field: Field) { field.setAccessible(true) }'
+  # I04: The JobService private invocation shape.
+  - |
+    fun fixture(service: JobService) {
+        JobService::class.java.getDeclaredMethod("expireAbandonedJobs")
+            .apply { isAccessible = true }.invoke(service)
+    }
+  # I05: Dynamic member names and arbitrary wrapper names receive no exemption.
+  - |
+    fun injectStaticMock(targetClass: Class<*>, memberName: String, value: Any) {
+        val member = targetClass.getDeclaredField(memberName)
+        member.isAccessible = true
+        member.set(null, value)
+    }
+  # I06: Direct fully qualified Spring field write.
+  - 'fun fixture() { org.springframework.test.util.ReflectionTestUtils.setField(target, "cache", value) }'
+  # I07: Direct fully qualified Spring field read.
+  - 'fun fixture() = org.springframework.test.util.ReflectionTestUtils.getField(target, "cache")'
+  # I08: Spring generic private method invocation.
+  - 'fun fixture() = org.springframework.test.util.ReflectionTestUtils.invokeMethod<String>(target, "drain")'
+  # I09: The actual WorkerContext imported Spring field-write shape.
+  - |
+    import org.springframework.test.util.ReflectionTestUtils
+    fun fixture(pod: MapstoresPod, resolver: StorageResolver) {
+        ReflectionTestUtils.setField(pod, "storageResolver", resolver)
+    }
+  # I10: Imported Spring field read.
+  - |
+    import org.springframework.test.util.ReflectionTestUtils
+    fun fixture() = ReflectionTestUtils.getField(target, "cache")
+  # I11: Imported Spring generic invocation.
+  - |
+    import org.springframework.test.util.ReflectionTestUtils
+    fun fixture() = ReflectionTestUtils.invokeMethod<Unit>(target, "drain")
+  # I12: The import relationship must work with other imports and nested calls.
+  - |
+    package fixture
+    import java.util.UUID
+    import org.springframework.test.util.ReflectionTestUtils
+    import org.junit.Test
+    class Fixture {
+        @Test fun setup() { ReflectionTestUtils.setField(target, "cache", value) }
+    }
+  # I13: Direct opening of a public schema member is also unnecessary.
+  - |
+    fun tables() = ChroniclePostgresTables::class.java.fields.map { field ->
+        field.isAccessible = true
+        field.get(null)
+    }
+  # I14: Visibility-changing logic inside an ordinary helper still matches.
+  - |
+    fun seed(target: Any, name: String, value: Any) {
+        target.javaClass.getDeclaredField(name).let { field ->
+            field.setAccessible(true)
+            field.set(target, value)
+        }
+    }
+  # I15: Exact Mobile family-discovery ancestor.
+  - |
+    fun fixture() {
+        val prefixes = MobileApiSignatureFilter::class.java.getDeclaredField("MOBILE_API_PREFIXES").let {
+            it.isAccessible = true
+            (it.get(null) as List<*>).map { prefix -> prefix as String }
+        }
+    }
+  # I16: Exact revision-route ancestor.
+  - |
+    fun fixture() {
+        val fences = ConcurrentEditFilter::class.java.declaredFields.filter { it.type == PathPattern::class.java }.map {
+            it.isAccessible = true
+            (it.get(null) as PathPattern).patternString
+        }.toSet()
+    }
