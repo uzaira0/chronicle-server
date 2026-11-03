@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.services.jobs
 
+import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.PostgresArrays
 import com.geekbeast.postgres.PostgresDatatype
@@ -23,6 +24,7 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.PRINCIPAL_TYP
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SECURABLE_PRINCIPAL_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STATUS
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import jakarta.annotation.PreDestroy
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
@@ -72,7 +74,6 @@ public open class JobService(
         private val INSERT_JOB_SQL = """
             INSERT INTO ${JOBS.name} ($JOB_COLUMNS) VALUES ($JOB_COLUMNS_BIND)
         """.trimIndent()
-        private val INSERT_JOB_IDEMPOTENT_SQL = "$INSERT_JOB_SQL ON CONFLICT (${JOB_ID.name}) DO NOTHING"
         private val GET_JOBS_SQL = """
             SELECT * FROM ${JOBS.name} WHERE ${JOB_ID.name} = ANY(?)
         """.trimIndent()
@@ -201,22 +202,10 @@ public open class JobService(
         """.trimIndent()
 
         private const val MAX_AVAILABLE = 4
-        private const val FINISHED_JOB_TTL = "'7d'"
         private const val MAX_FAILURE_MESSAGE_LENGTH = 4_096
 
-        private val DELETE_TERMINAL_JOBS_AFTER_TTL = """
-            DELETE FROM ${JOBS.name} 
-            WHERE ${STATUS.name} IN ('${JobStatus.FINISHED.name}', '${JobStatus.CANCELED.name}')
-            AND ${PostgresColumns.COMPLETED_AT.name} <= now() - INTERVAL $FINISHED_JOB_TTL
-        """.trimIndent()
 
-        private val DELETE_TERMINAL_PIPELINE_RUNS_AFTER_TTL = """
-            DELETE FROM pipeline_runs AS run
-            USING ${JOBS.name} AS job
-            WHERE run.job_id = job.${JOB_ID.name}
-              AND job.${STATUS.name} IN ('${JobStatus.FINISHED.name}', '${JobStatus.CANCELED.name}')
-              AND job.${PostgresColumns.COMPLETED_AT.name} <= now() - INTERVAL $FINISHED_JOB_TTL
-        """.trimIndent()
+        
     }
 
     private val leaseTokens = ConcurrentHashMap<UUID, UUID>()
@@ -235,11 +224,6 @@ public open class JobService(
 
     override fun createJobs(connection: Connection, jobs: Iterable<ChronicleJob>): Iterable<UUID> {
         return insertJobs(connection, jobs, INSERT_JOB_SQL)
-    }
-
-    /** Inserts deterministic jobs once while returning their stable IDs on every retry. */
-    public fun createJobsIdempotently(connection: Connection, jobs: Iterable<ChronicleJob>): Iterable<UUID> {
-        return insertJobs(connection, jobs, INSERT_JOB_IDEMPOTENT_SQL)
     }
 
     private fun insertJobs(
@@ -308,7 +292,7 @@ public open class JobService(
     @Scheduled(fixedRate = 10_000L)
     public fun tryAndAcquireTaskForExecutor() {
         logger.info("Attempting to acquire permit for executing background task.")
-        expireAbandonedJobs()
+        RLSRequestContext.withSystemContext { expireAbandonedJobs() }
 
         repeat(MAX_AVAILABLE) {
             if (!available.tryAcquire()) {
@@ -319,7 +303,7 @@ public open class JobService(
             try {
                 executor.execute {
                     try {
-                        executeNextJob()
+                        RLSRequestContext.withSystemContext { executeNextJob() }
                     } finally {
                         available.release()
                     }
@@ -387,6 +371,7 @@ public open class JobService(
                 }
             }
             logger.error("Task could not be completed", ex)
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.JOB)
         } finally {
             job?.let { unlockJob(it.id) }
         }
@@ -524,6 +509,7 @@ public open class JobService(
                 }
             }
         } catch (ex: Exception) {
+            ChronicleMetrics.recordBackgroundTaskFailure(ChronicleMetrics.BackgroundTask.JOB_RECONCILE)
             logger.error("Unable to reconcile expired Chronicle job leases.", ex)
         }
     }
@@ -535,31 +521,6 @@ public open class JobService(
         } else {
             "${ex.javaClass.simpleName}: $detail"
         }.take(MAX_FAILURE_MESSAGE_LENGTH)
-    }
-
-    @Scheduled(fixedRate = 60 * 60 * 1000L)
-    public fun clearFinishedJobs() {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            val previousAutoCommit = connection.autoCommit
-            try {
-                connection.autoCommit = false
-                val pipelineRunDeleteCount = connection.prepareStatement(
-                    DELETE_TERMINAL_PIPELINE_RUNS_AFTER_TTL,
-                ).executeUpdate()
-                val jobDeleteCount = connection.prepareStatement(DELETE_TERMINAL_JOBS_AFTER_TTL).executeUpdate()
-                connection.commit()
-                logger.info(
-                    "Expired {} jobs and {} retained pipeline runs.",
-                    jobDeleteCount,
-                    pipelineRunDeleteCount,
-                )
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = previousAutoCommit
-            }
-        }
     }
 
     @Autowired(required = false)
