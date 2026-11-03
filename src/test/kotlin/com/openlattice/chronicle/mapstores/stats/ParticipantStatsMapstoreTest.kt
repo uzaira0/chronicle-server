@@ -3,6 +3,8 @@ package com.openlattice.chronicle.mapstores.stats
 import com.openlattice.chronicle.participants.ParticipantStats
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.mockito.Mockito.times
@@ -85,15 +87,16 @@ class ParticipantStatsMapstoreTest {
         val value = ParticipantStats(key.studyId, key.participantId)
         whenever(dataSource.connection).thenReturn(connection)
         whenever(connection.prepareStatement(any())).thenReturn(statement)
-        whenever(statement.execute()).thenThrow(SQLException("connection lost", "08006"))
+        whenever(statement.execute()).thenThrow(SQLException("private-participant-sentinel", "08006"))
         val mapstore = TestParticipantStatsMapstore(dataSource)
 
         val failure = assertThrows(IllegalStateException::class.java) {
             mapstore.store(key, value)
         }
 
-        org.junit.Assert.assertFalse(failure.message.orEmpty().contains(key.participantId))
-        org.junit.Assert.assertFalse(key.toString().contains(key.participantId))
+        assertFalse(failure.message.orEmpty().contains(key.participantId))
+        assertFalse(key.toString().contains(key.participantId))
+        assertNull("SQL cause must not leave the storage boundary", failure.cause)
 
         verify(dataSource, times(1)).connection
         verify(statement).execute()
@@ -139,7 +142,7 @@ class ParticipantStatsMapstoreTest {
             mapstore.store(key, value)
         }
 
-        assertEquals(1, failure.cause?.suppressed?.size)
+        assertNull("Guard and SQL causes must remain private", failure.cause)
         verify(storeStatement).execute()
     }
 

@@ -6,7 +6,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
-import org.junit.Assume.assumeNoException
 import org.junit.BeforeClass
 import org.junit.Test
 import org.testcontainers.containers.PostgreSQLContainer
@@ -18,15 +17,14 @@ import java.time.Duration
 import java.util.Properties
 
 /**
- * W4 — PostgreSQL transport hardening: `sslmode` enforcement (HIPAA §164.312(e)(1) — transmission
- * security; in-transit encryption of ePHI).
+ * PostgreSQL transport hardening: `sslmode` enforcement (in-transit encryption).
  *
- * Two compliance claims are exercised here:
+ * Two claims are exercised here:
  *
  *  1. **Behavioral (real server):** against a Postgres server configured to REQUIRE SSL (the prod
  *     posture — `scram-sha-256` + SSL-only `pg_hba.conf`), a JDBC connection with `sslmode=disable`
  *     is **refused**, while `sslmode=require` / `verify-full`-class connections succeed. This proves
- *     a downgraded connection cannot reach the database — the property the W4 JDBC-URL pin protects.
+ *     a downgraded connection cannot reach the database — the property the JDBC-URL pin protects.
  *  2. **Configuration pin:** the production datasource template
  *     (`selfhost/config/rhizome.yaml.template`) hard-codes `sslmode=verify-full` in the JDBC URL, so a
  *     deploy cannot silently downgrade the connection via the `POSTGRES_SSL_MODE` env var.
@@ -48,22 +46,12 @@ class PostgresSslModeEnforcementTest {
         @BeforeClass
         @JvmStatic
         fun startSslRequiredContainer() {
-            val container = try {
-                val image = DockerImageName.parse(PERCONA_PG_TDE_IMAGE)
-                    .asCompatibleSubstituteFor("postgres")
-                PostgreSQLContainer(image)
-                    // Percona redirects logs to a collector → the default log-wait never matches;
-                    // wait on the listening port instead.
-                    .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofMinutes(3)))
-                    .also { it.start() }
-            } catch (e: Throwable) {
-                assumeNoException(
-                    "Percona image ($PERCONA_PG_TDE_IMAGE) unavailable — SSL enforcement is " +
-                        "verified by the staging smoke test instead (see W4-encryption-transport.md).",
-                    e,
-                )
-                return
-            }
+            val image = DockerImageName.parse(PERCONA_PG_TDE_IMAGE).asCompatibleSubstituteFor("postgres")
+            // Percona redirects logs to a collector; readiness uses the port and a real query.
+            val container = PostgreSQLContainer(image)
+                .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofMinutes(3)))
+            postgres = container
+            container.start()
 
             try {
                 // forListeningPort opens before the server accepts SQL; wait for query-readiness.
@@ -99,7 +87,7 @@ class PostgresSslModeEnforcementTest {
                 postgres = container
             } catch (e: Throwable) {
                 container.stop()
-                assumeNoException("Could not configure SSL-required Postgres for the test", e)
+                throw e
             }
         }
 
@@ -227,8 +215,8 @@ class PostgresSslModeEnforcementTest {
 
     @Test
     fun `verify-full is a stronger mode than the env default and is the pinned target`() {
-        // Documents the W4 decision: verify-full (encrypt + verify cert chain + verify hostname) is
-        // the pinned mode, strictly stronger than the historical `require` env default (encrypt only).
+        // verify-full (encrypt + verify cert chain + verify hostname) is the pinned mode, strictly
+        // stronger than the `require` env default (encrypt only).
         val template = requireNotNull(locateTemplate()) { "Required shipped datasource template is missing" }
         assertNull(
             "the pinned URL must not fall back to the weaker 'require' mode",

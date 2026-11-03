@@ -22,12 +22,17 @@ public fun odtFromUsageEventColumn(value: Any?): OffsetDateTime? {
 
 public fun zdtFromAndroidColumns(value: Any?, timezone: String): ZonedDateTime? {
     if (value == null) return null
-    return when (value) {
+    val time = when (value) {
         is String -> OffsetDateTime.parse(value)
         is OffsetDateTime -> value
         else -> throw UnsupportedOperationException("${value.javaClass.canonicalName} is not a supported date time class.")
-    }.atZoneSameInstant(ZoneId.of(timezone))
+    }
+    return time.atZoneSameInstant(zoneOrOffset(timezone, time))
 }
+
+/** A stored zone id as a zone, or [at]'s own offset when this server's zone data does not know the id. */
+public fun zoneOrOffset(timezone: String?, at: OffsetDateTime): ZoneId =
+    timezone?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: at.offset
 
 internal fun reflectedPostgresColumns(
     owner: Class<*>,

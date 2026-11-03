@@ -26,17 +26,18 @@ public class PostgresColumns private constructor() {
         @JvmField val COMPLETED_AT = PostgresColumnDefinition("completed_at", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("'infinity'")
         @JvmField val CONTACT = PostgresColumnDefinition("contact", PostgresDatatype.TEXT)
         @JvmField val CREATED_AT = PostgresColumnDefinition("created_at", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("now()")
-        @JvmField val DATA_EXPIRES = PostgresColumnDefinition("data_expires", PostgresDatatype.TIMESTAMPTZ).notNull()
+        @JvmField val DATA_EXPIRES = PostgresColumnDefinition("data_expires", PostgresDatatype.TIMESTAMPTZ)
         @JvmField val DATE_OF_BIRTH = PostgresColumnDefinition("dob", PostgresDatatype.DATE)
         @JvmField val DATA_RETENTION = PostgresColumnDefinition("data_retention", PostgresDatatype.JSONB).notNull()
         @JvmField val DELETED_ROWS = PostgresColumnDefinition("deleted_rows", PostgresDatatype.BIGINT).notNull()
         @JvmField val DELETION_OPERATION_ID = PostgresColumnDefinition("operation_id", PostgresDatatype.UUID)
         @JvmField val DELETION_PREVIOUS_STATUS = PostgresColumnDefinition("previous_status", PostgresDatatype.TEXT)
         @JvmField val DESCRIPTION = PostgresColumnDefinition("description", PostgresDatatype.TEXT)
-        @JvmField val DEVICE_ID = PostgresColumnDefinition("device_id", PostgresDatatype.UUID).notNull()
+        @JvmField val RANDOM_DEVICE_ID = PostgresColumnDefinition("random_device_id", PostgresDatatype.UUID).notNull()
         @Deprecated("device_token will be removed in a future migration")
         @JvmField val DEVICE_TOKEN = PostgresColumnDefinition("device_token", PostgresDatatype.TEXT)
         @JvmField val DEVICE_TYPE = PostgresColumnDefinition("device_type", PostgresDatatype.TEXT)
+        @JvmField val PRODUCER_VERSION = PostgresColumnDefinition("producer_version", PostgresDatatype.TEXT)
         @JvmField val DELETE_AFTER = PostgresColumnDefinition("delete_after", PostgresDatatype.TIMESTAMPTZ).notNull()
         @JvmField val EMAIL = PostgresColumnDefinition("email", PostgresDatatype.TEXT).unique()
         @JvmField val EMAIL_NOT_UNIQUE = PostgresColumnDefinition("email", PostgresDatatype.TEXT)
@@ -45,7 +46,6 @@ public class PostgresColumns private constructor() {
         @JvmField val EXPIRATION = PostgresColumnDefinition("expiration", PostgresDatatype.BIGINT)
         @JvmField val EXPIRATION_DATE = PostgresColumnDefinition("expiration_date", PostgresDatatype.TIMESTAMPTZ).withDefault("'infinity'").notNull()
         @JvmField val FIRST_NAME = PostgresColumnDefinition("first_name", PostgresDatatype.TEXT)
-        @JvmField val FEATURES = PostgresColumnDefinition("features", PostgresDatatype.TEXT_ARRAY).notNull().withDefault("'{}'")
         @JvmField val IOS_UNIQUE_DATES = PostgresColumnDefinition("ios_unique_dates", PostgresDatatype.DATE_ARRAY).withDefault("'{}'")
         @JvmField val IOS_FIRST_DATE = PostgresColumnDefinition("ios_first_date", PostgresDatatype.TIMESTAMPTZ)
         @JvmField val IOS_LAST_DATE = PostgresColumnDefinition("ios_last_date", PostgresDatatype.TIMESTAMPTZ)
@@ -54,7 +54,6 @@ public class PostgresColumns private constructor() {
         @JvmField val JOB_ID = PostgresColumnDefinition("job_id", PostgresDatatype.UUID).notNull()
         @JvmField val LAST_NAME = PostgresColumnDefinition("last_name", PostgresDatatype.TEXT)
         @JvmField val LAT = PostgresColumnDefinition("lat", PostgresDatatype.DOUBLE)
-        @JvmField val LEGACY_STUDY_ID = PostgresColumnDefinition("legacy_study_id", PostgresDatatype.UUID).notNull()
         @JvmField val LIFECYCLE_STATUS = PostgresColumnDefinition("lifecycle_status", PostgresDatatype.TEXT).notNull().withDefault("'ACTIVE'")
         @JvmField val LON = PostgresColumnDefinition("lon", PostgresDatatype.DOUBLE)
         @JvmField val LSB = PostgresColumnDefinition("lsb", PostgresDatatype.BIGINT).notNull()
@@ -62,10 +61,8 @@ public class PostgresColumns private constructor() {
         @JvmField val MSB = PostgresColumnDefinition("msb", PostgresDatatype.BIGINT).notNull()
         @JvmField val NAME = PostgresColumnDefinition("name", PostgresDatatype.TEXT)
         @JvmField val NEW_STATUS = PostgresColumnDefinition("new_status", PostgresDatatype.TEXT).notNull()
-        @JvmField val NOTIFICATIONS_ENABLED = PostgresColumnDefinition("notifications_enabled", PostgresDatatype.BOOLEAN)
         @JvmField val ORGANIZATION_ID = PostgresColumnDefinition("organization_id", PostgresDatatype.UUID).notNull()
         @JvmField val ORGANIZATION_IDS = PostgresColumnDefinition("organization_ids", PostgresDatatype.UUID_ARRAY).notNull()
-        @JvmField val PARTICIPANT_LIMIT = PostgresColumnDefinition("participant_limit", PostgresDatatype.INTEGER).notNull()
         @JvmField val PARTICIPANT_ID = PostgresColumnDefinition("participant_id", PostgresDatatype.TEXT).notNull()
         @JvmField val PARTICIPATION_STATUS = PostgresColumnDefinition("participation_status", PostgresDatatype.TEXT).notNull()
         @JvmField val PARTITION_INDEX = PostgresColumnDefinition("partition_index", PostgresDatatype.BIGINT).notNull()
@@ -95,12 +92,13 @@ public class PostgresColumns private constructor() {
         @JvmField val STARTED_AT = PostgresColumnDefinition("started_at", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("now()")
         @JvmField val STATUS = PostgresColumnDefinition("status", PostgresDatatype.TEXT)
         @JvmField val STORAGE = PostgresColumnDefinition("storage", PostgresDatatype.TEXT).notNull().withDefault("'default'")
-        @JvmField val STUDY_DURATION = PostgresColumnDefinition("study_duration", PostgresDatatype.JSONB).notNull()
-        @JvmField val STUDY_ENDS = PostgresColumnDefinition("study_ends", PostgresDatatype.TIMESTAMPTZ).notNull()
+        @JvmField val STUDY_DURATION = PostgresColumnDefinition("study_duration", PostgresDatatype.JSONB)
+        @JvmField val STUDY_ENDS = PostgresColumnDefinition("study_ends", PostgresDatatype.TIMESTAMPTZ)
         @JvmField val STUDY_GROUP = PostgresColumnDefinition("study_group", PostgresDatatype.TEXT)
         @JvmField val STUDY_ID = PostgresColumnDefinition("study_id", PostgresDatatype.UUID).notNull()
         @JvmField val STUDY_VERSION = PostgresColumnDefinition("study_version", PostgresDatatype.TEXT)
         @JvmField val SUBMISSION = PostgresColumnDefinition("submission", PostgresDatatype.JSONB)
+        @JvmField val SURVEY_DATE = PostgresColumnDefinition("survey_date", PostgresDatatype.DATE)
         @JvmField val SUBMISSION_DATE = PostgresColumnDefinition("submission_date", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("NOW()")
         @JvmField val SUBMISSION_ID = PostgresColumnDefinition("submission_id", PostgresDatatype.UUID).notNull()
         @JvmField val SUMMARY_DATA = PostgresColumnDefinition("summary_data", PostgresDatatype.JSONB).notNull()
@@ -112,10 +110,6 @@ public class PostgresColumns private constructor() {
         @JvmField val URL = PostgresColumnDefinition("url", PostgresDatatype.TEXT)
         @JvmField val USER_DATA = PostgresColumnDefinition("user_data", PostgresDatatype.JSONB)
         @JvmField val USER_ID = PostgresColumnDefinition("user_id", PostgresDatatype.TEXT).notNull()
-        @JvmField val UPGRADE_CLASS = PostgresColumnDefinition("upgrade_class", PostgresDatatype.TEXT).notNull()
-        @JvmField val UPGRADE_STATUS = PostgresColumnDefinition("upgrade_status", PostgresDatatype.TEXT)
-            .notNull().withDefault("'Registered'") // historical ledger; enum retired with the upgrade framework
-        @JvmField val LAST_UPDATE = PostgresColumnDefinition("last_update",PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("now()")
         @JvmField val UPLOAD_DATA = PostgresColumnDefinition("data", PostgresDatatype.JSONB).notNull()
         @JvmField val UPLOADED_AT = PostgresColumnDefinition("uploaded_at", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("now()")
         @JvmField val UPLOAD_TYPE = PostgresColumnDefinition("upload_type", PostgresDatatype.TEXT).notNull()
@@ -138,13 +132,32 @@ public class PostgresColumns private constructor() {
         @JvmField val BATTERY_LEVEL_PERCENT = PostgresColumnDefinition("level_percent", PostgresDatatype.INTEGER).notNull()
         @JvmField val BATTERY_CHARGING_STATE = PostgresColumnDefinition("charging_state", PostgresDatatype.TEXT).notNull()
 
-        // Android-hardware battery fields are nullable (V64): iOS has no plug type,
+        // Android-hardware battery fields are nullable: iOS has no plug type,
         // health, temperature, or voltage — iOS rows store NULL, never fabricated values.
         @JvmField val BATTERY_PLUG_TYPE = PostgresColumnDefinition("plug_type", PostgresDatatype.TEXT)
         @JvmField val BATTERY_HEALTH = PostgresColumnDefinition("health", PostgresDatatype.TEXT)
         @JvmField val BATTERY_TEMPERATURE_DECI_C = PostgresColumnDefinition("temperature_deci_c", PostgresDatatype.INTEGER)
         @JvmField val BATTERY_VOLTAGE_MILLIVOLTS = PostgresColumnDefinition("voltage_millivolts", PostgresDatatype.INTEGER)
         @JvmField val BATTERY_LOW_POWER_MODE = PostgresColumnDefinition("low_power_mode", PostgresDatatype.BOOLEAN)
+
+        // iOS Screen Time (DeviceActivity App & Web Usage) columns: one per ScreenTimeUsageRecord field.
+        // Absent app/domain/category labels and counts stay NULL; the natural key treats NULLs as equal.
+        @JvmField val SCREEN_TIME_RECORD_ID = PostgresColumnDefinition("record_id", PostgresDatatype.UUID).notNull()
+        @JvmField val SCREEN_TIME_ROW_KIND = PostgresColumnDefinition("row_kind", PostgresDatatype.TEXT).notNull()
+        @JvmField val SCREEN_TIME_CAPTURED_AT = PostgresColumnDefinition("captured_at", PostgresDatatype.TIMESTAMPTZ).notNull()
+        @JvmField val SCREEN_TIME_OBSERVATION_START =
+            PostgresColumnDefinition("observation_start", PostgresDatatype.TIMESTAMPTZ).notNull()
+        @JvmField val SCREEN_TIME_OBSERVATION_END =
+            PostgresColumnDefinition("observation_end", PostgresDatatype.TIMESTAMPTZ).notNull()
+        @JvmField val SCREEN_TIME_TIMEZONE = PostgresColumnDefinition("timezone", PostgresDatatype.TEXT).notNull()
+        @JvmField val SCREEN_TIME_APP_NAME = PostgresColumnDefinition("app_name", PostgresDatatype.TEXT)
+        @JvmField val SCREEN_TIME_BUNDLE_IDENTIFIER = PostgresColumnDefinition("bundle_identifier", PostgresDatatype.TEXT)
+        @JvmField val SCREEN_TIME_WEB_DOMAIN = PostgresColumnDefinition("web_domain", PostgresDatatype.TEXT)
+        @JvmField val SCREEN_TIME_CATEGORY_NAME = PostgresColumnDefinition("category_name", PostgresDatatype.TEXT)
+        @JvmField val SCREEN_TIME_DURATION_SECONDS =
+            PostgresColumnDefinition("duration_seconds", PostgresDatatype.INTEGER).notNull()
+        @JvmField val SCREEN_TIME_NOTIFICATION_COUNT = PostgresColumnDefinition("notification_count", PostgresDatatype.INTEGER)
+        @JvmField val SCREEN_TIME_PICKUP_COUNT = PostgresColumnDefinition("pickup_count", PostgresDatatype.INTEGER)
 
         // Interaction-events columns (interaction_events collection module). An
         // AndroidInteractionEvent carries a free-form String id, so INTERACTION_EVENT_ID is TEXT.
@@ -204,17 +217,6 @@ public class PostgresColumns private constructor() {
         @JvmField val AUDIO_ACTIVITY_RINGER_MODE = PostgresColumnDefinition("ringer_mode", PostgresDatatype.TEXT)
         @JvmField val AUDIO_ACTIVITY_DND_ACTIVE = PostgresColumnDefinition("dnd_active", PostgresDatatype.BOOLEAN)
         @JvmField val AUDIO_ACTIVITY_CALL_ACTIVE = PostgresColumnDefinition("call_active", PostgresDatatype.BOOLEAN)
-
-        // Ambient-audio columns (ambient_audio collection module — currently iOS SoundAnalysis).
-        // AMBIENT_AUDIO_CONTEXT-class, labels-only by construction: one row per on-device
-        // sound-classification label within a short listen window; the audio itself is discarded
-        // at the classifier boundary and never reaches the server in any form.
-        @JvmField val AMBIENT_AUDIO_EVENT_ID = PostgresColumnDefinition("event_id", PostgresDatatype.TEXT).notNull()
-        @JvmField val AMBIENT_AUDIO_WINDOW_START_MILLIS = PostgresColumnDefinition("window_start_millis", PostgresDatatype.BIGINT).notNull()
-        @JvmField val AMBIENT_AUDIO_WINDOW_END_MILLIS = PostgresColumnDefinition("window_end_millis", PostgresDatatype.BIGINT).notNull()
-        @JvmField val AMBIENT_AUDIO_LABEL = PostgresColumnDefinition("label", PostgresDatatype.TEXT).notNull()
-        @JvmField val AMBIENT_AUDIO_CONFIDENCE = PostgresColumnDefinition("confidence", PostgresDatatype.DOUBLE).notNull()
-        @JvmField val AMBIENT_AUDIO_CLASSIFIER_VERSION = PostgresColumnDefinition("classifier_version", PostgresDatatype.TEXT)
 
         // Audio-content columns (audio_content collection module). An AndroidAudioContentEvent
         // carries a free-form String id, so AUDIO_CONTENT_EVENT_ID is TEXT. MEDIA_CONTENT-class:
@@ -321,23 +323,7 @@ public class PostgresColumns private constructor() {
         @JvmField val DEVICE_SETTINGS_ALARM_VOLUME_MAX = PostgresColumnDefinition("alarm_volume_max", PostgresDatatype.INTEGER)
         @JvmField val DEVICE_SETTINGS_RINGER_MODE = PostgresColumnDefinition("ringer_mode", PostgresDatatype.TEXT)
 
-        // Encrypted payload envelope columns (HIPAA-2028 W2). The backend stores each
-        // EncryptedEnvelope blind: it never holds the study private key, so these BYTEA
-        // columns are opaque ciphertext + a wrapped content key it cannot open. content_hash
-        // is SHA-256 over (encrypted_key||iv||ciphertext) and is the idempotency key.
-        @JvmField val PAYLOAD_ID = PostgresColumnDefinition("payload_id", PostgresDatatype.UUID).notNull()
-        @JvmField val PAYLOAD_TYPE = PostgresColumnDefinition("payload_type", PostgresDatatype.TEXT).notNull()
-        @JvmField val ENVELOPE_VERSION = PostgresColumnDefinition("envelope_version", PostgresDatatype.INTEGER).notNull()
-        @JvmField val ENVELOPE_ALG = PostgresColumnDefinition("alg", PostgresDatatype.TEXT).notNull()
-        @JvmField val ENCRYPTION_KEY_ID = PostgresColumnDefinition("key_id", PostgresDatatype.TEXT).notNull()
-        @JvmField val ENCRYPTED_KEY = PostgresColumnDefinition("encrypted_key", PostgresDatatype.BYTEA).notNull()
-        @JvmField val ENVELOPE_IV = PostgresColumnDefinition("iv", PostgresDatatype.BYTEA).notNull()
-        @JvmField val CIPHERTEXT = PostgresColumnDefinition("ciphertext", PostgresDatatype.BYTEA).notNull()
-        @JvmField val SAMPLE_COUNT = PostgresColumnDefinition("sample_count", PostgresDatatype.INTEGER).notNull().withDefault("0")
-        @JvmField val CONTENT_HASH = PostgresColumnDefinition("content_hash", PostgresDatatype.BYTEA).notNull()
-
         @JvmField val AVAILABLE_SENSORS = PostgresColumnDefinition("available_sensors", PostgresDatatype.TEXT_ARRAY).notNull().withDefault("'{}'")
-        @JvmField val UNAVAILABLE_SENSORS = PostgresColumnDefinition("unavailable_sensors", PostgresDatatype.TEXT_ARRAY).notNull().withDefault("'{}'")
         // Static display context reported alongside sensor availability (nullable; older clients omit).
         @JvmField val SCREEN_WIDTH_PIXELS = PostgresColumnDefinition("screen_width_pixels", PostgresDatatype.INTEGER)
         @JvmField val SCREEN_HEIGHT_PIXELS = PostgresColumnDefinition("screen_height_pixels", PostgresDatatype.INTEGER)
@@ -350,13 +336,6 @@ public class PostgresColumns private constructor() {
         @JvmField val PARTICIPANT_NOTES = PostgresColumnDefinition("participant_notes", PostgresDatatype.TEXT)
         @JvmField val PARTICIPANT_TAGS = PostgresColumnDefinition("participant_tags", PostgresDatatype.TEXT_ARRAY).withDefault("'{}'")
 
-        @JvmField val EXPORT_ID = PostgresColumnDefinition("export_id", PostgresDatatype.UUID).notNull()
-        @JvmField val REQUEST = PostgresColumnDefinition("request", PostgresDatatype.JSONB).notNull().withDefault("'{}'::jsonb")
-        @JvmField val DOWNLOAD_TOKEN = PostgresColumnDefinition("download_token", PostgresDatatype.TEXT).unique()
-        @JvmField val ROW_COUNT = PostgresColumnDefinition("row_count", PostgresDatatype.BIGINT).notNull().withDefault("0")
-        @JvmField val ERROR_MESSAGE = PostgresColumnDefinition("error_message", PostgresDatatype.TEXT)
-        @JvmField val FILE_PATH = PostgresColumnDefinition("file_path", PostgresDatatype.TEXT)
-        @JvmField val FORMAT = PostgresColumnDefinition("format", PostgresDatatype.TEXT).notNull()
 
         @JvmField val KEY_ID = PostgresColumnDefinition("key_id", PostgresDatatype.UUID).notNull()
         @JvmField val KEY_HASH = PostgresColumnDefinition("key_hash", PostgresDatatype.TEXT).notNull()
@@ -394,13 +373,15 @@ public class PostgresColumns private constructor() {
         @JvmField val CHANGE_SUMMARY = PostgresColumnDefinition("change_summary", PostgresDatatype.TEXT).notNull()
         @JvmField val CHANGED_AT = PostgresColumnDefinition("changed_at", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("now()")
 
-        // Participant collection-acknowledgment trail (collection loop closure §5.3).
-        @JvmField val SOURCE_DEVICE_ID = PostgresColumnDefinition("source_device_id", PostgresDatatype.TEXT).notNull()
+        // Participant collection-acknowledgment trail.
+        @JvmField val SOURCE_RANDOM_DEVICE_ID = PostgresColumnDefinition("source_random_device_id", PostgresDatatype.TEXT).notNull()
         @JvmField val ACKNOWLEDGED_MODULES = PostgresColumnDefinition("acknowledged_modules", PostgresDatatype.JSONB).notNull()
         @JvmField val ACKNOWLEDGED_AT = PostgresColumnDefinition("acknowledged_at", PostgresDatatype.TIMESTAMPTZ).notNull()
         @JvmField val RECORDED_AT = PostgresColumnDefinition("recorded_at", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("now()")
         @JvmField val APP_VERSION = PostgresColumnDefinition("app_version", PostgresDatatype.TEXT)
         @JvmField val SETTINGS_VERSION = PostgresColumnDefinition("settings_version", PostgresDatatype.INTEGER)
+        /** The phone's per-enrollment decision counter; orders decisions and identifies a retried acknowledgment. */
+        @JvmField val DECISION_SEQ = PostgresColumnDefinition("decision_seq", PostgresDatatype.BIGINT).notNull()
         @JvmField val DISCLOSURE_VERSION = PostgresColumnDefinition("disclosure_version", PostgresDatatype.TEXT)
         @JvmField val MANIFEST_DIGEST = PostgresColumnDefinition("manifest_digest", PostgresDatatype.TEXT)
         @JvmField val UNAVAILABLE_MODULES =
@@ -411,7 +392,7 @@ public class PostgresColumns private constructor() {
         @JvmField val EVIDENCE_API_KEY_ID =
             PostgresColumnDefinition("evidence_api_key_id", PostgresDatatype.UUID)
 
-        // Per-module consent (design §3.3): the declined set + what triggered the decision.
+        // Per-module consent: the declined set + what triggered the decision.
         @JvmField val DECLINED_MODULES =
             PostgresColumnDefinition("declined_modules", PostgresDatatype.JSONB)
                 .notNull().withDefault("'[]'::jsonb")
@@ -419,11 +400,6 @@ public class PostgresColumns private constructor() {
             PostgresColumnDefinition("collection_trigger", PostgresDatatype.TEXT)
                 .notNull().withDefault("'ENROLLMENT'")
 
-        @JvmField val SCOPE_TYPE = PostgresColumnDefinition("scope_type", PostgresDatatype.TEXT).notNull()
-        @JvmField val SCOPE_ID = PostgresColumnDefinition("scope_id", PostgresDatatype.UUID).notNull()
-        @JvmField val ROLE_NAME = PostgresColumnDefinition("role_name", PostgresDatatype.TEXT).notNull()
-        @JvmField val ASSIGNED_BY = PostgresColumnDefinition("assigned_by", PostgresDatatype.TEXT).notNull()
-        @JvmField val ASSIGNED_AT = PostgresColumnDefinition("assigned_at", PostgresDatatype.TIMESTAMPTZ).notNull().withDefault("now()")
 
         public val columnTypes : Map<String, PostgresDatatype> = postgresColumns().associate { it.name to it.datatype }
 

@@ -29,29 +29,32 @@ public open class StorageResolver constructor(
     private var studyStorage: IMap<UUID, Study>? = null
     private val validatedEventStorages = ConcurrentHashMap.newKeySet<String>()
     private val loggedPlatformReadFallback = AtomicBoolean(false)
+    internal val databaseRoles = RuntimeDatabaseRoles(dataSourceManager, storageConfiguration)
 
     private companion object {
         private val logger = LoggerFactory.getLogger(StorageResolver::class.java)
     }
 
     public fun associateStudyWithStorage(studyId: UUID, storage: String = ChronicleStorage.CHRONICLE.id) {
-        requireDeletionStorageColocated(storage, getDataSource(storage).second)
+        requireDeletionStorageColocated(storage)
         checkNotNull(studyStorage) { "Study storage map has not been initialized" }
             .executeOnKey(studyId, StudyStorageUpdate(storage))
     }
 
     public fun resolve(studyId: UUID, requiredFlavor: PostgresFlavor = PostgresFlavor.VANILLA): HikariDataSource {
-        val (flavor, hds) = resolveAndGetFlavor(studyId)
+        val storage = resolveAndGetFlavor(studyId)
+        val flavor = storage.flavor
+        val hds = storage.dataSource
         check(flavor == PostgresFlavor.ANY || flavor == requiredFlavor) { "Configured flavor $flavor does not much required flavor $requiredFlavor" }
         return hds
     }
 
-    public fun resolveAndGetFlavor(studyId: UUID): Pair<PostgresFlavor, HikariDataSource> {
+    public fun resolveAndGetFlavor(studyId: UUID): ResolvedStorage {
         val dataSourceName = resolveDataSourceName(studyId)
         val resolved = getDataSource(dataSourceName)
         if (validatedEventStorages.add(dataSourceName)) {
             try {
-                requireDeletionStorageColocated(resolved.second)
+                requireDeletionStorageColocated(rawRuntimeStorage(dataSourceName))
             } catch (exception: Exception) {
                 validatedEventStorages.remove(dataSourceName)
                 throw exception
@@ -62,6 +65,7 @@ public open class StorageResolver constructor(
 
     public fun resolveDataSourceName(studyId: UUID): String {
         if (studyStorage != null) {
+            databaseRoles.requireRuntimeAlias(storageConfiguration.platformStorage)
             val platform = dataSourceManager.getDataSource(storageConfiguration.platformStorage)
             val owner = PinnedPlatformConnection.activeConnection(platform)
             if (owner != null) {
@@ -82,18 +86,24 @@ public open class StorageResolver constructor(
         return studyIds.groupBy { resolveDataSourceName(it) }
     }
 
-    public fun getDataSource(dataSourceName: String): Pair<PostgresFlavor, HikariDataSource> {
-        return dataSourceManager.getFlavor(dataSourceName) to rlsAware(dataSourceManager.getDataSource(dataSourceName))
+    public fun getDataSource(dataSourceName: String): ResolvedStorage {
+        val runtime = rawRuntimeStorage(dataSourceName)
+        return ResolvedStorage(dataSourceManager.getFlavor(dataSourceName), PinnedPlatformConnection.resolve(runtime))
     }
 
-    public fun getAuditStorage(): Pair<PostgresFlavor, HikariDataSource> {
-        return with(dataSourceManager) {
-            getFlavor(storageConfiguration.auditStorage) to rlsAware(getDataSource(storageConfiguration.auditStorage))
-        }
+    private fun rawRuntimeStorage(dataSourceName: String): HikariDataSource {
+        databaseRoles.requireRuntimeAlias(dataSourceName)
+        return rlsAware(dataSourceManager.getDataSource(dataSourceName))
+    }
+
+    public fun getAuditStorage(): ResolvedStorage {
+        return getDataSource(storageConfiguration.auditStorage)
     }
 
     public fun getEventStorageWithFlavor(requiredFlavor: PostgresFlavor = PostgresFlavor.VANILLA): HikariDataSource {
-        val (flavor, hds) = getDefaultEventStorage()
+        val storage = getDefaultEventStorage()
+        val flavor = storage.flavor
+        val hds = storage.dataSource
         check(flavor == PostgresFlavor.ANY || flavor == requiredFlavor) { "Configured flavor $flavor does not match required flavor $requiredFlavor" }
         // Distinct pools in a verified colocated database must materialize on the study-fence
         // owner. A second connection can queue behind an eraser that is waiting for this owner.
@@ -113,13 +123,17 @@ public open class StorageResolver constructor(
      * (lock, re-evaluate predicate, write) commits as one unit on one pooled connection.
      */
     public open fun getPlatformStorage(requiredFlavor: PostgresFlavor = PostgresFlavor.VANILLA): HikariDataSource {
-        val (flavor, hds) = getDefaultPlatformStorage()
+        val storage = getDefaultPlatformStorage()
+        val flavor = storage.flavor
+        val hds = storage.dataSource
         check(flavor == PostgresFlavor.ANY || flavor == requiredFlavor) { "Configured flavor $flavor does not match required flavor $requiredFlavor" }
         return PinnedPlatformConnection.resolve(hds)
     }
 
     public fun getPlatformReadStorage(requiredFlavor: PostgresFlavor = PostgresFlavor.VANILLA) : HikariDataSource {
-        val (flavor, hds) =  getDefaultPlatformReadStorage()
+        val storage = getDefaultPlatformReadStorage()
+        val flavor = storage.flavor
+        val hds = storage.dataSource
         check(flavor == PostgresFlavor.ANY || flavor == requiredFlavor) { "Configured flavor $flavor does not match required flavor $requiredFlavor" }
         return hds
     }
@@ -131,8 +145,8 @@ public open class StorageResolver constructor(
      * *read-replica* endpoint: it exists so deep export/download queueing does not compete with the
      * website on the primary. Single-database deployments — the self-host bundle, the Docker
      * compose stack and the k8s base config — have no replica and therefore register no
-     * `platform_read` datasource at all, so every read through this method used to die with
-     * `NoSuchElementException: Key platform_read is missing in the map`, taking down full-study
+     * `platform_read` datasource at all; a strict lookup would fail every read through this method
+     * with `NoSuchElementException: Key platform_read is missing in the map`, taking down full-study
      * export and every Time Use Diary read with it.
      *
      * When the configured read datasource is not registered we fall back to the platform (write)
@@ -143,7 +157,7 @@ public open class StorageResolver constructor(
      * the same pool the write path already uses under the same role, so study isolation is
      * identical — the only thing given up is replica offloading, which does not exist here.
      */
-    public fun getDefaultPlatformReadStorage(): Pair<PostgresFlavor, HikariDataSource> {
+    public fun getDefaultPlatformReadStorage(): ResolvedStorage {
         val configured = storageConfiguration.platformReadStorage
         val resolved = if (isDataSourceRegistered(configured)) {
             configured
@@ -166,23 +180,21 @@ public open class StorageResolver constructor(
             }
             fallback
         }
-        return with(dataSourceManager) {
-            getFlavor(resolved) to rlsAware(getDataSource(resolved))
-        }
+        return getDataSource(resolved)
     }
 
     private fun isDataSourceRegistered(name: String): Boolean = dataSourceManager.dataSources.containsKey(name)
 
-    public fun getDefaultPlatformStorage(): Pair<PostgresFlavor, HikariDataSource> {
-        return with(dataSourceManager) {
-            getFlavor(storageConfiguration.platformStorage) to rlsAware(getDataSource(storageConfiguration.platformStorage))
-        }
+    /** Privileged bootstrap is a separate configured pool, never a runtime fallback. */
+    internal fun getBootstrapStorage(): HikariDataSource =
+        PinnedPlatformConnection.resolve(dataSourceManager.getDataSource(storageConfiguration.bootstrapStorage))
+
+    public fun getDefaultPlatformStorage(): ResolvedStorage {
+        return getDataSource(storageConfiguration.platformStorage)
     }
 
-    public fun getDefaultEventStorage(): Pair<PostgresFlavor, HikariDataSource> {
-        return with(dataSourceManager) {
-            getFlavor(storageConfiguration.defaultEventStorage) to rlsAware(getDataSource(storageConfiguration.defaultEventStorage))
-        }
+    public fun getDefaultEventStorage(): ResolvedStorage {
+        return getDataSource(storageConfiguration.defaultEventStorage)
     }
 
     /**
@@ -192,7 +204,7 @@ public open class StorageResolver constructor(
      * datastore.
      */
     public fun requireDefaultDeletionStorageColocated() {
-        requireDeletionStorageColocated(storageConfiguration.defaultEventStorage, getDefaultEventStorage().second)
+        requireDeletionStorageColocated(storageConfiguration.defaultEventStorage)
     }
 
     /**
@@ -202,18 +214,15 @@ public open class StorageResolver constructor(
      */
     public fun requireDeletionStorageColocated(studyId: UUID) {
         val dataSourceName = resolveDataSourceName(studyId)
-        requireDeletionStorageColocated(dataSourceName, getDataSource(dataSourceName).second)
+        requireDeletionStorageColocated(dataSourceName)
     }
 
     public fun setStudyStorage( hazelcastInstance: HazelcastInstance ) {
         studyStorage = HazelcastMap.STUDIES.getMap(hazelcastInstance)
     }
 
-    private fun requireDeletionStorageColocated(
-        dataSourceName: String,
-        eventStorage: HikariDataSource,
-    ) {
-        requireDeletionStorageColocated(eventStorage)
+    private fun requireDeletionStorageColocated(dataSourceName: String) {
+        requireDeletionStorageColocated(rawRuntimeStorage(dataSourceName))
         validatedEventStorages.add(dataSourceName)
     }
 
@@ -233,42 +242,32 @@ public open class StorageResolver constructor(
         eventConnection: Connection,
         probeKey: Long,
     ) {
-        val platformAutoCommit = platformConnection.autoCommit
-        val eventAutoCommit = eventConnection.autoCommit
-        try {
-            platformConnection.autoCommit = false
-            eventConnection.autoCommit = false
-            val platformIdentity = readStorageIdentity(platformConnection)
-            val eventIdentity = readStorageIdentity(eventConnection)
-            check(platformIdentity == eventIdentity) {
-                "Verified deletion requires platform and event storage to use the same PostgreSQL database and schema search path"
-            }
+        platformConnection.withTransaction(rollbackOnSuccess = true) {
+            eventConnection.withTransaction(rollbackOnSuccess = true) {
+                val platformIdentity = readStorageIdentity(platformConnection)
+                val eventIdentity = readStorageIdentity(eventConnection)
+                check(platformIdentity == eventIdentity) {
+                    "Verified deletion requires platform and event storage to use the same PostgreSQL database and schema search path"
+                }
 
-            platformConnection.prepareStatement("SELECT pg_advisory_xact_lock(?)").use { statement ->
-                statement.setLong(1, probeKey)
-                statement.executeQuery().use { resultSet ->
-                    check(resultSet.next()) { "PostgreSQL did not acquire the deletion topology probe lock" }
+                platformConnection.prepareStatement("SELECT pg_advisory_xact_lock(?)").use { statement ->
+                    statement.setLong(1, probeKey)
+                    statement.executeQuery().use { resultSet ->
+                        check(resultSet.next()) { "PostgreSQL did not acquire the deletion topology probe lock" }
+                    }
                 }
-            }
-            val secondConnectionAcquired = eventConnection.prepareStatement(
-                "SELECT pg_try_advisory_xact_lock(?)",
-            ).use { statement ->
-                statement.setLong(1, probeKey)
-                statement.executeQuery().use { resultSet ->
-                    check(resultSet.next()) { "PostgreSQL did not return a deletion topology probe result" }
-                    resultSet.getBoolean(1)
+                val secondConnectionAcquired = eventConnection.prepareStatement(
+                    "SELECT pg_try_advisory_xact_lock(?)",
+                ).use { statement ->
+                    statement.setLong(1, probeKey)
+                    statement.executeQuery().use { resultSet ->
+                        check(resultSet.next()) { "PostgreSQL did not return a deletion topology probe result" }
+                        resultSet.getBoolean(1)
+                    }
                 }
-            }
-            check(!secondConnectionAcquired) {
-                "Verified deletion requires platform and event storage to share one PostgreSQL advisory-lock domain"
-            }
-        } finally {
-            try {
-                eventConnection.rollback()
-            } finally {
-                platformConnection.rollback()
-                eventConnection.autoCommit = eventAutoCommit
-                platformConnection.autoCommit = platformAutoCommit
+                check(!secondConnectionAcquired) {
+                    "Verified deletion requires platform and event storage to share one PostgreSQL advisory-lock domain"
+                }
             }
         }
     }

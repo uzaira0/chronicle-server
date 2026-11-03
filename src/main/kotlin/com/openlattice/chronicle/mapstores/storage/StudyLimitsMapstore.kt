@@ -1,7 +1,6 @@
 package com.openlattice.chronicle.mapstores.storage
 
 import com.geekbeast.mappers.mappers.ObjectMappers
-import com.geekbeast.postgres.PostgresArrays
 import com.geekbeast.postgres.mapstores.AbstractBasePostgresMapstore
 import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.postgres.ResultSetAdapters
@@ -29,13 +28,11 @@ public open class StudyLimitsMapstore(hds: HikariDataSource) :
             .setInitialLoadMode(MapStoreConfig.InitialLoadMode.LAZY)
     }
     override fun bind(ps: PreparedStatement, key: UUID, value: StudyLimits) {
-        var index = bind(ps, key, 1)
-        ps.setObject(index, value.participantLimit)
-        ps.setObject(index + 1, mapper.writeValueAsString(value.studyDuration))
-        ps.setObject(index + 2, mapper.writeValueAsString(value.dataRetentionDuration))
-        ps.setObject(index+ 3, value.studyEnds)
-        ps.setObject(index+ 4, value.studyDataExpires)
-        ps.setArray(index + 5, PostgresArrays.createTextArray(ps.connection, value.features.map { it.name }))
+        val index = bind(ps, key, 1)
+        ps.setObject(index, value.studyDuration?.let(mapper::writeValueAsString))
+        ps.setObject(index + 1, mapper.writeValueAsString(value.dataRetentionDuration))
+        ps.setObject(index + 2, value.studyEnds)
+        ps.setObject(index + 3, value.studyDataExpires)
     }
 
     override fun mapToKey(rs: ResultSet): UUID = rs.getObject(STUDY_ID.name, UUID::class.java)

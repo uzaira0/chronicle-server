@@ -1,9 +1,14 @@
 package com.openlattice.chronicle.storage.rls
 
+import com.openlattice.chronicle.storage.withFailureCleanup
 import com.zaxxer.hikari.HikariDataSource
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
+import com.openlattice.chronicle.util.SqlFailures
+import com.openlattice.chronicle.util.sqlCause
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.sql.Connection
 import java.sql.SQLException
@@ -12,19 +17,29 @@ import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
+/** Receipt ownership distinguishes user subjects from API-key credentials with equal raw ids. */
+public enum class ReceiptOwnerKind { USER, API_KEY }
+
 public data class RLSConnectionContext(
     val principalId: String,
     val authorizedStudyIds: Set<UUID>,
     val isAdmin: Boolean,
     val authorizedOrganizationIds: Set<UUID> = emptySet(),
+    val isDeletionWorker: Boolean = false,
+    val receiptOwnerKind: ReceiptOwnerKind? = null,
 ) {
+    public val authorizedOrganizationsCsv: String = authorizedOrganizationIds.joinToString(",") { it.toString() }
     public val authorizedStudiesCsv: String = authorizedStudyIds.joinToString(",") { it.toString() }
-    public val authorizedOrgsCsv: String = authorizedOrganizationIds.joinToString(",") { it.toString() }
 }
 
 public object RLSRequestContext {
     private val currentContext = ThreadLocal<RLSConnectionContext?>()
-    private val systemContext = RLSConnectionContext(
+    internal val anonymousContext = RLSConnectionContext(
+        principalId = "",
+        authorizedStudyIds = emptySet(),
+        isAdmin = false,
+    )
+    internal val systemContext = RLSConnectionContext(
         principalId = "chronicle-background",
         authorizedStudyIds = emptySet(),
         isAdmin = true,
@@ -33,6 +48,7 @@ public object RLSRequestContext {
         principalId = RLSConnectionCustomizer.DELETION_WORKER_ID,
         authorizedStudyIds = emptySet(),
         isAdmin = true,
+        isDeletionWorker = true,
     )
 
     public fun current(): RLSConnectionContext? = currentContext.get()
@@ -68,29 +84,7 @@ public object RLSRequestContext {
         return withContext(deletionWorkerContext, block)
     }
 
-    /**
-     * Runs one asynchronous export with the same least-privilege study boundary
-     * as the request that created it. Executor threads do not inherit servlet
-     * ThreadLocals, so leaving this implicit would make the pool owner bypass
-     * study and deletion-quarantine RLS policies.
-     */
-    public fun <T> withExportWorkerContext(
-        principalId: String,
-        studyId: UUID,
-        block: () -> T,
-    ): T {
-        require(principalId.isNotBlank()) { "Export worker principal must not be blank" }
-        return withContext(
-            RLSConnectionContext(
-                principalId = principalId,
-                authorizedStudyIds = setOf(studyId),
-                isAdmin = false,
-            ),
-            block,
-        )
-    }
-
-    private fun <T> withContext(context: RLSConnectionContext, block: () -> T): T {
+    public fun <T> withContext(context: RLSConnectionContext, block: () -> T): T {
         val previous = currentContext.get()
         currentContext.set(context)
         return try {
@@ -111,22 +105,18 @@ public object RLSDataSources {
     private val ROLE_IDENTIFIER = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
 
     /**
-     * Non-superuser Postgres role the request path drops to (via `SET ROLE`) before
-     * running any query, restoring the pool's authenticated role (`RESET ROLE`) on
-     * return. This is what makes Row-Level Security and the role-level audit-immutability
-     * REVOKEs actually take effect: the connection pool authenticates as the
-     * owner/superuser `chronicle` (required for schema bootstrap and the upgrade
-     * runner), and PostgreSQL lets a superuser bypass RLS entirely — so without this
-     * drop every per-request `app.authorized_studies` setting is silently inert.
+     * Non-superuser Postgres role applied via `SET ROLE` before request queries,
+     * restoring the pool's authenticated role (`RESET ROLE`) on return. Runtime pools
+     * authenticate with a restricted login validated at startup; schema bootstrap and
+     * upgrades use a separate owner pool. RESET ROLE cannot regain owner privileges.
      *
-     * `SET ROLE` only fires when a request context is present, so the bootstrap and
-     * upgrade paths (which run with no [RLSRequestContext]) keep full privileges.
+     * Every borrow drops privileges, including anonymous requests. Bootstrap and
+     * upgrades use their raw datasource; trusted workers install an explicit system context.
      *
-     * Control-plane *creation* flows (study / candidate / organization) are made
-     * RLS-correct by V28 (`ControlPlaneInsertRlsUpgrade`), which splits the creation-path
-     * policies so INSERT is permissive while SELECT/UPDATE/DELETE stay study-isolated — so
-     * this drop is engaged by default. Set to `null` to disable (e.g. an environment whose
-     * pool already authenticates as the restricted role). Validated as a SQL identifier.
+     * Creation flows authorize their new study/organization ID inside the creating transaction.
+     * Candidate INSERT has its registration policy; linked-candidate writes remain study scoped.
+     * Set to `null` when the pool already authenticates as the restricted role.
+     * Validated as a SQL identifier.
      */
     @Volatile
     @set:SuppressFBWarnings(
@@ -153,6 +143,10 @@ public object RLSDataSources {
     internal fun wrapUncachedRequestScoped(hds: HikariDataSource): HikariDataSource =
         RLSAwareHikariDataSource(hds, RLSRequestContext::current)
 
+    /** Explicit bootstrap owners may use the raw pool while retaining their active coordination pin. */
+    internal fun bootstrapStorage(dataSource: HikariDataSource): HikariDataSource =
+        PinnedPlatformConnection.resolve(poolDelegate(dataSource))
+
     /** Compares the actual pool beneath request/system wrappers, including configured aliases. */
     internal fun samePool(first: HikariDataSource, second: HikariDataSource): Boolean =
         poolDelegate(first) === poolDelegate(second)
@@ -173,13 +167,7 @@ public object RLSDataSources {
      */
     public fun wrapWithSystemContext(hds: HikariDataSource): HikariDataSource {
         return systemWrappers.getOrPut(hds) {
-            RLSAwareHikariDataSource(hds) {
-                RLSConnectionContext(
-                    principalId = "chronicle-background",
-                    authorizedStudyIds = emptySet(),
-                    isAdmin = true,
-                )
-            }
+            RLSAwareHikariDataSource(hds) { RLSRequestContext.systemContext }
         }
     }
 }
@@ -189,43 +177,19 @@ private class RLSAwareHikariDataSource(
     private val contextProvider: () -> RLSConnectionContext?,
 ) : HikariDataSource() {
 
-    // reason: resource-cleanup boundary — any failure applying the RLS context must evict the
-    // tainted connection rather than return it to the pool; both branches rethrow unchanged
-    @Suppress("TooGenericExceptionCaught")
-    override fun getConnection(): Connection {
-        val connection = delegate.connection
-        val context = contextProvider() ?: return connection
-        return try {
-            RLSConnectionSql.applyContext(connection, context)
-            rlsAwareConnection(connection, delegate)
-        } catch (e: SQLException) {
-            delegate.evictConnection(connection)
-            connection.close()
-            throw e
-        } catch (e: RuntimeException) {
-            delegate.evictConnection(connection)
-            connection.close()
-            throw e
-        }
-    }
+    override fun getConnection(): Connection = applyContext(delegate.connection)
 
-    // reason: resource-cleanup boundary — any failure applying the RLS context must evict the
-    // tainted connection rather than return it to the pool; both branches rethrow unchanged
+    override fun getConnection(username: String?, password: String?): Connection =
+        applyContext(delegate.getConnection(username, password))
+
+    // A failed context application must never return a privileged connection to a request.
     @Suppress("TooGenericExceptionCaught")
-    override fun getConnection(username: String?, password: String?): Connection {
-        val connection = delegate.getConnection(username, password)
-        val context = contextProvider() ?: return connection
-        return try {
-            RLSConnectionSql.applyContext(connection, context)
-            rlsAwareConnection(connection, delegate)
-        } catch (e: SQLException) {
-            delegate.evictConnection(connection)
-            connection.close()
-            throw e
-        } catch (e: RuntimeException) {
-            delegate.evictConnection(connection)
-            connection.close()
-            throw e
+    private fun applyContext(connection: Connection): Connection = try {
+        RLSConnectionSql.applyContext(connection, contextProvider() ?: RLSRequestContext.anonymousContext)
+        rlsAwareConnection(connection, delegate)
+    } catch (exception: Exception) {
+        withFailureCleanup(connection::close) {
+            withFailureCleanup({ delegate.evictConnection(connection) }) { throw exception }
         }
     }
 
@@ -237,13 +201,15 @@ private class RLSAwareHikariDataSource(
 
     override fun isRunning(): Boolean = delegate.isRunning
 
+    /**
+     * Hikari evicts only its own proxy connections, so evicting an RLS proxy through the inherited method (or after
+     * unwrapping it, which yields the proxy again) did nothing. A wrapper around this one (MapstoresPod and
+     * ParticipantStatsCache wrap the request-scoped platform pool in a system wrapper) evicts through here when its
+     * context cannot be applied or cleared; the physical connection beneath the proxy must leave the real pool.
+     */
     override fun evictConnection(connection: Connection) {
-        val unwrapped = try {
-            connection.unwrap(Connection::class.java)
-        } catch (_: SQLException) {
-            connection
-        }
-        delegate.evictConnection(unwrapped)
+        val handler = if (Proxy.isProxyClass(connection.javaClass)) Proxy.getInvocationHandler(connection) else null
+        if (handler is RLSConnectionHandler) handler.evict() else delegate.evictConnection(connection)
     }
 
     override fun <T : Any?> unwrap(iface: Class<T>?): T {
@@ -267,7 +233,9 @@ internal object RLSConnectionSql {
             set_config('app.current_user_id', ?, false),
             set_config('app.authorized_studies', ?, false),
             set_config('app.is_admin', ?, false),
-            set_config('app.authorized_orgs', ?, false)
+            set_config('app.authorized_organizations', ?, false),
+            set_config('app.is_deletion_worker', ?, false),
+            set_config('app.receipt_owner_kind', ?, false)
     """
 
     private const val CLEAR_RLS_CONTEXT_SQL = """
@@ -275,21 +243,43 @@ internal object RLSConnectionSql {
             set_config('app.current_user_id', '', false),
             set_config('app.authorized_studies', '', false),
             set_config('app.is_admin', 'false', false),
-            set_config('app.authorized_orgs', '', false)
+            set_config('app.authorized_organizations', '', false),
+            set_config('app.is_deletion_worker', 'false', false),
+            set_config('app.receipt_owner_kind', '', false)
     """
+
+    fun readSetting(connection: Connection, setting: String): String =
+        connection.prepareStatement("SELECT coalesce(current_setting(?, true), '')").use { statement ->
+            statement.setString(1, setting)
+            statement.executeQuery().use { resultSet ->
+                if (resultSet.next()) resultSet.getString(1) ?: "" else ""
+            }
+        }
+
+    fun authorizeCreatedObject(connection: Connection, setting: String, id: UUID) {
+        check(!connection.autoCommit) { "A created object is authorized only inside its creating transaction" }
+        connection.prepareStatement(
+            "SELECT set_config(?, concat_ws(',', NULLIF(current_setting(?, true), ''), ?), true)",
+        ).use { statement ->
+            statement.setString(1, setting)
+            statement.setString(2, setting)
+            statement.setString(3, id.toString())
+            statement.execute()
+        }
+    }
 
     fun applyContext(connection: Connection, context: RLSConnectionContext) {
         connection.prepareStatement(SET_RLS_CONTEXT_SQL).use { stmt ->
             stmt.setString(1, context.principalId)
             stmt.setString(2, context.authorizedStudiesCsv)
             stmt.setString(3, context.isAdmin.toString())
-            stmt.setString(4, context.authorizedOrgsCsv)
+            stmt.setString(4, context.authorizedOrganizationsCsv)
+            stmt.setString(5, context.isDeletionWorker.toString())
+            stmt.setString(6, context.receiptOwnerKind?.name.orEmpty())
             stmt.execute()
         }
-        // Drop to the non-superuser application role so the RLS policies and the
-        // role-level REVOKEs (audit immutability) actually engage on this request.
-        // The pool authenticates as the owner/superuser, which bypasses RLS, so the
-        // context set above does nothing without this. RESET ROLE happens in clear().
+        // Apply the application role consistently, including anonymous borrows.
+        // Runtime logins are also restricted; RESET ROLE in clear() cannot elevate them.
         RLSDataSources.appRole?.let { role ->
             connection.createStatement().use { stmt -> stmt.execute("SET ROLE \"$role\"") }
         }
@@ -313,13 +303,31 @@ internal object RLSConnectionSql {
     }
 }
 
+private fun rlsAwareConnection(connection: Connection, hds: HikariDataSource): Connection =
+    Proxy.newProxyInstance(
+        Connection::class.java.classLoader,
+        arrayOf(Connection::class.java),
+        RLSConnectionHandler(connection, hds),
+    ) as Connection
+
 // reason: security-critical JDBC proxy dispatch; the when-over-method-name branching is the
-// minimal correct form and must not be restructured (closure over connection/closed/hds).
+// minimal correct form and must not be restructured (the handler owns connection/closed/hds).
 // SpreadOperator: java.lang.reflect.Method.invoke is a vararg reflection API requiring spread.
-@Suppress("CyclomaticComplexMethod", "SpreadOperator")
-private fun rlsAwareConnection(connection: Connection, hds: HikariDataSource): Connection {
-    val closed = AtomicBoolean(false)
-    val handler = InvocationHandler { proxy, method, args ->
+@Suppress("SpreadOperator")
+private class RLSConnectionHandler(
+    private val connection: Connection,
+    private val hds: HikariDataSource,
+) : InvocationHandler {
+    private val closed = AtomicBoolean(false)
+
+    /** Removes the physical connection from its pool without the RLS reset a broken session cannot run. */
+    fun evict() {
+        if (closed.compareAndSet(false, true)) {
+            withFailureCleanup(connection::close) { hds.evictConnection(connection) }
+        }
+    }
+
+    override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? =
         when (method.name) {
             "close" -> {
                 if (closed.compareAndSet(false, true)) {
@@ -348,17 +356,10 @@ private fun rlsAwareConnection(connection: Connection, hds: HikariDataSource): C
                 throw e.targetException
             }
         }
-    }
-
-    return Proxy.newProxyInstance(
-        Connection::class.java.classLoader,
-        arrayOf(Connection::class.java),
-        handler
-    ) as Connection
 }
 
 // reason: resource-cleanup boundary — any failure resetting/clearing the connection must evict
-// it and surface as a single wrapped SQLException; e is chained into the rethrow
+// it and surface a safe SQLException that retains retry classification.
 @Suppress("TooGenericExceptionCaught")
 private fun clearAndClose(connection: Connection, hds: HikariDataSource) {
     try {
@@ -369,7 +370,9 @@ private fun clearAndClose(connection: Connection, hds: HikariDataSource) {
         RLSConnectionSql.clear(connection)
         connection.close()
     } catch (e: Exception) {
-        hds.evictConnection(connection)
-        throw SQLException("Failed to clear RLS context before returning connection to pool", e)
+        val failure = e.sqlCause()?.let(SqlFailures::sanitize)
+        withFailureCleanup({ hds.evictConnection(connection) }) {
+            throw SQLException("Failed to clear RLS context before returning connection to pool", failure?.sqlState, failure)
+        }
     }
 }

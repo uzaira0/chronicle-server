@@ -52,12 +52,12 @@ class PlatformReadStorageFallbackTest {
             ChronicleStorage.CHRONICLE.id to platformDataSource,
         )
 
-        val (flavor, hds) = resolver.getDefaultPlatformReadStorage()
+        val storage = resolver.getDefaultPlatformReadStorage()
 
-        assertEquals(PostgresFlavor.VANILLA, flavor)
+        assertEquals(PostgresFlavor.VANILLA, storage.flavor)
         // The resolved datasource is the RLS wrapper around the platform pool, which is exactly
         // what getDefaultPlatformStorage hands out, so reads run under the same chronicle_app role.
-        assertSame(resolver.getDefaultPlatformStorage().second, hds)
+        assertSame(resolver.getDefaultPlatformStorage().dataSource, storage.dataSource)
     }
 
     @Test
@@ -67,9 +67,9 @@ class PlatformReadStorageFallbackTest {
             ChronicleStorage.PLATFORM_READ.id to replicaDataSource,
         )
 
-        val (_, hds) = resolver.getDefaultPlatformReadStorage()
+        val storage = resolver.getDefaultPlatformReadStorage()
 
-        assertNotSame(resolver.getDefaultPlatformStorage().second, hds)
+        assertNotSame(resolver.getDefaultPlatformStorage().dataSource, storage.dataSource)
     }
 
     @Test

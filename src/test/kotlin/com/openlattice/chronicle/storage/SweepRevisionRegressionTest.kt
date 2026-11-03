@@ -1,5 +1,8 @@
 package com.openlattice.chronicle.storage
 
+import com.openlattice.chronicle.collection.HealthConnectRecordType
+import com.openlattice.chronicle.contract.seedEnrolledParticipant
+
 import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.jdbc.DataSourceManager
 import com.hazelcast.core.HazelcastInstance
@@ -12,17 +15,15 @@ import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import com.openlattice.chronicle.hazelcast.processors.storage.StudyStorageRead
 import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.sensorkit.SensorDataSample
-import com.openlattice.chronicle.sensorkit.SensorType
-import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.studies.StudyManager
-import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.upload.AppDataUploadService
 import com.openlattice.chronicle.services.upload.AppNetworkUsageUploadService
+import com.openlattice.chronicle.services.studies.AuthorizedHealthScope
 import com.openlattice.chronicle.services.upload.HealthMetricsUploadService
-import com.openlattice.chronicle.services.upload.SensorDataUploadService
-import com.openlattice.chronicle.storage.tasks.MoveToEventStorageTaskDependencies
-import com.openlattice.chronicle.storage.tasks.MoveToIosEventStorageTask
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageEnvelope
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageRecord
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageRowKind
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageUploadService
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.study.Study
 import com.zaxxer.hikari.HikariConfig
@@ -41,7 +42,6 @@ import org.mockito.kotlin.timeout
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
-import java.lang.reflect.InvocationTargetException
 import java.time.OffsetDateTime
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -68,14 +68,20 @@ class SweepRevisionRegressionTest {
     }
 
     private fun seed(): UUID = UUID.randomUUID().also { study ->
-        postgres.createConnection("").use { c -> c.createStatement().use {
-            it.execute("INSERT INTO studies (study_id, title, storage) VALUES ('$study', 'revision', 'default')")
-        } }
+        postgres.createConnection("").use { connection ->
+            connection.createStatement().use {
+                it.execute("INSERT INTO studies (study_id, title, storage) VALUES ('$study', 'revision', 'default')")
+            }
+            seedEnrolledParticipant(connection, study, participant)
+        }
     }
 
     private fun cutoff(study: UUID) {
         postgres.createConnection("").use { c -> c.createStatement().use {
-            it.execute("INSERT INTO participant_purge_cutoffs VALUES ('$study', md5('$study:$participant'), '${old.plusDays(1)}')")
+            it.execute("""
+                INSERT INTO participant_purge_cutoffs VALUES
+                ('$study', chronicle_participant_block_token('$study'::uuid, '$participant'), '${old.plusDays(1)}')
+            """.trimIndent())
         } }
     }
 
@@ -90,29 +96,25 @@ class SweepRevisionRegressionTest {
             RLSRequestContext.withSystemContext {
                 val health = AndroidHealthMetricEvent("old-health", fresh, "UTC", HealthMetricType.STEPS, 1.0, "count",
                     old.toInstant().toEpochMilli(), old.toInstant().toEpochMilli())
-                HealthMetricsUploadService(storage).upload(study, participant, listOf(health,
+                HealthMetricsUploadService(storage).upload(
+                    AuthorizedHealthScope(study, participant, UUID.randomUUID(), HealthConnectRecordType.entries.toSet()), listOf(health,
                     health.copy(id = "fresh-health", startMillis = fresh.toInstant().toEpochMilli(), endMillis = fresh.toInstant().toEpochMilli())))
                 val network = AndroidAppNetworkUsageEvent("old-network", fresh, "UTC", "example.app", NetworkUsageType.WIFI, 1, 2,
                     old.toInstant().toEpochMilli(), old.plusHours(1).toInstant().toEpochMilli())
                 AppNetworkUsageUploadService(storage).upload(study, participant, listOf(network,
                     network.copy(id = "fresh-network", bucketStartMillis = fresh.toInstant().toEpochMilli(), bucketEndMillis = fresh.plusHours(
                         1).toInstant().toEpochMilli())))
-                val screen = sample().copy(sensor = SensorType.deviceUsage,
-                    data = """{"totalScreenWakes":1,"totalUnlocks":1,"totalUnlockDuration":1.0,"appUsage":{},"webUsage":{}}""",
-                    startDate = old, endDate = old.plusHours(1), dateRecorded = fresh)
-                SensorDataUploadService(storage, mock<StudyService>()).upload(study, participant, UUID.randomUUID(),
-                    listOf(screen, screen.copy(id = UUID.randomUUID(), startDate = fresh, endDate = fresh.plusHours(1))))
+                // Captured after the cutoff, but the first window was measured before it.
+                val screen = screenTime(start = old, capturedAt = fresh)
+                ScreenTimeUsageUploadService(storage).upload(study, participant, UUID.randomUUID(), screenTimeEnvelope(study,
+                    listOf(screen, screen.copy(id = UUID.randomUUID(), observationStart = fresh, observationEnd = fresh.plusHours(1)))))
             }
         }
         assertEquals(1, count(study, "health_metrics")); assertEquals(1, count(study, "app_network_usage"))
-        postgres.createConnection("").use { c -> c.createStatement().use {
-            it.executeQuery("SELECT jsonb_array_length(data) FROM upload_buffer WHERE study_id = '$study'").use { r -> assertTrue(r.next());
-                assertEquals(1, r.getInt(1)) }
-            it.execute("DELETE FROM upload_buffer WHERE study_id = '$study'")
-        } }
+        assertEquals(1, count(study, "ios_screen_time_usage"))
     }
 
-    @Test fun legacyStatsMergeStillHoldsTheAdmissionFence() {
+    @Test fun statsMergeHoldsTheAdmissionFence() {
         val study = seed()
         pool().use { p ->
             val storage = resolver(p); val studies = mock<StudyManager>()
@@ -126,7 +128,7 @@ class SweepRevisionRegressionTest {
                 } }
                 null
             }
-            val upload = AppDataUploadService(storage, mock<EnrollmentManager>(), studies)
+            val upload = AppDataUploadService(storage, studies)
             RLSRequestContext.withSystemContext {
                 upload.uploadAndroidUsageEvents(study, participant, UUID.randomUUID(), listOf(
                     com.openlattice.chronicle.android.ChronicleUsageEvent(studyId = study, participantId = participant,
@@ -172,8 +174,9 @@ class SweepRevisionRegressionTest {
                         try {
                             awaitBlocked("revision-eraser-$study")
                             storage.getEventStorageWithFlavor().connection.use { destination -> destination.createStatement().use {
-                                it.execute("""INSERT INTO sensor_data (study_id, participant_id, sensor_type, recordeddate, sample_id, sample_duration, device_version, device_name, device_model, device_system_name)
-                                    VALUES ('$study', '$participant', 'phoneUsage', '$fresh', '${UUID.randomUUID()}', 60, '26', 'test', 'iPhone', 'iOS')""")
+                                it.execute("""INSERT INTO chronicle_usage_events (study_id, participant_id, app_package_name, interaction_type,
+                                        event_type, event_timestamp, timezone, username, application_label)
+                                    VALUES ('$study', '$participant', 'com.example', 'Move to Foreground', 1, '$fresh', 'UTC', '', 'Example')""")
                             } }
                         } finally { owner.commit(); eraser.get(5, TimeUnit.SECONDS) }
                     }
@@ -181,43 +184,39 @@ class SweepRevisionRegressionTest {
             }
         } }
         executor.shutdownNow()
-        assertEquals(1, count(study, "sensor_data"))
+        assertEquals(1, count(study, "chronicle_usage_events"))
     }
 
     @Test fun drainCensusFencesAtMostOneBatchOfEligibleStudies() {
         val studies = List(300) { UUID.randomUUID() }
         postgres.createConnection("").use { c -> c.createStatement().use { s -> studies.forEach {
             s.execute(
-                "INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id) VALUES ('$it', '$participant', '[]', '2000-01-01', 'Ios', '${UUID.randomUUID()}')")
+                "INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, random_device_id) " +
+                    "VALUES ('$it', '$participant', '[]', '2000-01-01', 'Android', '${UUID.randomUUID()}')")
         } } }
         try {
             postgres.createConnection("").use { c -> c.autoCommit = false
                 try { assertTrue("Preparatory fences must be bounded by the 128-row claim", DeletionTableLockOrder.lockDrain(c,
-                    "sensor_data").size <= 128) }
+                    "chronicle_usage_events").size <= 128) }
                 finally { c.rollback() }
             }
         } finally { postgres.createConnection("").use { c -> c.createStatement().use { s -> studies.forEach { s.execute(
             "DELETE FROM upload_buffer WHERE study_id = '$it'") } } } }
     }
 
-    @Test fun iosDrainAggregatesStatsByParticipant() {
+    @Test fun screenTimeUploadMergesEveryCaptureDayIntoOneStatsRow() {
         val study = seed()
         pool().use { p ->
-            val storage = resolver(p); val studies = mock<StudyManager>()
-            val samples = List(100) { index -> sample().copy(dateRecorded = fresh.plusDays(index.toLong()),
-                startDate = fresh.plusDays(index.toLong()), endDate = fresh.plusDays(index.toLong()).plusSeconds(60)) }
-            RLSRequestContext.withSystemContext { SensorDataUploadService(storage, mock()).upload(study, participant, UUID.randomUUID(), samples) }
-            val deps = MoveToEventStorageTaskDependencies(storage, studies)
-            val task = object : MoveToIosEventStorageTask() { override fun getDependency() = deps }
+            val records = List(100) { index -> screenTime(start = fresh.plusDays(index.toLong()), capturedAt = fresh.plusDays(index.toLong())) }
             RLSRequestContext.withSystemContext {
-                try { MoveToIosEventStorageTask::class.java.getDeclaredMethod("moveToEventStorage").apply { isAccessible = true }.invoke(task) }
-                catch (e: InvocationTargetException) { throw e.targetException }
+                ScreenTimeUsageUploadService(resolver(p)).upload(study, participant, UUID.randomUUID(), screenTimeEnvelope(study, records))
             }
-            val updates = Mockito.mockingDetails(studies).invocations.filter { it.method.name == "insertOrUpdateParticipantStats" && (
-                it.arguments[0] as ParticipantStats).studyId == study }
-            assertEquals("One stats merge per participant", 1, updates.size)
-            assertEquals(100, (updates.single().arguments[0] as ParticipantStats).iosUniqueDates.size)
         }
+        postgres.createConnection("").use { c -> c.createStatement().use {
+            it.executeQuery("SELECT cardinality(ios_unique_dates) FROM participant_stats WHERE study_id = '$study'").use { r ->
+                assertTrue(r.next()); assertEquals(100, r.getInt(1)); assertFalse("One stats row per participant", r.next())
+            }
+        } }
     }
 
     @Test fun notificationEnqueuePassesAQueuedFinalizerInGlobalTableOrder() {
@@ -295,55 +294,15 @@ class SweepRevisionRegressionTest {
         }
     }
 
-    @Test fun scopedFlushDoesNotFenceAnotherStudysBacklog() {
-        val study = seed(); val foreign = seed(); val studies = mock<StudyManager>()
-        pool().use { p ->
-            val storage = resolver(p)
-            val upload = AppDataUploadService(storage, mock(), studies)
-            RLSRequestContext.withSystemContext { upload.uploadAndroidUsageEvents(study, participant, UUID.randomUUID(), listOf(
-                com.openlattice.chronicle.android.ChronicleUsageEvent(studyId = study, participantId = participant,
-                    appPackageName = "example.app", interactionType = "Move to Foreground", timestamp = fresh,
-                    timezone = "UTC", user = "", applicationLabel = "Example"))) }
-            postgres.createConnection("").use { blocker ->
-                blocker.createStatement().use { it.execute("""INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, device_id)
-                    VALUES ('$foreign', '$participant', '[]', '2000-01-01', 'Android', '${UUID.randomUUID()}')""") }
-                blocker.autoCommit = false
-                blocker.createStatement().use { it.execute("SELECT pg_advisory_xact_lock(hashtextextended('chronicle-deletion:$foreign', 0))") }
-                try { RLSRequestContext.withSystemContext { upload.moveToEventStorage(study, participant) } }
-                finally { blocker.rollback(); blocker.autoCommit = true
-                    blocker.createStatement().use { it.execute("DELETE FROM upload_buffer WHERE study_id = '$foreign'") }
-                }
-            }
-        }
-        assertEquals(1, count(study, "chronicle_usage_events"))
-    }
+    private fun screenTime(start: OffsetDateTime, capturedAt: OffsetDateTime) = ScreenTimeUsageRecord(
+        id = UUID.randomUUID(), rowKind = ScreenTimeUsageRowKind.application,
+        capturedAt = capturedAt, observationStart = start, observationEnd = start.plusHours(1), timezoneIdentifier = "UTC",
+        appName = "Example", durationSeconds = 60,
+    )
 
-    @Test fun legacyScreenTimeDrainUsesObservationEnd() {
-        val study = seed(); cutoff(study)
-        val screen = sample().copy(sensor = SensorType.deviceUsage,
-            data = """{"totalScreenWakes":1,"totalUnlocks":1,"totalUnlockDuration":1.0,"appUsage":{},"webUsage":{}}""",
-            startDate = old, endDate = old.plusHours(1), dateRecorded = fresh)
-        postgres.createConnection("").use { c -> c.prepareStatement("""INSERT INTO upload_buffer
-            (study_id, participant_id, data, uploaded_at, upload_type, device_id) VALUES (?, ?, ?::jsonb, now(), 'Ios', ?)""").use {
-            it.setObject(1, study); it.setString(2, participant)
-            it.setString(3, SensorDataUploadService.mapper.writeValueAsString(listOf(screen)))
-            it.setObject(4, UUID.randomUUID()); it.executeUpdate()
-        } }
-        pool().use { p ->
-            val deps = MoveToEventStorageTaskDependencies(resolver(p), mock())
-            val task = object : MoveToIosEventStorageTask() { override fun getDependency() = deps }
-            RLSRequestContext.withSystemContext {
-                try { MoveToIosEventStorageTask::class.java.getDeclaredMethod("moveToEventStorage").apply { isAccessible = true }.invoke(task) }
-                catch (e: InvocationTargetException) { throw e.targetException }
-            }
-        }
-        assertEquals(0, count(study, "sensor_data")); assertEquals(0, count(study, "upload_buffer"))
-    }
-
-    private fun sample() = SensorDataSample(UUID.randomUUID(), fresh, 60.0,
-        """{"totalIncomingCalls":1,"totalOutgoingCalls":2,"totalPhoneDuration":3.0,"totalUniqueContacts":2}""",
-        """{"model":"iPhone","name":"test","systemName":"iOS","systemVersion":"26"}""",
-        "UTC", SensorType.phoneUsage, fresh, fresh.plusSeconds(60))
+    private fun screenTimeEnvelope(study: UUID, records: List<ScreenTimeUsageRecord>) = ScreenTimeUsageEnvelope(
+        randomDeviceId = "device", studyId = study.toString(), participantId = participant, generatedAt = fresh, records = records,
+    )
 
     private fun awaitBlocked(name: String) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)

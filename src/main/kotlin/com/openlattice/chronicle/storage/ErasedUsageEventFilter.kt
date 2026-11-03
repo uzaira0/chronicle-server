@@ -10,10 +10,9 @@ internal object ErasedUsageEventFilter {
             ParticipantPurgeCutoff.Subject(it.studyId, it.participantId)
         })
         return entries.filter { entry ->
-            val collectedAt = odtFromUsageEventColumn(entry.data[PostgresEventColumns.TIMESTAMP.name]?.value)
-                ?: odtFromUsageEventColumn(entry.data[PostgresEventColumns.COLLECTED_AT.name]?.value)
+            val capturedAt = odtFromUsageEventColumn(entry.data[PostgresEventColumns.TIMESTAMP.name]?.value)
             ParticipantPurgeCutoff.permits(
-                cutoffs[ParticipantPurgeCutoff.Subject(entry.studyId, entry.participantId)], collectedAt,
+                cutoffs[ParticipantPurgeCutoff.Subject(entry.studyId, entry.participantId)], capturedAt,
             )
         }
     }

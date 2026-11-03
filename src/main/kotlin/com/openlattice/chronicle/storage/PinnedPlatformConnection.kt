@@ -5,6 +5,8 @@ import com.zaxxer.hikari.HikariDataSource
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 import java.sql.Connection
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Scopes one already-open platform transaction to the current thread so nested work that borrows
@@ -27,8 +29,10 @@ public object PinnedPlatformConnection {
         return active.borrowingDataSource
     }
 
-    internal fun owningConnection(default: HikariDataSource): Connection? =
-        pinned.get()?.takeIf { it.belongsTo(default) && it.ownsTransaction }?.ownerConnection
+    internal fun owningConnection(default: HikariDataSource, connection: Connection? = null): Connection? =
+        pinned.get()?.takeIf {
+            it.belongsTo(default) && it.ownsTransaction && (connection == null || it.ownsConnection(connection))
+        }?.ownerConnection
 
     /** Active transaction pins and session-sharing scopes both support direct routing reads. */
     internal fun activeConnection(default: HikariDataSource): Connection? =
@@ -39,9 +43,14 @@ public object PinnedPlatformConnection {
         owner.afterCommit.putIfAbsent(key, action)
     }
 
+    /** Cache warms read through another connection, so inside a pinned transaction they wait for its commit. */
+    internal fun afterCommitOrNow(default: HikariDataSource, key: Any, action: () -> Unit) {
+        if (owningConnection(default) != null) afterCommit(default, key, action) else action()
+    }
+
     /** Commit the outermost owner, then dispatch its coalesced cache invalidations. */
     internal fun <T> committing(delegate: HikariDataSource, connection: Connection, commitWhen: () -> Boolean = { true }, block: () -> T): T {
-        if (owningConnection(delegate) != null) return block()
+        if (owningConnection(delegate) != null) return pinning(delegate, connection, block)
         return pinning(delegate, connection) {
             val result = block()
             if (commitWhen()) {
@@ -57,7 +66,11 @@ public object PinnedPlatformConnection {
      * guards cannot erase their caller's transaction.
      */
     public fun <T> pinning(delegate: HikariDataSource, connection: Connection, block: () -> T): T {
-        return scoped(delegate, connection, true, block)
+        if (owningConnection(delegate) != null) {
+            check(owningConnection(delegate, connection) != null) { "Connection does not belong to the active transaction" }
+            return block()
+        }
+        return scoped(delegate, connection, PinScope.TRANSACTION, block)
     }
 
     /**
@@ -65,18 +78,27 @@ public object PinnedPlatformConnection {
      * The coordination owner must have no uncommitted work when entering this scope.
      */
     internal fun <T> sharing(delegate: HikariDataSource, connection: Connection, block: () -> T): T {
-        check(connection.autoCommit) { "Session connection sharing requires autocommit" }
-        return scoped(delegate, connection, false, block)
+        return scoped(delegate, connection, PinScope.REQUEST_SESSION, block)
     }
+
+    /** Startup recovery reads the owner-only checkpoint while retaining one coordination connection. */
+    internal fun <T> bootstrapSharing(
+        delegate: HikariDataSource,
+        connection: Connection,
+        runtimePools: List<HikariDataSource>,
+        block: () -> T,
+    ): T = scoped(delegate, connection, PinScope.BOOTSTRAP_SESSION, block, runtimePools)
 
     private fun <T> scoped(
         delegate: HikariDataSource,
         connection: Connection,
-        ownsTransaction: Boolean,
+        scope: PinScope,
         block: () -> T,
+        bootstrapRuntimePools: List<HikariDataSource> = emptyList(),
     ): T {
+        if (scope != PinScope.TRANSACTION) check(connection.autoCommit) { "Session connection sharing requires autocommit" }
         val previous = pinned.get()
-        pinned.set(PinnedHikariDataSource(delegate, connection, ownsTransaction))
+        pinned.set(PinnedHikariDataSource(delegate, connection, scope, bootstrapRuntimePools))
         return try {
             block()
         } finally {
@@ -85,24 +107,35 @@ public object PinnedPlatformConnection {
     }
 }
 
+private enum class PinScope { TRANSACTION, REQUEST_SESSION, BOOTSTRAP_SESSION }
+
 private class PinnedHikariDataSource(
     private val delegate: HikariDataSource,
     private val pinned: Connection,
-    val ownsTransaction: Boolean,
+    private val scope: PinScope,
+    private val bootstrapRuntimePools: List<HikariDataSource>,
 ) : HikariDataSource() {
+    val ownsTransaction: Boolean get() = scope == PinScope.TRANSACTION
     val afterCommit = linkedMapOf<Any, () -> Unit>()
+    private val borrowed = Collections.newSetFromMap(IdentityHashMap<Connection, Boolean>())
 
     // Session sharing keeps each helper's request/deletion-worker RLS context and cleanup.
     val ownerConnection: Connection get() = pinned
 
-    val borrowingDataSource: HikariDataSource = if (ownsTransaction) this else RLSDataSources.wrapUncachedRequestScoped(this)
+    val borrowingDataSource: HikariDataSource = when (scope) {
+        PinScope.REQUEST_SESSION -> RLSDataSources.wrapUncachedRequestScoped(this)
+        PinScope.TRANSACTION, PinScope.BOOTSTRAP_SESSION -> this
+    }
 
-    fun belongsTo(dataSource: HikariDataSource): Boolean = RLSDataSources.samePool(delegate, dataSource)
+    fun belongsTo(dataSource: HikariDataSource): Boolean = RLSDataSources.samePool(delegate, dataSource) ||
+        (scope == PinScope.BOOTSTRAP_SESSION && bootstrapRuntimePools.any { RLSDataSources.samePool(it, dataSource) })
 
-    override fun getConnection(): Connection = nonClosingConnection(pinned, ownsTransaction)
+    fun ownsConnection(connection: Connection): Boolean = connection === pinned || connection in borrowed
+
+    override fun getConnection(): Connection = nonClosingConnection(pinned, ownsTransaction).also { borrowed.add(it) }
 
     override fun getConnection(username: String?, password: String?): Connection =
-        nonClosingConnection(pinned, ownsTransaction)
+        connection
 
     override fun close() {
         // The pin owner closes the real connection.

@@ -1,8 +1,13 @@
 package com.openlattice.chronicle.storage.rls
 
+import com.openlattice.chronicle.storage.withFailureCleanup
+
+import com.openlattice.chronicle.util.SqlFailures
+
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
+import java.util.UUID
 import java.util.concurrent.Executors
 
 /**
@@ -20,6 +25,9 @@ import java.util.concurrent.Executors
  * connectionInitSql: "SELECT
  *   set_config('app.current_user_id', '', false),
  *   set_config('app.authorized_studies', '', false),
+ *   set_config('app.authorized_organizations', '', false),
+ *   set_config('app.is_deletion_worker', 'false', false),
+ *   set_config('app.receipt_owner_kind', '', false),
  *   set_config('app.is_admin', 'false', false)"
  * ```
  *
@@ -46,6 +54,9 @@ public object RLSConnectionCustomizer {
         SELECT
             set_config('app.current_user_id', '', false),
             set_config('app.authorized_studies', '', false),
+            set_config('app.authorized_organizations', '', false),
+            set_config('app.is_deletion_worker', 'false', false),
+            set_config('app.receipt_owner_kind', '', false),
             set_config('app.is_admin', 'false', false)
     """
 
@@ -53,6 +64,9 @@ public object RLSConnectionCustomizer {
         SELECT
             set_config('app.current_user_id', 'system', false),
             set_config('app.authorized_studies', '', false),
+            set_config('app.authorized_organizations', '', false),
+            set_config('app.is_deletion_worker', 'false', false),
+            set_config('app.receipt_owner_kind', '', false),
             set_config('app.is_admin', 'true', false)
     """
 
@@ -61,6 +75,9 @@ public object RLSConnectionCustomizer {
         SELECT
             set_config('app.current_user_id', 'system', true),
             set_config('app.authorized_studies', '', true),
+            set_config('app.authorized_organizations', '', true),
+            set_config('app.is_deletion_worker', 'false', true),
+            set_config('app.receipt_owner_kind', '', true),
             set_config('app.is_admin', 'true', true)
     """
 
@@ -83,13 +100,13 @@ public object RLSConnectionCustomizer {
                 stmt.execute(CONNECTION_INIT_SQL)
             }
         } catch (e: SQLException) {
-            logger.error("Failed to clear RLS context on connection", e)
+            logger.error("Failed to clear RLS context on connection", SqlFailures.sanitize(e))
             try {
                 connection.abort(abortExecutor)
             } catch (abortException: Exception) {
                 e.addSuppressed(abortException)
             }
-            throw RLSContextException("Failed to clear RLS context", e)
+            throw RLSContextException("Failed to clear RLS context", SqlFailures.sanitize(e))
         }
     }
 
@@ -108,11 +125,14 @@ public object RLSConnectionCustomizer {
                     SELECT
                         current_setting('app.current_user_id', true) as user_id,
                         current_setting('app.authorized_studies', true) as studies,
+                        current_setting('app.authorized_organizations', true) as organizations,
+                        current_setting('app.is_deletion_worker', true) as is_deletion_worker,
+                        current_setting('app.receipt_owner_kind', true) as receipt_owner_kind,
                         current_setting('app.is_admin', true) as is_admin
                 """).use { rs -> isContextRowCleared(rs) }
             }
         } catch (e: SQLException) {
-            logger.warn("Failed to validate RLS context", e)
+            logger.warn("Failed to validate RLS context", SqlFailures.sanitize(e))
             false
         }
     }
@@ -123,8 +143,12 @@ public object RLSConnectionCustomizer {
         }
         val userId = rs.getString("user_id") ?: ""
         val studies = rs.getString("studies") ?: ""
+        val organizations = rs.getString("organizations") ?: ""
         val isAdmin = rs.getString("is_admin") ?: "false"
-        return userId.isEmpty() && studies.isEmpty() && isAdmin != "true"
+        val isDeletionWorker = rs.getString("is_deletion_worker") ?: "false"
+        val receiptKind = rs.getString("receipt_owner_kind") ?: ""
+        val emptyScope = userId.isEmpty() && studies.isEmpty() && organizations.isEmpty() && receiptKind.isEmpty()
+        return emptyScope && isAdmin != "true" && isDeletionWorker != "true"
     }
 
     /** Session scope is cleared by [withAdminContext]; transaction scope ends on commit/rollback. */
@@ -134,7 +158,9 @@ public object RLSConnectionCustomizer {
             statement.execute(
                 """
                 SELECT set_config('app.current_user_id', '$DELETION_WORKER_ID', $transactionLocal),
-                       set_config('app.is_admin', 'true', $transactionLocal)
+                       set_config('app.is_admin', 'true', $transactionLocal),
+                       set_config('app.is_deletion_worker', 'true', $transactionLocal),
+                       set_config('app.receipt_owner_kind', '', $transactionLocal)
                 """.trimIndent(),
             )
         }
@@ -146,11 +172,7 @@ public object RLSConnectionCustomizer {
             stmt.execute(ADMIN_CONTEXT_SQL)
         }
 
-        return try {
-            block()
-        } finally {
-            clearContext(connection)
-        }
+        return withFailureCleanup({ clearContext(connection) }, block)
     }
 
     /**
@@ -159,18 +181,16 @@ public object RLSConnectionCustomizer {
      * [withAdminTransactionContext] leaves `app.is_admin = true` in place for the rest of the
      * transaction. When a guard evaluates a server-side predicate and then runs the caller's own
      * write in the same transaction, that would silently elevate the write past RLS, so snapshot
-     * the four RLS settings and put them back before returning.
+     * all RLS settings and put them back before returning.
      */
     @JvmStatic
     public fun <T> withRestoredAdminTransactionContext(connection: Connection, block: () -> T): T {
         check(!connection.autoCommit) { "Transaction-local RLS admin context requires an active transaction" }
-        val saved = RLS_CONTEXT_SETTINGS.map { setting -> setting to readSetting(connection, setting) }
+        val saved = RLS_CONTEXT_SETTINGS.map { setting -> setting to RLSConnectionSql.readSetting(connection, setting) }
         connection.createStatement().use { statement ->
             statement.execute(ADMIN_TRANSACTION_CONTEXT_SQL)
         }
-        return try {
-            block()
-        } finally {
+        return withFailureCleanup({
             connection.prepareStatement("SELECT set_config(?, ?, true)").use { statement ->
                 saved.forEach { (setting, value) ->
                     statement.setString(1, setting)
@@ -178,7 +198,21 @@ public object RLSConnectionCustomizer {
                     statement.execute()
                 }
             }
-        }
+        }, block)
+    }
+
+    /**
+     * The request's study list was read before this transaction minted [studyId], so the study-scoped
+     * INSERT policies would refuse the new study's own rows. Adds it for this transaction only.
+     */
+    @JvmStatic
+    public fun authorizeCreatedStudy(connection: Connection, studyId: UUID) {
+        RLSConnectionSql.authorizeCreatedObject(connection, "app.authorized_studies", studyId)
+    }
+
+    @JvmStatic
+    public fun authorizeCreatedOrganization(connection: Connection, organizationId: UUID) {
+        RLSConnectionSql.authorizeCreatedObject(connection, "app.authorized_organizations", organizationId)
     }
 
     /** Only an authenticated enrollment lookup or withdrawal may bypass quarantine in this scope. */
@@ -192,17 +226,11 @@ public object RLSConnectionCustomizer {
     private val RLS_CONTEXT_SETTINGS = listOf(
         "app.current_user_id",
         "app.authorized_studies",
+        "app.authorized_organizations",
+        "app.is_deletion_worker",
+        "app.receipt_owner_kind",
         "app.is_admin",
-        "app.authorized_orgs",
     )
-
-    private fun readSetting(connection: Connection, setting: String): String =
-        connection.prepareStatement("SELECT coalesce(current_setting(?, true), '')").use { statement ->
-            statement.setString(1, setting)
-            statement.executeQuery().use { resultSet ->
-                if (resultSet.next()) resultSet.getString(1) ?: "" else ""
-            }
-        }
 
     @JvmStatic
     public fun <T> withAdminTransactionContext(connection: Connection, block: () -> T): T {

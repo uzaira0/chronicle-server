@@ -9,15 +9,12 @@ import com.geekbeast.postgres.PostgresTableDefinition
 import com.openlattice.chronicle.services.upload.UploadType
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACL_KEY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACTIVE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ALERT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ALERT_TYPE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ASSIGNED_AT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ASSIGNED_BY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_FIRST_DATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_LAST_DATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_LAST_PING
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_UNIQUE_DATES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.APP_USERS
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SURVEY_DATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.BASE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.BATTERY_CHARGING_STATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.BATTERY_HEALTH
@@ -57,12 +54,6 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.INTERACTION_S
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.INTERACTION_SCROLL_REVERSED
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.INTERACTION_SCROLL_VELOCITY_X
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.INTERACTION_SCROLL_VELOCITY_Y
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.AMBIENT_AUDIO_CLASSIFIER_VERSION
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.AMBIENT_AUDIO_CONFIDENCE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.AMBIENT_AUDIO_EVENT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.AMBIENT_AUDIO_LABEL
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.AMBIENT_AUDIO_WINDOW_END_MILLIS
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.AMBIENT_AUDIO_WINDOW_START_MILLIS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.AUDIO_ACTIVITY_EVENT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.AUDIO_ACTIVITY_EVENT_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.AUDIO_ACTIVITY_AUDIO_ACTIVE
@@ -158,7 +149,7 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.CHANGED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CHANGED_BY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CHANGE_SUMMARY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.AUDIT_ENTRY_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.SOURCE_DEVICE_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SOURCE_RANDOM_DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACKNOWLEDGED_MODULES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACKNOWLEDGED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.RECORDED_AT
@@ -171,6 +162,7 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.UNAVAILABLE_M
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EVIDENCE_ACCESS_CODE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EVIDENCE_API_KEY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.COLLECTION_TRIGGER
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.DECISION_SEQ
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SOURCE_IP
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SETTING_KEY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.BEFORE_VALUE
@@ -178,15 +170,14 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.AFTER_VALUE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DELETE_AFTER
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DESCRIPTION
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DESTINATION
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.RANDOM_DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_TOKEN
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_TYPE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.PRODUCER_VERSION
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ENDED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EVENT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EXPIRATION
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EXPIRATION_DATE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.FEATURES
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.FILE_PATH
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.HTML
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_FIRST_DATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_LAST_DATE
@@ -194,9 +185,7 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_LAST_PING
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_UNIQUE_DATES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.JOB_DEFINITION
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.JOB_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.LAST_UPDATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LAT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.LEGACY_STUDY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LIFECYCLE_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LON
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LSB
@@ -206,12 +195,10 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.MODULES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.MSB
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NAME
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NEW_STATUS
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.NOTIFICATIONS_ENABLED
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NOTIFICATION_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.NOTIFICATION_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ORGANIZATION_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_LIMIT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_NOTES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_TAGS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPATION_STATUS
@@ -226,30 +213,20 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.QUESTION_TITL
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.REASON
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.RECURRENCE_RULE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.RESPONSES
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.REQUEST
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.REVOKED
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ROW_COUNT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCHEDULED_BY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCOPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.KEY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.KEY_HASH
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.KEY_PREFIX
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CREATED_BY
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.DOWNLOAD_TOKEN
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ERROR_MESSAGE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EXPIRES_AT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.EXPORT_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.FORMAT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.LAST_USED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.USAGE_COUNT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SECURABLE_OBJECT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SECURABLE_OBJECT_NAME
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SECURABLE_OBJECT_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SECURABLE_PRINCIPAL_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ROLE_NAME
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCOPE_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCOPE_TYPE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCORE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SETTINGS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SOURCE_DEVICE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STARTED_AT
@@ -271,8 +248,6 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.TUD_FIRST_DAT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.TUD_LAST_DATE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.TUD_UNIQUE_DATES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPDATED_AT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPGRADE_CLASS
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPGRADE_STATUS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOADED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_TYPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOAD_DATA
@@ -287,17 +262,6 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_Z
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_W
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_VALUES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.AVAILABLE_SENSORS
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PAYLOAD_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.PAYLOAD_TYPE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ENVELOPE_VERSION
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ENVELOPE_ALG
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ENCRYPTION_KEY_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ENCRYPTED_KEY
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.ENVELOPE_IV
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.CIPHERTEXT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.SAMPLE_COUNT
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.CONTENT_HASH
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.UNAVAILABLE_SENSORS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_WIDTH_PIXELS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_HEIGHT_PIXELS
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DISPLAY_SCREEN_DENSITY_DPI
@@ -306,11 +270,19 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.INTERACTION_P
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.REPORTED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_ACCURACY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_TIMEZONE
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.RUN_ID
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.STEPS_COMPLETED
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.TOTAL_STEPS
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.INPUT_ROWS
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.OUTPUT_ROWS
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_RECORD_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_ROW_KIND
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_CAPTURED_AT
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_OBSERVATION_START
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_OBSERVATION_END
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_TIMEZONE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_APP_NAME
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_BUNDLE_IDENTIFIER
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_WEB_DOMAIN
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_CATEGORY_NAME
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_DURATION_SECONDS
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_NOTIFICATION_COUNT
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_PICKUP_COUNT
 
 /**
  *
@@ -350,7 +322,6 @@ public class ChroniclePostgresTables private constructor() {
                 ORGANIZATION_ID,
                 TITLE,
                 DESCRIPTION,
-                SETTINGS
             )
             .primaryKey(ORGANIZATION_ID)
             .overwriteOnConflict()
@@ -370,7 +341,6 @@ public class ChroniclePostgresTables private constructor() {
                 STUDY_GROUP,
                 STUDY_VERSION,
                 CONTACT,
-                NOTIFICATIONS_ENABLED,
                 STORAGE,
                 SETTINGS,
                 MODULES,
@@ -379,16 +349,6 @@ public class ChroniclePostgresTables private constructor() {
             )
             .primaryKey(STUDY_ID)
             .overwriteOnConflict()
-
-        @JvmField
-        public val LEGACY_STUDY_IDS = PostgresTableDefinition("legacy_study_ids")
-            .addColumns(STUDY_ID, LEGACY_STUDY_ID)
-            .primaryKey(STUDY_ID, LEGACY_STUDY_ID)
-
-        @JvmField
-        public val LEGACY_STUDY_SETTINGS = PostgresTableDefinition("legacy_study_settings")
-            .addColumns(ORGANIZATION_ID, SETTINGS)
-            .primaryKey(ORGANIZATION_ID)
 
         @JvmField
         public val STUDY_LIFECYCLE_EVENTS = PostgresTableDefinition("study_lifecycle_events")
@@ -430,8 +390,8 @@ public class ChroniclePostgresTables private constructor() {
             )
             .primaryKey(AUDIT_ENTRY_ID)
 
-        // Append-only trail of participant collection-module acknowledgments
-        // (collection loop closure §5.3). recorded_at is the server-stamped audit
+        // Append-only trail of participant collection-module acknowledgments.
+        // recorded_at is the server-stamped audit
         // anchor; acknowledged_at is the advisory device-reported time. Made immutable
         // (DELETE/UPDATE revoked) by V26, mirroring STUDY_SETTINGS_AUDIT.
         @JvmField
@@ -441,7 +401,7 @@ public class ChroniclePostgresTables private constructor() {
                     AUDIT_ENTRY_ID,
                     STUDY_ID,
                     PARTICIPANT_ID,
-                    SOURCE_DEVICE_ID,
+                    SOURCE_RANDOM_DEVICE_ID,
                     ACKNOWLEDGED_MODULES,
                     ACKNOWLEDGED_AT,
                     RECORDED_AT,
@@ -453,27 +413,10 @@ public class ChroniclePostgresTables private constructor() {
                     UNAVAILABLE_MODULES,
                     EVIDENCE_ACCESS_CODE_ID,
                     EVIDENCE_API_KEY_ID,
-                    COLLECTION_TRIGGER
+                    COLLECTION_TRIGGER,
+                    DECISION_SEQ
                 )
                 .primaryKey(AUDIT_ENTRY_ID)
-
-        @JvmField
-        public val EXPORT_JOBS = PostgresTableDefinition("export_jobs")
-            .addColumns(
-                EXPORT_ID,
-                STUDY_ID,
-                STATUS,
-                FORMAT,
-                REQUEST,
-                CREATED_BY,
-                CREATED_AT,
-                COMPLETED_AT,
-                DOWNLOAD_TOKEN,
-                ROW_COUNT,
-                ERROR_MESSAGE,
-                FILE_PATH
-            )
-            .primaryKey(EXPORT_ID)
 
         @JvmField
         public val API_KEYS = PostgresTableDefinition("api_keys")
@@ -491,8 +434,7 @@ public class ChroniclePostgresTables private constructor() {
                 USAGE_COUNT,
                 REVOKED,
                 PostgresColumnDefinition("participant_id", PostgresDatatype.TEXT),
-                PostgresColumnDefinition("device_id", PostgresDatatype.UUID),
-                PostgresColumnDefinition("is_honey_token", PostgresDatatype.BOOLEAN).notNull().withDefault("false")
+                PostgresColumnDefinition("random_device_id", PostgresDatatype.UUID),
             )
             .primaryKey(KEY_ID)
 
@@ -524,7 +466,7 @@ public class ChroniclePostgresTables private constructor() {
 
         @JvmField
         public val STUDY_LIMITS = PostgresTableDefinition("study_limits")
-            .addColumns(STUDY_ID, PARTICIPANT_LIMIT, STUDY_DURATION, DATA_RETENTION, STUDY_ENDS, DATA_EXPIRES, FEATURES)
+            .addColumns(STUDY_ID, STUDY_DURATION, DATA_RETENTION, STUDY_ENDS, DATA_EXPIRES)
             .primaryKey(STUDY_ID)
             .overwriteOnConflict()
 
@@ -538,16 +480,16 @@ public class ChroniclePostgresTables private constructor() {
 
         @Suppress("DEPRECATION") // DEVICE_TOKEN is deprecated but still in use
         @JvmField
-        public val DEVICES = PostgresTableDefinition("DEVICES")
+        public val DEVICES = PostgresTableDefinition("devices")
             .addColumns(
                 STUDY_ID,
-                DEVICE_ID,
+                RANDOM_DEVICE_ID,
                 PARTICIPANT_ID, //Make sure this is indexed.
                 DEVICE_TYPE,
                 SOURCE_DEVICE,
                 DEVICE_TOKEN
             )
-            .primaryKey(STUDY_ID, DEVICE_ID) //Just in case device is used across multiple studies
+            .primaryKey(STUDY_ID, RANDOM_DEVICE_ID) //Just in case device is used across multiple studies
 
         @JvmField
         public val TIME_USE_DIARY_SUBMISSIONS = PostgresTableDefinition("time_use_diary_submissions")
@@ -573,9 +515,10 @@ public class ChroniclePostgresTables private constructor() {
                 SUBMISSION_DATE, // date when survey was submitted
                 PostgresEventColumns.APPLICATION_LABEL,
                 PostgresEventColumns.APP_PACKAGE_NAME,
-                PostgresEventColumns.TIMESTAMP, // usage event
-                PostgresEventColumns.TIMEZONE, // usage event timezone
-                APP_USERS
+                PostgresEventColumns.TIMESTAMP, // answered block start
+                PostgresEventColumns.TIMEZONE, // study time zone of the survey day
+                APP_USERS,
+                SURVEY_DATE, // the answered survey day
             )
             .primaryKey(STUDY_ID, PARTICIPANT_ID, PostgresEventColumns.APP_PACKAGE_NAME, PostgresEventColumns.TIMESTAMP)
 
@@ -605,46 +548,9 @@ public class ChroniclePostgresTables private constructor() {
             ).primaryKey(SUBMISSION_ID, QUESTION_TITLE)
         // All the questions in a single submission are unique. A single submission can write multiple records in the table
 
-        @JvmField
-        public val ROLE_ASSIGNMENTS = PostgresTableDefinition("role_assignments")
-            .addColumns(
-                PRINCIPAL_ID,
-                PRINCIPAL_TYPE,
-                SCOPE_TYPE,
-                SCOPE_ID,
-                ROLE_NAME,
-                ASSIGNED_BY,
-                ASSIGNED_AT,
-            ).primaryKey(PRINCIPAL_ID, SCOPE_TYPE, SCOPE_ID)
+        
 
-        @JvmField
-        public val PIPELINE_RUNS = PostgresTableDefinition("pipeline_runs")
-            .addColumns(
-                RUN_ID,
-                STUDY_ID,
-                JOB_ID,
-                STATUS,
-                STEPS_COMPLETED,
-                TOTAL_STEPS,
-                INPUT_ROWS,
-                OUTPUT_ROWS,
-                STARTED_AT,
-                COMPLETED_AT,
-                ERROR_MESSAGE,
-            )
-            .primaryKey(RUN_ID)
-
-        @JvmField
-        public val DATA_QUALITY_ALERTS = PostgresTableDefinition("data_quality_alerts")
-            .addColumns(
-                ALERT_ID,
-                STUDY_ID,
-                PARTICIPANT_ID,
-                ALERT_TYPE,
-                MESSAGE,
-                SCORE,
-                CREATED_AT,
-            ).primaryKey(ALERT_ID)
+        
 
         @JvmField
         public val PARTICIPANT_STATS = PostgresTableDefinition("participant_stats")
@@ -685,10 +591,6 @@ public class ChroniclePostgresTables private constructor() {
             .addColumns(PostgresEventColumns.APP_PACKAGE_NAME)
             .primaryKey(PostgresEventColumns.APP_PACKAGE_NAME)
 
-        @JvmField
-        public val UPGRADES = PostgresTableDefinition("upgrades")
-            .addColumns(UPGRADE_CLASS, UPGRADE_STATUS, LAST_UPDATE)
-            .primaryKey(UPGRADE_CLASS)
         /**
          * Authorization tables
          *
@@ -763,13 +665,15 @@ public class ChroniclePostgresTables private constructor() {
                 SENSOR_TYPE,
                 SAMPLE_TIMESTAMP,
                 SENSOR_TIMEZONE,
-                DEVICE_ID,
+                RANDOM_DEVICE_ID,
                 SENSOR_X,
                 SENSOR_Y,
                 SENSOR_Z,
                 SENSOR_W,
                 SENSOR_VALUES,
-                SENSOR_ACCURACY
+                SENSOR_ACCURACY,
+                // Server receipt, as on every other research store; never sent by the phone.
+                UPLOADED_AT,
             )
             .primaryKey(SAMPLE_ID)
 
@@ -778,9 +682,8 @@ public class ChroniclePostgresTables private constructor() {
             .addColumns(
                 STUDY_ID,
                 PARTICIPANT_ID,
-                DEVICE_ID,
+                RANDOM_DEVICE_ID,
                 AVAILABLE_SENSORS,
-                UNAVAILABLE_SENSORS,
                 SCREEN_WIDTH_PIXELS,
                 SCREEN_HEIGHT_PIXELS,
                 DISPLAY_SCREEN_DENSITY_DPI,
@@ -788,7 +691,7 @@ public class ChroniclePostgresTables private constructor() {
                 INTERACTION_POINTER_CAPTURE_CAPABILITY,
                 REPORTED_AT
             )
-            .primaryKey(STUDY_ID, PARTICIPANT_ID, DEVICE_ID)
+            .primaryKey(STUDY_ID, PARTICIPANT_ID, RANDOM_DEVICE_ID)
             .overwriteOnConflict()
 
         /**
@@ -812,11 +715,43 @@ public class ChroniclePostgresTables private constructor() {
                 BATTERY_TEMPERATURE_DECI_C,
                 BATTERY_VOLTAGE_MILLIVOLTS,
                 UPLOADED_AT,
-                // Last so fresh installs match migrated databases (V64 ADD COLUMN appends).
-                BATTERY_LOW_POWER_MODE
+                BATTERY_LOW_POWER_MODE,
+                PostgresColumnDefinition(RANDOM_DEVICE_ID.name, PostgresDatatype.UUID),
+                DEVICE_TYPE,
+                PRODUCER_VERSION
             )
             .primaryKey(STUDY_ID, PARTICIPANT_ID, BATTERY_SAMPLE_ID)
             .overwriteOnConflict()
+
+        /**
+         * iOS Screen Time (DeviceActivity App & Web Usage): one row per uploaded
+         * `ScreenTimeUsageRecord` capture, written in the upload transaction. Apple reports a
+         * cumulative total per hour, so the phone sends each app/domain hour again on every
+         * capture; every capture is kept. V1 adds `ios_screen_time_usage_capture_key`
+         * (UNIQUE NULLS NOT DISTINCT over [ScreenTimeUsageCaptures.CAPTURE_KEY]), so a retried
+         * upload of the same capture writes nothing.
+         */
+        @JvmField
+        public val IOS_SCREEN_TIME_USAGE = PostgresTableDefinition("ios_screen_time_usage")
+            .addColumns(
+                STUDY_ID,
+                PARTICIPANT_ID,
+                RANDOM_DEVICE_ID,
+                SCREEN_TIME_RECORD_ID,
+                SCREEN_TIME_ROW_KIND,
+                SCREEN_TIME_CAPTURED_AT,
+                SCREEN_TIME_OBSERVATION_START,
+                SCREEN_TIME_OBSERVATION_END,
+                SCREEN_TIME_TIMEZONE,
+                SCREEN_TIME_APP_NAME,
+                SCREEN_TIME_BUNDLE_IDENTIFIER,
+                SCREEN_TIME_WEB_DOMAIN,
+                SCREEN_TIME_CATEGORY_NAME,
+                SCREEN_TIME_DURATION_SECONDS,
+                SCREEN_TIME_NOTIFICATION_COUNT,
+                SCREEN_TIME_PICKUP_COUNT,
+                UPLOADED_AT,
+            )
 
         /**
          * Per-row storage for interaction-salience events uploaded by the Android
@@ -898,34 +833,6 @@ public class ChroniclePostgresTables private constructor() {
                 UPLOADED_AT
             )
             .primaryKey(STUDY_ID, PARTICIPANT_ID, AUDIO_ACTIVITY_EVENT_ID)
-            .overwriteOnConflict()
-
-        /**
-         * Per-row storage for ambient-audio classification events uploaded by the `ambient_audio`
-         * collection module (currently iOS SoundAnalysis). One row per
-         * [com.openlattice.chronicle.collection.AmbientAudioClassificationEvent]: a single
-         * on-device sound-class label + confidence within one short listen window, scoped to a
-         * study + participant. AMBIENT_AUDIO_CONTEXT-class — labels-only by construction; no
-         * audio representation exists past the on-device classifier. EVENT_ID is the per-event
-         * dedup key; the (study_id, participant_id, event_id) primary key makes re-uploads
-         * idempotent.
-         */
-        @JvmField
-        public val AMBIENT_AUDIO_EVENTS = PostgresTableDefinition("ambient_audio_events")
-            .addColumns(
-                STUDY_ID,
-                PARTICIPANT_ID,
-                AMBIENT_AUDIO_EVENT_ID,
-                SAMPLE_TIMESTAMP,
-                SENSOR_TIMEZONE,
-                AMBIENT_AUDIO_WINDOW_START_MILLIS,
-                AMBIENT_AUDIO_WINDOW_END_MILLIS,
-                AMBIENT_AUDIO_LABEL,
-                AMBIENT_AUDIO_CONFIDENCE,
-                AMBIENT_AUDIO_CLASSIFIER_VERSION,
-                UPLOADED_AT
-            )
-            .primaryKey(STUDY_ID, PARTICIPANT_ID, AMBIENT_AUDIO_EVENT_ID)
             .overwriteOnConflict()
 
         /**
@@ -1106,38 +1013,6 @@ public class ChroniclePostgresTables private constructor() {
             .primaryKey(STUDY_ID, PARTICIPANT_ID, DEVICE_SETTINGS_EVENT_ID)
             .overwriteOnConflict()
 
-        /**
-         * Blind storage for envelope-encrypted upload batches (HIPAA-2028 W2). One row per
-         * [com.openlattice.chronicle.crypto.EncryptedEnvelope] posted by an Android device to
-         * the v4 `/android/encrypted` endpoint, scoped to a study + participant + device.
-         *
-         * The backend NEVER decrypts on ingest: encrypted_key / iv / ciphertext are opaque
-         * BYTEA, and the study private key lives only in Vault (fetched solely at authorized
-         * export). content_hash = SHA-256(encrypted_key||iv||ciphertext); the
-         * (study_id, participant_id, content_hash) UNIQUE constraint makes re-sends of the
-         * same sealed batch idempotent (mirrors battery_telemetry's ON CONFLICT DO NOTHING).
-         */
-        @JvmField
-        public val ENCRYPTED_PAYLOADS = PostgresTableDefinition("encrypted_payloads")
-            .addColumns(
-                PAYLOAD_ID,
-                STUDY_ID,
-                PARTICIPANT_ID,
-                DEVICE_ID,
-                PAYLOAD_TYPE,
-                ENVELOPE_VERSION,
-                ENVELOPE_ALG,
-                ENCRYPTION_KEY_ID,
-                ENCRYPTED_KEY,
-                ENVELOPE_IV,
-                CIPHERTEXT,
-                SAMPLE_COUNT,
-                CONTENT_HASH,
-                UPLOADED_AT
-            )
-            .primaryKey(PAYLOAD_ID)
-            .setUnique(STUDY_ID, PARTICIPANT_ID, CONTENT_HASH)
-
         @JvmField
         public val UPLOAD_BUFFER = PostgresTableDefinition("upload_buffer")
             .addColumns(
@@ -1146,7 +1021,7 @@ public class ChroniclePostgresTables private constructor() {
                 UPLOAD_DATA,
                 UPLOADED_AT,
                 UPLOAD_TYPE,
-                DEVICE_ID
+                RANDOM_DEVICE_ID
             )
 
         @JvmField
@@ -1161,7 +1036,12 @@ public class ChroniclePostgresTables private constructor() {
                 PostgresEventColumns.ORGANIZATION_ID,
                 PostgresEventColumns.DESCRIPTION,
                 PostgresEventColumns.DATA,
-                PostgresEventColumns.TIMESTAMP
+                PostgresEventColumns.TIMESTAMP,
+                PostgresEventColumns.AUDIT_EVENT_ID,
+                PostgresEventColumns.CLIENT_IP_REF,
+                PostgresEventColumns.USER_AGENT,
+                PostgresEventColumns.REQUEST_PATH,
+                PostgresEventColumns.REQUEST_METHOD,
             )
 
         /**
@@ -1177,31 +1057,7 @@ public class ChroniclePostgresTables private constructor() {
 
         @JvmStatic
         public fun getMoveSql(batchSize: Int = 65536, uploadType: UploadType, fencedStudies: Collection<UUID>? = null): String {
-            return buildMoveSql(batchSize, uploadType, scoped = false, fencedStudies)
-        }
-
-        /**
-         * Claims rows for one exact subject. Unlike the production opportunistic drain, this deliberately waits
-         * for an existing row claimant. A scoped flush therefore cannot report completion while another
-         * transaction still owns that subject's upload-buffer row.
-         *
-         * Bind parameters are study id then participant id.
-         */
-        @JvmStatic
-        public fun getScopedMoveSql(batchSize: Int = 65536, uploadType: UploadType, fencedStudies: Collection<UUID>? = null): String {
-            return buildMoveSql(batchSize, uploadType, scoped = true, fencedStudies)
-        }
-
-        private fun buildMoveSql(batchSize: Int, uploadType: UploadType, scoped: Boolean, fencedStudies: Collection<UUID>?): String {
             require(batchSize > 0) { "Move batch size must be positive" }
-            val subjectFilter = if (scoped) {
-                """
-                    AND candidate.${STUDY_ID.name} = ?
-                    AND candidate.${PARTICIPANT_ID.name} = ?
-                """.trimIndent()
-            } else {
-                ""
-            }
             // A newly arrived study was not part of the pre-lock census. Leave it for the next
             // drain instead of acquiring its study fence after owning global table/row locks.
             val studyFilter = when {
@@ -1209,7 +1065,6 @@ public class ChroniclePostgresTables private constructor() {
                 fencedStudies.isEmpty() -> "AND false"
                 else -> "AND candidate.${STUDY_ID.name} IN (${fencedStudies.joinToString { "'$it'::uuid" }})"
             }
-            val lockClause = if (scoped) "FOR UPDATE" else "FOR UPDATE SKIP LOCKED"
             val byteBound = if (uploadType == UploadType.Android) {
                 "WHERE claimed_bytes <= $MAX_ANDROID_CLAIM_BYTES OR claim_order = 1"
             } else ""
@@ -1225,10 +1080,9 @@ public class ChroniclePostgresTables private constructor() {
                     FROM ${UPLOAD_BUFFER.name} AS candidate
                     WHERE candidate.${UPLOAD_TYPE.name} = '${uploadType.name}'
                       AND chronicle_participant_mutation_allowed(candidate.${STUDY_ID.name}, candidate.${PARTICIPANT_ID.name})
-                    $subjectFilter
                     $studyFilter
                     ORDER BY candidate.${UPLOADED_AT.name}, candidate.ctid
-                    $lockClause
+                    FOR UPDATE SKIP LOCKED
                     LIMIT $batchSize
                 ), bounded AS (
                     SELECT ctid, row_number() OVER (ORDER BY ${UPLOADED_AT.name}, ctid) AS claim_order,
@@ -1249,12 +1103,12 @@ public class ChroniclePostgresTables private constructor() {
                 .addIndexes(PostgresColumnsIndexDefinition(ORGANIZATION_STUDIES, ORGANIZATION_ID).ifNotExists())
             DEVICES
                 .addIndexes(
-                    //(study id, participant id, device id) is unique per device
+                    //(study id, participant id, random device id) is unique per device
                     PostgresColumnsIndexDefinition(
                         DEVICES,
                         STUDY_ID,
                         PARTICIPANT_ID,
-                        DEVICE_ID
+                        RANDOM_DEVICE_ID
                     ).ifNotExists().unique(),
                     PostgresColumnsIndexDefinition(
                         DEVICES,
@@ -1302,14 +1156,6 @@ public class ChroniclePostgresTables private constructor() {
             APP_AUDIO_ACTIVITY.addIndexes(
                 PostgresColumnsIndexDefinition(
                     APP_AUDIO_ACTIVITY,
-                    STUDY_ID,
-                    PARTICIPANT_ID,
-                    SAMPLE_TIMESTAMP
-                ).ifNotExists()
-            )
-            AMBIENT_AUDIO_EVENTS.addIndexes(
-                PostgresColumnsIndexDefinition(
-                    AMBIENT_AUDIO_EVENTS,
                     STUDY_ID,
                     PARTICIPANT_ID,
                     SAMPLE_TIMESTAMP
@@ -1377,20 +1223,6 @@ public class ChroniclePostgresTables private constructor() {
                     STUDY_ID,
                     PARTICIPANT_ID,
                     SAMPLE_TIMESTAMP
-                ).ifNotExists()
-            )
-            ENCRYPTED_PAYLOADS.addIndexes(
-                PostgresColumnsIndexDefinition(
-                    ENCRYPTED_PAYLOADS,
-                    STUDY_ID,
-                    PARTICIPANT_ID,
-                    UPLOADED_AT
-                ).ifNotExists()
-            )
-            PIPELINE_RUNS.addIndexes(
-                PostgresColumnsIndexDefinition(
-                    PIPELINE_RUNS,
-                    STUDY_ID
                 ).ifNotExists()
             )
             STUDY_SETTINGS_AUDIT.addIndexes(

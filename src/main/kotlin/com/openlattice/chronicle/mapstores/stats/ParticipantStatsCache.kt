@@ -301,8 +301,8 @@ internal class ParticipantStatsDeletionGuard(
 }
 
 /**
- * Keeps legacy direct orchestrator tests focused on SQL behavior. Production
- * construction requires the Hazelcast-backed implementation.
+ * Runs erasure transactions while the backend and its caches are stopped, including
+ * one-shot restore reconciliation. Online construction uses the Hazelcast implementation.
  */
 internal object TransactionOnlyParticipantStatsCache : ParticipantStatsCache {
     override fun get(studyId: UUID, participantId: String): ParticipantStats? =

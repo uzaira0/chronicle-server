@@ -55,7 +55,7 @@ import jakarta.inject.Inject
 
 @Configuration
 @Import(PostgresPod::class)
-public open class MapstoresPod {
+public open class MapstoresPod @Inject constructor(private val storageResolver: StorageResolver) {
     // reason: DI-injected dependency kept to preserve Spring bean-initialization ordering
     // (PostgresTableManager must be constructed even though this pod does not read it directly)
     @Suppress("UnusedPrivateProperty")
@@ -65,85 +65,82 @@ public open class MapstoresPod {
     @Inject
     private lateinit var eventBus: EventBus
 
-    @Inject
-    private lateinit var storageResolver: StorageResolver
-
     // reason: DI-injected dependency kept to preserve Spring bean-initialization ordering
     @Suppress("UnusedPrivateProperty")
     @Inject
     private lateinit var jdbi: Jdbi
 
+    // Hazelcast loads and write-behind workers run outside servlet request scopes.
+    private val systemStorage get() = RLSDataSources.wrapWithSystemContext(storageResolver.getPlatformStorage())
+
     @Bean
     public fun studyLimitsMapstore(): StudyLimitsMapstore {
-        return StudyLimitsMapstore(storageResolver.getPlatformStorage())
+        return StudyLimitsMapstore(systemStorage)
     }
 
     @Bean
     public fun jobsMapstore(): SelfRegisteringMapStore<UUID, DistributableJob<*>> {
-        return PostgresJobsMapStore(storageResolver.getPlatformStorage())
+        return PostgresJobsMapStore(systemStorage)
     }
 
     @Bean
     public fun studyMapstore(): StudyMapstore {
-        return StudyMapstore(storageResolver.getPlatformStorage())
+        return StudyMapstore(systemStorage)
     }
 
     @Bean
     public fun permissionMapstore(): SelfRegisteringMapStore<AceKey, AceValue> {
-        return PermissionMapstore(storageResolver.getPlatformStorage(), eventBus)
+        return PermissionMapstore(systemStorage, eventBus)
     }
 
     @Bean
     public fun filteredAppsMapstore(): SelfRegisteringMapStore<UUID, KotlinDelegatedStringSet> {
-        return FilteredAppsMapstore(storageResolver.getPlatformStorage())
+        return FilteredAppsMapstore(systemStorage)
     }
 
     @Bean
     public fun securableObjectTypeMapstore(): SelfRegisteringMapStore<AclKey, SecurableObjectType> {
-        return SecurableObjectTypeMapstore(storageResolver.getPlatformStorage())
+        return SecurableObjectTypeMapstore(systemStorage)
     }
 
     //    @Bean
     //    public SelfRegisteringMapStore<String, UUID> aclKeysMapstore() {
-    //        return new AclKeysMapstore( storageResolver.getPlatformStorage() );
+    //        return new AclKeysMapstore( systemStorage );
     //    }
     @Bean
     public fun principalsMapstore(): SelfRegisteringMapStore<AclKey, SecurablePrincipal> {
-        return PrincipalMapstore(storageResolver.getPlatformStorage())
+        return PrincipalMapstore(systemStorage)
     }
 
     @Bean
     public fun longIdsMapstore(): SelfRegisteringMapStore<String, Long> {
-        return LongIdsMapstore(storageResolver.getPlatformStorage())
+        return LongIdsMapstore(systemStorage)
     }
 
     @Bean
     public fun userMapstore(): SelfRegisteringMapStore<String, ChronicleUserProfile> {
-        return UserMapstore(storageResolver.getPlatformStorage())
+        return UserMapstore(systemStorage)
     }
 
     //
     //    @Bean
     //    public SelfRegisteringMapStore<UUID, Organization> organizationsMapstore() {
-    //        return new OrganizationsMapstore( storageResolver.getPlatformStorage() );
+    //        return new OrganizationsMapstore( systemStorage );
     //    }
     @Bean
     public fun idGenerationMapstore(): SelfRegisteringMapStore<Long, Range> {
-        return IdGenerationMapstore(storageResolver.getPlatformStorage())
+        return IdGenerationMapstore(systemStorage)
     }
 
     @Bean
     public fun principalTreesMapstore(): PrincipalTreesMapstore {
-        return PrincipalTreesMapstore(storageResolver.getPlatformStorage())
+        return PrincipalTreesMapstore(systemStorage)
     }
 
     @Bean
     public fun participantStatsMapstore(): ParticipantStatsMapstore {
-        // Hazelcast persists this map on write-behind worker threads, after the request
-        // ThreadLocal has been cleared. Give only this trusted internal store an explicit
-        // system RLS context; normal request datasources remain study-scoped and fail closed.
         return ParticipantStatsMapstore(
-            RLSDataSources.wrapWithSystemContext(storageResolver.getPlatformStorage())
+            systemStorage
         )
     }
 

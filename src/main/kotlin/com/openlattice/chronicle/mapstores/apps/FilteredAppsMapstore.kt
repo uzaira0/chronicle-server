@@ -1,10 +1,12 @@
 package com.openlattice.chronicle.mapstores.apps
 
+import com.openlattice.chronicle.util.SqlFailures
+
+import com.openlattice.chronicle.storage.StreamingReadTransaction
 import com.geekbeast.postgres.PostgresArrays
 import com.geekbeast.postgres.PostgresArrays.getTextArray
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
-import com.geekbeast.postgres.streams.StatementHolderSupplier
 import com.geekbeast.rhizome.KotlinDelegatedStringSet
 import com.geekbeast.rhizome.mapstores.TestableSelfRegisteringMapStore
 import com.hazelcast.config.MapConfig
@@ -69,13 +71,14 @@ public open class FilteredAppsMapstore(
 
     override fun loadAllKeys(): Iterable<UUID> {
         return BasePostgresIterable(
-            StatementHolderSupplier(hds, LOAD_ALL_KEYS_SQL, 50000, false, 0L)
+            StreamingReadTransaction(hds, LOAD_ALL_KEYS_SQL, 50000, longRunningQueryLimit = 0L)
         ) { rs: ResultSet ->
             try {
                 ResultSetAdapters.studyId(rs)
             } catch (e: SQLException) {
-                logger.error("Unable to read keys for map {}.", mapName, e)
-                throw IllegalStateException("Unable to read keys.", e)
+                val failure = SqlFailures.sanitize(e)
+                logger.error("Unable to read keys for map {}.", mapName, failure)
+                throw failure
             }
         }
     }

@@ -6,7 +6,6 @@ import com.geekbeast.postgres.PostgresDatatype
 import com.geekbeast.util.StopWatch
 import com.openlattice.chronicle.services.upload.UsageEventQueueEntry
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.MAX_BIND_PARAMETERS
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.COLLECTED_AT
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.TIMESTAMP
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.UPLOADED_AT
 import com.openlattice.chronicle.storage.PostgresEventTables.Companion.CHRONICLE_USAGE_EVENTS
@@ -27,7 +26,6 @@ import kotlin.math.min
 
 internal object UsageEventStorageWriter {
     private val UPLOAD_AT_INDEX = getInsertUsageEventColumnIndex(UPLOADED_AT)
-    private val COLLECTED_AT_INDEX = getInsertUsageEventColumnIndex(COLLECTED_AT)
     // Column growth must keep full batches below the Postgres bind-parameter ceiling.
     private val EVENT_INSERT_BATCH_SIZE = (MAX_BIND_PARAMETERS - 1) / CHRONICLE_USAGE_EVENTS.columns.size
 
@@ -67,21 +65,17 @@ internal object UsageEventStorageWriter {
                 val studies = data.map { it.studyId.toString() }.toSet()
                 val participants = data.map { it.participantId }.toSet()
 
+                // ON CONFLICT absorbs two unique indexes (V1): chronicle_usage_events_identity (the same logical
+                // event in one upload) and chronicle_usage_events_client_event_idx (a retried phone event).
                 val insertBatchSize = min(data.size, EVENT_INSERT_BATCH_SIZE)
                 logger.info("Preparing primary insert statement with batch size $insertBatchSize")
-                val insertSql = buildMultilineInsertUsageEvents(
-                    insertBatchSize,
-                    false
-                )
+                val insertSql = buildMultilineInsertUsageEvents(insertBatchSize, includeOnConflict = true)
 
                 val dr = data.size % EVENT_INSERT_BATCH_SIZE
 
                 val finalInsertSql = if (data.size > EVENT_INSERT_BATCH_SIZE && dr != 0) {
                     logger.info("Preparing secondary insert statement with batch size $dr")
-                    buildMultilineInsertUsageEvents(
-                        dr,
-                        false
-                    )
+                    buildMultilineInsertUsageEvents(dr, includeOnConflict = true)
                 } else {
                     insertSql
                 }
@@ -139,13 +133,6 @@ internal object UsageEventStorageWriter {
                                         }
                                     }
                                     ps.setObject(indexBase + UPLOAD_AT_INDEX, usageEventCols.uploadedAt)
-                                    // Legacy buffered rows fall back to receipt time when collected_at is absent.
-                                    val collectedAt =
-                                        odtFromUsageEventColumn(usageEventCols.data[COLLECTED_AT.name]?.value)
-                                    ps.setObject(
-                                        indexBase + COLLECTED_AT_INDEX,
-                                        collectedAt ?: usageEventCols.uploadedAt
-                                    )
                                     indexBase += CHRONICLE_USAGE_EVENTS.columns.size
 
                                 }
@@ -201,8 +188,14 @@ internal object UsageEventStorageWriter {
                     LogSanitizer.stableFingerprints(participants, "participant")
                 ).use {
                     connection.createStatement().use { stmt ->
-                        stmt.execute(getDeleteUsageEventsFromTempTable(tempTableName))
+                        val duplicates = stmt.executeUpdate(getDeleteUsageEventsFromTempTable(tempTableName))
                         stmt.execute("DROP TABLE $tempTableName")
+                        logger.info(
+                            "Removed {} logical duplicate usage events for studies = {} and participantRefs = {}",
+                            duplicates,
+                            studies,
+                            LogSanitizer.stableFingerprints(participants, "participant")
+                        )
                     }
                 }
 

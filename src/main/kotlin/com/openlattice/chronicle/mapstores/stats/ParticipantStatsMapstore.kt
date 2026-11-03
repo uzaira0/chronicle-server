@@ -12,6 +12,18 @@ import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.participants.ParticipantStats
 import com.openlattice.chronicle.postgres.ResultSetAdapters
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.PARTICIPANT_STATS
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_FIRST_DATE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_LAST_DATE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_LAST_PING
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.ANDROID_UNIQUE_DATES
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_FIRST_DATE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_LAST_DATE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_LAST_PING
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.IOS_UNIQUE_DATES
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.TUD_FIRST_DATE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.TUD_LAST_DATE
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.TUD_UNIQUE_DATES
+import com.openlattice.chronicle.util.SqlFailures
 import com.openlattice.chronicle.util.tests.TestDataFactory
 import com.zaxxer.hikari.HikariDataSource
 import org.apache.commons.lang3.RandomStringUtils
@@ -20,6 +32,8 @@ import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
+import java.time.OffsetDateTime
+import java.time.ZonedDateTime
 import java.util.ArrayDeque
 import java.util.Collections
 import java.util.IdentityHashMap
@@ -48,6 +62,39 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
         }
     }
 
+    /** Matches the SQL now() receipt instant, in the upload owner's transaction. */
+    internal fun recordAndroidUploadUsing(connection: Connection, studyId: UUID, participantId: String) {
+        mergeUsing(connection, ParticipantStats(studyId, participantId, androidLastPing = receiptTime(connection)))
+    }
+
+    /** iOS receipt instant plus the participant-local capture days of [captures], in the upload owner's transaction. */
+    internal fun recordIosUploadUsing(
+        connection: Connection,
+        studyId: UUID,
+        participantId: String,
+        captures: Collection<ZonedDateTime>,
+    ) {
+        require(captures.isNotEmpty()) { "An iOS upload records at least one capture" }
+        mergeUsing(
+            connection,
+            ParticipantStats(
+                studyId, participantId,
+                iosLastPing = receiptTime(connection),
+                iosFirstDate = captures.min().toOffsetDateTime(),
+                iosLastDate = captures.max().toOffsetDateTime(),
+                iosUniqueDates = captures.mapTo(linkedSetOf()) { it.toLocalDate() },
+            ),
+        )
+    }
+
+    private fun receiptTime(connection: Connection): OffsetDateTime =
+        connection.prepareStatement(RECEIPT_TIME_SQL).use { statement ->
+            statement.executeQuery().use { rows ->
+                check(rows.next()) { "Upload receipt timestamp is missing" }
+                rows.getObject(1, OffsetDateTime::class.java)
+            }
+        }
+
     override fun getMapStoreConfig(): MapStoreConfig {
         return super.getMapStoreConfig()
             .setInitialLoadMode(MapStoreConfig.InitialLoadMode.LAZY)
@@ -72,7 +119,6 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
             hds.connection.use { connection ->
                 prepareInsert(connection).use { insertRow ->
                     bind(insertRow, key, value)
-                    logger.debug("Insert query: {}", insertRow)
                     insertRow.execute()
                     handleStoreSucceeded(key, value)
                 }
@@ -87,9 +133,9 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
             }
 
             val message = "Error executing SQL during store for key $key in map $mapName."
-            logger.error(message, failure)
+            logSqlFailure(message, failure)
             handleStoreFailed(key, value)
-            throw IllegalStateException(message, failure)
+            throw SqlFailures.sanitize(failure)
         }
     }
 
@@ -118,8 +164,8 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
             }
 
             val message = "Error executing SQL during store all for key $lastKey in map $mapName."
-            logger.error(message, failure)
-            throw IllegalStateException(message, failure)
+            logSqlFailure(message, failure)
+            throw SqlFailures.sanitize(failure)
         }
     }
 
@@ -186,6 +232,10 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
         return ResultSetAdapters.participantStats(rs)
     }
 
+    private fun logSqlFailure(message: String, failure: SQLException) {
+        logger.error("{} category={} sqlState={}", message, failure.javaClass.simpleName, failure.sqlState)
+    }
+
     private fun deletionGuardConfirmsBlocked(
         key: ParticipantKey,
         originalFailure: SQLException,
@@ -229,23 +279,40 @@ public open class ParticipantStatsMapstore(hds: HikariDataSource) : AbstractBase
         return false
     }
 
-    private companion object {
+    internal companion object {
+        internal const val RECEIPT_TIME_SQL = "SELECT now()"
+
+        private enum class Merge(val sql: (current: String, incoming: String) -> String) {
+            UNION({ current, incoming -> "ARRAY(SELECT DISTINCT day FROM unnest($current || $incoming) day)" }),
+            EARLIEST({ current, incoming -> "LEAST($current, $incoming)" }),
+            LATEST({ current, incoming -> "GREATEST($current, $incoming)" }),
+        }
+
+        /** Every stats column states how a delayed cache write merges with the stored row. */
+        private val MERGE_RULES = mapOf(
+            ANDROID_LAST_PING to Merge.LATEST,
+            ANDROID_FIRST_DATE to Merge.EARLIEST,
+            ANDROID_LAST_DATE to Merge.LATEST,
+            ANDROID_UNIQUE_DATES to Merge.UNION,
+            IOS_LAST_PING to Merge.LATEST,
+            IOS_FIRST_DATE to Merge.EARLIEST,
+            IOS_LAST_DATE to Merge.LATEST,
+            IOS_UNIQUE_DATES to Merge.UNION,
+            TUD_FIRST_DATE to Merge.EARLIEST,
+            TUD_LAST_DATE to Merge.LATEST,
+            TUD_UNIQUE_DATES to Merge.UNION,
+        )
+
         private val MERGE_SQL = run {
+            val key = PARTICIPANT_STATS.primaryKey
             val columns = PARTICIPANT_STATS.columns.map { it.name }
-            val updates = columns.drop(2).joinToString(", ") { name ->
-                val incoming = "EXCLUDED.$name"
-                val current = "participant_stats.$name"
-                val value = when {
-                    name.endsWith("unique_dates") ->
-                        "ARRAY(SELECT DISTINCT day FROM unnest($current || $incoming) day)"
-                    name.endsWith("first_date") -> "LEAST($current, $incoming)"
-                    else -> "GREATEST($current, $incoming)"
-                }
-                "$name = $value"
+            val updates = PARTICIPANT_STATS.columns.filterNot(key::contains).joinToString(", ") { column ->
+                val merge = checkNotNull(MERGE_RULES[column]) { "participant_stats.${column.name} has no merge rule" }
+                "${column.name} = ${merge.sql("participant_stats.${column.name}", "EXCLUDED.${column.name}")}"
             }
             "INSERT INTO participant_stats (${columns.joinToString(", ")}) " +
                 "VALUES (${columns.joinToString(", ") { "?" }}) " +
-                "ON CONFLICT (study_id, participant_id) DO UPDATE SET $updates"
+                "ON CONFLICT (${key.joinToString(", ") { it.name }}) DO UPDATE SET $updates"
         }
 
         private const val RLS_REJECTION_SQL_STATE = "42501"

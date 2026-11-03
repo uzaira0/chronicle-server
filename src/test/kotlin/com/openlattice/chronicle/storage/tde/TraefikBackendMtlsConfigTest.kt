@@ -10,8 +10,8 @@ import org.junit.Test
 import java.io.File
 
 /**
- * W4 — Traefik↔backend mTLS serversTransport CONFIG assertion (HIPAA §164.312(e)(1) — transmission
- * security; mutual authentication + encryption of the last internal hop).
+ * Traefik↔backend mTLS serversTransport CONFIG assertion (mutual authentication + encryption of the
+ * last internal hop).
  *
  * Full mTLS connectivity is a two-sided, cert-dependent cutover (backend `require-client-auth` +
  * mounted certs), so it is intentionally staged DEFAULT-OFF and enabled operationally — it cannot be
@@ -20,8 +20,7 @@ import java.io.File
  * `insecureSkipVerify` on, drops the CA, or removes the client cert — turning "mutual + verified TLS"
  * into "blind TLS") fails the build here.
  *
- * This is the W4 mTLS "container-structure-test assertion" the design called for, expressed as a
- * structural config test (the repo's testing idiom). It parses the actual dynamic-config file Traefik
+ * It is a structural config test: it parses the actual dynamic-config file Traefik
  * loads and asserts the transport's security invariants.
  *
  * When chronicle-server is built standalone (no monorepo checkout, so `docker/` is absent) the test

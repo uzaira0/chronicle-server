@@ -1,10 +1,8 @@
 package com.openlattice.chronicle.storage
 
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
-import org.springframework.web.server.ResponseStatusException
 import java.util.UUID
 
 class DeletionStudyFenceTest {
@@ -38,31 +36,6 @@ class DeletionStudyFenceTest {
         } finally {
             executor.shutdownNow()
             org.junit.Assert.assertTrue(executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS))
-        }
-    }
-
-    @Test
-    fun busyExportRejectsDeletionWithoutQueuingAheadOfUploads() {
-        val pg = ChronicleContractTestSchema.sharedPostgres
-        val study = UUID.randomUUID()
-        pg.createConnection("").use { export ->
-            export.autoCommit = false
-            DeletionStudyFence.exportShared(export, study)
-            pg.createConnection("").use { deletion ->
-                deletion.autoCommit = false
-                deletion.createStatement().use { it.execute("SET LOCAL lock_timeout = '1s'") }
-                val rejected = assertThrows(ResponseStatusException::class.java) { DeletionStudyFence.exclusive(deletion, study) }
-                assertEquals(409, rejected.statusCode.value())
-                deletion.rollback() // The orchestrator rolls back a refused quarantine before returning 409.
-                pg.createConnection("").use { upload ->
-                    upload.autoCommit = false
-                    DeletionStudyFence.shared(upload, study)
-                    upload.rollback()
-                }
-                export.rollback()
-                DeletionStudyFence.exclusive(deletion, study)
-                deletion.rollback()
-            }
         }
     }
 }

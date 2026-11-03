@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.android.AndroidSensorSample
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.ANDROID_SENSOR_DATA
-import com.openlattice.chronicle.storage.PostgresColumns.Companion.DEVICE_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.RANDOM_DEVICE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SAMPLE_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SAMPLE_TIMESTAMP
@@ -17,14 +17,19 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_X
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_Y
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.SENSOR_Z
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.UPLOADED_AT
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.sql.Statement
 import java.sql.Types
+import java.time.OffsetDateTime
 import java.util.UUID
 
-/** Shared idempotent writer used by direct ingestion and the legacy upload-buffer drain. */
+/**
+ * Shared idempotent writer used by direct ingestion and the legacy upload-buffer drain. The receipt is
+ * the database's: now() for a direct upload, or the buffer row's own receipt when the drain moves it.
+ */
 internal object AndroidSensorDataWriter {
     private val mapper: ObjectMapper = ObjectMappers.newJsonMapper()
 
@@ -36,14 +41,15 @@ internal object AndroidSensorDataWriter {
             ${SENSOR_TYPE.name},
             ${SAMPLE_TIMESTAMP.name},
             ${SENSOR_TIMEZONE.name},
-            ${DEVICE_ID.name},
+            ${RANDOM_DEVICE_ID.name},
             ${SENSOR_X.name},
             ${SENSOR_Y.name},
             ${SENSOR_Z.name},
             ${SENSOR_W.name},
             ${SENSOR_VALUES.name},
-            ${SENSOR_ACCURACY.name}
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?)
+            ${SENSOR_ACCURACY.name},
+            ${UPLOADED_AT.name}
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?::jsonb,?,COALESCE(?::timestamptz, now()))
         ON CONFLICT (${SAMPLE_ID.name}) DO NOTHING
     """.trimIndent()
 
@@ -51,22 +57,26 @@ internal object AndroidSensorDataWriter {
         connection: Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         samples: List<AndroidSensorSample>,
     ): Int = connection.prepareStatement(insertSql).use { ps ->
-        write(ps, studyId, participantId, deviceId, samples)
+        write(ps, studyId, participantId, randomDeviceId, samples)
     }
 
     internal fun write(
         ps: PreparedStatement,
         studyId: UUID?,
         participantId: String,
-        deviceId: UUID?,
+        randomDeviceId: UUID?,
         samples: List<AndroidSensorSample>,
+        bufferReceipt: OffsetDateTime? = null,
     ): Int {
         val cutoff = studyId?.let { ParticipantPurgeCutoff.load(ps.connection, it, participantId) }
-        samples.filter { ParticipantPurgeCutoff.permits(cutoff, it.timestamp) }.forEach { sample -> bind(ps, studyId, participantId, deviceId,
-            sample) }
+        samples.filter { ParticipantPurgeCutoff.permits(cutoff, it.timestamp) }.forEach { sample ->
+            bind(ps, studyId, participantId, randomDeviceId, sample)
+            ps.setObject(14, bufferReceipt)
+            ps.addBatch()
+        }
         val results = ps.executeBatch()
         ps.clearBatch()
         return results.sumOf { result ->
@@ -83,7 +93,7 @@ internal object AndroidSensorDataWriter {
         ps: PreparedStatement,
         studyId: UUID?,
         participantId: String,
-        deviceId: UUID?,
+        randomDeviceId: UUID?,
         sample: AndroidSensorSample,
     ) {
         ps.setObject(1, studyId)
@@ -92,7 +102,7 @@ internal object AndroidSensorDataWriter {
         ps.setString(4, sample.sensor.name)
         ps.setObject(5, sample.timestamp)
         ps.setString(6, sample.timezone)
-        ps.setObject(7, deviceId)
+        ps.setObject(7, randomDeviceId)
         bindNullableFloat(ps, 8, sample.x)
         bindNullableFloat(ps, 9, sample.y)
         bindNullableFloat(ps, 10, sample.z)
@@ -100,7 +110,6 @@ internal object AndroidSensorDataWriter {
         ps.setString(12, mapper.writeValueAsString(sample.values))
         val accuracy = sample.accuracy
         if (accuracy != null) ps.setInt(13, accuracy) else ps.setNull(13, Types.INTEGER)
-        ps.addBatch()
     }
 
     private fun bindNullableFloat(ps: PreparedStatement, index: Int, value: Float?) {

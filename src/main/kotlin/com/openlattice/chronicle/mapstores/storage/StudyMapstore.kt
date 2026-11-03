@@ -1,9 +1,9 @@
 package com.openlattice.chronicle.mapstores.storage
 
+import com.openlattice.chronicle.storage.StreamingReadTransaction
 import com.geekbeast.postgres.PostgresArrays
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
-import com.geekbeast.postgres.streams.StatementHolderSupplier
 import com.geekbeast.rhizome.mapstores.TestableSelfRegisteringMapStore
 import com.hazelcast.config.IndexConfig
 import com.hazelcast.config.IndexType
@@ -69,7 +69,7 @@ public open class StudyMapstore(public val hds: HikariDataSource) : TestableSelf
     }
 
     override fun loadAllKeys(): Iterable<UUID> {
-        return BasePostgresIterable(StatementHolderSupplier(hds, LOAD_STUDY_IDS, fetchSize = 65536)) { mapKey(it) }
+        return BasePostgresIterable(StreamingReadTransaction(hds, LOAD_STUDY_IDS, fetchSize = 65536)) { mapKey(it) }
     }
 
     override fun store(key: UUID, value: Study) {
