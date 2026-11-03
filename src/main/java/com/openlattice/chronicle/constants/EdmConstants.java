@@ -2,10 +2,7 @@ package com.openlattice.chronicle.constants;
 
 import org.apache.olingo.commons.api.edm.FullQualifiedName;
 
-import java.util.Map;
 
-import static com.openlattice.chronicle.constants.CollectionTemplateTypeName.*;
-import static java.util.Map.entry;
 
 /**
  * @author alfoncenzioka &lt;alfonce@openlattice.com&gt;
@@ -38,31 +35,6 @@ public final class EdmConstants {
     public static final String SUBMISSION_ES        = "chronicle_submission";
     public static final String TIMERANGE_ES         = "chronicle_timerange";
     public static final String USED_BY_ES           = "chronicle_used_by";
-
-    public static final Map<String, CollectionTemplateTypeName> LEGACY_DATASET_COLLECTION_TEMPLATE_MAP = Map
-            .ofEntries(
-                    entry( ADDRESSES_ES, ADDRESSES ),
-                    entry( ANSWERS_ES, ANSWER ),
-                    entry( APPS_DICTIONARY_ES, APP_DICTIONARY ),
-                    entry( USER_APPS_ES, USER_APPS ),
-                    entry( DATA_ES, APPDATA ),
-                    entry( DEVICES_ES, DEVICE ),
-                    entry( HAS_ES, HAS ),
-                    entry( METADATA_ES, METADATA ),
-                    entry( NOTIFICATION_ES, NOTIFICATION ),
-                    entry( PARTICIPATED_IN_ES, PARTICIPATED_IN ),
-                    entry( PART_OF_ES, PART_OF ),
-                    entry( PREPROCESSED_DATA_ES, PREPROCESSED_DATA ),
-                    entry( QUESTIONNAIRE_ES, SURVEY ),
-                    entry( QUESTIONS_ES, QUESTION ),
-                    entry( RECORDED_BY_ES, RECORDED_BY ),
-                    entry( RESPONDS_WITH_ES, RESPONDS_WITH ),
-                    entry( REGISTERED_FOR_ES, REGISTERED_FOR ),
-                    entry( STUDY_ES, STUDIES ),
-                    entry( SUBMISSION_ES, SUBMISSION ),
-                    entry( TIMERANGE_ES, TIME_RANGE ),
-                    entry( USED_BY_ES, USED_BY )
-            );
 
     // property types
     public static final FullQualifiedName COMPLETED_DATE_TIME_FQN = new FullQualifiedName( "date.completeddatetime" );
