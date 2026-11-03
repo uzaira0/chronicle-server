@@ -6,20 +6,19 @@ import com.openlattice.chronicle.storage.PostgresEventTables
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import java.sql.Connection
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.BeforeClass
 import org.junit.Test
-import java.io.File
-import java.sql.Connection
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider
+import org.springframework.context.annotation.Configuration
+import org.springframework.core.type.filter.AnnotationTypeFilter
 
 // =============================================================================
-// Tranche 6 (docs/shared-contracts/06-web-backend-db-alignment.md §Backend /
-// §Database, 08-rollout-sequence.md): the REQUIRED MODULE CONTRACT MATRIX.
-//
-// This file declares, in test source, one explicit contract row for EVERY
-// active CollectionModuleId and enforces it four ways:
+// The matrix covers every active CollectionModuleId and enforces four contracts:
 //
 //   Test A (CollectionModuleCoverageMatrixTest)   — static completeness:
 //       active enum <-> matrix is exactly 1:1; retired/reserved ids never
@@ -27,7 +26,7 @@ import java.sql.Connection
 //       row is added/removed.
 //   Test B (CollectionModuleCoverageMatrixTest)   — handler existence/wiring:
 //       every row's handler class loads on the classpath, is registered in
-//       ChronicleServerServicesPod (when it is a Spring bean), and its
+//       a services pod (when it is a Spring bean), and its
 //       controller entry points exist in StudyController / StudyV4Controller /
 //       SurveyController source.
 //   Test C (CollectionModuleCoverageMatrixDbTest) — DB reality, Testcontainers:
@@ -36,15 +35,14 @@ import java.sql.Connection
 //       idempotency constraint (pg_constraint) and RLS state (pg_class /
 //       pg_policies) are asserted.
 //   Test D (CollectionModuleCoverageMatrixTest)   — export eligibility:
-//       the ParticipantDataType export lanes (ExportService -> DataDownload*)
+//       the ParticipantDataType export lanes (StudyController export -> DataDownload*)
 //       are pinned to their physical tables, and each row's exportEligible
 //       flag must equal "its table is served by an export lane".
 //
 // The matrix values were derived by reading the upload services
 // (services/upload/*), StudyController / StudyV4Controller / SurveyController,
 // ChroniclePostgresTables / PostgresEventTables, the movers
-// (MoveAndroidSensorDataToStorageTask, MoveToEventStorageTask,
-// MoveToIosEventStorageTask) and the Flyway corpus under
+// (MoveAndroidSensorDataToStorageTask, MoveToEventStorageTask) and the Flyway corpus under
 // src/main/resources/db/migration — not guessed.
 // =============================================================================
 
@@ -70,18 +68,18 @@ internal sealed class RlsExpectation {
     data class NotApplicable(val reason: String) : RlsExpectation()
 }
 
-/** One row of the required module contract matrix (doc 06 §"Required module contract matrix"). */
+/** One row of the required module contract matrix. */
 internal data class ModuleContractRow(
     val module: CollectionModuleId,
     /** FQCN of the ingesting handler; null only for documented no-upload modules. */
     val handlerClass: String?,
-    /** Is the handler a bean built in ChronicleServerServicesPod (vs a Kotlin object / controller)? */
+    /** Is the handler a bean declared by a services pod (vs a Kotlin object / controller)? */
     val handlerIsPodBean: Boolean,
-    /** Ingesting method that must exist in StudyController.kt (or SurveyController.kt). */
+    /** Ingesting method that must exist on StudyController (or SurveyController). */
     val controllerMethod: String?,
-    /** Kotlin file (relative to chronicle-server) that must declare [controllerMethod]. */
-    val controllerFile: String,
-    /** V4 endpoint method that must exist in StudyV4Controller.kt; null when the surface is not V4. */
+    /** Controller class (FQCN) that must declare [controllerMethod]. */
+    val controllerClass: String,
+    /** V4 endpoint method that must exist on StudyV4Controller; null when the surface is not V4. */
     val v4EndpointMethod: String?,
     /** Human-readable upload endpoint (documentation field). */
     val endpoint: String,
@@ -125,7 +123,7 @@ internal object CollectionModuleContractMatrix {
         handlerClass = "com.openlattice.chronicle.services.upload.$handlerSimpleName",
         handlerIsPodBean = true,
         controllerMethod = controllerMethod,
-        controllerFile = STUDY_CONTROLLER,
+        controllerClass = STUDY_CONTROLLER,
         v4EndpointMethod = v4Method,
         endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android$endpointSuffix",
         table = table,
@@ -141,7 +139,7 @@ internal object CollectionModuleContractMatrix {
     )
 
     /**
-     * The 12 active per-sensor hardware modules (per-sensor consent redesign, 2026-06-11).
+     * The 12 active per-sensor hardware modules.
      * All land directly in android_sensor_data through AndroidSensorDataUploadService, with
      * idempotent ON CONFLICT (sample_id) DO NOTHING semantics against the PK.
      */
@@ -164,8 +162,8 @@ internal object CollectionModuleContractMatrix {
         module = module,
         handlerClass = "com.openlattice.chronicle.services.upload.AndroidSensorDataUploadService",
         handlerIsPodBean = true,
-        controllerMethod = "uploadAndroidSensorData",
-        controllerFile = STUDY_CONTROLLER,
+        controllerMethod = "uploadAndroidSensorDataV4",
+        controllerClass = STUDY_CONTROLLER,
         v4EndpointMethod = "uploadAndroidSensorDataV4",
         endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android/sensors",
         table = "android_sensor_data",
@@ -176,25 +174,24 @@ internal object CollectionModuleContractMatrix {
         ),
         studyScopeColumn = "study_id",
         participantScopeColumn = "participant_id",
-        deviceScopeColumn = "device_id",
+        deviceScopeColumn = "random_device_id",
         eventTimestampColumn = "sample_timestamp",
         ingestionTimestampColumn = null,
         ingestionTimestampNote = "Direct ingestion commits the final table synchronously; " +
             "android_sensor_data intentionally carries no uploaded_at column.",
         rls = RlsExpectation.Policy("study_isolation_android_sensor_data"),
         exportEligible = true,
-        exportNote = "ParticipantDataType.AndroidSensor lane (ExportService -> " +
+        exportNote = "ParticipantDataType.AndroidSensor lane (StudyController export -> " +
             "DataDownloadService.getParticipantsAndroidSensorData).",
     )
 
-    // Source files asserted by Test B ----------------------------------------
+    // Compiled classes asserted by Test B (never their source text) -------------
 
-    const val STUDY_CONTROLLER = "src/main/kotlin/com/openlattice/chronicle/controllers/StudyController.kt"
-    const val STUDY_V4_CONTROLLER = "src/main/kotlin/com/openlattice/chronicle/controllers/StudyV4Controller.kt"
-    const val SURVEY_CONTROLLER = "src/main/kotlin/com/openlattice/chronicle/controllers/SurveyController.kt"
-    const val SERVICES_POD = "src/main/kotlin/com/openlattice/chronicle/pods/ChronicleServerServicesPod.kt"
-    const val EXPORT_SERVICE = "src/main/kotlin/com/openlattice/chronicle/services/export/ExportService.kt"
-    const val DOWNLOAD_SERVICE = "src/main/kotlin/com/openlattice/chronicle/services/download/DataDownloadService.kt"
+    const val STUDY_CONTROLLER = "com.openlattice.chronicle.controllers.StudyController"
+    const val STUDY_V4_CONTROLLER = "com.openlattice.chronicle.controllers.StudyV4Controller"
+    const val SURVEY_CONTROLLER = "com.openlattice.chronicle.controllers.SurveyController"
+    // Bean registration is checked from compiled pod declarations below.
+    const val DOWNLOAD_SERVICE = "com.openlattice.chronicle.services.download.DataDownloadService"
 
     // The matrix --------------------------------------------------------------
 
@@ -205,15 +202,14 @@ internal object CollectionModuleContractMatrix {
             module = CollectionModuleId.USAGE_EVENTS,
             handlerClass = "com.openlattice.chronicle.services.upload.AppDataUploadService",
             handlerIsPodBean = true,
-            controllerMethod = "uploadAndroidUsageEventData",
-            controllerFile = STUDY_CONTROLLER,
+            controllerMethod = "uploadAndroidUsageEventDataV4",
+            controllerClass = STUDY_CONTROLLER,
             v4EndpointMethod = "uploadAndroidUsageEventDataV4",
             endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android",
             table = "chronicle_usage_events",
-            idempotency = Idempotency.Logical(
-                "No unique index by design: inserts use a bare ON CONFLICT DO NOTHING and duplicates " +
-                    "are merged by the scheduled dedup pass (PostgresEventTables.buildTempTableOfDuplicates " +
-                    "groups on all columns except uploaded_at, keeping min(uploaded_at)).",
+            idempotency = Idempotency.UniqueKey(setOf("study_id", "participant_id", "client_event_id"),
+                "A retried upload stores each phone-assigned client event ID once (ON CONFLICT DO NOTHING); " +
+                    "the scheduled dedup pass still merges rows that repeat the same content.",
             ),
             studyScopeColumn = "study_id",
             participantScopeColumn = "participant_id",
@@ -221,23 +217,23 @@ internal object CollectionModuleContractMatrix {
             ingestionTimestampColumn = "uploaded_at",
             rls = RlsExpectation.Policy("study_isolation_usage_events"),
             exportEligible = true,
-            exportNote = "ParticipantDataType.UsageEvents lane (ExportService -> " +
+            exportNote = "ParticipantDataType.UsageEvents lane (StudyController export -> " +
                 "DataDownloadService.getParticipantsUsageEventsData).",
         ),
         ModuleContractRow(
             module = CollectionModuleId.IN_APP_ACTIVITY_CLASS,
             // Shared-row module: the foreground Activity class rides each usage event as the
-            // activity_class column (V22); there is no separate payload, handler, or table.
+            // activity_class column; there is no separate payload, handler, or table.
             handlerClass = "com.openlattice.chronicle.services.upload.AppDataUploadService",
             handlerIsPodBean = true,
-            controllerMethod = "uploadAndroidUsageEventData",
-            controllerFile = STUDY_CONTROLLER,
+            controllerMethod = "uploadAndroidUsageEventDataV4",
+            controllerClass = STUDY_CONTROLLER,
             v4EndpointMethod = "uploadAndroidUsageEventDataV4",
             endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android " +
                 "(activity_class field of each usage event; stripped on-device when the module is off)",
             table = "chronicle_usage_events",
-            idempotency = Idempotency.Logical(
-                "Shares the usage-events row: same bare ON CONFLICT DO NOTHING + scheduled dedup merge.",
+            idempotency = Idempotency.UniqueKey(setOf("study_id", "participant_id", "client_event_id"),
+                "Shares the usage-events row and its client event ID index.",
             ),
             studyScopeColumn = "study_id",
             participantScopeColumn = "participant_id",
@@ -257,14 +253,14 @@ internal object CollectionModuleContractMatrix {
             // distinguished by event type.
             handlerClass = "com.openlattice.chronicle.services.upload.AppDataUploadService",
             handlerIsPodBean = true,
-            controllerMethod = "uploadAndroidUsageEventData",
-            controllerFile = STUDY_CONTROLLER,
+            controllerMethod = "uploadAndroidUsageEventDataV4",
+            controllerClass = STUDY_CONTROLLER,
             v4EndpointMethod = "uploadAndroidUsageEventDataV4",
             endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android " +
                 "(lifecycle events ride the ChronicleData usage-event payload)",
             table = "chronicle_usage_events",
-            idempotency = Idempotency.Logical(
-                "Shares the usage-events row: same bare ON CONFLICT DO NOTHING + scheduled dedup merge " +
+            idempotency = Idempotency.UniqueKey(setOf("study_id", "participant_id", "client_event_id"),
+                "Shares the usage-events row and its client event ID index " +
                     "(plus on-device dedup via PrefsLifecycleDedupeStore).",
             ),
             studyScopeColumn = "study_id",
@@ -276,34 +272,29 @@ internal object CollectionModuleContractMatrix {
             exportNote = "Exported with the UsageEvents lane (lifecycle rows are usage-event rows).",
         ),
 
-        // ---- iOS lane ----
         ModuleContractRow(
             module = CollectionModuleId.USER_IDENTIFICATION,
-            // Kotlin object (not a pod bean): converts the UserIdentificationEnvelope into
-            // SensorDataSamples and delegates to SensorDataUploadService -> upload_buffer ->
-            // MoveToIosEventStorageTask -> sensor_data.
-            handlerClass = "com.openlattice.chronicle.services.upload.UserIdentificationUploadService",
-            handlerIsPodBean = false,
-            controllerMethod = "uploadUserIdentificationData",
-            controllerFile = STUDY_CONTROLLER,
-            v4EndpointMethod = null,
-            endpoint = "POST /v3/study/{studyId}/participant/{participantId}/ios/{sourceDeviceId}/user-identification",
-            table = "sensor_data",
-            idempotency = Idempotency.Logical(
-                "No unique index by design: sensor_data dedup is the scheduled iOS merge pass " +
-                    "(PostgresEventTables.buildTempTableOfDuplicatesForIos).",
+            // Shared-row module: the phone's current device user (participant or someone else)
+            // rides each usage event as its username column; there is no separate payload or table.
+            handlerClass = "com.openlattice.chronicle.services.upload.AppDataUploadService",
+            handlerIsPodBean = true,
+            controllerMethod = "uploadAndroidUsageEventDataV4",
+            controllerClass = STUDY_CONTROLLER,
+            v4EndpointMethod = "uploadAndroidUsageEventDataV4",
+            endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android " +
+                "(username field of each usage event)",
+            table = "chronicle_usage_events",
+            idempotency = Idempotency.UniqueKey(setOf("study_id", "participant_id", "client_event_id"),
+                "Shares the usage-events row and its client event ID index.",
             ),
             studyScopeColumn = "study_id",
             participantScopeColumn = "participant_id",
-            eventTimestampColumn = "recordeddate",
-            ingestionTimestampColumn = null,
-            ingestionTimestampNote = "Ingestion time lives on upload_buffer.uploaded_at during staging; " +
-                "sensor_data keeps the exact_recordeddate utility column but no uploaded_at.",
-            extraColumns = setOf("exact_recordeddate", "sample_id"),
-            rls = RlsExpectation.Policy("study_isolation_sensor_data"),
+            eventTimestampColumn = "event_timestamp",
+            ingestionTimestampColumn = "uploaded_at",
+            extraColumns = setOf("username"),
+            rls = RlsExpectation.Policy("study_isolation_usage_events"),
             exportEligible = true,
-            exportNote = "ParticipantDataType.IOSSensor lane (ExportService -> " +
-                "DataDownloadService.getParticipantsSensorData over sensor_data).",
+            exportNote = "Exported with the UsageEvents lane; the username column is part of the usage-events download.",
         ),
 
         // ---- documented no-upload exception ----
@@ -312,12 +303,12 @@ internal object CollectionModuleContractMatrix {
             handlerClass = null,
             handlerIsPodBean = false,
             controllerMethod = null,
-            controllerFile = STUDY_CONTROLLER,
+            controllerClass = STUDY_CONTROLLER,
             v4EndpointMethod = null,
             endpoint = "none",
             table = null,
             noTableReason = "Device-local, read-only diagnostics module (OPERATIONAL_DIAGNOSTICS): " +
-                "UploadTelemetryCollectionModule only observes the on-device upload subsystem and renders " +
+                "the Android app only records the on-device upload subsystem and renders " +
                 "redaction-safe telemetry in the app. It uploads no payload, so there is no endpoint, " +
                 "handler, table, RLS policy, or export lane.",
             idempotency = null,
@@ -338,18 +329,18 @@ internal object CollectionModuleContractMatrix {
             handlerClass = "com.openlattice.chronicle.controllers.StudyController",
             handlerIsPodBean = false,
             controllerMethod = "reportAndroidSensorAvailability",
-            controllerFile = STUDY_CONTROLLER,
+            controllerClass = STUDY_CONTROLLER,
             v4EndpointMethod = "reportAndroidSensorAvailabilityV4",
             endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android/sensors/availability",
             table = "android_device_sensor_availability",
             idempotency = Idempotency.UniqueKey(
-                setOf("study_id", "participant_id", "device_id"),
-                "PRIMARY KEY (study_id, participant_id, device_id); latest-snapshot upsert via " +
+                setOf("study_id", "participant_id", "random_device_id"),
+                "PRIMARY KEY (study_id, participant_id, random_device_id); latest-snapshot upsert via " +
                     "ON CONFLICT ... DO UPDATE (overwriteOnConflict)",
             ),
             studyScopeColumn = "study_id",
             participantScopeColumn = "participant_id",
-            deviceScopeColumn = "device_id",
+            deviceScopeColumn = "random_device_id",
             eventTimestampColumn = "reported_at",
             ingestionTimestampColumn = "reported_at",
             ingestionTimestampNote = "Snapshot table: reported_at is set to now() at ingestion and " +
@@ -365,7 +356,7 @@ internal object CollectionModuleContractMatrix {
             handlerClass = "com.openlattice.chronicle.services.surveys.SurveysService",
             handlerIsPodBean = true,
             controllerMethod = "submitQuestionnaireResponses",
-            controllerFile = SURVEY_CONTROLLER,
+            controllerClass = SURVEY_CONTROLLER,
             v4EndpointMethod = null,
             endpoint = "POST /v3/survey/{studyId}/participant/{participantId}/questionnaire/{questionnaireId}",
             table = "questionnaire_submissions",
@@ -392,8 +383,8 @@ internal object CollectionModuleContractMatrix {
             module = CollectionModuleId.BATTERY_TELEMETRY,
             handlerClass = "com.openlattice.chronicle.services.upload.BatteryTelemetryUploadService",
             handlerIsPodBean = true,
-            controllerMethod = "uploadBatteryTelemetry",
-            controllerFile = STUDY_CONTROLLER,
+            controllerMethod = "uploadBatteryTelemetryV4",
+            controllerClass = STUDY_CONTROLLER,
             v4EndpointMethod = "uploadBatteryTelemetryV4",
             endpoint = "POST /v4/study/{studyId}/participant/{participantId}/android/battery",
             table = "battery_telemetry",
@@ -416,7 +407,7 @@ internal object CollectionModuleContractMatrix {
             // ---- the ten dedicated (study_id, participant_id, event_id) collection tables ----
             eventTableRow(
                 CollectionModuleId.INTERACTION_EVENTS, "InteractionEventsUploadService",
-                "uploadInteractionEvents", "uploadInteractionEventsV4", "/interaction", "interaction_events",
+                "uploadInteractionEventsV4", "uploadInteractionEventsV4", "/interaction", "interaction_events",
             ),
             eventTableRow(
                 CollectionModuleId.AUDIO_ACTIVITY, "AppAudioActivityUploadService",
@@ -458,41 +449,17 @@ internal object CollectionModuleContractMatrix {
                 "uploadDeviceSettings", "uploadDeviceSettingsV4", "/device-settings", "device_settings",
             ),
 
-            // ---- ambient audio: same (study_id, participant_id, event_id) event-table shape,
-            // but the upload surface is the iOS lane (SoundAnalysis realization), so the row is
-            // declared explicitly instead of via eventTableRow (whose endpoint is android-prefixed).
-            ModuleContractRow(
-                module = CollectionModuleId.AMBIENT_AUDIO,
-                handlerClass = "com.openlattice.chronicle.services.upload.AmbientAudioUploadService",
-                handlerIsPodBean = true,
-                controllerMethod = "uploadAmbientAudio",
-                controllerFile = STUDY_CONTROLLER,
-                v4EndpointMethod = "uploadIosAmbientAudio",
-                endpoint = "POST /v4/study/{studyId}/participant/{participantId}/ios/ambient-audio",
-                table = "ambient_audio_events",
-                idempotency = EVENT_PK,
-                studyScopeColumn = "study_id",
-                participantScopeColumn = "participant_id",
-                eventTimestampColumn = "sample_timestamp",
-                ingestionTimestampColumn = "uploaded_at",
-                rls = RlsExpectation.Policy("study_isolation_ambient_audio_events"),
-                exportEligible = false,
-                exportNote = "Not yet wired into an export lane: ParticipantDataType has no lane for " +
-                    "ambient_audio_events.",
-            ),
         )
 
     /**
      * The export lanes as implemented today: ParticipantDataType -> physical table
-     * (ExportService.executeExport dispatches each lane to DataDownloadManager).
-     * Test D pins this map against the enum, the ExportService source, and the
-     * DataDownloadService source, then derives every row's exportEligible from it.
+     * (the StudyController export's exhaustive `when` dispatches each lane to DataDownloadService).
+     * Test D pins this map against the enum, then derives every row's exportEligible from it.
      */
     val exportLaneToTable: Map<String, String> = mapOf(
         "UsageEvents" to "chronicle_usage_events",
-        "Preprocessed" to "preprocessed_usage_events",
         "AppUsageSurvey" to "app_usage_survey",
-        "IOSSensor" to "sensor_data",
+        "IOSScreenTime" to "ios_screen_time_usage",
         "AndroidSensor" to "android_sensor_data",
         "SensorAvailability" to "android_device_sensor_availability",
         "BatteryTelemetry" to "battery_telemetry",
@@ -507,38 +474,10 @@ internal object CollectionModuleContractMatrix {
         "AppNetworkUsage" to "app_network_usage",
         "DeviceSettings" to "device_settings",
         "UploadDiagnostics" to "upload_diagnostics",
-        "DataQualityAlerts" to "data_quality_alerts",
     )
 
-    /** Table-definition symbol each lane's SQL is built from in DataDownloadService.kt. */
-    val exportLaneToTableSymbol: Map<String, String> = mapOf(
-        "UsageEvents" to "CHRONICLE_USAGE_EVENTS",
-        "Preprocessed" to "PREPROCESSED_USAGE_EVENTS",
-        "AppUsageSurvey" to "APP_USAGE_SURVEY",
-        "IOSSensor" to "IOS_SENSOR_DATA",
-        "AndroidSensor" to "ANDROID_SENSOR_DATA",
-        "SensorAvailability" to "ANDROID_DEVICE_SENSOR_AVAILABILITY",
-        "BatteryTelemetry" to "BATTERY_TELEMETRY",
-        "InteractionEvents" to "INTERACTION_EVENTS",
-        "AudioActivity" to "APP_AUDIO_ACTIVITY",
-        "AudioContent" to "APP_AUDIO_CONTENT",
-        "NotificationActivity" to "NOTIFICATION_ACTIVITY",
-        "SleepEvents" to "SLEEP_EVENTS",
-        "ActivityRecognition" to "ACTIVITY_RECOGNITION_EVENTS",
-        "HealthMetrics" to "HEALTH_METRICS",
-        "ConnectivityState" to "CONNECTIVITY_STATE_EVENTS",
-        "AppNetworkUsage" to "APP_NETWORK_USAGE",
-        "DeviceSettings" to "DEVICE_SETTINGS",
-        // Retained operational history; the download SQL names these tables directly.
-        "UploadDiagnostics" to "FROM upload_diagnostics",
-        "DataQualityAlerts" to "FROM data_quality_alerts",
-    )
-
-    /** Locate a chronicle-server file whether the test cwd is the module dir or the repo root. */
-    fun serverFile(relativePath: String): File =
-        sequenceOf(File(relativePath), File("chronicle-server/$relativePath"))
-            .firstOrNull { it.isFile }
-            ?: error("Could not locate $relativePath from cwd=${File(".").absolutePath}")
+    /** Public method names the compiled class declares or inherits. */
+    fun methodNames(className: String): Set<String> = Class.forName(className).methods.mapTo(mutableSetOf()) { it.name }
 }
 
 // =============================================================================
@@ -654,62 +593,56 @@ class CollectionModuleCoverageMatrixTest {
     }
 
     @Test
-    fun `every pod-bean handler is registered in ChronicleServerServicesPod`() {
-        val pod = CollectionModuleContractMatrix.serverFile(CollectionModuleContractMatrix.SERVICES_POD).readText()
-        for (row in rows) {
-            val handler = row.handlerClass ?: continue
-            if (!row.handlerIsPodBean) continue
-            val simpleName = handler.substringAfterLast('.')
-            assertTrue(
-                "${row.module.id}: $simpleName is not constructed in ChronicleServerServicesPod " +
-                    "(handler exists but is not wired as a bean)",
-                Regex("return\\s+$simpleName\\(").containsMatchIn(pod) ||
-                    Regex("=\\s*$simpleName\\(").containsMatchIn(pod),
+    fun `every pod-bean handler has exactly one compiled bean declaration`() {
+        val scanner = ClassPathScanningCandidateComponentProvider(false)
+        scanner.addIncludeFilter(AnnotationTypeFilter(Configuration::class.java))
+        val beanMethods = scanner.findCandidateComponents("com.openlattice.chronicle.pods")
+            .flatMap { candidate ->
+                Class.forName(requireNotNull(candidate.beanClassName)).declaredMethods.toList()
+            }
+            .filter { it.isAnnotationPresent(Bean::class.java) }
+        assertTrue("No compiled pod beans discovered", beanMethods.isNotEmpty())
+        for (row in rows.filter { it.handlerIsPodBean }) {
+            val handler = Class.forName(requireNotNull(row.handlerClass))
+            val declarations = beanMethods.filter { it.returnType.isAssignableFrom(handler) }
+            assertEquals(
+                "${row.module.id}: ${handler.simpleName} must have exactly one pod bean declaration",
+                1,
+                declarations.size,
             )
         }
     }
 
     @Test
-    fun `every matrix controller method exists in its controller source`() {
-        val sourceCache = mutableMapOf<String, String>()
-        fun source(path: String) = sourceCache.getOrPut(path) {
-            CollectionModuleContractMatrix.serverFile(path).readText()
-        }
-
+    fun `every matrix controller method exists on its compiled controller`() {
         for (row in rows) {
             row.controllerMethod?.let { method ->
                 assertTrue(
-                    "${row.module.id}: fun $method not found in ${row.controllerFile}",
-                    Regex("fun\\s+$method\\s*\\(").containsMatchIn(source(row.controllerFile)),
+                    "${row.module.id}: $method is not a public method of ${row.controllerClass}",
+                    method in CollectionModuleContractMatrix.methodNames(row.controllerClass),
                 )
             }
             row.v4EndpointMethod?.let { v4 ->
                 assertTrue(
-                    "${row.module.id}: fun $v4 not found in StudyV4Controller.kt " +
+                    "${row.module.id}: $v4 is not a public method of StudyV4Controller " +
                         "(V4 upload surface is missing or was renamed without updating the matrix)",
-                    Regex("fun\\s+$v4\\s*\\(").containsMatchIn(
-                        source(CollectionModuleContractMatrix.STUDY_V4_CONTROLLER),
-                    ),
+                    v4 in CollectionModuleContractMatrix.methodNames(CollectionModuleContractMatrix.STUDY_V4_CONTROLLER),
                 )
             }
         }
     }
 
     @Test
-    fun `handlers used by controllers are actually referenced in controller source`() {
-        val sourceCache = mutableMapOf<String, String>()
-        fun source(path: String) = sourceCache.getOrPut(path) {
-            CollectionModuleContractMatrix.serverFile(path).readText()
-        }
+    fun `controllers are constructed with the handler that ingests their modules`() {
         for (row in rows) {
-            val handler = row.handlerClass ?: continue
-            val simpleName = handler.substringAfterLast('.')
-            // StudyController is itself the handler for sensor_availability; skip self-reference.
-            if (row.controllerFile.endsWith("${simpleName}.kt")) continue
+            val handler = Class.forName(row.handlerClass ?: continue)
+            val controller = Class.forName(row.controllerClass)
+            // StudyController is itself the handler for sensor_availability.
+            if (controller == handler) continue
             assertTrue(
-                "${row.module.id}: $simpleName is not referenced in ${row.controllerFile} — the handler " +
-                    "exists but the controller does not use it",
-                source(row.controllerFile).contains(simpleName),
+                "${row.module.id}: no ${controller.simpleName} constructor takes a ${handler.simpleName} — the handler " +
+                    "exists but Spring never gives it to the controller",
+                controller.constructors.any { constructor -> constructor.parameterTypes.any { it.isAssignableFrom(handler) } },
             )
         }
     }
@@ -730,36 +663,9 @@ class CollectionModuleCoverageMatrixTest {
         // Pin each lane's table-definition symbol to its physical table name at runtime, so the
         // lane->table map cannot silently rot if a table is renamed.
         assertEquals("chronicle_usage_events", PostgresEventTables.CHRONICLE_USAGE_EVENTS.name)
-        assertEquals("preprocessed_usage_events", PostgresEventTables.PREPROCESSED_USAGE_EVENTS.name)
-        assertEquals("sensor_data", PostgresEventTables.IOS_SENSOR_DATA.name)
+        assertEquals("ios_screen_time_usage", ChroniclePostgresTables.IOS_SCREEN_TIME_USAGE.name)
         assertEquals("app_usage_survey", ChroniclePostgresTables.APP_USAGE_SURVEY.name)
         assertEquals("android_sensor_data", ChroniclePostgresTables.ANDROID_SENSOR_DATA.name)
-    }
-
-    @Test
-    fun `export service dispatches every lane and download service reads the expected tables`() {
-        val exportSource = CollectionModuleContractMatrix.serverFile(
-            CollectionModuleContractMatrix.EXPORT_SERVICE,
-        ).readText()
-        val downloadSource = CollectionModuleContractMatrix.serverFile(
-            CollectionModuleContractMatrix.DOWNLOAD_SERVICE,
-        ).readText()
-
-        for ((lane, symbol) in CollectionModuleContractMatrix.exportLaneToTableSymbol) {
-            assertTrue(
-                "ExportService.executeExport no longer dispatches ParticipantDataType.$lane",
-                exportSource.contains("ParticipantDataType.$lane"),
-            )
-            assertTrue(
-                "DataDownloadService no longer builds SQL from the $symbol table definition " +
-                    "(lane $lane) — the export lane's backing table changed",
-                downloadSource.contains(symbol),
-            )
-        }
-        assertTrue(
-            "ExportService no longer sends dedicated Play streams through the collection-table exporter",
-            exportSource.contains("downloadManager.getParticipantsCollectionData("),
-        )
     }
 
     @Test
@@ -774,32 +680,28 @@ class CollectionModuleCoverageMatrixTest {
             }
         }
         assertTrue(
-            "Export-eligibility drift between the matrix and the ExportService lanes:\n  " +
+            "Export-eligibility drift between the matrix and the export lanes:\n  " +
                 failures.joinToString("\n  "),
             failures.isEmpty(),
         )
     }
 
     @Test
-    fun `every Play module with server data has a researcher download path`() {
-        val playRows = rows.filterNot { it.module == CollectionModuleId.AMBIENT_AUDIO }
-        val unsupported = playRows.filterNot { row ->
+    fun `every module with server data has a researcher download path`() {
+        val unsupported = rows.filterNot { row ->
             row.exportEligible ||
                 row.module == CollectionModuleId.QUESTIONNAIRE ||
                 (row.module == CollectionModuleId.UPLOAD_TELEMETRY && row.table == null)
         }
         assertTrue(
-            "Play modules silently collect data without a researcher download path: " +
+            "Modules silently collect data without a researcher download path: " +
                 unsupported.joinToString { "${it.module.id}:${it.table}" },
             unsupported.isEmpty(),
         )
 
-        val downloadSource = CollectionModuleContractMatrix.serverFile(
-            CollectionModuleContractMatrix.DOWNLOAD_SERVICE,
-        ).readText()
         assertTrue(
             "Questionnaire is the only Play table outside ParticipantDataType and must retain its dedicated download",
-            downloadSource.contains("fun getQuestionnaireResponses("),
+            "getQuestionnaireResponses" in CollectionModuleContractMatrix.methodNames(CollectionModuleContractMatrix.DOWNLOAD_SERVICE),
         )
     }
 }

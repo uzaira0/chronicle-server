@@ -7,9 +7,9 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Contract-drift guard for the Phase 9A generalized Android data collection setting.
+ * Contract-drift guard for the generalized Android data collection setting.
  *
- * Phase 9A does NOT add a new public route: the generalized [DataCollection] read is
+ * The setting has no public route of its own: the generalized [DataCollection] read is
  * served by the existing typed-settings endpoint
  * `GET /chronicle/v3/study/{studyId}/settings/type/{settingType}`, which already
  * returns the polymorphic `StudySetting` schema. The only OpenAPI change is the
@@ -18,8 +18,7 @@ import java.io.File
  *
  * This test fails if the spec drifts away from the model contracts in
  * `chronicle-models` — e.g. a [CollectionModuleId] is added but not documented, or
- * the schema is removed. It is the contract-drift gate required by refactor plan
- * §12.1 step 14; it complements `bun run check:api-types` on the web side.
+ * the schema is removed. It complements `bun run check:api-types` on the web side.
  */
 class DataCollectionSettingContractTest {
 
@@ -40,8 +39,6 @@ class DataCollectionSettingContractTest {
             "AndroidDataCollectionSetting:",
             "CollectionModuleSetting:",
             "CollectionCadence:",
-            "BatteryPolicy:",
-            "NetworkPolicy:",
             "CollectionModuleId:",
         ).forEach { schema ->
             assertTrue(
@@ -76,8 +73,8 @@ class DataCollectionSettingContractTest {
 
     @Test
     fun `no new public route was added for the generalized read`() {
-        // Phase 9A design decision: reuse the existing typed-settings endpoint, do not
-        // add a new route. Assert no `data-collection/settings` style route crept in.
+        // The read reuses the existing typed-settings endpoint.
+        // Assert no `data-collection/settings` style route crept in.
         val spec = specText()
         val forbidden = listOf(
             "/settings/type/DataCollection:",

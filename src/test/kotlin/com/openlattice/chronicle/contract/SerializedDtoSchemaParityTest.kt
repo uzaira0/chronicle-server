@@ -11,7 +11,6 @@ import com.openlattice.chronicle.android.AndroidSensorType
 import com.openlattice.chronicle.collection.CollectionAcknowledgmentEntry
 import com.openlattice.chronicle.collection.CollectionModuleSetting
 import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.study.StudyEncryptionSetting
 import com.openlattice.chronicle.study.StudyUpdate
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -22,7 +21,7 @@ import kotlin.reflect.full.primaryConstructor
 
 class SerializedDtoSchemaParityTest {
     @Test
-    fun sevenSchemasMatchSerializedPropertiesRequiredFieldsAndNullability() {
+    fun sixSchemasMatchSerializedPropertiesRequiredFieldsAndNullability() {
         val mapper = jacksonObjectMapper().registerModule(JavaTimeModule())
         val schemas = ObjectMapper(YAMLFactory()).readTree(File("../chronicle-api/chronicle.yaml"))["components"]["schemas"]
         val study = UUID.randomUUID()
@@ -30,9 +29,8 @@ class SerializedDtoSchemaParityTest {
             ParticipantStats(study, "P-1"), AndroidDeviceSensorAvailability(),
             AndroidSensorSample(UUID.randomUUID(), AndroidSensorType.values().first(), OffsetDateTime.now(), "UTC"),
             StudyUpdate(), CollectionModuleSetting(false),
-            CollectionAcknowledgmentEntry(studyId = study, participantId = "P-1", sourceDeviceId = "phone", acknowledgedModules = emptySet(),
+            CollectionAcknowledgmentEntry(studyId = study, participantId = "P-1", sourceRandomDeviceId = "phone", acknowledgedModules = emptySet(),
                 acknowledgedAt = OffsetDateTime.now()),
-            StudyEncryptionSetting(),
         )
         for (sample in samples) {
             val name = sample.javaClass.simpleName

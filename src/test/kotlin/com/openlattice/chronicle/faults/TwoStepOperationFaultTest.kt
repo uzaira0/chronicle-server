@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.faults
 
+import com.openlattice.chronicle.storage.ResolvedStorage
+
 import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
@@ -16,6 +18,7 @@ import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
 import com.openlattice.chronicle.services.delete.RestoreContinuityFixture
 import com.openlattice.chronicle.services.delete.RestoreContinuityFixture.Companion.storageResolver as fixtureStorage
+import com.openlattice.chronicle.services.delete.RestoreContinuityFixture.Companion.bootstrapConnection
 import com.openlattice.chronicle.services.delete.RestoreContinuityReconciler
 import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.storage.PinnedPlatformConnection
@@ -59,8 +62,9 @@ class TwoStepOperationFaultTest {
     @Before
     fun setUp() {
         TestSecurityUtils.setupSecurityContext()
+        fixture.installContext()
         fixture.seedRestoredOlderState()
-        faults = FaultInjectingDataSource(fixtureStorage.getPlatformStorage())
+        faults = FaultInjectingDataSource(fixtureStorage.getBootstrapStorage())
         val view = object : HikariDataSource() {
             override fun getConnection(): Connection = faults.connection.apply {
                 // Bound an accidental nested study-fence lock so the regression fails promptly.
@@ -69,16 +73,22 @@ class TwoStepOperationFaultTest {
         }
         storage = Mockito.mock(StorageResolver::class.java)
         Mockito.`when`(storage.getPlatformStorage()).thenAnswer { PinnedPlatformConnection.resolve(view) }
+        Mockito.`when`(storage.getBootstrapStorage()).thenAnswer { PinnedPlatformConnection.resolve(view) }
+        Mockito.`when`(storage.databaseRoles).thenReturn(fixtureStorage.databaseRoles)
     }
 
     @After
     fun cleanUp() {
-        fixture.cleanFixture()
-        TestSecurityUtils.clearSecurityContext()
+        try {
+            fixture.cleanFixture()
+        } finally {
+            fixture.restoreContext()
+            TestSecurityUtils.clearSecurityContext()
+        }
     }
 
     @Test
-    fun `DEL-04 ledger failure rolls back status and retry succeeds`() {
+    fun `participant deletion rolls back status when its ledger write fails and a retry succeeds`() {
         val auditing = Mockito.mock(AuditingManager::class.java)
         val authorization = Mockito.mock(AuthorizationManager::class.java)
         Mockito.`when`(authorization.checkIfHasPermissions(any(), any(), any())).thenReturn(true)
@@ -100,45 +110,7 @@ class TwoStepOperationFaultTest {
             webhookService = mock(),
         ))
         Mockito.doReturn(true).`when`(service).isValidStudy(studyId)
-        val orchestrator = DataDeletionOrchestrator(storage, auditing)
-        val controller = StudyController(
-            hazelcastInstance = hazelcast,
-            storageResolver = storage,
-            idGenerationService = mock(),
-            enrollmentService = mock(),
-            studyService = service,
-            sensorDataUploadService = mock(),
-            androidSensorDataUploadService = mock(),
-            batteryTelemetryUploadService = mock(),
-            interactionEventsUploadService = mock(),
-            appAudioActivityUploadService = mock(),
-            ambientAudioUploadService = mock(),
-            appAudioContentUploadService = mock(),
-            notificationActivityUploadService = mock(),
-            sleepEventsUploadService = mock(),
-            activityRecognitionEventsUploadService = mock(),
-            healthMetricsUploadService = mock(),
-            connectivityStateEventsUploadService = mock(),
-            appNetworkUsageUploadService = mock(),
-            deviceSettingsUploadService = mock(),
-            uploadDiagnosticsUploadService = mock(),
-            encryptedPayloadUploadService = mock(),
-            studyEncryptionKeyService = mock(),
-            appDataUploadService = mock(),
-            downloadService = mock(),
-            enrollmentManager = mock(),
-            authorizationManager = authorization,
-            auditingManager = auditing,
-            chronicleJobService = mock(),
-            auditService = mock(),
-            studySettingsAuditService = mock(),
-            participantCollectionAcknowledgmentService = mock(),
-            studySettingsNotificationService = mock(),
-            apiKeyService = mock(),
-            dataDeletionOrchestrator = orchestrator,
-            studyLifecycleService = mock(),
-            webhookService = mock(),
-        )
+        val controller = studyController(service, authorization, auditing, hazelcast)
         faults.failOnStatement(Regex("INSERT\\s+INTO\\s+data_deletion_operations", RegexOption.IGNORE_CASE))
 
         val error = assertThrows(SQLException::class.java) {
@@ -156,15 +128,56 @@ class TwoStepOperationFaultTest {
         assertEquals(1L, count("data_deletion_operations"))
         assertEquals(1L, count("data_deletion_audit_outbox", " AND event_type = 'UPDATE_PARTICIPATION_STATUS'"))
         Mockito.verify(service, Mockito.never()).updateParticipationStatus(
-            studyId, participantId, com.openlattice.chronicle.data.ParticipationStatus.NOT_ENROLLED,
+            org.mockito.kotlin.eq(studyId), org.mockito.kotlin.eq(participantId),
+            org.mockito.kotlin.eq(com.openlattice.chronicle.data.ParticipationStatus.NOT_ENROLLED), org.mockito.kotlin.any(),
         )
     }
+
+    private fun studyController(
+        service: StudyService,
+        authorization: AuthorizationManager,
+        auditing: AuditingManager,
+        hazelcast: HazelcastInstance,
+    ) = StudyController(
+        hazelcastInstance = hazelcast,
+        storageResolver = storage,
+        enrollmentService = mock(),
+        studyService = service,
+        screenTimeUsageUploadService = mock(),
+        androidSensorDataUploadService = mock(),
+        batteryTelemetryUploadService = mock(),
+        interactionEventsUploadService = mock(),
+        appAudioActivityUploadService = mock(),
+        appAudioContentUploadService = mock(),
+        notificationActivityUploadService = mock(),
+        sleepEventsUploadService = mock(),
+        activityRecognitionEventsUploadService = mock(),
+        healthMetricsUploadService = mock(),
+        connectivityStateEventsUploadService = mock(),
+        appNetworkUsageUploadService = mock(),
+        deviceSettingsUploadService = mock(),
+        uploadDiagnosticsUploadService = mock(),
+        appDataUploadService = mock(),
+        downloadService = mock(),
+        enrollmentManager = mock(),
+        authorizationManager = authorization,
+        auditingManager = auditing,
+        auditService = mock(),
+        studySettingsAuditService = mock(),
+        participantCollectionAcknowledgmentService = mock(),
+        studySettingsNotificationService = mock(),
+        apiKeyService = mock(),
+        dataDeletionOrchestrator = DataDeletionOrchestrator(storage, auditing),
+        studyLifecycleService = mock(),
+        webhookService = mock(),
+        enrollmentManifestService = mock(),
+    )
 
     @Test
     fun `containment failure rolls back receipt and revocation and retains checkpoint for retry`() {
         fixture.seedContinuityCheckpoint()
         // This is after the receipt INSERT and both key UPDATEs, so rollback must undo real writes.
-        faults.failOnStatement(Regex("UPDATE\\s+study_participants\\s+target", RegexOption.IGNORE_CASE))
+        faults.failOnStatement(Regex("UPDATE\\s+(?:public\\.)?study_participants\\s+target", RegexOption.IGNORE_CASE))
         val reconciler = RestoreContinuityReconciler(storage, DataDeletionOrchestrator(storage, Mockito.mock(AuditingManager::class.java)))
 
         val error = assertThrows(SQLException::class.java) { reconciler.reconcile() }
@@ -187,8 +200,9 @@ class TwoStepOperationFaultTest {
     fun `failed domain commit rolls back its success audit`() {
         val auditResolver = Mockito.mock(StorageResolver::class.java)
         Mockito.`when`(auditResolver.getAuditStorage()).thenReturn(
-            PostgresFlavor.VANILLA to fixtureStorage.getPlatformStorage(),
+            ResolvedStorage(PostgresFlavor.VANILLA, fixtureStorage.getPlatformStorage()),
         )
+        Mockito.`when`(auditResolver.getPlatformStorage()).thenReturn(fixtureStorage.getPlatformStorage())
         val event = AuditableEvent(
             aclKey = AclKey(studyId), eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
             study = studyId, description = "fault-characterisation-${UUID.randomUUID()}",
@@ -214,7 +228,7 @@ class TwoStepOperationFaultTest {
         assertEquals(1, faults.injectedFailures)
         assertEquals("ENROLLED", status())
         // Success audits share the domain transaction and cannot survive its failed commit.
-        fixtureStorage.getPlatformStorage().connection.use { connection ->
+        bootstrapConnection().use { connection ->
             connection.prepareStatement("SELECT count(*) FROM audit WHERE description = ?").use {
                 it.setString(1, event.description)
                 it.executeQuery().use { rows ->
@@ -225,9 +239,9 @@ class TwoStepOperationFaultTest {
         }
     }
 
-    private fun status(): String = fixtureStorage.getPlatformStorage().connection.use(fixture::participationStatus)
+    private fun status(): String = bootstrapConnection().use(fixture::participationStatus)
 
-    private fun count(table: String, extra: String = ""): Long = fixtureStorage.getPlatformStorage().connection.use { connection ->
+    private fun count(table: String, extra: String = ""): Long = bootstrapConnection().use { connection ->
         if (table == "restore_continuity_reconciliations") fixture.count(connection, table, "checkpoint_id", fixture.checkpointId, extra)
         else fixture.count(connection, table, "study_id", studyId, extra)
     }

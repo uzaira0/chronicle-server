@@ -1,6 +1,10 @@
 package com.openlattice.chronicle.contract
 
 import com.geekbeast.postgres.PostgresTableDefinition
+import com.geekbeast.configuration.postgres.PostgresConfiguration
+import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
+import java.util.Properties
+import java.util.UUID
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.PostgresDataTables
 import com.openlattice.chronicle.storage.PostgresEventTables
@@ -13,9 +17,9 @@ import org.testcontainers.containers.wait.strategy.WaitAllStrategy
 import org.testcontainers.utility.DockerImageName
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
-import java.sql.Connection
 import java.nio.file.Files
 import java.nio.file.Path
+import java.sql.Connection
 import java.time.Duration
 import java.time.Instant
 
@@ -34,24 +38,38 @@ import java.time.Instant
 object ChronicleContractTestSchema {
 
     /**
-     * Production database image (Percona PG 17.5 + pg_tde) — the single test-side pin.
+     * Production database image with pg_tde — the single test-side pin.
      * Plain `postgres:16` containers previously used here drifted from prod; keep every
-     * Postgres testcontainer on this constant.
+     * Postgres testcontainer on this constant. Pinned by the 18.6.1-4 index digest from
+     * toolchain-manifest.yaml (Testcontainers rejects tag@digest, so the tag lives there).
      */
-    const val PROD_POSTGRES_IMAGE = "percona/percona-distribution-postgresql:18.6.1-3"
+    const val PROD_POSTGRES_IMAGE = "percona/percona-distribution-postgresql@sha256:27a1dba816fcc4cec88f216d54e3ec86db4c1d4b16799f49800055c41606e11e"
+    const val TEST_PASSWORD = "testpass"
+    const val BOOTSTRAP_MAXIMUM_POOL_SIZE = 2
+    const val RUNTIME_USERNAME = "chronicle_app"
+    const val RUNTIME_PASSWORD = "chronicle-app-test-password"
+    const val LOCK_TIMEOUT = "15s"
+    const val STATEMENT_TIMEOUT = "30s"
 
-    fun prodPostgresContainer(databaseName: String): PostgreSQLContainer<*> =
+    fun prodPostgresContainer(databaseName: String, preload: String? = null): PostgreSQLContainer<*> =
         PostgreSQLContainer(
             DockerImageName.parse(PROD_POSTGRES_IMAGE).asCompatibleSubstituteFor("postgres")
         ).apply {
             withDatabaseName(databaseName)
             withUsername("testuser")
-            withPassword("testpass")
+            withPassword(TEST_PASSWORD)
+            // The image otherwise initializes SQL_ASCII and counts UTF-8 bytes as characters.
+            withEnv("POSTGRES_INITDB_ARGS", "--encoding=UTF8")
             // Explicit command, mirroring TdePrincipalKeyRotationTest: the Percona image's
             // entrypoint misbehaves under the PostgreSQLContainer default command wiring.
             // Bound every test connection, including direct barrier/observer connections.
             // Flyway clears these limits in its migration session.
-            withCommand("postgres", "-c", "fsync=off", "-c", "lock_timeout=15s", "-c", "statement_timeout=30s")
+            val command = mutableListOf(
+                "postgres", "-c", "fsync=off", "-c", "lock_timeout=$LOCK_TIMEOUT",
+                "-c", "statement_timeout=$STATEMENT_TIMEOUT",
+            )
+            preload?.let { command.addAll(listOf("-c", "shared_preload_libraries=$it")) }
+            withCommand(*command.toTypedArray())
             // The Percona image routes server logs through a logging collector, so the
             // default log-message wait never matches; wait on the port, then on pg_isready
             // so start() only returns once queries are accepted ("starting up" window) —
@@ -92,7 +110,6 @@ object ChronicleContractTestSchema {
             .filter { f: Field -> Modifier.isStatic(f.modifiers) && Modifier.isFinal(f.modifiers) }
             .filter { f: Field -> PostgresTableDefinition::class.java.isAssignableFrom(f.type) }
             .map { f: Field ->
-                f.isAccessible = true
                 f[null] as PostgresTableDefinition
             }
             .distinctBy { it.name }
@@ -109,15 +126,11 @@ object ChronicleContractTestSchema {
             for (table in allChronicleTableDefinitions()) {
                 stmt.execute(table.createTableQuery())
             }
+            // Match the production framework definitions; V1 adds the usage-event identity constraint.
             stmt.execute(PostgresEventTables.CHRONICLE_USAGE_EVENTS.createTableQuery())
-            stmt.execute(PostgresEventTables.CHRONICLE_USAGE_STATS.createTableQuery())
-            stmt.execute(PostgresEventTables.IOS_SENSOR_DATA.createTableQuery())
-            stmt.execute(PostgresEventTables.PREPROCESSED_USAGE_EVENTS.createTableQuery())
-            // Production creates the final audit store from PostgresDataTables, whose full-row
-            // primary key makes V54's ON CONFLICT drain idempotent. The event-table definition has
-            // the same columns but no key and would give migration tests weaker semantics.
+            stmt.execute(PostgresDataTables.CHRONICLE_USAGE_STATS.createTableQuery())
             stmt.execute(PostgresDataTables.AUDIT.createTableQuery())
-            stmt.execute("CREATE ROLE chronicle")
+            stmt.execute(FlywayMigrationService.ENSURE_CHRONICLE_ROLE_SQL)
         }
     }
 
@@ -139,16 +152,57 @@ object ChronicleContractTestSchema {
         check(result.success) { "Flyway corpus failed to apply: ${result.warnings}" }
     }
 
+    /** Restore the standard public schema only inside a suite's private container. */
+    fun clearSchema(container: PostgreSQLContainer<*>) {
+        container.createConnection("").use { connection ->
+            connection.createStatement().use {
+                it.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public AUTHORIZATION pg_database_owner; GRANT USAGE ON SCHEMA public TO PUBLIC")
+            }
+        }
+    }
+
+    /** Each case exercises the full fresh schema and its real default privileges. */
+    fun resetSchemaAndMigrations(container: PostgreSQLContainer<*>) {
+        clearSchema(container)
+        applyFrameworkSchemaAndMigrations(container)
+    }
+
     /**
      * Run the shipped role bootstrap before schema creation so Flyway's REVOKEs remain effective.
      */
     fun bootstrapApplicationRoles(conn: Connection) {
+        FlywayMigrationService.prepareMigrationConnection(conn)
         val script = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
             .map { it.resolve("docker/init-db-roles.sql") }
             .first { Files.isRegularFile(it) }
         conn.createStatement().use { stmt ->
             stmt.execute(Files.readString(script))
+            stmt.execute("ALTER ROLE $RUNTIME_USERNAME LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD '$RUNTIME_PASSWORD'")
         }
+    }
+
+    fun createDatabase(container: PostgreSQLContainer<*>, prefix: String): String {
+        val database = "${prefix}_${UUID.randomUUID().toString().replace("-", "")}"
+        container.createConnection("").use { connection ->
+            connection.createStatement().use { it.execute("CREATE DATABASE $database") }
+        }
+        return container.jdbcUrl.substringBeforeLast('/') + "/$database"
+    }
+
+    fun storageConfigurations(container: PostgreSQLContainer<*>, maximumPoolSize: Int): Map<String, PostgresConfiguration> {
+        fun configuration(username: String, password: String, size: Int) = PostgresConfiguration(
+            Properties().apply {
+                setProperty("jdbcUrl", container.jdbcUrl)
+                setProperty("username", username)
+                setProperty("password", password)
+                setProperty("maximumPoolSize", size.toString())
+            }, initializeTables = false, initializeIndices = false,
+        )
+        val runtime = configuration(RUNTIME_USERNAME, RUNTIME_PASSWORD, maximumPoolSize)
+        val owner = configuration(container.username, container.password, BOOTSTRAP_MAXIMUM_POOL_SIZE)
+        owner.hikariConfiguration.setProperty("minimumIdle", "0")
+        return mapOf("default" to runtime, "chronicle" to runtime, "platform_read" to runtime,
+            ChronicleStorageConfiguration.DEFAULT_BOOTSTRAP_STORAGE to owner)
     }
 
     /**

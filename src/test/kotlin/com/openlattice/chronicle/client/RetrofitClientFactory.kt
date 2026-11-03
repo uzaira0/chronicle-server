@@ -9,6 +9,7 @@ import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import retrofit2.CallAdapter
 import retrofit2.Retrofit
+import java.net.ServerSocket
 import java.util.concurrent.TimeUnit
 import java.util.function.Consumer
 import java.util.function.Supplier
@@ -22,10 +23,14 @@ class RetrofitClientFactory private constructor() {
         const val BASE_URL = "https://api.openlattice.com/"
         const val LOCAL_BASE_URL = "http://localhost:40320/"
         const val STAGING_BASE_URL = "https://api.staging.openlattice.com/"
-        private val testingHttpPort = System.getenv("CHRONICLE_TEST_HTTP_PORT")
+        /**
+         * The one reading of CHRONICLE_TEST_HTTP_PORT: the test server listens here and every test client calls here.
+         * Unset, the OS picks a free port, so two test JVMs on one host never race for a fixed one.
+         */
+        val testingHttpPort: Int = System.getenv("CHRONICLE_TEST_HTTP_PORT")
             ?.toIntOrNull()
             ?.takeIf { it in 1..65535 }
-            ?: 40320
+            ?: ServerSocket(0).use { it.localPort }
         val TESTING_BASE_URL: String = "http://localhost:$testingHttpPort/"
         val TESTING_CHRONICLE_URL: String = "http://localhost:$testingHttpPort/"
 
@@ -104,6 +109,7 @@ class RetrofitClientFactory private constructor() {
                             .build()
                     )
                 }
+                .addInterceptor(::fixtureMutationHeaders)
         }
 
         fun configureObjectMapper(c: Consumer<ObjectMapper>) {

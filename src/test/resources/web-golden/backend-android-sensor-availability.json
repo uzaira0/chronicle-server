@@ -1,0 +1,15 @@
+{
+  "_comment": "Generated from chronicle-web/src/modern/test/golden/backend-android-sensor-availability.json by the root contract generator.",
+  "participantId": "p-1",
+  "randomDeviceId": "device-abc-123",
+  "availableSensors": [
+    "accelerometer",
+    "gyroscope"
+  ],
+  "screenWidthPixels": 1080,
+  "screenHeightPixels": 2340,
+  "screenDensityDpi": 440,
+  "displayRotation": 0,
+  "interactionPointerCaptureCapability": "REQUIRES_INPUT_INTERCEPTION",
+  "reportedAt": "2024-06-15T14:30:00Z"
+}

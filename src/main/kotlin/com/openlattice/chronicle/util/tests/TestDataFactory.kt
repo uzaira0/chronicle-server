@@ -1,12 +1,8 @@
 package com.openlattice.chronicle.util.tests
 
 import com.google.common.collect.ImmutableList
-import com.google.common.collect.LinkedHashMultimap
-import com.google.common.collect.SetMultimap
-import com.openlattice.chronicle.android.AndroidSensorSetting
 import com.openlattice.chronicle.android.ChronicleData
 import com.openlattice.chronicle.android.ChronicleUsageEvent
-import com.openlattice.chronicle.android.LegacyChronicleData
 import com.openlattice.chronicle.authorization.Ace
 import com.openlattice.chronicle.authorization.AceValue
 import com.openlattice.chronicle.authorization.Acl
@@ -20,20 +16,15 @@ import com.openlattice.chronicle.authorization.Role
 import com.openlattice.chronicle.authorization.SecurableObjectType
 import com.openlattice.chronicle.authorization.SecurablePrincipal
 import com.openlattice.chronicle.candidates.Candidate
-import com.openlattice.chronicle.constants.EdmConstants
+import com.openlattice.chronicle.collection.CollectionDefaults
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.notifications.StudyNotificationSettings
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
 import com.openlattice.chronicle.organizations.Organization
 import com.openlattice.chronicle.organizations.OrganizationPrincipal
 import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.sensorkit.SensorSetting
-import com.openlattice.chronicle.sensorkit.SensorType
-import com.openlattice.chronicle.services.legacy.LegacyEdmResolver
-import com.openlattice.chronicle.settings.AppUsageFrequency
 import com.openlattice.chronicle.sources.AndroidDevice
-import com.openlattice.chronicle.study.DataQualityConfig
+import com.openlattice.chronicle.study.AppUsageSurveySetting
 import com.openlattice.chronicle.study.Study
 import com.openlattice.chronicle.study.StudyDuration
 import com.openlattice.chronicle.study.StudyFeature
@@ -41,6 +32,7 @@ import com.openlattice.chronicle.study.StudyLimits
 import com.openlattice.chronicle.study.StudyParticipantPolicy
 import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.study.StudySettings
+import com.openlattice.chronicle.study.StudyWithdrawalSetting
 import com.openlattice.chronicle.survey.SurveySettings
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryResponse
 import com.openlattice.chronicle.timeusediary.TimeUseDiarySettings
@@ -67,7 +59,6 @@ public class TestDataFactory private constructor() {
         private val securableObjectTypes = SecurableObjectType.values()
         private val studyFeatures = StudyFeature.values()
         private val studySettings = StudySettingType.values()
-        private val sensorTypes = SensorType.values()
         private val allowedDigitsAndLetters = arrayOf(
             charArrayOf('a', 'z'), charArrayOf('A', 'Z'), charArrayOf('0', '9')
         )
@@ -89,14 +80,11 @@ public class TestDataFactory private constructor() {
 
         public fun randomSettings(): StudySettings {
             // Exclude Sensor settings from test data - sensor modifications require admin privileges
-            val testableSettings = studySettings.filter { it != StudySettingType.Sensor }
+            val testableSettings = studySettings
             val numFeatures = 1 + r.nextInt(testableSettings.size)
             return StudySettings((0 until numFeatures).associate {
                 testableSettings[it] to when (testableSettings[it]) {
-                    StudySettingType.DataCollection -> ChronicleDataCollectionSettings(
-                        if (r.nextBoolean()) AppUsageFrequency.DAILY else AppUsageFrequency.HOURLY
-                    )
-                    StudySettingType.Sensor -> SensorSetting(randomSubset(sensorTypes))
+                    StudySettingType.DataCollection -> CollectionDefaults.androidDataCollectionSetting()
                     StudySettingType.Notifications -> StudyNotificationSettings(
                         randomAlphanumeric(5),
                         randomAlphanumeric(5),
@@ -104,12 +92,9 @@ public class TestDataFactory private constructor() {
                     )
                     StudySettingType.TimeUseDiary -> TimeUseDiarySettings()
                     StudySettingType.Survey -> SurveySettings()
-                    StudySettingType.AndroidSensor -> AndroidSensorSetting()
-                    StudySettingType.DataQuality -> DataQualityConfig()
-                    StudySettingType.Pipeline -> com.openlattice.chronicle.pipeline.PipelineConfig()
-                    StudySettingType.Encryption -> com.openlattice.chronicle.study.StudyEncryptionSetting()
                     StudySettingType.ParticipantPolicy -> participantPolicy()
-                    StudySettingType.Withdrawal -> com.openlattice.chronicle.study.StudyWithdrawalSetting()
+                    StudySettingType.AppUsageSurvey -> AppUsageSurveySetting()
+                    StudySettingType.Withdrawal -> StudyWithdrawalSetting()
                 }
             })
 
@@ -286,22 +271,6 @@ public class TestDataFactory private constructor() {
             )
         }
 
-        public fun legacyChronicleUsageEvents(count: Int = 10): LegacyChronicleData {
-            val usageEvents = (0 until count).map {
-                val mm : SetMultimap<UUID, Any> = LinkedHashMultimap.create()
-                mm.put(LegacyEdmResolver.getPropertyTypeId(EdmConstants.FULL_NAME_FQN), randomAlphanumeric(5))
-                mm.put(LegacyEdmResolver.getPropertyTypeId(EdmConstants.RECORD_TYPE_FQN), randomAlphanumeric(5))
-                mm.put(LegacyEdmResolver.getPropertyTypeId(EdmConstants.DATE_LOGGED_FQN), OffsetDateTime.now())
-                mm.put(LegacyEdmResolver.getPropertyTypeId(EdmConstants.TIMEZONE_FQN), TimeZone.getDefault().id)
-                mm.put(LegacyEdmResolver.getPropertyTypeId(EdmConstants.USER_FQN), randomAlphanumeric(5))
-                mm.put(LegacyEdmResolver.getPropertyTypeId(EdmConstants.TITLE_FQN), randomAlphanumeric(5))
-                return@map mm
-            }
-
-            return LegacyChronicleData(usageEvents)
-        }
-
-
         public fun chronicleUsageEvents(studyId: UUID, participantId: String, count: Int = 10): ChronicleData {
             val usageEvents = (0 until count).map {
                 ChronicleUsageEvent(
@@ -314,7 +283,8 @@ public class TestDataFactory private constructor() {
                     TimeZone.getDefault().id,
                     RandomStringUtils.randomAlphanumeric(5),
                     RandomStringUtils.randomAlphanumeric(5),
-                    "com.example.Activity$it"
+                    "com.example.Activity$it",
+                    clientEventId = UUID.randomUUID(),
                 )
             }
 
@@ -343,7 +313,6 @@ public class TestDataFactory private constructor() {
             return StudyLimits(
                 studyDuration = StudyDuration(years = 2),
                 dataRetentionDuration = StudyDuration(days = 180),
-                participantLimit = 50
             )
         }
 

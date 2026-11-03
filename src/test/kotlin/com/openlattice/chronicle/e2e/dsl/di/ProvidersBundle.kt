@@ -10,6 +10,7 @@ import com.openlattice.chronicle.participants.Participant
 import com.openlattice.chronicle.services.upload.AppDataUploadService
 import com.openlattice.chronicle.sources.AndroidDevice
 import com.openlattice.chronicle.study.Study
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.util.tests.TestDataFactory
 import org.springframework.context.ApplicationContext
 import java.util.UUID
@@ -60,6 +61,5 @@ class DefaultTestDataProvider : TestDataProvider {
 }
 
 class InProcessFlusher(private val uploadService: AppDataUploadService) : DataPipelineFlusher {
-    override fun flush(studyId: UUID, participantId: String) =
-        uploadService.moveToEventStorage(studyId, participantId)
+    override fun flush() = RLSRequestContext.withSystemContext { uploadService.drainEventStorage() }
 }

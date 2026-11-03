@@ -2,22 +2,21 @@ package com.openlattice.chronicle.e2e.scenarios
 
 import com.openlattice.chronicle.ChronicleServerTests
 import com.openlattice.chronicle.e2e.dsl.assertions.EnrollmentAssertions
-import com.openlattice.chronicle.e2e.dsl.assertions.ExportAssertions
 import com.openlattice.chronicle.e2e.dsl.chronicleScenario
 import com.openlattice.chronicle.e2e.dsl.di.ProvidersBundle
-import com.openlattice.chronicle.export.ExportFormat
-import com.openlattice.chronicle.export.ExportJobStatus
-import com.openlattice.chronicle.export.ExportRequest
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.study.ParticipantDataType
-import org.junit.Assert.assertEquals
+import com.openlattice.chronicle.storage.rls.RLSFixtureContext
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.Rule
+import java.time.OffsetDateTime
 
 /**
- * Composes every DSL scope: auth → study → participant → device → upload → flush → verify → export → download.
+ * Composes every DSL scope: auth → study → participant → device → upload → flush → verify → export.
  */
 class FullJourneyE2ETest : ChronicleServerTests() {
+    @get:Rule val fixtureContext = RLSFixtureContext()
     private val providers = ProvidersBundle.fromSpringContext(testServer.context)
     // Read through the study service to assert the aggregate cache update directly.
     private val studyManager = testServer.context.getBean(StudyManager::class.java)
@@ -56,22 +55,12 @@ class FullJourneyE2ETest : ChronicleServerTests() {
                     EnrollmentAssertions.assertParticipantEnrolled(devices, theParticipantId)
                 }
 
-                // Async export: admin submits, polls, downloads
-                export(ExportRequest(
-                    dataTypes = setOf(ParticipantDataType.UsageEvents),
-                    participantIds = setOf(capturedParticipantId),
-                    format = ExportFormat.CSV,
-                )) {
-                    val finished = awaitCompletion(timeoutMs = 30_000, intervalMs = 200)
-                    assertEquals(
-                        "Export must complete successfully",
-                        ExportJobStatus.COMPLETED,
-                        finished.status
-                    )
-                    val bytes = download()
-                    assertTrue("Downloaded CSV must not be empty", bytes.isNotEmpty())
-                    ExportAssertions.assertCsvHasRows(bytes, atLeast = 25)
-                }
+                // Export: the synchronous participants-data stream the dashboard downloads.
+                val rows = adminClient.testStudyApi.getParticipantsData(
+                    theStudyId, ParticipantDataType.UsageEvents, setOf(capturedParticipantId),
+                    OffsetDateTime.now().minusDays(1), OffsetDateTime.now().plusDays(1), "json",
+                )
+                assertTrue("Expected at least 25 exported rows, got ${rows.size}", rows.size >= 25)
             }
         }
     }

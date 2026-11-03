@@ -3,7 +3,6 @@ package com.openlattice.chronicle.e2e.dsl.scopes
 import com.openlattice.chronicle.client.ChronicleClient
 import com.openlattice.chronicle.e2e.dsl.ChronicleTestDsl
 import com.openlattice.chronicle.e2e.dsl.ScenarioContext
-import com.openlattice.chronicle.export.ExportRequest
 import com.openlattice.chronicle.participants.Participant
 import java.util.UUID
 
@@ -25,13 +24,4 @@ class StudyScope(
         ParticipantScope(ctx, userId, client, studyId, participant.participantId).block()
     }
 
-    fun export(
-        request: ExportRequest = ExportRequest(
-            dataTypes = setOf(com.openlattice.chronicle.study.ParticipantDataType.UsageEvents),
-        ),
-        block: ExportScope.() -> Unit,
-    ) {
-        val job = client.testExportApi.createAsyncExport(studyId, request)
-        ExportScope(ctx, client, studyId, job.exportId).block()
-    }
 }

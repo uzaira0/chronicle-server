@@ -1,15 +1,18 @@
 package com.openlattice.chronicle.contract
 
+import com.openlattice.chronicle.collection.HealthConnectRecordType
+import com.openlattice.chronicle.collection.CollectionDefaults
+import com.openlattice.chronicle.study.StudySettings
+import com.openlattice.chronicle.study.StudySettingType
 import com.codahale.metrics.MetricRegistry
 import com.codahale.metrics.health.HealthCheckRegistry
 import com.fasterxml.jackson.core.JacksonException
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.geekbeast.configuration.postgres.PostgresConfiguration
-import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.jdbc.DataSourceManager
+import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
+import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.android.AndroidSensorSample
-import com.openlattice.chronicle.collection.AmbientAudioClassificationEvent
 import com.openlattice.chronicle.collection.AndroidActivityRecognitionEvent
 import com.openlattice.chronicle.collection.AndroidAppNetworkUsageEvent
 import com.openlattice.chronicle.collection.AndroidAudioActivityEvent
@@ -24,64 +27,52 @@ import com.openlattice.chronicle.collection.BatterySample
 import com.openlattice.chronicle.collection.CollectionModuleId
 import com.openlattice.chronicle.configuration.ChronicleStorageConfiguration
 import com.openlattice.chronicle.configuration.JacksonSecurityConfig
-import com.openlattice.chronicle.crypto.EncryptedEnvelope
 import com.openlattice.chronicle.fixtures.FixtureFamily
 import com.openlattice.chronicle.fixtures.FixtureRegistry
-import com.openlattice.chronicle.sensorkit.SensorDataSample
 import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
 import com.openlattice.chronicle.services.delete.DataDeletionMode
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.services.studies.StudyManager
-import com.openlattice.chronicle.services.studies.StudyService
 import com.openlattice.chronicle.services.upload.ActivityRecognitionEventsUploadService
 import com.openlattice.chronicle.services.upload.AndroidSensorDataUploadService
 import com.openlattice.chronicle.services.upload.UploadType
-import com.openlattice.chronicle.services.upload.AmbientAudioUploadService
 import com.openlattice.chronicle.services.upload.AppAudioActivityUploadService
 import com.openlattice.chronicle.services.upload.AppAudioContentUploadService
 import com.openlattice.chronicle.services.upload.AppNetworkUsageUploadService
 import com.openlattice.chronicle.services.upload.BatteryTelemetryUploadService
 import com.openlattice.chronicle.services.upload.ConnectivityStateEventsUploadService
 import com.openlattice.chronicle.services.upload.DeviceSettingsUploadService
-import com.openlattice.chronicle.services.upload.EncryptedPayloadUploadService
+import com.openlattice.chronicle.services.studies.AuthorizedHealthScope
 import com.openlattice.chronicle.services.upload.HealthMetricsUploadService
 import com.openlattice.chronicle.services.upload.InteractionEventsUploadService
 import com.openlattice.chronicle.services.upload.NotificationActivityUploadService
-import com.openlattice.chronicle.services.upload.ScreenTimeCaptureSource
 import com.openlattice.chronicle.services.upload.ScreenTimeUsageEnvelope
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageRecord
+import com.openlattice.chronicle.services.upload.ScreenTimeUsageRowKind
 import com.openlattice.chronicle.services.upload.ScreenTimeUsageUploadService
-import com.openlattice.chronicle.services.upload.SensorDataUploadService
 import com.openlattice.chronicle.services.upload.SleepEventsUploadService
-import com.openlattice.chronicle.services.upload.UserIdentificationEnvelope
-import com.openlattice.chronicle.services.upload.UserIdentificationUploadService
 import com.openlattice.chronicle.storage.ChroniclePostgresTables
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.storage.tasks.MoveAndroidSensorDataToStorageTask
 import com.openlattice.chronicle.storage.tasks.MoveToEventStorageTaskDependencies
-import com.openlattice.chronicle.storage.tasks.MoveToIosEventStorageTask
 import com.openlattice.chronicle.study.Study
-import com.openlattice.chronicle.util.DeviceIdUtils
+import com.openlattice.chronicle.util.RandomDeviceIdUtils
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.BeforeClass
 import org.junit.Test
+import org.junit.Rule
+import com.openlattice.chronicle.storage.rls.RLSFixtureContext
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.whenever
 import java.io.File
-import java.sql.SQLException
 import java.time.OffsetDateTime
-import java.util.Properties
 import java.util.UUID
 
 // =============================================================================
-// Tranche 6, fixture-ingestion half (docs/shared-contracts/
-// 06-web-backend-db-alignment.md §Backend checks, 07-proof-and-testing-matrix.md
-// "Backend ingestion" row — chronicle-models repo).
-//
 // The canonical cross-language payload fixtures live in
 // chronicle-models/fixtures/payloads/ (registry.json, chronicle-fixture-registry/v1).
 // This suite proves, against a REAL Percona PG 17.5 (prod image) with the framework schema plus the
@@ -96,22 +87,22 @@ import java.util.UUID
 //      timestamps survive round-trip to TIMESTAMPTZ exactly (instant equality);
 //   3. re-ingesting the same fixture is idempotent per the matrix semantics
 //      (PK + ON CONFLICT DO NOTHING for the dedicated collection tables,
-//      sample_id PK for android_sensor_data, and the iOS mover's duplicate-merge
-//      pass for sensor_data);
+//      sample_id PK for android_sensor_data, and the capture key of
+//      ios_screen_time_usage);
 //   4. every invalid-*.json fixture is REJECTED by the ingestion path (Jackson
 //      decode -> DTO init require(...) validation) and persists nothing.
 //
-// encrypted-payloads is the deliberate release-gate exception: its DTO still decodes, but V95
-// proves that the service/database reject ciphertext until it can be decrypted into the complete
-// participant export contract. Android sensor samples are committed directly to their final table. The iOS
-// SensorKit and screen-time families retain their upload-buffer mover path.
-// A separate Android legacy-buffer test proves pre-upgrade rows still drain.
+// Android sensor samples and iOS Screen Time records are committed directly to their
+// final tables. A separate Android legacy-buffer test proves pre-upgrade rows still drain.
 //
 // ios-device is the one registry family not exercised here: its backendHandler is
 // EnrollmentService (device registration), not a payload upload service; it is
 // covered by the enrollment-surface tests, not the payload-ingestion matrix.
 // =============================================================================
 class PayloadFixtureIngestionTest {
+    @get:Rule
+    val fixtureContext = RLSFixtureContext()
+
 
     internal companion object {
 
@@ -161,23 +152,9 @@ class PayloadFixtureIngestionTest {
 
             // Real DataSourceManager + StorageResolver, wired exactly the way
             // FlywayMigrationCorpusTest builds them for upload-path services.
-            val hikariProps = Properties().apply {
-                setProperty("jdbcUrl", postgres.jdbcUrl)
-                setProperty("username", postgres.username)
-                setProperty("password", postgres.password)
-                setProperty("maximumPoolSize", "5")
-            }
-            val pgConfig = PostgresConfiguration(
-                hikariConfiguration = hikariProps,
-                usingCitus = false,
-                flavor = PostgresFlavor.VANILLA,
-                initializeIndices = false,
-                initializeTables = false,
-            )
             dataSourceManager = DataSourceManager(
-                mapOf("default" to pgConfig, "chronicle" to pgConfig, "platform_read" to pgConfig),
-                HealthCheckRegistry(),
-                MetricRegistry(),
+                ChronicleContractTestSchema.storageConfigurations(postgres, maximumPoolSize = 5),
+                HealthCheckRegistry(), MetricRegistry(),
             )
             storageResolver = StorageResolver(dataSourceManager, ChronicleStorageConfiguration())
 
@@ -185,10 +162,9 @@ class PayloadFixtureIngestionTest {
             // executeOnKey returns null makes resolveAndGetFlavor fall back to the
             // default event storage, which is what production does for unmapped studies.
             val studyStorage = mock<IMap<UUID, Study>>()
-            StorageResolver::class.java.getDeclaredField("studyStorage").apply {
-                isAccessible = true
-                set(storageResolver, studyStorage)
-            }
+            val hazelcast = mock<HazelcastInstance>()
+            whenever(hazelcast.getMap<UUID, Study>(HazelcastMap.STUDIES.name)).thenReturn(studyStorage)
+            storageResolver.setStudyStorage(hazelcast)
 
             moverDependencies = MoveToEventStorageTaskDependencies(storageResolver, mock<StudyManager>())
             mapper = JacksonSecurityConfig().secureObjectMapper()
@@ -207,21 +183,21 @@ class PayloadFixtureIngestionTest {
          * study/participant the screen-time fixture itself carries.
          */
         private fun seedStudiesAndParticipants() {
-            val iosEnvelopes = listOf("screen-time-usage", "user-identification").map { family ->
-                mapper.readTree(validFixture(family))
-            }
+            val iosEnvelopes = listOf(mapper.readTree(validFixture("screen-time-usage")))
 
-            storageResolver.getPlatformStorage().connection.use { conn ->
+            storageResolver.getBootstrapStorage().connection.use { conn ->
                 conn.prepareStatement(
-                    "INSERT INTO studies (study_id, title) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                    "INSERT INTO studies (study_id, title, settings) VALUES (?, ?, ?::jsonb) ON CONFLICT DO NOTHING",
                 ).use { ps ->
                     for ((studyId, title) in listOf(
                         SHARED_STUDY_ID to "Fixture Ingestion Study",
                         UUID.fromString(iosEnvelopes[0].path("studyId").asText()) to "Screen Time Fixture Study",
-                        UUID.fromString(iosEnvelopes[1].path("studyId").asText()) to "User Identification Fixture Study",
                     )) {
                         ps.setObject(1, studyId)
                         ps.setString(2, title)
+                        ps.setString(3, mapper.writeValueAsString(StudySettings(mapOf(
+                            StudySettingType.DataCollection to CollectionDefaults.androidDataCollectionSetting(),
+                        ))))
                         ps.addBatch()
                     }
                     ps.executeBatch()
@@ -240,7 +216,7 @@ class PayloadFixtureIngestionTest {
                     for ((studyId, participantId) in participants) {
                         ps.setObject(1, studyId)
                         ps.setString(2, participantId)
-                        ps.setObject(3, UUID.randomUUID())
+                        ps.setObject(3, seedCandidate(conn))
                         ps.addBatch()
                     }
                     ps.executeBatch()
@@ -414,14 +390,7 @@ class PayloadFixtureIngestionTest {
         val orchestrator = DataDeletionOrchestrator(storageResolver, mock<AuditingManager>())
         val operation = orchestrator.quarantineParticipant(SHARED_STUDY_ID, participantId,
             DataDeletionMode.COLLECTED_DATA_PURGE, "fixture-purge", UUID.randomUUID())
-        hds().connection.use { connection ->
-            connection.prepareStatement(
-                "UPDATE data_deletion_operations SET quarantine_until = now() - interval '1 minute' WHERE operation_id = ?").use {
-                it.setObject(1, operation); it.executeUpdate()
-            }
-        }
-        assertEquals(1, orchestrator.processDueOperations(1))
-        assertEquals("COMPLETED", orchestrator.getOperation(operation).status)
+        assertEquals("COMPLETED", orchestrator.eraseNow(operation, SHARED_STUDY_ID, "test-owner").status)
         assertEquals(expected.size, ingest(SHARED_STUDY_ID, participantId, valid))
         assertEquals("$familyName: old-only retry must be acknowledged and dropped", 0,
             scopedCount(table, SHARED_STUDY_ID, participantId))
@@ -460,9 +429,10 @@ class PayloadFixtureIngestionTest {
                 }
                 mapper.writeValue(mixed, listOf(fresh, newest))
                 assertEquals("$familyName: the entire $status batch is acknowledged", 2, ingest(SHARED_STUDY_ID, participantId, mixed))
-                assertEquals("$familyName: only the pre-stop capture is stored", 1, scopedCount(table, SHARED_STUDY_ID, participantId))
+                // One clock: the phone drops rows inside its windows; the server stores the queue.
+                assertEquals("$familyName: every queued capture is stored", 2, scopedCount(table, SHARED_STUDY_ID, participantId))
                 assertEquals(2, ingest(SHARED_STUDY_ID, participantId, mixed))
-                assertEquals("$familyName: retries do not store the forbidden sibling", 1, scopedCount(table, SHARED_STUDY_ID, participantId))
+                assertEquals("$familyName: retries store each capture once", 2, scopedCount(table, SHARED_STUDY_ID, participantId))
             }
         } finally { mixed.delete() }
     }
@@ -482,8 +452,9 @@ class PayloadFixtureIngestionTest {
     @Test
     fun `battery-telemetry fixtures ingest through BatteryTelemetryUploadService`() {
         val service = BatteryTelemetryUploadService(storageResolver)
+        val deviceId = UUID.randomUUID()
         assertDirectFamilyContract("battery-telemetry", service::class.java, "sample_id") { s, p, f ->
-            service.upload(s, p, decodeList(f, BatterySample::class.java))
+            service.upload(s, p, deviceId, decodeList(f, BatterySample::class.java))
         }
     }
 
@@ -492,14 +463,6 @@ class PayloadFixtureIngestionTest {
         val service = InteractionEventsUploadService(storageResolver)
         assertDirectFamilyContract("interaction-events", service::class.java, "event_id") { s, p, f ->
             service.upload(s, p, decodeList(f, AndroidInteractionEvent::class.java))
-        }
-    }
-
-    @Test
-    fun `ambient-audio fixtures ingest through AmbientAudioUploadService`() {
-        val service = AmbientAudioUploadService(storageResolver)
-        assertDirectFamilyContract("ambient-audio", service::class.java, "event_id") { s, p, f ->
-            service.upload(s, p, decodeList(f, AmbientAudioClassificationEvent::class.java))
         }
     }
 
@@ -547,7 +510,8 @@ class PayloadFixtureIngestionTest {
     fun `health-metrics fixtures ingest through HealthMetricsUploadService`() {
         val service = HealthMetricsUploadService(storageResolver)
         assertDirectFamilyContract("health-metrics", service::class.java, "event_id") { s, p, f ->
-            service.upload(s, p, decodeList(f, AndroidHealthMetricEvent::class.java))
+            service.upload(AuthorizedHealthScope(s, p, UUID.randomUUID(), HealthConnectRecordType.entries.toSet()),
+                decodeList(f, AndroidHealthMetricEvent::class.java))
         }
     }
 
@@ -568,55 +532,6 @@ class PayloadFixtureIngestionTest {
     }
 
     // -------------------------------------------------------------------------
-    // encrypted-payloads: EncryptedPayloadUploadService -> encrypted_payloads
-    // -------------------------------------------------------------------------
-
-    @Test
-    fun `encrypted-payloads fixtures stay blocked until they have a complete export path`() {
-        val registryEntry = family("encrypted-payloads")
-        val service = EncryptedPayloadUploadService(storageResolver)
-        assertEquals(
-            "encrypted-payloads: registry backendHandler drifted",
-            service::class.java.simpleName,
-            registryEntry.backendHandler,
-        )
-        val participantId = participantFor("encrypted-payloads")
-        val deviceId = UUID.fromString("00000000-0000-4000-8000-0000000000e0")
-
-        fun ingest(file: File): Int = service.upload(
-            SHARED_STUDY_ID,
-            participantId,
-            deviceId,
-            listOf(mapper.readValue(file, EncryptedEnvelope::class.java)),
-        )
-
-        // V95 is the release boundary: accepting ciphertext before OWNER-gated decryption is
-        // integrated with participant exports would silently strand study data.
-        assertThrows(SQLException::class.java) { ingest(validFixture("encrypted-payloads")) }
-        assertEquals(
-            "encrypted-payloads: release gate must persist no ciphertext",
-            0,
-            scopedCount(registryEntry.backendTable, SHARED_STUDY_ID, participantId),
-        )
-
-        // Malformed envelopes remain rejected before the database boundary as well.
-        for (invalid in invalidFixtures("encrypted-payloads")) {
-            assertIngestionRejects("encrypted-payloads", invalid, ::ingest)
-            assertEquals(
-                "encrypted-payloads: rejected ${invalid.name} must persist nothing",
-                0,
-                scopedCount(registryEntry.backendTable, SHARED_STUDY_ID, participantId),
-            )
-        }
-        for (status in listOf("PAUSED", "COLLECTION_COMPLETED")) {
-            stopParticipant(SHARED_STUDY_ID, participantId, status)
-            assertEquals("Undated envelopes cannot prove pre-stop captures, but the queue must drain", 1,
-                ingest(validFixture("encrypted-payloads")))
-            assertEquals(0, scopedCount(registryEntry.backendTable, SHARED_STUDY_ID, participantId))
-        }
-    }
-
-    // -------------------------------------------------------------------------
     // Direct Android sensor ingestion and legacy-buffer compatibility
     // -------------------------------------------------------------------------
 
@@ -632,32 +547,6 @@ class PayloadFixtureIngestionTest {
             }
         }
 
-    private fun sampleRows(table: String, sampleId: UUID): Int =
-        hds().connection.use { c ->
-            c.prepareStatement("SELECT count(*) FROM $table WHERE sample_id = ?").use { ps ->
-                ps.setString(1, sampleId.toString())
-                ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
-            }
-        }
-
-    /**
-     * sensor_data stores study_id as TEXT_UUID (varchar) — the iOS mover binds it with
-     * setString — so its scope queries must bind text, unlike the uuid-typed tables.
-     */
-    private fun sensorDataCount(table: String, studyId: UUID, participantId: String): Int =
-        hds().connection.use { c ->
-            c.prepareStatement(
-                "SELECT count(*) FROM $table WHERE study_id = ? AND participant_id = ?",
-            ).use { ps ->
-                ps.setString(1, studyId.toString())
-                ps.setString(2, participantId)
-                ps.executeQuery().use { rs ->
-                    rs.next()
-                    rs.getInt(1)
-                }
-            }
-        }
-
     @Test
     fun `android-sensor-data fixtures commit directly and idempotently to final storage`() {
         val registryEntry = family("android-sensor-data")
@@ -669,12 +558,12 @@ class PayloadFixtureIngestionTest {
         )
         val table = registryEntry.backendTable
         val participantId = participantFor("android-sensor-data")
-        val deviceId = UUID.fromString("00000000-0000-4000-8000-0000000000d0")
+        val randomDeviceId = UUID.fromString("00000000-0000-4000-8000-0000000000d0")
         val valid = validFixture("android-sensor-data")
         val expected = fixtureEventTimestamps(valid)
 
         fun ingest(file: File): Int =
-            service.upload(SHARED_STUDY_ID, participantId, deviceId, decodeList(file, AndroidSensorSample::class.java))
+            service.upload(SHARED_STUDY_ID, participantId, randomDeviceId, decodeList(file, AndroidSensorSample::class.java))
 
         // 1) The service must not acknowledge before final-table rows are visible.
         assertEquals(expected.size, ingest(valid))
@@ -686,15 +575,15 @@ class PayloadFixtureIngestionTest {
         )
         hds().connection.use { c ->
             c.prepareStatement(
-                "SELECT count(*) FROM $table WHERE study_id = ? AND participant_id = ? AND device_id = ?",
+                "SELECT count(*) FROM $table WHERE study_id = ? AND participant_id = ? AND random_device_id = ?",
             ).use { ps ->
                 ps.setObject(1, SHARED_STUDY_ID)
                 ps.setString(2, participantId)
-                ps.setObject(3, deviceId)
+                ps.setObject(3, randomDeviceId)
                 ps.executeQuery().use { rs ->
                     rs.next()
                     assertEquals(
-                        "android-sensor-data: rows must carry the uploading device id",
+                        "android-sensor-data: rows must carry the uploading random device id",
                         expected.size,
                         rs.getInt(1),
                     )
@@ -722,17 +611,19 @@ class PayloadFixtureIngestionTest {
             val cutoff = stopParticipant(SHARED_STUDY_ID, participantId, status)
             val before = template.copy(id = UUID.randomUUID(), timestamp = cutoff.minusSeconds(index + 1L))
             val after = template.copy(id = UUID.randomUUID(), timestamp = cutoff.plusSeconds(1))
-            assertEquals(2, service.upload(SHARED_STUDY_ID, participantId, deviceId, listOf(before, after)))
+            assertEquals(2, service.upload(SHARED_STUDY_ID, participantId, randomDeviceId, listOf(before, after)))
+            // One clock: the server stores the queue; the phone drops rows inside its windows.
             permitted[before.id.toString()] = before.timestamp
+            permitted[after.id.toString()] = after.timestamp
             assertTimestampsPreserved("android-sensor-data", permitted,
                 persistedEventTimestamps(table, "sample_id", SHARED_STUDY_ID, participantId))
         }
     }
 
     @Test
-    fun `legacy android sensor buffer rows still drain transactionally`() {
+    fun `android sensor buffer rows drain transactionally`() {
         val participantId = participantFor("android-sensor-data-legacy-buffer")
-        val deviceId = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
+        val randomDeviceId = UUID.fromString("00000000-0000-4000-8000-0000000000d1")
         val samples = decodeList(validFixture("android-sensor-data"), AndroidSensorSample::class.java)
             .mapIndexed { index, sample ->
                 sample.copy(id = UUID.nameUUIDFromBytes("legacy-android-sensor-$index".toByteArray()))
@@ -741,14 +632,14 @@ class PayloadFixtureIngestionTest {
             connection.prepareStatement(
                 """
                 INSERT INTO upload_buffer
-                    (study_id, participant_id, data, uploaded_at, upload_type, device_id)
+                    (study_id, participant_id, data, uploaded_at, upload_type, random_device_id)
                 VALUES (?, ?, ?::jsonb, now(), 'AndroidSensor', ?)
                 """.trimIndent(),
             ).use { ps ->
                 ps.setObject(1, SHARED_STUDY_ID)
                 ps.setString(2, participantId)
                 ps.setString(3, mapper.writeValueAsString(samples))
-                ps.setObject(4, deviceId)
+                ps.setObject(4, randomDeviceId)
                 assertEquals(1, ps.executeUpdate())
 
                 ps.setString(3, "{\"not\":\"a sensor sample list\"}")
@@ -782,151 +673,98 @@ class PayloadFixtureIngestionTest {
     }
 
     @Test
-    fun `legacy buffer claim is bounded by rows rather than participant pairs`() {
+    fun `android sensor buffer drain keeps the server receipt of the buffer row`() {
+        val participantId = participantFor("android-sensor-data-receipt")
+        val randomDeviceId = UUID.fromString("00000000-0000-4000-8000-0000000000d2")
+        val received = OffsetDateTime.now().minusDays(2).truncatedTo(java.time.temporal.ChronoUnit.MICROS)
+        val samples = decodeList(validFixture("android-sensor-data"), AndroidSensorSample::class.java)
+            .mapIndexed { index, sample -> sample.copy(id = UUID.nameUUIDFromBytes("receipt-android-sensor-$index".toByteArray())) }
+        hds().connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO upload_buffer (study_id, participant_id, data, uploaded_at, upload_type, random_device_id)
+                VALUES (?, ?, ?::jsonb, ?, 'AndroidSensor', ?)
+                """.trimIndent(),
+            ).use { ps ->
+                ps.setObject(1, SHARED_STUDY_ID)
+                ps.setString(2, participantId)
+                ps.setString(3, mapper.writeValueAsString(samples))
+                ps.setObject(4, received)
+                ps.setObject(5, randomDeviceId)
+                assertEquals(1, ps.executeUpdate())
+            }
+        }
+
+        FixtureDrivenAndroidSensorMover(moverDependencies).runTask()
+
+        hds().connection.use { connection ->
+            connection.prepareStatement(
+                "SELECT DISTINCT uploaded_at FROM android_sensor_data WHERE study_id = ? AND participant_id = ?",
+            ).use { ps ->
+                ps.setObject(1, SHARED_STUDY_ID)
+                ps.setString(2, participantId)
+                ps.executeQuery().use { rs ->
+                    val receipts = generateSequence { if (rs.next()) rs.getObject(1, OffsetDateTime::class.java).toInstant() else null }
+                    assertEquals("the drain must carry the buffer receipt, not stamp the move time",
+                        listOf(received.toInstant()), receipts.toList())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `buffer claim is bounded by rows rather than participant pairs`() {
         val participantId = participantFor("android-sensor-data-bounded-drain")
         hds().connection.use { connection ->
             connection.autoCommit = false
             try {
-                connection.prepareStatement(
-                    """
-                    INSERT INTO upload_buffer
-                        (study_id, participant_id, data, uploaded_at, upload_type, device_id)
-                    VALUES (?, ?, '[]'::jsonb, '2000-01-01T00:00:00Z', 'AndroidSensor', ?)
-                    """.trimIndent(),
-                ).use { ps ->
-                    repeat(5) {
-                        ps.setObject(1, SHARED_STUDY_ID)
-                        ps.setString(2, participantId)
-                        ps.setObject(3, UUID.randomUUID())
-                        ps.addBatch()
-                    }
-                    assertEquals(5, ps.executeBatch().sum())
-                }
-
+                insertSensorBufferRows(connection, participantId, 5)
                 val claimed = connection.createStatement().use { statement ->
-                    statement.executeQuery(ChroniclePostgresTables.getMoveSql(2, UploadType.AndroidSensor)).use { rs ->
-                        var rows = 0
-                        while (rs.next()) rows++
-                        rows
-                    }
+                    val rs = statement.executeQuery(ChroniclePostgresTables.getMoveSql(2, UploadType.AndroidSensor))
+                    generateSequence { rs.takeIf { it.next() } }.count() // closed with its statement
                 }
                 assertEquals("move SQL must claim no more than its row limit", 2, claimed)
-
-                connection.prepareStatement(
-                    "SELECT count(*) FROM upload_buffer WHERE study_id = ? AND participant_id = ?",
-                ).use { ps ->
-                    ps.setObject(1, SHARED_STUDY_ID)
-                    ps.setString(2, participantId)
-                    ps.executeQuery().use { rs ->
-                        rs.next()
-                        assertEquals("three rows from the same participant must remain", 3, rs.getInt(1))
-                    }
-                }
+                assertEquals("three rows from the same participant must remain", 3, bufferRows(connection, participantId))
             } finally {
                 connection.rollback()
             }
         }
     }
 
-    @Test
-    fun `ios-sensorkit-data fixtures ingest through SensorDataUploadService and the ios mover`() {
-        val registryEntry = family("ios-sensorkit-data")
-        val service = SensorDataUploadService(storageResolver, mock<StudyService>())
-        assertEquals(
-            "ios-sensorkit-data: registry backendHandler drifted",
-            service::class.java.simpleName,
-            registryEntry.backendHandler,
-        )
-        val table = registryEntry.backendTable
-        val participantId = participantFor("ios-sensorkit-data")
-        val deviceId = UUID.fromString("00000000-0000-4000-8000-0000000000d2")
-        val mover = FixtureDrivenIosMover(moverDependencies)
-        val valid = validFixture("ios-sensorkit-data")
-        val samples = decodeList(valid, SensorDataSample::class.java)
-
-        // The iOS mover FLATTENS each deviceUsage sample into one sensor_data row per
-        // (appUsage entry x textInputSession) plus one row per webUsage-only category
-        // (MoveToIosEventStorageTask.mapDeviceUsageData). Derive the expected row count
-        // from the fixture's nested data payload so the fixture stays the source of truth.
-        val usageData = mapper.readTree(samples.single().data)
-        val appCategories = usageData.path("appUsage").fieldNames().asSequence().toSet()
-        val webCategories = usageData.path("webUsage").fieldNames().asSequence().toSet()
-        val appRows = usageData.path("appUsage").sumOf { entries ->
-            entries.sumOf { entry -> maxOf(1, entry.path("textInputSessions").size()) }
-        }
-        val expectedRows = appRows + (webCategories - appCategories).size
-        assertEquals(
-            "ios-sensorkit-data: canonical fixture flattening drifted (recheck mapDeviceUsageData)",
-            2,
-            expectedRows,
-        )
-
-        fun ingest(file: File): Int =
-            service.upload(SHARED_STUDY_ID, participantId, deviceId, decodeList(file, SensorDataSample::class.java))
-
-        // 1) Valid ingestion end to end.
-        assertEquals(samples.size, ingest(valid))
-        assertEquals(1, bufferCount(SHARED_STUDY_ID, participantId))
-        mover.runTask()
-        assertEquals("ios-sensorkit-data: mover must drain the buffer", 0, bufferCount(SHARED_STUDY_ID, participantId))
-        assertSensorDataRows(
-            family = "ios-sensorkit-data",
-            table = table,
-            studyId = SHARED_STUDY_ID,
-            participantId = participantId,
-            expectedCount = expectedRows,
-            // Every flattened row keeps the sample's shared columns, so all rows carry
-            // the single fixture sample id and its exact timestamps.
-            expectedDistinctSampleIds = samples.size,
-            expectedStart = samples.single().startDate,
-            expectedEnd = samples.single().endDate,
-            expectedExactRecorded = samples.single().dateRecorded,
-            expectedSampleId = samples.single().id,
-        )
-
-        // 2) Idempotency: the iOS duplicate-merge pass collapses the re-ingest.
-        ingest(valid)
-        mover.runTask()
-        assertEquals(
-            "ios-sensorkit-data: the iOS dedup pass must collapse duplicate samples",
-            expectedRows,
-            sensorDataCount(table, SHARED_STUDY_ID, participantId),
-        )
-
-        // 3) Malformed fixture (missing sensor) rejected at decode; nothing staged.
-        for (invalid in invalidFixtures("ios-sensorkit-data")) {
-            assertIngestionRejects("ios-sensorkit-data", invalid, ::ingest)
-            assertEquals(0, bufferCount(SHARED_STUDY_ID, participantId))
-            assertEquals(expectedRows, sensorDataCount(table, SHARED_STUDY_ID, participantId))
-        }
-        for ((index, status) in listOf("PAUSED", "COLLECTION_COMPLETED").withIndex()) {
-            val cutoff = stopParticipant(SHARED_STUDY_ID, participantId, status)
-            val before = samples.single().copy(id = UUID.randomUUID(), dateRecorded = cutoff.plusMinutes(10),
-                startDate = cutoff.minusMinutes(1), endDate = cutoff.minusSeconds(index + 1L))
-            val after = before.copy(id = UUID.randomUUID(), endDate = cutoff.plusSeconds(1))
-            assertEquals(2, service.upload(SHARED_STUDY_ID, participantId, deviceId, listOf(before, after)))
-            hds().connection.use { connection ->
-                connection.prepareStatement("SELECT data FROM upload_buffer WHERE study_id = ? AND participant_id = ?").use {
-                    it.setObject(1, SHARED_STUDY_ID); it.setString(2, participantId)
-                    it.executeQuery().use { rows ->
-                        assertTrue(rows.next())
-                        assertEquals(listOf(before.id.toString()), mapper.readTree(rows.getString(1)).map { sample -> sample.path("id").asText() })
-                    }
-                }
+    private fun insertSensorBufferRows(connection: java.sql.Connection, participantId: String, rows: Int) {
+        connection.prepareStatement(
+            """
+            INSERT INTO upload_buffer
+                (study_id, participant_id, data, uploaded_at, upload_type, random_device_id)
+            VALUES (?, ?, '[]'::jsonb, '2000-01-01T00:00:00Z', 'AndroidSensor', ?)
+            """.trimIndent(),
+        ).use { ps ->
+            repeat(rows) {
+                ps.setObject(1, SHARED_STUDY_ID)
+                ps.setString(2, participantId)
+                ps.setObject(3, UUID.randomUUID())
+                ps.addBatch()
             }
-            mover.runTask()
-            // The legacy iOS dedup collapses content-equal samples regardless of id and timestamps,
-            // so assert on the post-cutoff sample id rather than on a row count.
-            assertEquals(0, sampleRows(table, after.id))
+            assertEquals(rows, ps.executeBatch().sum())
         }
     }
 
+    private fun bufferRows(connection: java.sql.Connection, participantId: String): Int =
+        connection.prepareStatement("SELECT count(*) FROM upload_buffer WHERE study_id = ? AND participant_id = ?").use { ps ->
+            ps.setObject(1, SHARED_STUDY_ID)
+            ps.setString(2, participantId)
+            val rs = ps.executeQuery() // closed with its statement
+            rs.next()
+            rs.getInt(1)
+        }
+
     @Test
-    fun `screen-time-usage fixtures ingest through ScreenTimeUsageUploadService and the ios mover`() {
+    fun `screen-time-usage fixtures ingest through ScreenTimeUsageUploadService`() {
         val registryEntry = family("screen-time-usage")
+        val service = ScreenTimeUsageUploadService(storageResolver)
         assertEquals(
             "screen-time-usage: registry backendHandler drifted",
-            ScreenTimeUsageUploadService::class.java.simpleName,
+            service::class.java.simpleName,
             registryEntry.backendHandler,
         )
         val table = registryEntry.backendTable
@@ -937,59 +775,26 @@ class PayloadFixtureIngestionTest {
         val envelope = mapper.readValue(valid, ScreenTimeUsageEnvelope::class.java)
         val studyId = UUID.fromString(envelope.studyId)
         val participantId = envelope.participantId
-        val sourceDeviceId = envelope.deviceId
-        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, sourceDeviceId)
-        val sensorService = SensorDataUploadService(storageResolver, mock<StudyService>())
-        val mover = FixtureDrivenIosMover(moverDependencies)
+        val randomDeviceId = RandomDeviceIdUtils.deriveRandomDeviceId(studyId, participantId, envelope.randomDeviceId)
 
-        fun ingest(candidate: ScreenTimeUsageEnvelope = envelope): Int {
-            val samples = ScreenTimeUsageUploadService.toSensorDataSamples(candidate, sourceDeviceId)
-            assertEquals(
-                "screen-time-usage: every record in the canonical valid fixture must be ingestible " +
-                    "(none may be dropped as category-summary/threshold rows)",
-                candidate.records.size,
-                samples.size,
-            )
-            return sensorService.upload(studyId, participantId, deviceId, samples)
-        }
+        fun ingest(candidate: ScreenTimeUsageEnvelope = envelope): Int =
+            service.upload(studyId, participantId, randomDeviceId, candidate)
 
-        // 1) Valid ingestion end to end (controller path: envelope -> samples -> buffer -> mover).
+        // 1) Valid ingestion end to end: one row per record, every wire field kept.
         assertEquals(envelope.records.size, ingest())
-        assertEquals(1, bufferCount(studyId, participantId))
-        mover.runTask()
-        assertEquals("screen-time-usage: mover must drain the buffer", 0, bufferCount(studyId, participantId))
+        assertEquals(envelope.records.associate { it.id to it.capturedAt.toInstant() }, storedCaptures(table, studyId, participantId))
 
-        // All fixture records share the same observation window and capture time. Each
-        // screen-time record maps to exactly one flattened sensor_data row (one app
-        // category without text-input sessions, or one web domain).
-        val record = envelope.records.first()
-        assertSensorDataRows(
-            family = "screen-time-usage",
-            table = table,
-            studyId = studyId,
-            participantId = participantId,
-            expectedCount = envelope.records.size,
-            expectedDistinctSampleIds = envelope.records.size,
-            expectedStart = record.observationStart,
-            expectedEnd = record.observationEnd,
-            expectedExactRecorded = record.capturedAt,
-            // The reportSummary record keeps its wire id; the deviceActivityExport record's
-            // sample id is the deterministic SHA-256 UUID, asserted stable via idempotency.
-            expectedSampleId = envelope.records.first { it.source == ScreenTimeCaptureSource.reportSummary }.id,
-        )
-
-        // 2) Idempotency: deterministic sample ids + the iOS dedup pass -> no duplicates.
+        // 2) Idempotency: the capture key admits a retried envelope once.
         ingest()
-        mover.runTask()
         assertEquals(
             "screen-time-usage: re-ingesting the same envelope must not create duplicate rows",
             envelope.records.size,
-            sensorDataCount(table, studyId, participantId),
+            scopedCount(table, studyId, participantId),
         )
 
-        // 3) A later capture of the same Apple bucket is a new raw snapshot, even when
-        // every entity key is unchanged. Replaying that exact capture is still idempotent.
-        val directRecord = envelope.records.single { it.source == ScreenTimeCaptureSource.deviceActivityExport }
+        // 3) A later capture of the same Apple window is a new row, even when every
+        // entity key is unchanged. Replaying that exact capture is still idempotent.
+        val directRecord = envelope.records.single { it.rowKind == ScreenTimeUsageRowKind.application }
         val laterCapture = envelope.copy(
             generatedAt = envelope.generatedAt.plusMinutes(15),
             records = listOf(
@@ -1003,30 +808,34 @@ class PayloadFixtureIngestionTest {
             ),
         )
         assertEquals(1, ingest(laterCapture))
-        mover.runTask()
-        assertEquals(envelope.records.size + 1, sensorDataCount(table, studyId, participantId))
-
-        assertEquals(1, ingest(laterCapture))
-        mover.runTask()
+        assertEquals(envelope.records.size + 1, scopedCount(table, studyId, participantId))
+        assertEquals(1, ingest(laterCapture.copy(records = laterCapture.records.map { it.copy(id = UUID.randomUUID()) })))
         assertEquals(
-            "screen-time-usage: retrying one capture must not duplicate that raw snapshot",
+            "screen-time-usage: retrying one capture must not duplicate that row",
             envelope.records.size + 1,
-            sensorDataCount(table, studyId, participantId),
+            scopedCount(table, studyId, participantId),
         )
 
+        assertDirectRowDelta(studyId, participantId, directRecord)
+    }
+
+    /** The delta view keeps the newest of the app window's two captures; the web-domain row has its own delta. */
+    private fun assertDirectRowDelta(studyId: UUID, participantId: String, directRecord: ScreenTimeUsageRecord) {
         hds().connection.use { connection ->
             connection.prepareStatement(
                 """
-                SELECT usage_delta_seconds, notification_delta_count, pickup_delta_count,
+                SELECT row_kind, usage_delta_seconds, notification_delta_count, pickup_delta_count,
                        interval_start_utc, interval_end_utc, delta_status
                 FROM screen_time_usage_deltas
                 WHERE study_id = ? AND participant_id = ?
+                ORDER BY row_kind
                 """.trimIndent(),
             ).use { statement ->
-                statement.setString(1, studyId.toString())
+                statement.setObject(1, studyId)
                 statement.setString(2, participantId)
                 statement.executeQuery().use { rows ->
-                    assertTrue("screen-time-usage: delta projection should contain the direct row", rows.next())
+                    assertTrue("screen-time-usage: delta projection should contain the app row", rows.next())
+                    assertEquals("application", rows.getString("row_kind"))
                     assertEquals(960.0, rows.getDouble("usage_delta_seconds"), 0.001)
                     assertEquals(4, rows.getInt("notification_delta_count"))
                     assertEquals(6, rows.getInt("pickup_delta_count"))
@@ -1039,131 +848,29 @@ class PayloadFixtureIngestionTest {
                         rows.getObject("interval_end_utc", OffsetDateTime::class.java).toInstant(),
                     )
                     assertEquals("ok", rows.getString("delta_status"))
-                    assertTrue("screen-time-usage: report summaries must stay out of the direct view", !rows.next())
+                    assertTrue("screen-time-usage: delta projection should contain the web-domain row", rows.next())
+                    assertEquals("webDomain", rows.getString("row_kind"))
+                    assertEquals(300.0, rows.getDouble("usage_delta_seconds"), 0.001)
+                    assertTrue("screen-time-usage: one delta row per app or domain window", !rows.next())
                 }
             }
         }
     }
 
-    @Test
-    fun `user-identification fixtures ingest through UserIdentificationUploadService and the ios mover`() {
-        val registryEntry = family("user-identification")
-        assertEquals(UserIdentificationUploadService::class.java.simpleName, registryEntry.backendHandler)
-        val valid = validFixture("user-identification")
-        val envelope = mapper.readValue(valid, UserIdentificationEnvelope::class.java)
-        val studyId = UUID.fromString(envelope.studyId)
-        val participantId = envelope.participantId
-        val deviceId = DeviceIdUtils.deriveDeviceId(studyId, participantId, envelope.deviceId)
-        val sensorService = SensorDataUploadService(storageResolver, mock<StudyService>())
-        val mover = FixtureDrivenIosMover(moverDependencies)
-
-        fun ingest(): Int = sensorService.upload(
-            studyId,
-            participantId,
-            deviceId,
-            UserIdentificationUploadService.toSensorDataSamples(envelope, envelope.deviceId),
-        )
-
-        assertEquals(envelope.records.size, ingest())
-        mover.runTask()
-        assertEquals(0, bufferCount(studyId, participantId))
-        val record = envelope.records.single()
-        assertSensorDataRows(
-            family = "user-identification",
-            table = registryEntry.backendTable,
-            studyId = studyId,
-            participantId = participantId,
-            expectedCount = 1,
-            expectedDistinctSampleIds = 1,
-            expectedStart = record.capturedAt,
-            expectedEnd = record.capturedAt.plusSeconds(1),
-            expectedExactRecorded = record.capturedAt,
-            expectedSampleId = record.id,
-        )
-
-        ingest()
-        mover.runTask()
-        assertEquals(0, bufferCount(studyId, participantId))
-        assertEquals(1, sensorDataCount(registryEntry.backendTable, studyId, participantId))
-
-        for (invalid in invalidFixtures("user-identification")) {
-            assertIngestionRejects("user-identification", invalid) { fixture ->
-                mapper.readValue(fixture, UserIdentificationEnvelope::class.java)
-                0
-            }
-            assertEquals(1, sensorDataCount(registryEntry.backendTable, studyId, participantId))
-        }
-    }
-
-    /** Shared assertions for rows the iOS mover lands in sensor_data. */
-    @Suppress("LongParameterList")
-    private fun assertSensorDataRows(
-        family: String,
-        table: String,
-        studyId: UUID,
-        participantId: String,
-        expectedCount: Int,
-        expectedDistinctSampleIds: Int,
-        expectedStart: OffsetDateTime,
-        expectedEnd: OffsetDateTime,
-        expectedExactRecorded: OffsetDateTime,
-        expectedSampleId: UUID,
-    ) {
-        hds().connection.use { c ->
-            c.prepareStatement(
-                """
-                SELECT sample_id, sensor_type, datetimestart, datetimeend, exact_recordeddate, recordeddate
-                FROM $table WHERE study_id = ? AND participant_id = ?
-                """.trimIndent(),
-            ).use { ps ->
-                // sensor_data study_id is TEXT_UUID (varchar): bind text like the mover does.
-                ps.setString(1, studyId.toString())
-                ps.setString(2, participantId)
-                ps.executeQuery().use { rs ->
-                    val sampleIds = mutableSetOf<String>()
-                    var rows = 0
-                    while (rs.next()) {
-                        rows++
-                        sampleIds += rs.getString("sample_id")
-                        assertEquals("$family: sensor_type", "deviceUsage", rs.getString("sensor_type"))
-                        assertEquals(
-                            "$family: datetimestart (observation start) not preserved",
-                            expectedStart.toInstant(),
-                            rs.getObject("datetimestart", OffsetDateTime::class.java).toInstant(),
-                        )
-                        assertEquals(
-                            "$family: datetimeend (observation end) not preserved",
-                            expectedEnd.toInstant(),
-                            rs.getObject("datetimeend", OffsetDateTime::class.java).toInstant(),
-                        )
-                        assertEquals(
-                            "$family: exact_recordeddate (capture time) not preserved",
-                            expectedExactRecorded.toInstant(),
-                            rs.getObject("exact_recordeddate", OffsetDateTime::class.java).toInstant(),
-                        )
-                        assertNotNull(
-                            "$family: recordeddate must be populated",
-                            rs.getObject("recordeddate", OffsetDateTime::class.java),
-                        )
+    /** record id -> captured_at of every stored row of one participant. */
+    private fun storedCaptures(table: String, studyId: UUID, participantId: String): Map<UUID, java.time.Instant> =
+        hds().connection.use { connection ->
+            connection.prepareStatement("SELECT record_id, captured_at FROM $table WHERE study_id = ? AND participant_id = ?").use {
+                it.setObject(1, studyId); it.setString(2, participantId)
+                it.executeQuery().use { rows ->
+                    buildMap {
+                        while (rows.next()) {
+                            put(rows.getObject(1, UUID::class.java), rows.getObject(2, OffsetDateTime::class.java).toInstant())
+                        }
                     }
-                    assertEquals("$family: persisted row count", expectedCount, rows)
-                    assertEquals("$family: distinct sample ids", expectedDistinctSampleIds, sampleIds.size)
-                    assertTrue(
-                        "$family: fixture sample id $expectedSampleId must survive to sensor_data " +
-                            "(persisted: $sampleIds)",
-                        expectedSampleId.toString() in sampleIds,
-                    )
                 }
             }
         }
-    }
-}
-
-/** Production iOS mover with its Hazelcast-provided dependencies pinned for the test. */
-private class FixtureDrivenIosMover(
-    private val deps: MoveToEventStorageTaskDependencies,
-) : MoveToIosEventStorageTask() {
-    override fun getDependency(): MoveToEventStorageTaskDependencies = deps
 }
 
 /** Production Android sensor mover with its dependencies pinned for the test. */

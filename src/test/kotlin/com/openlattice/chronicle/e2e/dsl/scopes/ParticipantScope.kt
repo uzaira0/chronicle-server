@@ -1,6 +1,6 @@
 package com.openlattice.chronicle.e2e.dsl.scopes
 
-import com.openlattice.chronicle.ChronicleServerTests
+import com.openlattice.chronicle.UsageEnrollmentFixtures.enrollUsageFixture
 import com.openlattice.chronicle.client.ChronicleClient
 import com.openlattice.chronicle.e2e.dsl.ChronicleTestDsl
 import com.openlattice.chronicle.e2e.dsl.ScenarioContext
@@ -19,8 +19,9 @@ class ParticipantScope(
         device: AndroidDevice = ctx.providers.data.androidDevice(),
         block: DeviceScope.() -> Unit,
     ) {
-        val deviceId = "e2e-${device.model}-${UUID.randomUUID()}"
-        val mobileApi = ChronicleServerTests.enrollUsageFixture(studyId, participantId, deviceId, device)
-        DeviceScope(ctx, userId, client, studyId, participantId, deviceId, mobileApi).block()
+        val randomDeviceId = "e2e-${device.model}-${UUID.randomUUID()}"
+        val enrollmentDevice = device.copy(randomDeviceId = randomDeviceId)
+        val mobileApi = enrollUsageFixture(studyId, participantId, enrollmentDevice).mobileApi
+        DeviceScope(ctx, userId, client, studyId, participantId, randomDeviceId, mobileApi).block()
     }
 }

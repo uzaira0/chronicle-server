@@ -1,6 +1,7 @@
 package com.openlattice.chronicle
 
 import org.junit.Test
+import org.junit.Assume.assumeTrue
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
@@ -12,7 +13,7 @@ import java.util.concurrent.TimeUnit
  * Long-running test server for Playwright e2e tests.
  *
  * Boots the full Chronicle server (testcontainer Postgres + embedded Jetty on the configured
- * `CHRONICLE_TEST_HTTP_PORT`, defaulting to 40320)
+ * `CHRONICLE_TEST_HTTP_PORT`, or a free port the OS picks; the ready line logs it)
  * and blocks indefinitely so the operator can run frontend tests against it.
  *
  * Run with:
@@ -27,10 +28,8 @@ class PlaywrightBackendServer : ChronicleServerTests() {
 
     @Test
     fun bootAndBlock() {
-        if (System.getProperty("chronicle.playwright.backend") != "true") {
-            logger.info("Skipping Playwright backend harness; pass -Dchronicle.playwright.backend=true to block.")
-            return
-        }
+        assumeTrue("Playwright backend harness requires explicit opt-in",
+            System.getProperty("chronicle.playwright.backend") == "true")
         check(hazelcastInstance.cluster.members.size == 1) {
             "Playwright backend must use an isolated one-member Hazelcast cluster; found " +
                     "${hazelcastInstance.cluster.members.size} members"

@@ -8,16 +8,26 @@ import com.hazelcast.internal.serialization.impl.DefaultSerializationServiceBuil
 import jakarta.validation.Validation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito
-import java.io.File
 import java.time.OffsetDateTime
 
 class ExactDayStudyLimitsTest {
+    /** H-end-default: a study whose researcher set no limits has no protocol end, so nothing ever pauses it. */
+    @Test fun emptyLimitsSetNoProtocolEnd() {
+        val mapper = JacksonSecurityConfig().secureObjectMapper()
+        for (limits in listOf(StudyLimits(), mapper.readValue("{}", StudyLimits::class.java))) {
+            assertNull(limits.studyDuration)
+            assertNull(limits.studyEnds)
+            assertNull(limits.studyDataExpires)
+        }
+    }
+
     @Test fun webDayPayloadsPassProductionValidationAndKeepCalendarBoundaryDeadlines() {
         val mapper = JacksonSecurityConfig().secureObjectMapper()
-        val fixtures = mapper.readTree(File("../chronicle-web/src/modern/test/golden/exact-day-study-limits.json"))
+        val fixtures = checkNotNull(javaClass.getResourceAsStream("/exact-day-study-limits.json")).use(mapper::readTree)
         Validation.buildDefaultValidatorFactory().use { factory ->
             fixtures.forEach { fixture ->
                 val start = OffsetDateTime.parse(fixture["start"].asText())

@@ -1,0 +1,1897 @@
+[ {
+  "method" : "GET",
+  "path" : "/.well-known/jwks.json",
+  "operation" : "JwksController.getJwks",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/.well-known/jwks.json",
+  "operation" : "JwksController.getJwks",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerComplianceNotificationsForAllStudies",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerStudyComplianceNotifications",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/compliance/study/{studyId}",
+  "operation" : "StudyComplianceController.getStudyComplianceViolations",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/internal/health/encryption",
+  "operation" : "EncryptionHealthService.encryptionHealth",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/internal/health/live",
+  "operation" : "InternalHealthController.live",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/internal/health/ready",
+  "operation" : "InternalHealthController.ready",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.getStudyLimits",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PUT",
+  "path" : "/chronicle/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.setStudyLimits",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/principal",
+  "operation" : "PrincipalDirectoryController.getSecurablePrincipal",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/principal/roles",
+  "operation" : "PrincipalDirectoryController.getAvailableRoles",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/principal/roles/current",
+  "operation" : "PrincipalDirectoryController.getCurrentRoles",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/principal/sync",
+  "operation" : "PrincipalDirectoryController.syncCallingUser",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/principal/update",
+  "operation" : "PrincipalDirectoryController.removePrincipalFromPrincipal",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/principal/update",
+  "operation" : "PrincipalDirectoryController.addPrincipalToPrincipal",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/principal/users/search",
+  "operation" : "PrincipalDirectoryController.searchUsers",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/principal/users/{userId}",
+  "operation" : "PrincipalDirectoryController.deleteUserAccount",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/admin/event-storage",
+  "operation" : "AdminController.moveToEventStorage",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/admin/principals",
+  "operation" : "AdminController.getCurrentUserPrincipals",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/admin/principals/{id}",
+  "operation" : "AdminController.getUserPrincipals",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/admin/reload/cache",
+  "operation" : "AdminController.reloadCache",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/admin/reload/cache/{name}",
+  "operation" : "AdminController.reloadCache",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/auth/dashboard-login",
+  "operation" : "AuthTokenController.dashboardLogin",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/auth/logout",
+  "operation" : "AuthTokenController.logout",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/auth/oidc/callback",
+  "operation" : "AuthTokenController.oidcCallback",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/auth/oidc/login",
+  "operation" : "AuthTokenController.oidcLogin",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/auth/session",
+  "operation" : "AuthTokenController.getSession",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/auth/set-cookie",
+  "operation" : "AuthTokenController.setAuthCookie",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/auth/testing-login",
+  "operation" : "AuthTokenController.testingLogin",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/authorizations",
+  "operation" : "AuthorizationsController.getAccessibleObjects",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/authorizations",
+  "operation" : "AuthorizationsController.checkAuthorizations",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/candidate",
+  "operation" : "CandidateController.registerCandidate",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerComplianceNotificationsForAllStudies",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerStudyComplianceNotifications",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/compliance/study/{studyId}",
+  "operation" : "StudyComplianceController.getStudyComplianceViolations",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.getStudyLimits",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PUT",
+  "path" : "/chronicle/v3/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.setStudyLimits",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/notification/status",
+  "operation" : "NotificationController.updateNotificationStatus",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/notification/{studyId}",
+  "operation" : "NotificationController.sendNotifications",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/observability/browser-errors",
+  "operation" : "BrowserErrorController.report",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/organization",
+  "operation" : "OrganizationController.getOrganizations",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/organization",
+  "operation" : "OrganizationController.createOrganization",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/organization/{organizationId}",
+  "operation" : "OrganizationController.getOrganization",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/participant-access/exchange",
+  "operation" : "ParticipantFormAccessController.exchangeAccessCode",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/participant-access/session",
+  "operation" : "ParticipantFormAccessController.recoverSession",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/permissions",
+  "operation" : "PermissionsController.updateAcl",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/permissions",
+  "operation" : "PermissionsController.getAcl",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/permissions/bulk",
+  "operation" : "PermissionsController.getAcls",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/permissions/explain",
+  "operation" : "PermissionsController.getAclExplanation",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/permissions/update",
+  "operation" : "PermissionsController.updateAcls",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study",
+  "operation" : "StudyController.getAllStudies",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study",
+  "operation" : "StudyController.createStudy",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/organization/{organizationId}",
+  "operation" : "StudyController.getOrgStudies",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/study/{studyId}",
+  "operation" : "StudyController.destroyStudy",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}",
+  "operation" : "StudyController.getStudy",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/study/{studyId}",
+  "operation" : "StudyController.updateStudy",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/android/sensors/availability",
+  "operation" : "StudyController.getStudySensorAvailability",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/api-keys",
+  "operation" : "ApiKeyController.listApiKeys",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/api-keys",
+  "operation" : "ApiKeyController.createApiKey",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/study/{studyId}/api-keys/{keyId}",
+  "operation" : "ApiKeyController.revokeApiKey",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/api-keys/{keyId}/rotate",
+  "operation" : "ApiKeyController.rotateApiKey",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/archive",
+  "operation" : "StudyLifecycleController.archiveStudy",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/clone",
+  "operation" : "StudyLifecycleController.cloneStudy",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/deletions",
+  "operation" : "DataDeletionController.listOperations",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/deletions/{operationId}",
+  "operation" : "DataDeletionController.getOperation",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/deletions/{operationId}/erase",
+  "operation" : "DataDeletionController.eraseNow",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/devices",
+  "operation" : "StudyController.getStudyDevices",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/export/availability",
+  "operation" : "ExportController.exportAvailability",
+  "studyPermission" : "EXPORT_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/lifecycle",
+  "operation" : "StudyLifecycleController.getStudyLifecycleStatus",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/participant",
+  "operation" : "StudyController.registerParticipant",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/annotations",
+  "operation" : "StudyController.getParticipantAnnotations",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "HEAD",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/annotations",
+  "operation" : "ConcurrentEditFilter.revision",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/annotations",
+  "operation" : "StudyController.updateParticipantAnnotations",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/enrollment-code",
+  "operation" : "ParticipantFormAccessController.getLiveEnrollmentCode",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/form-access-codes",
+  "operation" : "ParticipantFormAccessController.createAccessCode",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/pending-enrollment/cancel",
+  "operation" : "ParticipantFormAccessController.cancelPendingEnrollment",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/processing-block",
+  "operation" : "ParticipantProcessingController.unblockParticipantProcessing",
+  "studyPermission" : "MANAGE_PARTICIPANTS",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/processing-block",
+  "operation" : "ParticipantProcessingController.blockParticipantProcessing",
+  "studyPermission" : "MANAGE_PARTICIPANTS",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/status",
+  "operation" : "StudyController.updateParticipationStatus",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participant/{participantId}/verify",
+  "operation" : "StudyController.isKnownParticipant",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/study/{studyId}/participants",
+  "operation" : "StudyController.deleteStudyParticipants",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participants",
+  "operation" : "StudyController.getStudyParticipants",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participants/android/diagnostics",
+  "operation" : "StudyController.getAndroidDiagnostics",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participants/data",
+  "operation" : "StudyController.getParticipantsData",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/participants/data",
+  "operation" : "StudyController.postParticipantsData",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participants/ios/upload-status",
+  "operation" : "StudyController.getIosUploadStatus",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/participants/purge",
+  "operation" : "ParticipantPurgeController.executeParticipantPurge",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participants/stats",
+  "operation" : "StudyController.getParticipantStats",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/participants/{participantId}/purge/preview",
+  "operation" : "ParticipantPurgeController.previewParticipantPurge",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/pending-enrollments",
+  "operation" : "ParticipantFormAccessController.getPendingEnrollments",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/study/{studyId}/schedule-delete",
+  "operation" : "StudyLifecycleController.scheduleStudyDeletion",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/schedule-delete",
+  "operation" : "StudyLifecycleController.cancelScheduledDeletion",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/settings",
+  "operation" : "StudyController.getStudySettings",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/settings/acknowledgments",
+  "operation" : "StudyController.getStudyCollectionAcknowledgments",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/settings/audit",
+  "operation" : "StudyController.getStudySettingsAudit",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/settings/locks",
+  "operation" : "ParticipantFormAccessController.getSettingLocks",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/settings/type/{settingType}",
+  "operation" : "StudyController.getStudySetting",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/study/{studyId}/settings/type/{settingType}",
+  "operation" : "StudyController.updateStudySettings",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/unarchive",
+  "operation" : "StudyLifecycleController.unarchiveStudy",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/webhooks",
+  "operation" : "WebhookController.listWebhooks",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/webhooks",
+  "operation" : "WebhookController.createWebhook",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/study/{studyId}/webhooks/{webhookId}",
+  "operation" : "WebhookController.deleteWebhook",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/study/{studyId}/webhooks/{webhookId}/deliveries",
+  "operation" : "WebhookController.getDeliveries",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/study/{studyId}/webhooks/{webhookId}/test",
+  "operation" : "WebhookController.testWebhook",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/app-usage-frequency",
+  "operation" : "SurveyController.getAppUsageFrequency",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.allowAppForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.getAppsFilteredForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.filterAppForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PUT",
+  "path" : "/chronicle/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.setAppsFilteredForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/participant/{participantId}/app-usage",
+  "operation" : "SurveyController.getAppUsageSurveyData",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/survey/{studyId}/participant/{participantId}/app-usage",
+  "operation" : "SurveyController.submitAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/participant/{participantId}/app-usage/days",
+  "operation" : "SurveyController.getAppUsageSurveyDays",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/participant/{participantId}/device-usage",
+  "operation" : "SurveyController.getDeviceUsageSurveyData",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/survey/{studyId}/participant/{participantId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.submitQuestionnaireResponses",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire",
+  "operation" : "SurveyController.getStudyQuestionnaires",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire",
+  "operation" : "SurveyController.createQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.deleteQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.getQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "HEAD",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire/{questionnaireId}",
+  "operation" : "ConcurrentEditFilter.revision",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "PATCH",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.updateQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire/{questionnaireId}/data",
+  "operation" : "SurveyController.getQuestionnaireResponses",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/survey/{studyId}/questionnaire/{questionnaireId}/data",
+  "operation" : "SurveyController.postQuestionnaireResponses",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/data",
+  "operation" : "TimeUseDiaryController.getStudyTUDSubmissions",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/data",
+  "operation" : "TimeUseDiaryController.postStudyTUDSubmissions",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/ids",
+  "operation" : "TimeUseDiaryController.getStudyTUDSubmissionIdsByDate",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/participant/{participantId}",
+  "operation" : "TimeUseDiaryController.getParticipantTUDSubmissionIdsByDate",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/participant/{participantId}",
+  "operation" : "TimeUseDiaryController.submitTimeUseDiary",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/participants/data",
+  "operation" : "TimeUseDiaryController.getParticipantsTudSubmissions",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/participants/data",
+  "operation" : "TimeUseDiaryController.postParticipantsTudSubmissions",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v3/time-use-diary/{studyId}/settings",
+  "operation" : "TimeUseDiaryController.getTimeUseDiarySettings",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "DELETE",
+  "path" : "/chronicle/v4/mobile/enrollments/current",
+  "operation" : "MobileEnrollmentController.withdrawCurrentEnrollment",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/mobile/reviewer-enrollment",
+  "operation" : "ReviewerEnrollmentController.createReviewerEnrollment",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android",
+  "operation" : "StudyV4Controller.uploadAndroidUsageEventDataV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/activity-recognition",
+  "operation" : "StudyV4Controller.uploadActivityRecognitionEventsV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/app-network-usage",
+  "operation" : "StudyV4Controller.uploadAppNetworkUsageV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/audio-activity",
+  "operation" : "StudyV4Controller.uploadAudioActivityV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/audio-content",
+  "operation" : "StudyV4Controller.uploadAudioContentV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/battery",
+  "operation" : "StudyV4Controller.uploadBatteryTelemetryV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/collection-ack",
+  "operation" : "StudyV4Controller.reportCollectionAcknowledgmentV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/connectivity-state",
+  "operation" : "StudyV4Controller.uploadConnectivityStateEventsV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/device-settings",
+  "operation" : "StudyV4Controller.uploadDeviceSettingsV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/health-connect",
+  "operation" : "StudyV4Controller.uploadHealthMetricsV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/interaction",
+  "operation" : "StudyV4Controller.uploadInteractionEventsV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/notification-activity",
+  "operation" : "StudyV4Controller.uploadNotificationActivityV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/sensors",
+  "operation" : "StudyV4Controller.uploadAndroidSensorDataV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/sensors/availability",
+  "operation" : "StudyV4Controller.reportAndroidSensorAvailabilityV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/sensors/receipt",
+  "operation" : "StudyV4Controller.uploadAndroidSensorDataReceiptV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/sleep",
+  "operation" : "StudyV4Controller.uploadSleepEventsV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/android/upload-diagnostics",
+  "operation" : "StudyV4Controller.uploadDiagnosticsV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/enroll",
+  "operation" : "StudyV4Controller.enrollV4",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/enrollment-preview",
+  "operation" : "StudyV4Controller.getEnrollmentPreviewV4",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/form-access-codes",
+  "operation" : "ParticipantFormAccessController.createAccessCode",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/ios/battery",
+  "operation" : "StudyV4Controller.uploadIosBatteryTelemetry",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/ios/collection-ack",
+  "operation" : "StudyV4Controller.reportCollectionAcknowledgmentV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/ios/connectivity-state",
+  "operation" : "StudyV4Controller.uploadIosConnectivityStateEvents",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/ios/health-connect",
+  "operation" : "StudyV4Controller.uploadIosHealthMetrics",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "POST",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/ios/screen-time",
+  "operation" : "StudyV4Controller.uploadScreenTimeDataV4",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/reminders",
+  "operation" : "MobileReminderController.getReminderSchedule",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/chronicle/v4/study/{studyId}/participant/{participantId}/status",
+  "operation" : "MobileReminderController.getParticipationStatus",
+  "studyPermission" : null,
+  "auth" : "AUTHENTICATED"
+}, {
+  "method" : "GET",
+  "path" : "/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerComplianceNotificationsForAllStudies",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerStudyComplianceNotifications",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/compliance/study/{studyId}",
+  "operation" : "StudyComplianceController.getStudyComplianceViolations",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/internal/health/encryption",
+  "operation" : "EncryptionHealthService.encryptionHealth",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/internal/health/live",
+  "operation" : "InternalHealthController.live",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/internal/health/ready",
+  "operation" : "InternalHealthController.ready",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.getStudyLimits",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PUT",
+  "path" : "/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.setStudyLimits",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/principal",
+  "operation" : "PrincipalDirectoryController.getSecurablePrincipal",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/principal/roles",
+  "operation" : "PrincipalDirectoryController.getAvailableRoles",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/principal/roles/current",
+  "operation" : "PrincipalDirectoryController.getCurrentRoles",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/principal/sync",
+  "operation" : "PrincipalDirectoryController.syncCallingUser",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/principal/update",
+  "operation" : "PrincipalDirectoryController.removePrincipalFromPrincipal",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/principal/update",
+  "operation" : "PrincipalDirectoryController.addPrincipalToPrincipal",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/principal/users/search",
+  "operation" : "PrincipalDirectoryController.searchUsers",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/principal/users/{userId}",
+  "operation" : "PrincipalDirectoryController.deleteUserAccount",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/admin/event-storage",
+  "operation" : "AdminController.moveToEventStorage",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/admin/principals",
+  "operation" : "AdminController.getCurrentUserPrincipals",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/admin/principals/{id}",
+  "operation" : "AdminController.getUserPrincipals",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/admin/reload/cache",
+  "operation" : "AdminController.reloadCache",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/admin/reload/cache/{name}",
+  "operation" : "AdminController.reloadCache",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/auth/dashboard-login",
+  "operation" : "AuthTokenController.dashboardLogin",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "POST",
+  "path" : "/v3/auth/logout",
+  "operation" : "AuthTokenController.logout",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/auth/oidc/callback",
+  "operation" : "AuthTokenController.oidcCallback",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/v3/auth/oidc/login",
+  "operation" : "AuthTokenController.oidcLogin",
+  "studyPermission" : null,
+  "auth" : "PUBLIC"
+}, {
+  "method" : "GET",
+  "path" : "/v3/auth/session",
+  "operation" : "AuthTokenController.getSession",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/auth/set-cookie",
+  "operation" : "AuthTokenController.setAuthCookie",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/auth/testing-login",
+  "operation" : "AuthTokenController.testingLogin",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/authorizations",
+  "operation" : "AuthorizationsController.getAccessibleObjects",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/authorizations",
+  "operation" : "AuthorizationsController.checkAuthorizations",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/candidate",
+  "operation" : "CandidateController.registerCandidate",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerComplianceNotificationsForAllStudies",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/compliance/notifications",
+  "operation" : "StudyComplianceController.triggerStudyComplianceNotifications",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/compliance/study/{studyId}",
+  "operation" : "StudyComplianceController.getStudyComplianceViolations",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.getStudyLimits",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PUT",
+  "path" : "/v3/limits/study/{studyId}",
+  "operation" : "StudyLimitsController.setStudyLimits",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/notification/status",
+  "operation" : "NotificationController.updateNotificationStatus",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/notification/{studyId}",
+  "operation" : "NotificationController.sendNotifications",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/observability/browser-errors",
+  "operation" : "BrowserErrorController.report",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/organization",
+  "operation" : "OrganizationController.getOrganizations",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/organization",
+  "operation" : "OrganizationController.createOrganization",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/organization/{organizationId}",
+  "operation" : "OrganizationController.getOrganization",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/participant-access/exchange",
+  "operation" : "ParticipantFormAccessController.exchangeAccessCode",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/participant-access/session",
+  "operation" : "ParticipantFormAccessController.recoverSession",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/permissions",
+  "operation" : "PermissionsController.updateAcl",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/permissions",
+  "operation" : "PermissionsController.getAcl",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/permissions/bulk",
+  "operation" : "PermissionsController.getAcls",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/permissions/explain",
+  "operation" : "PermissionsController.getAclExplanation",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/permissions/update",
+  "operation" : "PermissionsController.updateAcls",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study",
+  "operation" : "StudyController.getAllStudies",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study",
+  "operation" : "StudyController.createStudy",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/organization/{organizationId}",
+  "operation" : "StudyController.getOrgStudies",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/study/{studyId}",
+  "operation" : "StudyController.destroyStudy",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}",
+  "operation" : "StudyController.getStudy",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/study/{studyId}",
+  "operation" : "StudyController.updateStudy",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/android/sensors/availability",
+  "operation" : "StudyController.getStudySensorAvailability",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/api-keys",
+  "operation" : "ApiKeyController.listApiKeys",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/api-keys",
+  "operation" : "ApiKeyController.createApiKey",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/study/{studyId}/api-keys/{keyId}",
+  "operation" : "ApiKeyController.revokeApiKey",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/api-keys/{keyId}/rotate",
+  "operation" : "ApiKeyController.rotateApiKey",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/archive",
+  "operation" : "StudyLifecycleController.archiveStudy",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/clone",
+  "operation" : "StudyLifecycleController.cloneStudy",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/deletions",
+  "operation" : "DataDeletionController.listOperations",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/deletions/{operationId}",
+  "operation" : "DataDeletionController.getOperation",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/deletions/{operationId}/erase",
+  "operation" : "DataDeletionController.eraseNow",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/devices",
+  "operation" : "StudyController.getStudyDevices",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/export/availability",
+  "operation" : "ExportController.exportAvailability",
+  "studyPermission" : "EXPORT_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/lifecycle",
+  "operation" : "StudyLifecycleController.getStudyLifecycleStatus",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/participant",
+  "operation" : "StudyController.registerParticipant",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/annotations",
+  "operation" : "StudyController.getParticipantAnnotations",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/annotations",
+  "operation" : "StudyController.updateParticipantAnnotations",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/enrollment-code",
+  "operation" : "ParticipantFormAccessController.getLiveEnrollmentCode",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/form-access-codes",
+  "operation" : "ParticipantFormAccessController.createAccessCode",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/pending-enrollment/cancel",
+  "operation" : "ParticipantFormAccessController.cancelPendingEnrollment",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/processing-block",
+  "operation" : "ParticipantProcessingController.unblockParticipantProcessing",
+  "studyPermission" : "MANAGE_PARTICIPANTS",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/processing-block",
+  "operation" : "ParticipantProcessingController.blockParticipantProcessing",
+  "studyPermission" : "MANAGE_PARTICIPANTS",
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/status",
+  "operation" : "StudyController.updateParticipationStatus",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participant/{participantId}/verify",
+  "operation" : "StudyController.isKnownParticipant",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/study/{studyId}/participants",
+  "operation" : "StudyController.deleteStudyParticipants",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participants",
+  "operation" : "StudyController.getStudyParticipants",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participants/android/diagnostics",
+  "operation" : "StudyController.getAndroidDiagnostics",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participants/data",
+  "operation" : "StudyController.getParticipantsData",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/participants/data",
+  "operation" : "StudyController.postParticipantsData",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participants/ios/upload-status",
+  "operation" : "StudyController.getIosUploadStatus",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/participants/purge",
+  "operation" : "ParticipantPurgeController.executeParticipantPurge",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participants/stats",
+  "operation" : "StudyController.getParticipantStats",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/participants/{participantId}/purge/preview",
+  "operation" : "ParticipantPurgeController.previewParticipantPurge",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/pending-enrollments",
+  "operation" : "ParticipantFormAccessController.getPendingEnrollments",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/study/{studyId}/schedule-delete",
+  "operation" : "StudyLifecycleController.scheduleStudyDeletion",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/schedule-delete",
+  "operation" : "StudyLifecycleController.cancelScheduledDeletion",
+  "studyPermission" : "DELETE_DATA",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/settings",
+  "operation" : "StudyController.getStudySettings",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/settings/acknowledgments",
+  "operation" : "StudyController.getStudyCollectionAcknowledgments",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/settings/audit",
+  "operation" : "StudyController.getStudySettingsAudit",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/settings/locks",
+  "operation" : "ParticipantFormAccessController.getSettingLocks",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/settings/type/{settingType}",
+  "operation" : "StudyController.getStudySetting",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/study/{studyId}/settings/type/{settingType}",
+  "operation" : "StudyController.updateStudySettings",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/unarchive",
+  "operation" : "StudyLifecycleController.unarchiveStudy",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/webhooks",
+  "operation" : "WebhookController.listWebhooks",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/webhooks",
+  "operation" : "WebhookController.createWebhook",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/study/{studyId}/webhooks/{webhookId}",
+  "operation" : "WebhookController.deleteWebhook",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/study/{studyId}/webhooks/{webhookId}/deliveries",
+  "operation" : "WebhookController.getDeliveries",
+  "studyPermission" : "READ_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/study/{studyId}/webhooks/{webhookId}/test",
+  "operation" : "WebhookController.testWebhook",
+  "studyPermission" : "MODIFY_STUDY",
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/app-usage-frequency",
+  "operation" : "SurveyController.getAppUsageFrequency",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.allowAppForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.getAppsFilteredForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.filterAppForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PUT",
+  "path" : "/v3/survey/{studyId}/filtered",
+  "operation" : "SurveyController.setAppsFilteredForStudyAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/participant/{participantId}/app-usage",
+  "operation" : "SurveyController.getAppUsageSurveyData",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/survey/{studyId}/participant/{participantId}/app-usage",
+  "operation" : "SurveyController.submitAppUsageSurvey",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/participant/{participantId}/app-usage/days",
+  "operation" : "SurveyController.getAppUsageSurveyDays",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/participant/{participantId}/device-usage",
+  "operation" : "SurveyController.getDeviceUsageSurveyData",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/survey/{studyId}/participant/{participantId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.submitQuestionnaireResponses",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/questionnaire",
+  "operation" : "SurveyController.getStudyQuestionnaires",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/survey/{studyId}/questionnaire",
+  "operation" : "SurveyController.createQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v3/survey/{studyId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.deleteQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.getQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "PATCH",
+  "path" : "/v3/survey/{studyId}/questionnaire/{questionnaireId}",
+  "operation" : "SurveyController.updateQuestionnaire",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/survey/{studyId}/questionnaire/{questionnaireId}/data",
+  "operation" : "SurveyController.getQuestionnaireResponses",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/survey/{studyId}/questionnaire/{questionnaireId}/data",
+  "operation" : "SurveyController.postQuestionnaireResponses",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/time-use-diary/{studyId}/data",
+  "operation" : "TimeUseDiaryController.getStudyTUDSubmissions",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/time-use-diary/{studyId}/data",
+  "operation" : "TimeUseDiaryController.postStudyTUDSubmissions",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/time-use-diary/{studyId}/ids",
+  "operation" : "TimeUseDiaryController.getStudyTUDSubmissionIdsByDate",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/time-use-diary/{studyId}/participant/{participantId}",
+  "operation" : "TimeUseDiaryController.getParticipantTUDSubmissionIdsByDate",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/time-use-diary/{studyId}/participant/{participantId}",
+  "operation" : "TimeUseDiaryController.submitTimeUseDiary",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/time-use-diary/{studyId}/participants/data",
+  "operation" : "TimeUseDiaryController.getParticipantsTudSubmissions",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v3/time-use-diary/{studyId}/participants/data",
+  "operation" : "TimeUseDiaryController.postParticipantsTudSubmissions",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v3/time-use-diary/{studyId}/settings",
+  "operation" : "TimeUseDiaryController.getTimeUseDiarySettings",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "DELETE",
+  "path" : "/v4/mobile/enrollments/current",
+  "operation" : "MobileEnrollmentController.withdrawCurrentEnrollment",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/mobile/reviewer-enrollment",
+  "operation" : "ReviewerEnrollmentController.createReviewerEnrollment",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android",
+  "operation" : "StudyV4Controller.uploadAndroidUsageEventDataV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/activity-recognition",
+  "operation" : "StudyV4Controller.uploadActivityRecognitionEventsV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/app-network-usage",
+  "operation" : "StudyV4Controller.uploadAppNetworkUsageV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/audio-activity",
+  "operation" : "StudyV4Controller.uploadAudioActivityV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/audio-content",
+  "operation" : "StudyV4Controller.uploadAudioContentV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/battery",
+  "operation" : "StudyV4Controller.uploadBatteryTelemetryV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/collection-ack",
+  "operation" : "StudyV4Controller.reportCollectionAcknowledgmentV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/connectivity-state",
+  "operation" : "StudyV4Controller.uploadConnectivityStateEventsV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/device-settings",
+  "operation" : "StudyV4Controller.uploadDeviceSettingsV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/health-connect",
+  "operation" : "StudyV4Controller.uploadHealthMetricsV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/interaction",
+  "operation" : "StudyV4Controller.uploadInteractionEventsV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/notification-activity",
+  "operation" : "StudyV4Controller.uploadNotificationActivityV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/sensors",
+  "operation" : "StudyV4Controller.uploadAndroidSensorDataV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/sensors/availability",
+  "operation" : "StudyV4Controller.reportAndroidSensorAvailabilityV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/sensors/receipt",
+  "operation" : "StudyV4Controller.uploadAndroidSensorDataReceiptV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/sleep",
+  "operation" : "StudyV4Controller.uploadSleepEventsV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/android/upload-diagnostics",
+  "operation" : "StudyV4Controller.uploadDiagnosticsV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/enroll",
+  "operation" : "StudyV4Controller.enrollV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/enrollment-preview",
+  "operation" : "StudyV4Controller.getEnrollmentPreviewV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/form-access-codes",
+  "operation" : "ParticipantFormAccessController.createAccessCode",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/ios/battery",
+  "operation" : "StudyV4Controller.uploadIosBatteryTelemetry",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/ios/collection-ack",
+  "operation" : "StudyV4Controller.reportCollectionAcknowledgmentV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/ios/connectivity-state",
+  "operation" : "StudyV4Controller.uploadIosConnectivityStateEvents",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/ios/health-connect",
+  "operation" : "StudyV4Controller.uploadIosHealthMetrics",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "POST",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/ios/screen-time",
+  "operation" : "StudyV4Controller.uploadScreenTimeDataV4",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/reminders",
+  "operation" : "MobileReminderController.getReminderSchedule",
+  "studyPermission" : null,
+  "auth" : "DENY"
+}, {
+  "method" : "GET",
+  "path" : "/v4/study/{studyId}/participant/{participantId}/status",
+  "operation" : "MobileReminderController.getParticipationStatus",
+  "studyPermission" : null,
+  "auth" : "DENY"
+} ]

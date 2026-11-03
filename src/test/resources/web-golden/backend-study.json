@@ -1,0 +1,496 @@
+{
+  "_comment": "Generated from chronicle-web/src/modern/test/golden/backend-study.json by the root contract generator.",
+  "title": "Sleep Study 2024",
+  "description": "A longitudinal study on sleep patterns",
+  "lat": 37.4275,
+  "lon": -122.1697,
+  "group": "neuroscience",
+  "version": "1.0",
+  "contact": "researcher@university.edu",
+  "organizationIds": [
+    "33333333-3333-4333-8333-333333333333"
+  ],
+  "storage": "chronicle",
+  "settings": {
+    "DataCollection": {
+      "@class": "com.openlattice.chronicle.collection.AndroidDataCollectionSetting",
+      "modules": {
+        "usage_events": {
+          "enabled": true,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "in_app_activity_class": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "device_lifecycle": {
+          "enabled": true,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "user_identification": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "upload_telemetry": {
+          "enabled": true,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_availability": {
+          "enabled": true,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "questionnaire": {
+          "enabled": true,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "battery_telemetry": {
+          "enabled": true,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_accelerometer": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "accelerometer"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_gyroscope": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "gyroscope"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_magnetometer": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "magnetometer"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_gravity": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "gravity"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_linear_acceleration": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "linearAcceleration"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_rotation_vector": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "rotationVector"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_step_counter": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "stepCounter"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_light": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "light"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_proximity": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "proximity"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_significant_motion": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "significantMotion"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_tilt_detector": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "tiltDetector"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sensor_screen_orientation": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": {
+            "@class": "com.openlattice.chronicle.android.AndroidSensorSetting",
+            "sensors": [
+              "screenOrientation"
+            ],
+            "samplingRateHz": 5,
+            "dutyCycleActiveSeconds": 30,
+            "dutyCyclePeriodSeconds": 300
+          },
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "interaction_events": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": {
+            "gridRows": 4,
+            "gridCols": 3,
+            "captureClicks": true,
+            "captureScrolls": true,
+            "captureElementPosition": true
+          },
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "audio_activity": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "audio_content": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "notification_activity": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "sleep": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "activity_recognition": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "health_connect": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "connectivity_state": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "app_network_usage": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        },
+        "device_settings": {
+          "enabled": false,
+          "required": false,
+          "collectionCadence": {
+            "intervalSeconds": 900,
+            "jitterSeconds": 0
+          },
+          "sensorPolicy": null,
+          "interactionPolicy": null,
+          "healthConnectRecordTypes": [],
+          "consentEpoch": 1
+        }
+      },
+      "version": 2,
+      "settingsVersion": 1
+    }
+  },
+  "modules": {
+    "CHRONICLE_DATA_COLLECTION": {},
+    "TIME_USE_DIARY": {}
+  },
+  "phoneNumber": "+15551234567",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "createdAt": "2024-01-15T10:00:00Z",
+  "updatedAt": "2024-06-01T12:00:00Z",
+  "startedAt": "2024-02-01T00:00:00Z",
+  "endedAt": "2025-02-01T00:00:00Z",
+  "category": "Study"
+}

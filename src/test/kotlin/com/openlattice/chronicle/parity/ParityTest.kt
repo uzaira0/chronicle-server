@@ -86,7 +86,6 @@ class ParityTest {
         assertEquals(study.lon, roundTripped.lon, 0.0001)
         assertEquals(study.group, roundTripped.group)
         assertEquals(study.version, roundTripped.version)
-        assertEquals(study.notificationsEnabled, roundTripped.notificationsEnabled)
         assertEquals(study.storage, roundTripped.storage)
     }
 

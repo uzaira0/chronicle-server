@@ -1,58 +1,56 @@
 package com.openlattice.chronicle
 
-import com.hazelcast.core.HazelcastInstance
+import com.auth0.jwt.JWT
+import com.geekbeast.jdbc.DataSourceManager
+import com.geekbeast.mappers.mappers.ObjectMappers
+import com.geekbeast.postgres.PostgresPod
 import com.geekbeast.rhizome.configuration.ConfigurationConstants
+import com.geekbeast.rhizome.configuration.websockets.BaseRhizomeServer
 import com.geekbeast.rhizome.core.RhizomeApplicationServer
 import com.geekbeast.rhizome.hazelcast.serializers.RhizomeUtils
-import com.openlattice.chronicle.constants.ChronicleProfiles
-import com.openlattice.chronicle.storage.PostgresDataTables
-import com.openlattice.chronicle.storage.StorageResolver
-import com.geekbeast.jdbc.DataSourceManager
-import com.geekbeast.postgres.PostgresPod
-import com.geekbeast.rhizome.configuration.websockets.BaseRhizomeServer
-import com.openlattice.chronicle.mapstores.MapstoresPod
+import com.hazelcast.core.HazelcastInstance
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.authorization.AuthorizationManager
+import com.openlattice.chronicle.authorization.CreatorPrincipalResolver
+import com.openlattice.chronicle.authorization.JwtBlocklist
+import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.authorization.Principal
 import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.authorization.SecurablePrincipal
 import com.openlattice.chronicle.authorization.SortedPrincipalSet
 import com.openlattice.chronicle.authorization.SystemRole
-import com.openlattice.chronicle.authorization.AuthorizationManager
-import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.authorization.principals.SecurePrincipalsManager
 import com.openlattice.chronicle.client.ChronicleClient
+import com.openlattice.chronicle.client.RetrofitClientFactory
+import com.openlattice.chronicle.configuration.MobileSecurityConfiguration
+import com.openlattice.chronicle.configuration.MobileApiSignatureFilterTest
+import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.mapstores.MapstoresPod
+import com.openlattice.chronicle.storage.PostgresDataTables
+import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.users.ConfiguredUserListingService
 import com.zaxxer.hikari.HikariDataSource
-import com.openlattice.chronicle.contract.ChronicleContractTestSchema
-import com.openlattice.chronicle.client.Environment
-import com.openlattice.chronicle.client.RetrofitClientFactory
-import com.openlattice.chronicle.collection.AndroidDataCollectionSetting
-import com.openlattice.chronicle.collection.CollectionAcknowledgment
-import com.openlattice.chronicle.collection.CollectionDefaults
-import com.openlattice.chronicle.collection.CollectionModuleId
-import com.openlattice.chronicle.participantaccess.ParticipantFormKind
-import com.openlattice.chronicle.services.apikeys.ApiKeyService
-import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType
-import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
-import com.openlattice.chronicle.sources.AndroidDevice
-import com.openlattice.chronicle.study.StudyApi
-import com.openlattice.chronicle.study.StudyFeature
-import com.openlattice.chronicle.study.StudySettingType
-import com.openlattice.chronicle.study.StudyUpdate
-import com.openlattice.chronicle.util.tests.TestDataFactory
-import java.time.OffsetDateTime
-import org.junit.Before
+import com.zaxxer.hikari.HikariConfig
 import java.io.File
+import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
+import java.time.Duration
+import java.time.Instant
+import java.time.temporal.ChronoUnit
+import java.util.EnumSet
 import java.util.Optional
 import java.util.TreeSet
 import java.util.UUID
+import org.junit.Before
+import org.junit.experimental.categories.Category
 
+@Category(ChronicleServerTests::class)
 open class ChronicleServerTests {
     @Before
     fun restoreIntegrationSecurityState() {
-        restorePrincipalMaps()
+        restorePrincipalContext()
         seedTestPrincipals(
             testServer.context.getBean(SecurePrincipalsManager::class.java),
             testServer.context.getBean(AuthorizationManager::class.java)
@@ -60,64 +58,11 @@ open class ChronicleServerTests {
     }
 
     companion object {
-        /** Publish the disclosure and uploaded modules before registering the first participant. */
-        fun prepareUsageFixture(client: ChronicleClient, studyId: UUID) {
-            val study = client.studyApi.getStudy(studyId)
-            client.studyApi.updateStudy(studyId, StudyUpdate(
-                modules = study.modules.mapKeys { it.key.name } +
-                    (StudyFeature.CHRONICLE_DATA_COLLECTION.name to emptyMap<String, Any>()),
-            ))
-            val settings = client.studyApi.getStudySetting(studyId, StudySettingType.DataCollection) as AndroidDataCollectionSetting
-            val fixtureModules = setOf(CollectionModuleId.USAGE_EVENTS, CollectionModuleId.IN_APP_ACTIVITY_CLASS,
-                CollectionModuleId.USER_IDENTIFICATION)
-            client.studyApi.updateStudySettings(studyId, StudySettingType.DataCollection, settings.copy(
-                modules = settings.modules + fixtureModules.associateWith { CollectionDefaults.moduleSetting(it, enabled = true) },
-            ))
-            client.studyApi.updateStudySettings(studyId, StudySettingType.ParticipantPolicy, TestDataFactory.participantPolicy())
-        }
-
-        /** Enroll through the public Android invitation protocol, with consent for the usage fixture. */
-        fun enrollUsageFixture(
-            studyId: UUID,
-            participantId: String,
-            sourceDeviceId: String,
-            device: AndroidDevice,
-            beforeAcknowledgment: (StudyApi) -> Unit = {},
-        ): StudyApi {
-            val code = testServer.context.getBean(ParticipantFormAccessService::class.java).createAccessCode(
-                studyId, participantId, ParticipantFormKind.ENROLLMENT, null, null, null,
-                ParticipantAccessCodeIssuerType.RESEARCHER, "integration-fixture",
-            ).accessCode
-            val publicApi = RetrofitClientFactory.newClient(Environment.TESTING_CHRONICLE).create(StudyApi::class.java)
-            val preview = publicApi.getEnrollmentPreviewV4(studyId, participantId, code)
-            val rawKey = UUID.randomUUID().toString().replace("-", "")
-            val proposedKey = "ck_${rawKey.take(ApiKeyService.PREFIX_LENGTH)}_$rawKey"
-            val enrolled = publicApi.enrollV4(studyId, participantId, sourceDeviceId, device,
-                code, preview.manifestDigest, UUID.randomUUID().toString(), proposedKey)
-            val mobileHttp = RetrofitClientFactory.okHttpClient().addInterceptor { chain ->
-                chain.proceed(chain.request().newBuilder().header("X-Api-Key", requireNotNull(enrolled.apiKey)).build())
-            }
-            val mobileApi = RetrofitClientFactory.decorateWithOpenLatticeFactories(
-                RetrofitClientFactory.createBaseRhizomeRetrofitBuilder(Environment.TESTING_CHRONICLE, mobileHttp),
-            ).build().create(StudyApi::class.java)
-            beforeAcknowledgment(mobileApi)
-            mobileApi.reportCollectionAcknowledgmentV4(studyId, participantId, sourceDeviceId, CollectionAcknowledgment(
-                acknowledgedModules = preview.manifest.collectionSettings.effectiveEnabledModuleIds(),
-                acknowledgedAt = OffsetDateTime.now(),
-                settingsVersion = preview.manifest.settingsVersion,
-                disclosureVersion = preview.manifest.participantPolicy.version,
-                manifestDigest = preview.manifestDigest,
-            ))
-            return mobileApi
-        }
-
         @JvmField
-        val testHttpPort: Int = System.getenv("CHRONICLE_TEST_HTTP_PORT")
-            ?.toIntOrNull()
-            ?.takeIf { it in 1..65535 }
-            ?: 40320
+        val testHttpPort: Int = RetrofitClientFactory.testingHttpPort
+        /** Asked of the OS, never derived from the HTTP port: a derived port can sit in the ephemeral range under someone else's connection. */
         @JvmField
-        internal val testHazelcastPort: Int = 10_000 + (testHttpPort % 50_000)
+        internal val testHazelcastPort: Int = ServerSocket(0).use { it.localPort }
         private val testHazelcastGroup = "chronicle-test-$testHttpPort"
 
         private val postgres = ChronicleContractTestSchema.prodPostgresContainer("chronicle").apply {
@@ -128,8 +73,7 @@ open class ChronicleServerTests {
         private val LOCAL_TEST_PROFILES = arrayOf(
             ConfigurationConstants.Profiles.LOCAL_CONFIGURATION_PROFILE,
             PostgresDataTables.POSTGRES_DATA_ENVIRONMENT,
-            PostgresPod.PROFILE,
-            ChronicleProfiles.MEDIA_LOCAL_PROFILE)
+            PostgresPod.PROFILE)
 
         /*
          * BaseRhizomeServer uses a plain Spring environment rather than Spring Boot,
@@ -157,6 +101,7 @@ open class ChronicleServerTests {
                 arrayOf(
                     MapstoresPod::class.java,
                     FailFastTestHazelcastConfigurationPod::class.java,
+                    RateLimitTestClockPod::class.java,
                 ),
                 RhizomeApplicationServer.DEFAULT_PODS,
                 ChronicleServer.chronicleServerPods
@@ -178,9 +123,18 @@ open class ChronicleServerTests {
         @JvmField
         val jwtTokens : Map<String,List<String>>
 
+        /** Committed rows of one audit event type for a study, as the append-only `audit` table holds them. */
+        fun auditEventCount(studyId: UUID, type: AuditEventType): Int = hds.connection.use { connection ->
+            connection.prepareStatement("SELECT count(*) FROM audit WHERE study_id = ? AND audit_event_type = ?").use {
+                it.setString(1, studyId.toString())
+                it.setString(2, type.name)
+                it.executeQuery().use { rows -> check(rows.next()); rows.getInt(1) }
+            }
+        }
+
         init {
             postgres.start()
-            postgres.createConnection("").use(ChronicleContractTestSchema::bootstrapApplicationRoles)
+            ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(postgres)
             writeTestConfig()
             testServer.start(*LOCAL_TEST_PROFILES)
 
@@ -194,11 +148,16 @@ open class ChronicleServerTests {
             check(hazelcastInstance.cluster.members.size == 1) {
                 "Chronicle tests require one isolated Hazelcast member"
             }
-            hds = testServer.context.getBean(HikariDataSource::class.java)
             sr = testServer.context.getBean(StorageResolver::class.java)
+            hds = HikariDataSource(HikariConfig().apply {
+                jdbcUrl = postgres.jdbcUrl
+                username = postgres.username
+                password = postgres.password
+                maximumPoolSize = ChronicleContractTestSchema.BOOTSTRAP_MAXIMUM_POOL_SIZE
+                minimumIdle = 0
+            })
             dsm = testServer.context.getBean(DataSourceManager::class.java)
             jwtTokens = testServer.context.getBean(ConfiguredUserListingService::class.java).jwtTokens
-            ensureAuditLogsTable(hds)
             seedTestPrincipals(
                 testServer.context.getBean(SecurePrincipalsManager::class.java),
                 testServer.context.getBean(AuthorizationManager::class.java)
@@ -224,61 +183,21 @@ open class ChronicleServerTests {
                 authorizationManager.addPermission(
                     spm.lookup(principal),
                     SystemRole.adminRole,
-                    java.util.EnumSet.allOf(Permission::class.java)
+                    EnumSet.allOf(Permission::class.java)
                 )
             }
             spm.addPrincipalToPrincipal(spm.lookup(Principal(PrincipalType.USER, "test_admin")), spm.lookup(SystemRole.ADMIN.principal))
             seedResolvedPrincipalTrees()
         }
 
-        private fun ensureAuditLogsTable(hds: HikariDataSource) {
-            hds.connection.use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS audit_logs (
-                            id UUID PRIMARY KEY,
-                            timestamp TIMESTAMPTZ NOT NULL,
-                            user_id TEXT,
-                            user_role TEXT,
-                            ip_address TEXT,
-                            user_agent TEXT,
-                            action TEXT NOT NULL,
-                            resource_type TEXT,
-                            resource_id TEXT,
-                            study_id UUID,
-                            organization_id UUID,
-                            success BOOLEAN NOT NULL,
-                            error_message TEXT,
-                            accessed_phi BOOLEAN NOT NULL DEFAULT false,
-                            phi_fields TEXT[],
-                            request_path TEXT,
-                            request_method TEXT,
-                            response_code INTEGER,
-                            duration_ms BIGINT,
-                            additional_data JSONB
-                        )
-                        """.trimIndent()
-                    )
-                }
-            }
-        }
+        private fun restorePrincipalContext() = Principals.init(
+            testServer.context.getBean(SecurePrincipalsManager::class.java),
+            hazelcastInstance,
+            testServer.context.getBean(CreatorPrincipalResolver::class.java),
+        )
 
-        private fun restorePrincipalMaps() {
-            val securableField = Principals::class.java.getDeclaredField("securablePrincipals")
-            securableField.isAccessible = true
-            securableField.set(null, HazelcastMap.SECURABLE_PRINCIPALS.getMap(hazelcastInstance))
-
-            val principalsField = Principals::class.java.getDeclaredField("principals")
-            principalsField.isAccessible = true
-            principalsField.set(null, HazelcastMap.RESOLVED_PRINCIPAL_TREES.getMap(hazelcastInstance))
-        }
-
-        @Suppress("UNCHECKED_CAST")
         private fun seedResolvedPrincipalTrees() {
-            val field = Principals::class.java.getDeclaredField("principals")
-            field.isAccessible = true
-            val principalsMap = field.get(null) as com.hazelcast.map.IMap<String, SortedPrincipalSet>
+            val principalsMap = HazelcastMap.RESOLVED_PRINCIPAL_TREES.getMap(hazelcastInstance)
             listOf("test_user1", "test_user2", "test_user3").forEach { userId ->
                 principalsMap[userId] = SortedPrincipalSet(TreeSet<Principal>().apply {
                     add(Principal(PrincipalType.USER, userId))
@@ -290,11 +209,24 @@ open class ChronicleServerTests {
             })
         }
 
-        // reason: length is dominated by three embedded YAML config literals (rhizome/jetty/auth)
-        // written to the test classpath; extracting them would only obscure the test fixture
-        @Suppress("LongMethod")
         private fun writeTestConfig() {
+            // Write to the build output classpath without dirtying the source tree.
+            val configDir = File("build/resources/test")
+            configDir.mkdirs()
+            writeRhizomeTestConfig(configDir)
+            writeJettyTestConfig(configDir)
+            writeAuthenticationTestConfig(configDir)
+            ObjectMappers.getJsonMapper().writeValue(File(configDir, MobileSecurityConfiguration.key.uri),
+                MobileSecurityConfiguration(internalWebSecret = System.getenv("CHRONICLE_INTERNAL_WEB_SECRET")
+                    ?.takeIf { it.isNotBlank() } ?: MobileApiSignatureFilterTest.SECRET))
+        }
+
+        private fun writeRhizomeTestConfig(configDir: File) {
             val jdbcUrl = postgres.jdbcUrl
+            val runtimePool = ObjectMappers.getJsonMapper().writeValueAsString(mapOf(
+                "jdbcUrl" to jdbcUrl, "username" to ChronicleContractTestSchema.RUNTIME_USERNAME,
+                "password" to ChronicleContractTestSchema.RUNTIME_PASSWORD, "maximumPoolSize" to 10,
+            ))
             val yaml = """
                 enable-persistence: true
                 session-clustering-enabled: false
@@ -316,34 +248,26 @@ open class ChronicleServerTests {
                             - "127.0.0.1:$testHazelcastPort"
                 postgres:
                     citus: false
-                    hikari:
-                        jdbcUrl: "$jdbcUrl"
-                        username: "oltest"
-                        password: "test"
-                        maximumPoolSize: 10
+                    initialize-tables: false
+                    initialize-indices: false
+                    hikari: $runtimePool
                 datasources:
                     chronicle:
                         citus: false
-                        initialize-tables: true
-                        hikari:
-                            jdbcUrl: "$jdbcUrl"
-                            username: "oltest"
-                            password: "test"
-                            maximumPoolSize: 10
+                        initialize-tables: false
+                        initialize-indices: false
+                        hikari: $runtimePool
                     platform_read:
                         citus: false
                         initialize-tables: false
-                        hikari:
-                            jdbcUrl: "$jdbcUrl"
-                            username: "oltest"
-                            password: "test"
-                            maximumPoolSize: 10
+                        initialize-indices: false
+                        hikari: $runtimePool
             """.trimIndent()
 
-            // Write to build output classpath so rhizome picks it up without dirtying source tree
-            val configDir = File("build/resources/test")
-            configDir.mkdirs()
             File(configDir, "rhizome.yaml").writeText(yaml)
+        }
+
+        private fun writeJettyTestConfig(configDir: File) {
             File(configDir, "jetty.yaml").writeText(
                 """
                 max-threads: 200
@@ -359,20 +283,14 @@ open class ChronicleServerTests {
                     require-ssl: false
                     require-client-auth: false
                     want-client-auth: false
-                    certificate-alias: rhizomessl
-                keymanager-password: rhizome
-                keystore:
-                    path: security/rhizome.jks
-                    password: rhizome
-                truststore:
-                    path: security/rhizome.jks
-                    password: rhizome
                 gzip:
                     enabled: true
                 security-enabled: true
                 """.trimIndent()
             )
+        }
 
+        private fun writeAuthenticationTestConfig(configDir: File) {
             val authYaml = """
                 testingLoginEnabled: true
                 defaultTestingUserId: "test_user1"
@@ -419,15 +337,15 @@ open class ChronicleServerTests {
 
         internal fun activeFixtureToken(user: Principal): String {
             val token = jwtTokens.getValue(user.id).first()
-            val jwt = com.auth0.jwt.JWT.decode(token)
-            val blocklist = testServer.context.getBean(com.openlattice.chronicle.authorization.JwtBlocklist::class.java)
+            val jwt = JWT.decode(token)
+            val blocklist = testServer.context.getBean(JwtBlocklist::class.java)
             if (blocklist.credentialRejectionReason(jwt.id, token, jwt.issuedAt?.toInstant(), jwt.expiresAt?.toInstant(),
-                    java.time.Duration.ofMinutes(15), subject = user.id) == null) return token
+                    Duration.ofMinutes(15), subject = user.id) == null) return token
 
             // JWT iat has second precision; reauthenticate after the ACL cutoff's second.
-            val nextSecond = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusSeconds(1)
-            while (java.time.Instant.now().isBefore(nextSecond)) {
-                Thread.sleep(maxOf(1, java.time.Duration.between(java.time.Instant.now(), nextSecond).toMillis()))
+            val nextSecond = Instant.now().truncatedTo(ChronoUnit.SECONDS).plusSeconds(1)
+            while (Instant.now().isBefore(nextSecond)) {
+                Thread.sleep(maxOf(1, Duration.between(Instant.now(), nextSecond).toMillis()))
             }
             return requireNotNull(testServer.context.getBean(ConfiguredUserListingService::class.java).issueDashboardToken(user.id))
         }

@@ -2,6 +2,7 @@ package com.openlattice.chronicle.controllers
 
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.services.upload.AppDataUploadService
+import com.openlattice.chronicle.storage.StorageResolver
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.mockito.Mockito
@@ -11,9 +12,8 @@ import java.util.UUID
 class TestHookControllerTest {
 
     private val uploadService = Mockito.mock(AppDataUploadService::class.java)
-    private val studyId = UUID.randomUUID()
-    private val participantId = "participant-1"
-    private val request = FlushPipelineRequest(studyId, participantId)
+    private val storageResolver = Mockito.mock(StorageResolver::class.java)
+    private val backdate = BackdateEnrollmentRequest(UUID.randomUUID(), "participant", 3)
 
     @Test
     fun disabledTestingModeReturnsNotFoundWithoutFlushing() {
@@ -21,12 +21,15 @@ class TestHookControllerTest {
             uploadService,
             ChronicleAuthConfiguration(testingLoginEnabled = false),
             MockEnvironment(),
+            storageResolver,
         )
 
-        val response = controller.flushPipeline(request)
+        val response = controller.flushPipeline()
 
         assertEquals(404, response.statusCode.value())
         Mockito.verifyNoInteractions(uploadService)
+        assertEquals(404, controller.backdateEnrollment(backdate).statusCode.value())
+        Mockito.verifyNoInteractions(storageResolver)
     }
 
     @Test
@@ -35,13 +38,14 @@ class TestHookControllerTest {
             uploadService,
             ChronicleAuthConfiguration(testingLoginEnabled = true),
             MockEnvironment(),
+            storageResolver,
         )
 
-        val response = controller.flushPipeline(request)
+        val response = controller.flushPipeline()
 
         assertEquals(200, response.statusCode.value())
         assertEquals("flushed", response.body?.get("status"))
-        Mockito.verify(uploadService).moveToEventStorage(studyId, participantId)
+        Mockito.verify(uploadService).drainEventStorage()
     }
 
     @Test
@@ -52,11 +56,14 @@ class TestHookControllerTest {
             MockEnvironment().withProperty("spring.profiles.active", "production").also {
                 it.setActiveProfiles("production")
             },
+            storageResolver,
         )
 
-        val response = controller.flushPipeline(request)
+        val response = controller.flushPipeline()
 
         assertEquals(404, response.statusCode.value())
         Mockito.verifyNoInteractions(uploadService)
+        assertEquals(404, controller.backdateEnrollment(backdate).statusCode.value())
+        Mockito.verifyNoInteractions(storageResolver)
     }
 }

@@ -3,7 +3,6 @@ package com.openlattice.chronicle.e2e.scenarios
 import com.openlattice.chronicle.ChronicleServerTests
 import com.openlattice.chronicle.e2e.dsl.chronicleScenario
 import com.openlattice.chronicle.e2e.dsl.di.ProvidersBundle
-import com.openlattice.chronicle.services.studies.StudyLifecycleService
 import com.openlattice.chronicle.study.StudyLifecycleStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -33,7 +32,7 @@ class StudyLifecycleE2ETest : ChronicleServerTests() {
             }
         }
         assertEquals(StudyLifecycleStatus.SCHEDULED_FOR_DELETION,
-            testServer.context.getBean(StudyLifecycleService::class.java).getLifecycleStatus(checkNotNull(capturedId)))
+            clientUser1.studyLifecycleApi.getStudyLifecycleStatus(checkNotNull(capturedId)))
     }
 
     @Test

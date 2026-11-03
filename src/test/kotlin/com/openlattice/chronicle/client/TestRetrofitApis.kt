@@ -6,19 +6,10 @@ import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.Acl
 import com.openlattice.chronicle.authorization.Authorization
 import com.openlattice.chronicle.base.OK
-import com.openlattice.chronicle.export.ExportApi
-import com.openlattice.chronicle.export.ExportJobInfo
-import com.openlattice.chronicle.export.ExportRequest
-import com.openlattice.chronicle.notifications.DeliveryType
-import com.openlattice.chronicle.notifications.NotificationType
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
-import com.openlattice.chronicle.organizations.OrganizationSettings
 import com.openlattice.chronicle.study.ParticipantDataType
 import com.openlattice.chronicle.study.StudyApi
 import com.openlattice.chronicle.study.StudyLimits
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryResponse
-import com.openlattice.chronicle.users.ChronicleUserProfile
-import okhttp3.ResponseBody
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.PATCH
@@ -82,81 +73,6 @@ interface TestAdminApi {
 }
 
 @JvmSuppressWildcards
-interface TestExportApi {
-    @POST("${StudyApi.BASE}${StudyApi.STUDY_ID_PATH}${ExportApi.EXPORT_PATH}${ExportApi.ASYNC_PATH}")
-    fun createAsyncExport(
-        @Path(StudyApi.STUDY_ID) studyId: UUID,
-        @Body request: ExportRequest,
-    ): ExportJobInfo
-
-    @GET("${StudyApi.BASE}${StudyApi.STUDY_ID_PATH}${ExportApi.EXPORT_PATH}${ExportApi.EXPORT_ID_PATH}")
-    fun getExportStatus(
-        @Path(StudyApi.STUDY_ID) studyId: UUID,
-        @Path(ExportApi.EXPORT_ID) exportId: UUID,
-    ): ExportJobInfo
-
-    @GET("${StudyApi.BASE}${StudyApi.STUDY_ID_PATH}${ExportApi.EXPORT_PATH}${ExportApi.EXPORT_ID_PATH}${ExportApi.DOWNLOAD_PATH}")
-    fun downloadExport(
-        @Path(StudyApi.STUDY_ID) studyId: UUID,
-        @Path(ExportApi.EXPORT_ID) exportId: UUID,
-    ): ResponseBody
-}
-
-@JvmSuppressWildcards
-interface TestOrganizationApi {
-    companion object {
-        const val BASE = "/chronicle/v3/organization"
-    }
-
-    @PUT("$BASE/{organizationId}/settings")
-    fun setOrganizationSettings(
-        @Path("organizationId") organizationId: UUID,
-        @Body orgSettings: OrganizationSettings,
-    ): Void?
-
-    @PUT("$BASE/{organizationId}/data-collection")
-    fun setChronicleDataCollectionSettings(
-        @Path("organizationId") organizationId: UUID,
-        @Body dataCollectionSettings: ChronicleDataCollectionSettings,
-    ): Void?
-
-    @PUT("$BASE/{organizationId}/app-component/{appComponent}")
-    fun setAppComponentSettings(
-        @Path("organizationId") organizationId: UUID,
-        @Path("appComponent") appComponent: String,
-        @Body settings: Map<String, Any>,
-    ): Void?
-
-    @GET("$BASE/{organizationId}/app-component/{appComponent}")
-    fun getAppComponentSettings(
-        @Path("organizationId") organizationId: UUID,
-        @Path("appComponent") appComponent: String,
-    ): Map<String, Any>
-}
-
-@JvmSuppressWildcards
-interface TestNotificationApi {
-    companion object {
-        const val BASE = "/chronicle/v3/notification"
-    }
-
-    @PUT("$BASE/{studyId}/principal/{principalId}/notifications")
-    fun setResearcherNotificationSettings(
-        @Path("studyId") studyId: UUID,
-        @Path("principalId") principalId: String,
-        @Body settings: Map<NotificationType, Set<DeliveryType>>,
-    ): Void?
-
-    @PUT("$BASE/{studyId}/principal/{principalId}/notifications/{notificationType}")
-    fun setResearcherNotificationSettingsByType(
-        @Path("studyId") studyId: UUID,
-        @Path("principalId") principalId: String,
-        @Path("notificationType") notificationType: NotificationType,
-        @Body deliveryTypes: Set<DeliveryType>,
-    ): Void?
-}
-
-@JvmSuppressWildcards
 interface TestStudyComplianceApi {
     companion object {
         const val BASE = "/chronicle/compliance"
@@ -201,14 +117,4 @@ interface TestTimeUseDiaryApi {
         @Path("participantId") participantId: String,
         @Body responses: List<TimeUseDiaryResponse>,
     ): UUID
-}
-
-@JvmSuppressWildcards
-interface TestPrincipalApi {
-    companion object {
-        const val BASE = "/chronicle/principal"
-    }
-
-    @POST("$BASE/users")
-    fun getUsers(@Body userIds: Set<String>): Map<String, ChronicleUserProfile>
 }

@@ -3,23 +3,16 @@ package com.openlattice.chronicle
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.storage.PostgresEventColumns
 import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitConfiguration
 import com.openlattice.chronicle.configuration.RateLimitFilter
 import com.openlattice.chronicle.controllers.AuthTokenController
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.services.studies.StudyLimitsManager
 import com.openlattice.chronicle.services.studies.StudyService
-import com.openlattice.chronicle.services.studies.StudyManager
-import com.openlattice.chronicle.services.delete.DataDeletionMode
-import com.openlattice.chronicle.services.delete.DataDeletionOrchestrator
-import com.openlattice.chronicle.services.quality.DataQualityScheduler
-import com.openlattice.chronicle.services.quality.DataQualityService
-import com.openlattice.chronicle.participants.ParticipantStats
-import com.openlattice.chronicle.hazelcast.HazelcastMap
 import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import com.openlattice.chronicle.studies.tasks.StudyLimitsEnforcementTask
 import com.openlattice.chronicle.studies.tasks.StudyLimitsEnforcementTaskDependencies
 import com.openlattice.chronicle.study.Study
+import com.openlattice.chronicle.study.StudyLimits
 import com.openlattice.chronicle.util.tests.TestDataFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,18 +23,17 @@ import org.springframework.mock.web.MockFilterChain
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.mock.web.MockHttpServletResponse
 import org.springframework.security.core.context.SecurityContextHolder
-import java.time.LocalDate
-import java.time.ZoneOffset
 import java.util.UUID
+import java.time.OffsetDateTime
 
-class ServerLaneRegressionTest : ChronicleServerTests() {
+class ServerWiringRegressionTest : ChronicleServerTests() {
     @Test
     fun fixturePreservesFlywayPrivilegeRestrictions() {
         RLSRequestContext.clear()
         hds.connection.use { connection ->
             connection.createStatement().use { statement ->
                 statement.executeQuery(
-                    "SELECT has_table_privilege('chronicle_app', 'export_jobs', 'UPDATE'), " +
+                    "SELECT has_table_privilege('chronicle_app', 'audit', 'UPDATE'), " +
                         "has_table_privilege('chronicle_app', 'audit', 'SELECT')",
                 ).use { rows ->
                     assertTrue(rows.next())
@@ -70,6 +62,11 @@ class ServerLaneRegressionTest : ChronicleServerTests() {
         }
         SecurityContextHolder.clearContext()
         RLSRequestContext.clear()
+        task.runTask()
+        assertEquals("a stale expiration snapshot cannot pause an open-ended study",
+            participants.map { (status, participant) -> participant.participantId to status }.toMap(),
+            clientAdmin.studyApi.getStudyParticipants(studyId).associate { it.participantId to it.participationStatus })
+        clientAdmin.testStudyLimitsApi.setStudyLimits(studyId, StudyLimits(studyEnds = OffsetDateTime.now().minusMinutes(1)))
         repeat(2) { task.runTask() }
         hds.connection.use { connection ->
             connection.prepareStatement("SELECT participant_id, participation_status FROM study_participants WHERE study_id = ?").use { statement ->
@@ -93,53 +90,15 @@ class ServerLaneRegressionTest : ChronicleServerTests() {
         }
     }
 
-    @Test
-    fun backgroundQualityEvaluationSkipsQuarantineAndStillAlertsForTheOtherParticipant() {
-        val studyId = clientAdmin.studyApi.createStudy(Study(title = "quality regression", contact = "test@example.org"))
-        val participants = List(2) { TestDataFactory.participant() }
-        val studies = testServer.context.getBean(StudyService::class.java)
-        RLSRequestContext.clear()
-        participants.forEach {
-            clientAdmin.studyApi.registerParticipant(studyId, it)
-            studies.insertOrUpdateParticipantStats(ParticipantStats(
-                studyId, it.participantId, androidUniqueDates = setOf(LocalDate.now(ZoneOffset.UTC)),
-            ))
-        }
-        HazelcastMap.PARTICIPANT_STATS.getMap(hazelcastInstance).flush()
-        testServer.context.getBean(DataDeletionOrchestrator::class.java).quarantineParticipant(
-            studyId, participants.first().participantId, DataDeletionMode.WITHDRAW_AND_ERASE,
-            "server-lane-test", UUID.randomUUID(),
-        )
-        val enumeration = Mockito.mock(StudyManager::class.java)
-        Mockito.`when`(enumeration.getAllStudyIds()).thenReturn(listOf(studyId))
-        SecurityContextHolder.clearContext()
-        RLSRequestContext.clear()
-        DataQualityScheduler(enumeration, testServer.context.getBean(DataQualityService::class.java)).evaluateAllStudies()
-        hds.connection.use { connection ->
-            connection.prepareStatement("SELECT participant_id FROM data_quality_alerts WHERE study_id = ?").use { statement ->
-                statement.setObject(1, studyId)
-                statement.executeQuery().use { rows ->
-                    assertTrue(rows.next())
-                    assertEquals(participants.last().participantId, rows.getString(1))
-                    assertFalse(rows.next())
-                }
-            }
-        }
-    }
+    
 
     @Test
     fun rootRateLimiterUsesAnnotationsFromTheDispatcherServletChild() {
         val filter = testServer.context.getBean("rateLimitFilter", RateLimitFilter::class.java)
-        val config = testServer.context.getBean(RateLimitConfiguration::class.java)
-        val loginLimit = AuthTokenController::class.java.methods.single { it.name == "dashboardLogin" }
-            .getAnnotation(RateLimit::class.java).requestsPerMinute
+        val login = AuthTokenController::class.java.methods.single { it.name == "dashboardLogin" }
+            .getAnnotation(RateLimit::class.java)
         val studyId = UUID.randomUUID()
-        val paths = mapOf(
-            "/chronicle/v3/auth/dashboard-login" to loginLimit,
-            "/chronicle/v3/study/$studyId/export/async" to config.sensitiveRequestsPerMinute,
-            "/chronicle/v4/study/$studyId/participant/participant-1/android" to config.writeRequestsPerMinute,
-        )
-        paths.forEach { (path, limit) ->
+        fun status(path: String): Int {
             val request = MockHttpServletRequest("POST", path).apply {
                 servletPath = "/chronicle"
                 pathInfo = path.removePrefix(servletPath)
@@ -148,7 +107,15 @@ class ServerLaneRegressionTest : ChronicleServerTests() {
             }
             val response = MockHttpServletResponse()
             filter.doFilter(request, response, MockFilterChain())
-            assertEquals(path, limit.toString(), response.getHeader(RateLimitFilter.HEADER_LIMIT))
+            return response.status
+        }
+        val loginStatuses = (0..login.burstCapacity).map { status("/chronicle/v3/auth/dashboard-login") }
+        assertEquals(List(login.burstCapacity.toInt()) { 200 } + 429, loginStatuses)
+        listOf(
+            "/chronicle/v3/study/$studyId/participants/data",
+            "/chronicle/v4/study/$studyId/participant/participant-1/android",
+        ).forEach { path ->
+            repeat(200) { assertEquals("authenticated route $path is never limited", 200, status(path)) }
         }
     }
 

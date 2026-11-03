@@ -13,7 +13,7 @@ class DataScope(
     val participantId: String,
     val rowsWritten: Int,
 ) {
-    fun flush() = ctx.providers.flusher.flush(studyId, participantId)
+    fun flush() = ctx.providers.flusher.flush()
 
     fun verify(block: DataScope.() -> Unit) = block()
 }

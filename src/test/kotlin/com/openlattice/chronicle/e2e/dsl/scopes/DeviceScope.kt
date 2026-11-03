@@ -14,14 +14,14 @@ class DeviceScope(
     val client: ChronicleClient,
     val studyId: UUID,
     val participantId: String,
-    val deviceId: String,
+    val randomDeviceId: String,
     val mobileApi: StudyApi,
 ) {
     fun upload(
         data: ChronicleData = ctx.providers.data.usageEvents(studyId, participantId),
         block: DataScope.() -> Unit,
     ) {
-        val rowsWritten = mobileApi.uploadAndroidUsageEventDataV4(studyId, participantId, deviceId, data)
+        val rowsWritten = mobileApi.uploadAndroidUsageEventDataV4(studyId, participantId, randomDeviceId, data).acceptedIds.size
         DataScope(ctx, client, studyId, participantId, rowsWritten).block()
     }
 }

@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 import java.io.File
 import java.lang.reflect.Method
+import com.openlattice.chronicle.filters.ConcurrentEditFilter
+import org.springframework.web.bind.annotation.RequestMethod
 
 /**
  * Spec-to-controller parity test.
@@ -42,7 +44,8 @@ class SpecToControllerParityTest {
         val path: String,
         val method: String,
         val controllerClass: String,
-        val methodName: String
+        val methodName: String,
+        val handler: Method? = null,
     )
 
     // -------------------------------------------------------------------------
@@ -109,7 +112,7 @@ class SpecToControllerParityTest {
 
     private val controllerPackage = "com.openlattice.chronicle"
 
-    private fun discoverControllerEndpoints(): List<ControllerEndpoint> {
+    internal fun discoverControllerEndpoints(): List<ControllerEndpoint> {
         val endpoints = mutableListOf<ControllerEndpoint>()
 
         for (clazz in discoverControllerClasses()) {
@@ -126,21 +129,25 @@ class SpecToControllerParityTest {
 
             for (method in clazz.declaredMethods) {
                 for ((httpMethod, methodPaths) in extractMappings(method)) {
-                    endpoints += expandEndpoints(name, method.name, httpMethod, basePaths, methodPaths)
+                    endpoints += expandEndpoints(name, method, httpMethod, basePaths, methodPaths)
                 }
             }
         }
 
-        return endpoints
+        return endpoints + ConcurrentEditFilter.revisionReadPaths.map { path ->
+            ControllerEndpoint(path, RequestMethod.HEAD.name, ConcurrentEditFilter::class.java.simpleName, "guarded")
+        }
     }
 
     private fun discoverControllerClasses(): Set<Class<*>> {
         val scanner = ClassPathScanningCandidateComponentProvider(false)
         scanner.addIncludeFilter(AnnotationTypeFilter(RestController::class.java))
         return scanner.findCandidateComponents(controllerPackage)
-            .mapTo(mutableSetOf()) { candidate ->
+            .map { candidate ->
                 Class.forName(requireNotNull(candidate.beanClassName))
             }
+            .filterTo(mutableSetOf()) { it.protectionDomain.codeSource.location ==
+                com.openlattice.chronicle.controllers.StudyController::class.java.protectionDomain.codeSource.location }
     }
 
     /**
@@ -149,7 +156,7 @@ class SpecToControllerParityTest {
      */
     private fun expandEndpoints(
         controllerName: String,
-        methodName: String,
+        handler: Method,
         httpMethod: String,
         basePaths: List<String>,
         methodPaths: List<String>
@@ -163,7 +170,8 @@ class SpecToControllerParityTest {
                         path = normalizePath("$basePath$methodPath"),
                         method = httpMethod,
                         controllerClass = controllerName,
-                        methodName = methodName
+                        methodName = handler.name,
+                        handler = handler,
                     )
                 )
             }
@@ -252,6 +260,27 @@ class SpecToControllerParityTest {
     }
 
     @Test
+    fun everyProductionHandlerHasAPublishedContractOrAnExplicitInternalReason() {
+        val spec = parseSpecEndpoints()
+        val internal = mapOf(
+            "GET /internal/health/live" to "The orchestration liveness probe is an internal operational contract.",
+            "GET /internal/health/ready" to "The orchestration readiness probe checks required dependencies.",
+            "GET /internal/health/encryption" to "Authenticated operators inspect encryption readiness, not research data.",
+        )
+        fun canonical(path: String) = normalizePath(path).removePrefix("/chronicle").removePrefix("/v3")
+        val endpoints = discoverControllerEndpoints()
+        val missing = endpoints.filterNot { endpoint ->
+            "${endpoint.method} ${canonical(endpoint.path)}" in internal || spec.any {
+                it.method == endpoint.method && pathsMatch(canonical(it.path), canonical(endpoint.path))
+            }
+        }
+        assertTrue("Undocumented production routes: $missing", missing.isEmpty())
+        assertTrue("Remove stale internal reasons", internal.keys.all { key ->
+            endpoints.any { "${it.method} ${canonical(it.path)}" == key }
+        })
+    }
+
+    @Test
     fun `all spec endpoints have matching controller methods`() {
         val specEndpoints = parseSpecEndpoints()
         val controllerEndpoints = discoverControllerEndpoints()
@@ -270,7 +299,9 @@ class SpecToControllerParityTest {
                 "/chronicle$normalizedSpecPath"
             val altPath = normalizedSpecPath.removePrefix("/chronicle")
 
-            val candidates = controllerByMethod[spec.method].orEmpty()
+            // Spring MVC serves HEAD through every GET mapping without a separate annotation.
+            val candidates = controllerByMethod[spec.method].orEmpty() +
+                if (spec.method == "HEAD") controllerByMethod["GET"].orEmpty() else emptyList()
             val matched = candidates.any {
                 pathsMatch(it.path, searchPath) || pathsMatch(it.path, altPath)
             }

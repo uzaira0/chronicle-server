@@ -1,6 +1,6 @@
 package com.openlattice.chronicle.e2e.dsl.scopes
 
-import com.openlattice.chronicle.ChronicleServerTests
+import com.openlattice.chronicle.UsageEnrollmentFixtures.prepareUsageFixture
 import com.openlattice.chronicle.client.ChronicleClient
 import com.openlattice.chronicle.e2e.dsl.ChronicleTestDsl
 import com.openlattice.chronicle.e2e.dsl.ScenarioContext
@@ -15,7 +15,7 @@ class AuthScope(
     fun study(study: Study = ctx.providers.data.study(), block: StudyScope.() -> Unit) {
         val studyId = client.studyApi.createStudy(study)
         ctx.pushCleanup { client.studyApi.destroyStudy(studyId) }
-        ChronicleServerTests.prepareUsageFixture(client, studyId)
+        prepareUsageFixture(client, studyId)
         StudyScope(ctx, userId, client, studyId).block()
     }
 }
