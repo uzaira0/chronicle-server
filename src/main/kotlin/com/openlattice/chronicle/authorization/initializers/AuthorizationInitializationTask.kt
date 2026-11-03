@@ -21,6 +21,8 @@
 
 package com.openlattice.chronicle.authorization.initializers
 
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
+
 import com.geekbeast.tasks.HazelcastInitializationTask
 import com.geekbeast.tasks.Task
 import com.openlattice.chronicle.authorization.Role
@@ -36,7 +38,7 @@ import java.util.concurrent.TimeUnit
  * @author Matthew Tamayo-Rios &lt;matthew@openlattice.com&gt;
  */
 public open class AuthorizationInitializationTask : HazelcastInitializationTask<AuthorizationInitializationDependencies> {
-    override fun initialize(dependencies: AuthorizationInitializationDependencies) {
+    override fun initialize(dependencies: AuthorizationInitializationDependencies): Unit = RLSRequestContext.withSystemContext {
         val spm = dependencies.securePrincipalsManager
         spm.createSecurablePrincipalIfNotExists(SystemRole.AUTHENTICATED_USER.principal, GLOBAL_USER_ROLE)
         spm.createSecurablePrincipalIfNotExists(SystemRole.ADMIN.principal, GLOBAL_ADMIN_ROLE)

@@ -1,5 +1,11 @@
 package com.openlattice.chronicle.controllers
 
+import org.junit.Assert.assertThrows
+
+import com.openlattice.chronicle.audit.RecordingAuditingManager
+import com.openlattice.chronicle.audit.success
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
@@ -33,6 +39,8 @@ class PrincipalDirectoryControllerTest {
     private val spm = Mockito.mock(SecurePrincipalsManager::class.java)
     private val organizationService = Mockito.mock(ChronicleOrganizationService::class.java)
     private val auditingManager = Mockito.mock(AuditingManager::class.java)
+    private val audit = RecordingAuditingManager()
+    private val auditService = AuditService(audit)
 
     private lateinit var controller: PrincipalDirectoryController
 
@@ -58,14 +66,11 @@ class PrincipalDirectoryControllerTest {
 
         controller = PrincipalDirectoryController(
             authorizationManager, userDirectoryService, userListingService,
-            spm, organizationService, auditingManager
+            spm, organizationService, auditingManager, auditService
         )
     }
 
-    @Test
-    fun testControllerConstructsSuccessfully() {
-        assertNotNull(controller)
-    }
+    
 
     @Test
     fun testAuthorizationManagerAccessible() {
@@ -88,98 +93,33 @@ class PrincipalDirectoryControllerTest {
         assertSame(securablePrincipal, result)
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testGetSecurablePrincipalPropagatesException() {
         val principal = Principal(PrincipalType.USER, "user-123")
         Mockito.`when`(spm.lookup(principal)).thenThrow(RuntimeException("lookup failed"))
 
-        controller.getSecurablePrincipal(principal)
-    }
-
-    // --- getAllUsers ---
-
-    @Test
-    fun testGetAllUsersDelegatesToService() {
-        val users = mapOf("user1" to Mockito.mock(ChronicleUserProfile::class.java))
-        Mockito.`when`(userDirectoryService.getAllUsers()).thenReturn(users)
-
-        val result = controller.getAllUsers()
-        assertNotNull(result)
-        assertEquals(1, result.size)
-        verify(userDirectoryService).getAllUsers()
-    }
-
-    @Test
-    fun testGetAllUsersReturnsEmptyMap() {
-        Mockito.`when`(userDirectoryService.getAllUsers()).thenReturn(emptyMap())
-
-        val result = controller.getAllUsers()
-        assertTrue(result.isEmpty())
-    }
-
-    @Test(expected = RuntimeException::class)
-    fun testGetAllUsersPropagatesException() {
-        Mockito.`when`(userDirectoryService.getAllUsers()).thenThrow(RuntimeException("users error"))
-
-        controller.getAllUsers()
-    }
-
-    // --- getUser ---
-
-    @Test
-    fun testGetUserDelegatesToService() {
-        val userId = "user-123"
-        val profile = Mockito.mock(ChronicleUserProfile::class.java)
-        Mockito.`when`(userDirectoryService.getUser(userId)).thenReturn(profile)
-
-        val result = controller.getUser(userId)
-        assertNotNull(result)
-        assertSame(profile, result)
-        verify(userDirectoryService).getUser(userId)
-    }
-
-    @Test(expected = RuntimeException::class)
-    fun testGetUserPropagatesException() {
-        val userId = "user-123"
-        Mockito.`when`(userDirectoryService.getUser(userId)).thenThrow(RuntimeException("get user error"))
-
-        controller.getUser(userId)
-    }
-
-    // --- getUsers ---
-
-    @Test
-    fun testGetUsersDelegatesToService() {
-        val userIds = setOf("user-1", "user-2")
-        val users = mapOf(
-            "user-1" to Mockito.mock(ChronicleUserProfile::class.java),
-            "user-2" to Mockito.mock(ChronicleUserProfile::class.java)
-        )
-        Mockito.`when`(userDirectoryService.getUsers(userIds)).thenReturn(users)
-
-        val result = controller.getUsers(userIds)
-        assertEquals(2, result.size)
-        verify(userDirectoryService).getUsers(userIds)
-    }
-
-    @Test
-    fun testGetUsersReturnsEmptyMap() {
-        Mockito.`when`(userDirectoryService.getUsers(emptySet())).thenReturn(emptyMap())
-
-        val result = controller.getUsers(emptySet())
-        assertTrue(result.isEmpty())
+        assertThrows(RuntimeException::class.java) {
+            controller.getSecurablePrincipal(principal)
+        }
     }
 
     // --- syncCallingUser ---
 
     @Test
-    fun testSyncCallingUserDelegatesToService() {
-        // Verify the method exists and the controller accepts the dependency chain.
-        // Full integration requires Principals.getCurrentUser() which needs real SecurityContext.
-        assertNotNull(controller)
-        verify(authorizationManager, Mockito.atLeast(0)).checkIfHasPermissions(
-            kAny(), kAny(), kAny()
-        )
+    fun testSyncCallingUserAcceptsAListedUser() {
+        Mockito.`when`(userListingService.getUser("test-user")).thenReturn(Mockito.mock(ChronicleUserProfile::class.java))
+
+        assertEquals(OK(), controller.syncCallingUser())
+    }
+
+    /** ConfiguredUserListingService.getUser is `users.getValue(id)`: an unknown id throws NoSuchElementException. */
+    @Test
+    fun testSyncCallingUserRefusesAUserTheListingDoesNotKnow() {
+        Mockito.`when`(userListingService.getUser("test-user")).thenThrow(NoSuchElementException("Key test-user is missing in the map."))
+
+        assertThrows(org.springframework.security.authentication.BadCredentialsException::class.java) {
+            controller.syncCallingUser()
+        }
     }
 
     // --- searchUsers ---
@@ -205,12 +145,14 @@ class PrincipalDirectoryControllerTest {
         assertTrue(result.isEmpty())
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testSearchUsersPropagatesException() {
         val fields = Mockito.mock(UserSearchFields::class.java)
         Mockito.`when`(userDirectoryService.searchAllUsers(fields)).thenThrow(RuntimeException("search error"))
 
-        controller.searchUsers(fields)
+        assertThrows(RuntimeException::class.java) {
+            controller.searchUsers(fields)
+        }
     }
 
     // --- addPrincipalToPrincipal ---
@@ -224,9 +166,10 @@ class PrincipalDirectoryControllerTest {
         val result = controller.addPrincipalToPrincipal(directedAclKeys)
         assertEquals(OK.ok, result)
         verify(spm).addPrincipalToPrincipal(source, target)
+        assertAudited(AuditEventType.PERMISSION_GRANT, "Principal", mapOf("source" to source.toString(), "target" to target.toString()))
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testAddPrincipalToPrincipalPropagatesException() {
         val source = AclKey(UUID.randomUUID())
         val target = AclKey(UUID.randomUUID())
@@ -234,7 +177,9 @@ class PrincipalDirectoryControllerTest {
 
         Mockito.doThrow(RuntimeException("add error")).`when`(spm).addPrincipalToPrincipal(source, target)
 
-        controller.addPrincipalToPrincipal(directedAclKeys)
+        assertThrows(RuntimeException::class.java) {
+            controller.addPrincipalToPrincipal(directedAclKeys)
+        }
     }
 
     // --- removePrincipalFromPrincipal ---
@@ -248,9 +193,10 @@ class PrincipalDirectoryControllerTest {
         val result = controller.removePrincipalFromPrincipal(directedAclKeys)
         assertEquals(OK.ok, result)
         verify(spm).removePrincipalFromPrincipal(source, target)
+        assertAudited(AuditEventType.PERMISSION_REVOKE, "Principal", mapOf("source" to source.toString(), "target" to target.toString()))
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testRemovePrincipalFromPrincipalPropagatesException() {
         val source = AclKey(UUID.randomUUID())
         val target = AclKey(UUID.randomUUID())
@@ -258,22 +204,33 @@ class PrincipalDirectoryControllerTest {
 
         Mockito.doThrow(RuntimeException("remove error")).`when`(spm).removePrincipalFromPrincipal(source, target)
 
-        controller.removePrincipalFromPrincipal(directedAclKeys)
+        assertThrows(RuntimeException::class.java) {
+            controller.removePrincipalFromPrincipal(directedAclKeys)
+        }
     }
 
     // --- deleteUserAccount ---
 
     @Test
-    fun testDeleteUserAccountSetupVerification() {
-        // deleteUserAccount requires admin role via Principals static methods.
-        // Verify the controller is properly configured to accept the call.
+    fun deleteUserAccountDeletesThePrincipalAndAuditsIt() {
         val securablePrincipal = Mockito.mock(SecurablePrincipal::class.java)
         val aclKey = AclKey(UUID.randomUUID())
         Mockito.`when`(securablePrincipal.aclKey).thenReturn(aclKey)
         Mockito.`when`(spm.getSecurablePrincipal("user-to-delete")).thenReturn(securablePrincipal)
 
-        assertNotNull(controller)
-        verify(spm, Mockito.atLeast(0)).getSecurablePrincipal(kAnyString())
+        assertEquals(OK.ok, controller.deleteUserAccount("user-to-delete"))
+
+        verify(spm).deletePrincipal(aclKey)
+        verify(userDirectoryService).deleteUser("user-to-delete")
+        assertAudited(AuditEventType.DELETE, "User", mapOf("principalId" to "user-to-delete"))
+    }
+
+    private fun assertAudited(action: AuditEventType, resourceType: String, details: Map<String, Any>) {
+        val entry = audit.events.single()
+        assertEquals(action, entry.eventType)
+        assertEquals(resourceType, entry.description)
+        assertTrue(entry.success)
+        assertEquals(AuditService.sanitizeAdditionalData(details), entry.data - "success" - "accessedPHI")
     }
 
     // --- getCurrentRoles ---
@@ -291,9 +248,5 @@ class PrincipalDirectoryControllerTest {
     // a real security context. Cannot be unit-tested with simple mocks.
     // Covered by integration tests.
 
-    @Test
-    fun testControllerImplementsAuthorizingComponent() {
-        assertNotNull(controller.authorizationManager)
-        assertNotNull(controller.auditingManager)
-    }
+    
 }

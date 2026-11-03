@@ -19,7 +19,7 @@ import jakarta.servlet.http.HttpServletResponse
  * the PostgreSQL session variables (app.current_user_id, app.authorized_studies,
  * app.is_admin) that RLS policies reference.
  *
- * C-6: Wires the existing RLSContextManager into the request lifecycle.
+ * Wires the existing RLSContextManager into the request lifecycle.
  */
 public open class RLSContextFilter(
     private val rlsContextManager: RLSContextManager

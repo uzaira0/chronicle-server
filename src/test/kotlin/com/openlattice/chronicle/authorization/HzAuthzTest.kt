@@ -536,10 +536,7 @@ open class HzAuthzTest : ChronicleServerTests() {
                 return
             }
             val reservationService = AclKeyReservationService(sr)
-            val principalsMapManager: PrincipalsMapManager = HazelcastPrincipalsMapManager(
-                hazelcastInstance,
-                reservationService
-            )
+            val principalsMapManager: PrincipalsMapManager = HazelcastPrincipalsMapManager(hazelcastInstance)
 
             hzAuthz = HazelcastAuthorizationService(
                 hazelcastInstance,

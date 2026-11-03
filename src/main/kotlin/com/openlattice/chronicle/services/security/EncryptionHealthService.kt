@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.services.security
 
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
+
 import com.openlattice.chronicle.storage.StorageResolver
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
@@ -81,7 +83,7 @@ public class EncryptionHealthService(
     // -----------------------------------------------------------------------
 
     @Scheduled(fixedDelay = 3_600_000)
-    public fun periodicCheck() {
+    public fun periodicCheck(): Unit = RLSRequestContext.withSystemContext {
         val previousStatus = HashMap(tableStatus)
         runEncryptionCheck()
 

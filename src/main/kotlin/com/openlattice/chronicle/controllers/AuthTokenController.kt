@@ -3,25 +3,24 @@ package com.openlattice.chronicle.controllers
 import com.codahale.metrics.annotation.Timed
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.openlattice.chronicle.configuration.MobileSecurityConfiguration
+import com.openlattice.chronicle.configuration.CookiePolicy
+import com.openlattice.chronicle.configuration.CookiePurpose
 import com.fasterxml.jackson.module.kotlin.readValue
-import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.audit.AuditEntryBuilder
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.authorization.JwtBlocklist
+import com.openlattice.chronicle.generated.SessionMetadataFields
 import com.openlattice.chronicle.configuration.boundedRestTemplate
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
-import com.openlattice.chronicle.configuration.ChronicleJwtClientConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
 import com.openlattice.chronicle.configuration.roleClientIdForClaims
 import com.openlattice.chronicle.configuration.RateLimit
 import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
 import com.openlattice.chronicle.configuration.RateLimitType
-import com.openlattice.chronicle.services.auth.RefreshTokenException
-import com.openlattice.chronicle.services.auth.RefreshTokenService
 import com.openlattice.chronicle.util.ClientIpRecord
-import com.openlattice.chronicle.util.ChronicleServerUtil
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.users.UserListingService
-import jakarta.servlet.http.Cookie
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import org.slf4j.LoggerFactory
@@ -32,9 +31,9 @@ import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.security.core.Authentication
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder
+import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.security.oauth2.jwt.JwtDecoder
 import org.springframework.security.oauth2.jwt.JwtException
-import org.springframework.security.oauth2.jwt.NimbusJwtDecoder
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
 import org.springframework.util.LinkedMultiValueMap
 import org.springframework.web.bind.annotation.GetMapping
@@ -45,16 +44,16 @@ import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.util.UriComponentsBuilder
 import java.net.URI
-import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.time.Duration
+import java.time.Instant
 import java.util.*
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Provides endpoints for managing JWT authentication via httpOnly cookies.
  *
- * F-P0-2: Migrates JWT storage from frontend localStorage (XSS-accessible) to
+ * Migrates JWT storage from frontend localStorage (XSS-accessible) to
  * httpOnly Secure SameSite=Strict cookies (inaccessible to JavaScript).
  *
  * Transitional flow:
@@ -81,12 +80,12 @@ public open class AuthTokenController(
     private val chronicleAuthConfiguration: ChronicleAuthConfiguration,
     private val objectMapper: ObjectMapper,
     private val userListingService: UserListingService,
-    private val refreshTokenService: RefreshTokenService,
     private val environment: Environment,
     private val auditService: AuditService,
     private val jwtBlocklist: JwtBlocklist,
     private val mobileSecurityConfiguration: MobileSecurityConfiguration =
         MobileSecurityConfiguration(),
+    private val cookiePolicy: CookiePolicy,
 ) {
     internal companion object {
         private val logger = LoggerFactory.getLogger(AuthTokenController::class.java)
@@ -95,11 +94,15 @@ public open class AuthTokenController(
         private const val OIDC_STATE_COOKIE_NAME = "chronicle_oidc_state"
         private const val OIDC_NONCE_COOKIE_NAME = "chronicle_oidc_nonce"
         private const val OIDC_PKCE_VERIFIER_COOKIE_NAME = "chronicle_oidc_pkce"
-        private const val COOKIE_PATH = "/chronicle"
-        private const val MAX_AGE_30_DAYS = 30 * 24 * 60 * 60
         private const val MAX_AGE_10_MINUTES = 10 * 60
         private const val TESTING_PROVIDER_LABEL = "Chronicle testing session"
         private const val SSO_PROVIDER_LABEL = "Institutional SSO"
+        private val TESTING_LOGIN_UNAVAILABLE: Map<String, Any> = mapOf(
+            "authenticated" to false,
+            "error" to "testing login is not enabled",
+            "providerLabel" to TESTING_PROVIDER_LABEL,
+            "status" to "awaiting-sso",
+        )
 
         // One response for every way dashboard-login can fail — wrong password, no hash
         // configured, no local user to mint a session for, an unusable token. Distinct
@@ -120,24 +123,8 @@ public open class AuthTokenController(
     // Stateless and thread-safe; bcrypt's own comparison is constant time over the digest.
     private val dashboardPasswordEncoder = BCryptPasswordEncoder()
 
-    private fun useSecureCookie(request: HttpServletRequest?): Boolean {
-        val explicitCookieSecure = environment.getProperty("chronicle.security.cookie.secure")?.toBooleanStrictOrNull()
-        if (explicitCookieSecure != null) {
-            return explicitCookieSecure
-        }
-
-        return request?.let { isSecureRequest(it) } ?: true
-    }
-
-    /**
-     * Determines if the request arrived over a secure channel.
-     * Defaults to Secure=true when behind a proxy (header absent or "https").
-     * Only returns false when X-Forwarded-Proto explicitly says "http".
-     */
-    public fun isSecureRequest(request: HttpServletRequest): Boolean {
-        return request.isSecure ||
-            request.getHeader("X-Forwarded-Proto")?.equals("https", ignoreCase = true) ?: true
-    }
+    /** Retained for callers that inspect the established proxy scheme decision. */
+    public fun isSecureRequest(request: HttpServletRequest): Boolean = cookiePolicy.isSecureRequest(request)
 
     @RateLimit(type = RateLimitType.AUTH)
     @PostMapping(
@@ -161,7 +148,7 @@ public open class AuthTokenController(
         }
 
         if (!sessionIsActive(jwt)) return ResponseEntity.status(401).body(mapOf("error" to "session expired"))
-        val csrfToken = ensureCookieSession(request, token, response)
+        val csrfToken = ensureCookieSession(request, jwt, response)
         return ResponseEntity.ok(buildAuthenticatedSession(jwt, csrfToken))
     }
 
@@ -186,7 +173,7 @@ public open class AuthTokenController(
                     null
                 }
                 if (decodedCookieJwt != null && sessionIsActive(decodedCookieJwt)) {
-                    val csrfToken = ensureCookieSession(request, cookieToken, response)
+                    val csrfToken = ensureCookieSession(request, decodedCookieJwt, response)
                     return ResponseEntity.ok(buildAuthenticatedSession(decodedCookieJwt, csrfToken))
                 }
             }
@@ -195,7 +182,7 @@ public open class AuthTokenController(
         }
 
         if (!sessionIsActive(jwtAuthentication.token)) return ResponseEntity.status(401).body(mapOf("error" to "session expired"))
-        val csrfToken = ensureCsrfCookie(request, response)
+        val csrfToken = ensureCsrfCookie(request, jwtAuthentication.token, response)
         return ResponseEntity.ok(buildAuthenticatedSession(jwtAuthentication.token, csrfToken))
     }
 
@@ -207,38 +194,35 @@ public open class AuthTokenController(
     ): ResponseEntity<Void> {
         val oidc = chronicleAuthConfiguration.oidc
         if (!isOidcReady()) {
-            return ResponseEntity.status(404).build()
+            throw signInNotFound("error.auth.oidcNotConfigured")
         }
 
         val state = UUID.randomUUID().toString()
         val nonce = UUID.randomUUID().toString()
         val codeVerifier = generateCodeVerifier()
-        addCookie(
+        cookiePolicy.addCookie(
             request = request,
             response = response,
+            purpose = CookiePurpose.OIDC_HANDSHAKE,
             name = OIDC_STATE_COOKIE_NAME,
             value = state,
-            httpOnly = true,
-            maxAge = MAX_AGE_10_MINUTES,
-            sameSite = "Lax"
+            maxAge = Duration.ofSeconds(MAX_AGE_10_MINUTES.toLong()),
         )
-        addCookie(
+        cookiePolicy.addCookie(
             request = request,
             response = response,
+            purpose = CookiePurpose.OIDC_HANDSHAKE,
             name = OIDC_NONCE_COOKIE_NAME,
             value = nonce,
-            httpOnly = true,
-            maxAge = MAX_AGE_10_MINUTES,
-            sameSite = "Lax"
+            maxAge = Duration.ofSeconds(MAX_AGE_10_MINUTES.toLong()),
         )
-        addCookie(
+        cookiePolicy.addCookie(
             request = request,
             response = response,
+            purpose = CookiePurpose.OIDC_HANDSHAKE,
             name = OIDC_PKCE_VERIFIER_COOKIE_NAME,
             value = codeVerifier,
-            httpOnly = true,
-            maxAge = MAX_AGE_10_MINUTES,
-            sameSite = "Lax"
+            maxAge = Duration.ofSeconds(MAX_AGE_10_MINUTES.toLong()),
         )
 
         val authorizationUrlBuilder = UriComponentsBuilder.fromUriString(oidc.authorizationUri)
@@ -278,7 +262,7 @@ public open class AuthTokenController(
         response: HttpServletResponse,
     ): ResponseEntity<*> {
         if (!isOidcReady()) {
-            return ResponseEntity.status(404).body(mapOf("error" to "oidc_not_configured"))
+            throw signInNotFound("error.auth.oidcNotConfigured")
         }
         if (!error.isNullOrBlank()) {
             logger.warn(
@@ -317,10 +301,10 @@ public open class AuthTokenController(
             return ResponseEntity.status(400).body(mapOf("error" to "invalid_oidc_nonce"))
         }
 
-        ensureCookieSession(request, sessionToken, response)
-        clearCookie(response, request, OIDC_STATE_COOKIE_NAME, sameSite = "Lax")
-        clearCookie(response, request, OIDC_NONCE_COOKIE_NAME, sameSite = "Lax")
-        clearCookie(response, request, OIDC_PKCE_VERIFIER_COOKIE_NAME, sameSite = "Lax")
+        ensureCookieSession(request, jwt, response)
+        cookiePolicy.clearCookie(response, request, CookiePurpose.OIDC_HANDSHAKE, OIDC_STATE_COOKIE_NAME)
+        cookiePolicy.clearCookie(response, request, CookiePurpose.OIDC_HANDSHAKE, OIDC_NONCE_COOKIE_NAME)
+        cookiePolicy.clearCookie(response, request, CookiePurpose.OIDC_HANDSHAKE, OIDC_PKCE_VERIFIER_COOKIE_NAME)
         logger.info("OIDC login completed for subject {}", jwt.subject)
         auditLogin(request, "oidc", jwt.subject, null)
         return ResponseEntity.status(302).location(URI.create(chronicleAuthConfiguration.oidc.postLoginRedirectUri)).build<Void>()
@@ -335,9 +319,8 @@ public open class AuthTokenController(
      * authentication entirely and mints a session from pre-configured user tokens.
      */
     // reason: guard-clause endpoint — each return is a distinct HTTP outcome (disabled/forbidden/
-    // error/ok); collapsing them would obscure the auth decision flow. Boundary catch wraps
-    // decodeTestingToken which can throw JwtException/IllegalArgumentException/Base64 errors.
-    @Suppress("ReturnCount", "TooGenericExceptionCaught")
+    // error/ok); collapsing them would obscure the auth decision flow.
+    @Suppress("ReturnCount")
     @RateLimit(type = RateLimitType.AUTH)
     @PostMapping(
         path = ["/testing-login"],
@@ -360,14 +343,7 @@ public open class AuthTokenController(
 
         if (!chronicleAuthConfiguration.testingLoginEnabled) {
             auditLogin(request, "testing", null, "disabled")
-            return ResponseEntity.status(403).body(
-                mapOf(
-                    "authenticated" to false,
-                    "error" to "testing login is not enabled",
-                    "providerLabel" to TESTING_PROVIDER_LABEL,
-                    "status" to "awaiting-sso"
-                )
-            )
+            return ResponseEntity.status(403).body(TESTING_LOGIN_UNAVAILABLE)
         }
 
         if (!MobileSecurityConfiguration.isTrustedInternalWebMarker(
@@ -381,19 +357,12 @@ public open class AuthTokenController(
         val token = userListingService.issueTestingToken(body?.get("userId"))
         if (token == null) {
             auditLogin(request, "testing", null, "no_local_user")
-            return ResponseEntity.status(403).body(
-                mapOf(
-                    "authenticated" to false,
-                    "error" to "testing login is not enabled",
-                    "providerLabel" to TESTING_PROVIDER_LABEL,
-                    "status" to "awaiting-sso"
-                )
-            )
-
+            return ResponseEntity.status(403).body(TESTING_LOGIN_UNAVAILABLE)
         }
         val jwt = try {
-            decodeTestingToken(token)
-        } catch (exception: Exception) {
+            // The cookie is replayed through this same decoder on every later request, so it alone decides.
+            jwtDecoder.decode(token)
+        } catch (exception: JwtException) {
             auditLogin(request, "testing", null, "invalid_token")
             logger.warn(
                 "testing-login issued token could not be decoded with current JWT decoder: {}",
@@ -409,51 +378,11 @@ public open class AuthTokenController(
             )
         }
 
-        val csrfToken = ensureCookieSession(request, token, response)
-        val metadata = buildAuthenticatedSession(jwt, csrfToken).toMutableMap()
+        val metadata = localSessionMetadata(request, response, jwt, "testing-login")
         metadata["authToken"] = token
         metadata["providerLabel"] = TESTING_PROVIDER_LABEL
-        metadata["tokenSource"] = "testing-login"
         auditLogin(request, "testing", jwt.subject, null)
         return ResponseEntity.ok(metadata)
-    }
-
-    private fun decodeTestingToken(token: String): org.springframework.security.oauth2.jwt.Jwt {
-        return try {
-            jwtDecoder.decode(token)
-        } catch (primaryError: JwtException) {
-            val testingTokenConfig = chronicleAuthConfiguration.configurations
-                .firstOrNull { it.testingTokenIssuer }
-                ?: throw primaryError
-
-            logger.debug(
-                "Fallback decoding of testing token because primary JwtDecoder failed: {}",
-                primaryError::class.java.simpleName
-            )
-
-            createLaxJwtDecoder(testingTokenConfig).decode(token)
-        }
-    }
-
-    private fun createLaxJwtDecoder(config: ChronicleJwtClientConfiguration): JwtDecoder {
-        return when {
-            !config.jwkSetUri.isNullOrBlank() ->
-                NimbusJwtDecoder.withJwkSetUri(config.jwkSetUri).restOperations(boundedRestTemplate()).build()
-            config.signingAlgorithm.startsWith("HS") -> {
-                val secret = if (config.base64EncodedSecret) {
-                    java.util.Base64.getDecoder().decode(config.secret)
-                } else {
-                    config.secret.toByteArray(StandardCharsets.UTF_8)
-                }
-                val algorithm = when (config.signingAlgorithm) {
-                    "HS384" -> "HmacSHA384"
-                    "HS512" -> "HmacSHA512"
-                    else -> "HmacSHA256"
-                }
-                NimbusJwtDecoder.withSecretKey(SecretKeySpec(secret, algorithm)).build()
-            }
-            else -> throw IllegalArgumentException("Unsupported testing fallback algorithm: ${config.signingAlgorithm}")
-        }
     }
 
     /**
@@ -471,9 +400,8 @@ public open class AuthTokenController(
      */
     // reason: guard-clause endpoint — every failure path returns the identical body on
     // purpose (see DASHBOARD_LOGIN_REJECTED), and collapsing them would hide which
-    // conditions are checked. Boundary catch wraps decodeTestingToken, which can throw
-    // JwtException/IllegalArgumentException/Base64 errors.
-    @Suppress("ReturnCount", "TooGenericExceptionCaught")
+    // conditions are checked.
+    @Suppress("ReturnCount")
     @RateLimit(
         type = RateLimitType.AUTH,
         requestsPerMinute = DASHBOARD_LOGIN_PER_MINUTE,
@@ -526,8 +454,9 @@ public open class AuthTokenController(
         }
 
         val jwt = try {
-            decodeTestingToken(token)
-        } catch (exception: Exception) {
+            // The cookie is replayed through this same decoder on every later request, so it alone decides.
+            jwtDecoder.decode(token)
+        } catch (exception: JwtException) {
             logger.error(
                 "dashboard-login minted a session token the JWT decoder rejects: {}",
                 exception.message
@@ -536,25 +465,33 @@ public open class AuthTokenController(
             return dashboardLoginRejected()
         }
 
-        val csrfToken = ensureCookieSession(request, token, response)
-        val metadata = buildAuthenticatedSession(jwt, csrfToken).toMutableMap()
-        metadata["tokenSource"] = "dashboard-login"
+        val metadata = localSessionMetadata(request, response, jwt, "dashboard-login")
         logger.info("dashboard-login succeeded for {}", dashboardClientReference(request))
         auditLogin(request, "dashboard", jwt.subject, null)
         return ResponseEntity.ok(metadata)
     }
 
+    private fun localSessionMetadata(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        jwt: Jwt,
+        tokenSource: String,
+    ): MutableMap<String, Any> {
+        val csrfToken = ensureCookieSession(request, jwt, response)
+        return buildAuthenticatedSession(jwt, csrfToken).toMutableMap().apply { put("tokenSource", tokenSource) }
+    }
+
     /** Records a login outcome in the audit trail; [failure] null means the login succeeded. */
     private fun auditLogin(request: HttpServletRequest, method: String, subject: String?, failure: String?) {
-        auditService.logAuthEvent(
-            userId = subject?.let { runCatching { UUID.fromString(it) }.getOrNull() },
-            userRole = null,
-            ipAddress = ClientIpRecord.staffSurfaceReference(request),
-            userAgent = request.getHeader(HttpHeaders.USER_AGENT),
-            eventType = if (failure == null) AuditAction.LOGIN else AuditAction.LOGIN_FAILED,
-            success = failure == null,
-            errorMessage = failure,
-            additionalData = listOfNotNull("method" to method, subject?.let { "subject" to it }).toMap(),
+        auditService.log(
+            AuditEntryBuilder()
+                .request(request, ClientIpRecord.staffSurfaceReference(request))
+                .action(if (failure == null) AuditEventType.LOGIN else AuditEventType.LOGIN_FAILED)
+                .resourceType("Authentication")
+                .success(failure == null)
+                .additionalData(
+                    listOfNotNull("method" to method, subject?.let { "subject" to it }, failure?.let { "reason" to it }).toMap(),
+                ),
         )
     }
 
@@ -591,69 +528,31 @@ public open class AuthTokenController(
                 if (jti.isNullOrBlank()) jwtBlocklist.blockTokenByValue(token, expiry)
                 else jwtBlocklist.blockToken(jti, expiry)
             }
+            jwt?.subject?.let { subject ->
+                auditService.log(
+                    AuditEntryBuilder()
+                        .request(request, ClientIpRecord.staffSurfaceReference(request))
+                        .action(AuditEventType.LOGOUT)
+                        .resourceType("Authentication")
+                        .success(true)
+                        .additionalData(mapOf("subject" to subject)),
+                )
+            }
         }
-        clearCookie(
+        cookiePolicy.clearCookie(
             request = request,
             response = response,
+            purpose = CookiePurpose.AUTH_SESSION,
             name = AUTH_COOKIE_NAME,
-            httpOnly = true,
-            sameSite = "Strict",
         )
-        clearCookie(
+        cookiePolicy.clearCookie(
             request = request,
             response = response,
+            purpose = CookiePurpose.CSRF,
             name = CSRF_COOKIE_NAME,
-            httpOnly = false,
-            sameSite = "Strict",
         )
 
         return ResponseEntity.noContent().build()
-    }
-
-    /**
-     * Rotates a refresh token and returns a new access + refresh token pair.
-     *
-     * Token theft detection: if a rotated-out (already-used) refresh token is
-     * presented, the entire token family is revoked and a security alert is logged.
-     */
-    @RateLimit(type = RateLimitType.AUTH)
-    @PostMapping(
-        path = ["/refresh"],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    public fun refreshToken(
-        @RequestBody body: Map<String, String>,
-        request: HttpServletRequest,
-        response: HttpServletResponse,
-    ): ResponseEntity<Map<String, Any>> {
-        val rawRefreshToken = body["refreshToken"]
-            ?: return ResponseEntity.badRequest().body(mapOf("error" to "missing 'refreshToken' field" as Any))
-
-        return try {
-            val ipAddress = ClientIpRecord.staffSurfaceReference(request)
-            val userAgent = request.getHeader("User-Agent")
-
-            val result = refreshTokenService.rotateRefreshToken(rawRefreshToken, ipAddress, userAgent)
-
-            // Set the new access token as an httpOnly cookie
-            val csrfToken = ensureCookieSession(request, result.accessToken, response)
-
-            ResponseEntity.ok(
-                mapOf(
-                    "accessToken" to result.accessToken,
-                    "refreshToken" to result.refreshToken,
-                    "expiresIn" to result.expiresIn,
-                    "csrfToken" to csrfToken,
-                    "tokenType" to "Bearer",
-                ) as Map<String, Any>
-            )
-        } catch (ex: RefreshTokenException) {
-            logger.warn("Refresh token rejected: {}", ex.message)
-            ResponseEntity.status(401).body(
-                mapOf("error" to (ex.message ?: "invalid refresh token") as Any)
-            )
-        }
     }
 
     private fun isOidcReady(): Boolean {
@@ -753,31 +652,33 @@ public open class AuthTokenController(
         return session
     }
 
+    /** Writes the session cookies; both end with [jwt], or with the browser session when it has no expiry. */
     private fun ensureCookieSession(
         request: HttpServletRequest,
-        token: String,
+        jwt: Jwt,
         response: HttpServletResponse
     ): String {
-        addCookie(
+        val maxAge = jwt.expiresAt
+            ?.let { Duration.between(Instant.now(), it).seconds.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt() }
+            ?: -1
+        cookiePolicy.addCookie(
             response = response,
             request = request,
+            purpose = CookiePurpose.AUTH_SESSION,
             name = AUTH_COOKIE_NAME,
-            value = token,
-            httpOnly = true,
-            maxAge = MAX_AGE_30_DAYS,
-            sameSite = "Strict"
+            value = jwt.tokenValue,
+            maxAge = Duration.ofSeconds(maxAge.toLong()),
         )
 
         val csrfToken = UUID.randomUUID().toString()
         // httpOnly=false: JS must read CSRF token for header inclusion
-        addCookie(
+        cookiePolicy.addCookie(
             response = response,
             request = request,
+            purpose = CookiePurpose.CSRF,
             name = CSRF_COOKIE_NAME,
             value = csrfToken,
-            httpOnly = false,
-            maxAge = MAX_AGE_30_DAYS,
-            sameSite = "Strict"
+            maxAge = Duration.ofSeconds(maxAge.toLong()),
         )
 
         return csrfToken
@@ -785,6 +686,7 @@ public open class AuthTokenController(
 
     private fun ensureCsrfCookie(
         request: HttpServletRequest,
+        jwt: Jwt,
         response: HttpServletResponse
     ): String {
         val existingToken = readCookie(request, CSRF_COOKIE_NAME)
@@ -793,13 +695,13 @@ public open class AuthTokenController(
             return existingToken
         }
 
-        return ensureCookieSession(request, ChronicleServerUtil.getTokenFromContext(), response)
+        return ensureCookieSession(request, jwt, response)
     }
 
-    private fun sessionIsActive(jwt: org.springframework.security.oauth2.jwt.Jwt): Boolean =
+    private fun sessionIsActive(jwt: Jwt): Boolean =
         jwtBlocklist.credentialRejectionReason(
             jwt.id?.takeIf(String::isNotBlank), jwt.tokenValue, jwt.issuedAt, jwt.expiresAt,
-            java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes),
+            Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes),
             subject = jwt.subject,
         ) == null
 
@@ -807,42 +709,6 @@ public open class AuthTokenController(
         return request.cookies
             ?.firstOrNull { it.name == name }
             ?.value
-    }
-
-    private fun addCookie(
-        response: HttpServletResponse,
-        request: HttpServletRequest,
-        name: String,
-        value: String,
-        httpOnly: Boolean,
-        maxAge: Int,
-        sameSite: String,
-    ) {
-        val cookie = Cookie(name, value)
-        cookie.isHttpOnly = httpOnly
-        cookie.secure = useSecureCookie(request)
-        cookie.path = COOKIE_PATH
-        cookie.maxAge = maxAge
-        cookie.setAttribute("SameSite", sameSite)
-        response.addCookie(cookie)
-    }
-
-    private fun clearCookie(
-        response: HttpServletResponse,
-        request: HttpServletRequest,
-        name: String,
-        httpOnly: Boolean = true,
-        sameSite: String = "Strict",
-    ) {
-        addCookie(
-            response = response,
-            request = request,
-            name = name,
-            value = "",
-            httpOnly = httpOnly,
-            maxAge = 0,
-            sameSite = sameSite
-        )
     }
 
     private fun constantTimeEquals(expected: String, actual: String): Boolean {
@@ -871,7 +737,7 @@ public open class AuthTokenController(
     }
 
     private fun buildAuthenticatedSession(
-        jwt: org.springframework.security.oauth2.jwt.Jwt,
+        jwt: Jwt,
         csrfToken: String,
     ): Map<String, Any> {
         val tokenIssuer = jwt.issuer
@@ -883,18 +749,20 @@ public open class AuthTokenController(
                 chronicleAuthConfiguration.oidc.providerLabel
             else -> SSO_PROVIDER_LABEL
         }
+        val idleWindow = Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes)
         val metadata = mutableMapOf<String, Any>(
             "authenticated" to true,
             "authMode" to "cookie-bootstrap",
             "csrfToken" to csrfToken,
             "providerLabel" to providerLabel,
             "status" to "authenticated",
-            "tokenSource" to "sso-session"
+            "tokenSource" to "sso-session",
+            SessionMetadataFields.IDLE_WINDOW_MS to idleWindow.toMillis(),
         )
 
         jwt.expiresAt?.let { metadata["expiresAt"] = it.toEpochMilli() }
         jwtBlocklist.sessionIdleDeadline(jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt,
-            java.time.Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes))
+            idleWindow)
             ?.let { metadata["idleExpiresAt"] = it.toEpochMilli() }
         jwt.subject?.let { metadata["subject"] = it }
         val roles = extractRoles(jwt.claims)

@@ -11,10 +11,7 @@ import org.springframework.context.annotation.Profile
 class RetiredDatastoreAliasTest {
     @Test fun testChronicleServletDoesNotExposeDatastoreAlias() {
         val configuration = ChronicleServerServletsPod().chronicleServlet()
-        val mappings = configuration.javaClass.declaredFields
-            .first { it.type == Array<String>::class.java }
-            .also { it.isAccessible = true }
-            .get(configuration) as Array<*>
+        val mappings = configuration.getMappings()
 
         assertArrayEquals(arrayOf("/chronicle/*"), mappings)
     }

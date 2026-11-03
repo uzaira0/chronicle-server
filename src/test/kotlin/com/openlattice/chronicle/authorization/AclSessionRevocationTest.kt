@@ -4,7 +4,6 @@ import com.google.common.eventbus.EventBus
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.authorization.principals.PrincipalsMapManager
-import com.openlattice.chronicle.services.auth.RefreshTokenService
 import com.openlattice.chronicle.storage.StorageResolver
 import org.junit.Test
 import org.mockito.kotlin.any
@@ -23,14 +22,13 @@ class AclSessionRevocationTest {
     private val key = AclKey(UUID.randomUUID())
     private val aces = mock<IMap<AceKey, AceValue>>()
     private val revoked = mock<JwtBlocklist>()
-    private val refresh = mock<RefreshTokenService>()
     private val service = run {
         val hz = mock<HazelcastInstance>()
         whenever(hz.getMap<AceKey, AceValue>("PERMISSIONS")).thenReturn(aces)
         whenever(hz.getMap<AclKey, SecurableObjectType>("SECURABLE_OBJECT_TYPES")).thenReturn(mock<IMap<AclKey, SecurableObjectType>>())
         val principals = mock<PrincipalsMapManager>()
         whenever(principals.getAclKeyByPrincipal(setOf(user))).thenReturn(mapOf(user to AclKey(UUID.randomUUID())))
-        HazelcastAuthorizationService(hz, mock<StorageResolver>(), EventBus(), principals, revoked, refresh)
+        HazelcastAuthorizationService(hz, mock<StorageResolver>(), EventBus(), principals, revoked)
     }
 
     private fun currently(vararg permissions: Permission) {
@@ -41,7 +39,6 @@ class AclSessionRevocationTest {
     private fun assertRevoked(expected: Boolean) {
         val times = if (expected) times(1) else never()
         verify(revoked, times).revokePrincipalBefore(eq("affected"), any())
-        verify(refresh, times).revokeAllForUser("affected")
         verify(revoked, never()).revokePrincipalBefore(eq("unrelated"), any())
     }
 

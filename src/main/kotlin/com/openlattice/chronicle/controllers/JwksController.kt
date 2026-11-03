@@ -32,12 +32,9 @@ public open class JwksController(
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
     public fun getJwks(): ResponseEntity<Map<String, Any>> {
-        if (!jwtKeyMaterial.isRs256()) {
-            return ResponseEntity.notFound().build()
-        }
-
+        // Only RS256 material carries a public key (JwtKeyConfig); HS256 has nothing to publish.
         val rsaPublicKey = jwtKeyMaterial.rsaPublicKey
-            ?: return ResponseEntity.notFound().build()
+            ?: throw signInNotFound("error.auth.noPublicSigningKey")
 
         val jwk = RSAKey.Builder(rsaPublicKey)
             .keyID(jwtKeyMaterial.keyId)

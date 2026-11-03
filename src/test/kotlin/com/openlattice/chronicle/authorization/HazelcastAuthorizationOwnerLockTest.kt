@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.authorization
 
+import com.openlattice.chronicle.storage.ResolvedStorage
+
 import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
@@ -53,7 +55,7 @@ class HazelcastAuthorizationOwnerLockTest {
             )
         ).thenReturn(securableObjectTypes)
         whenever(storageResolver.getDefaultPlatformStorage())
-            .thenReturn(PostgresFlavor.VANILLA to dataSource)
+            .thenReturn(ResolvedStorage(PostgresFlavor.VANILLA, dataSource))
         whenever(principalsMapManager.getAclKeyByPrincipal(any())).thenAnswer { invocation ->
             invocation.getArgument<Set<Principal>>(0).associateWith { AclKey(UUID.randomUUID()) }
         }

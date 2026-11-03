@@ -20,7 +20,7 @@ import com.openlattice.chronicle.authorization.StudyPermission
 
 /**
  * Annotation to require study-level access on controller methods.
- * When applied to a method, the StudyAuthorizationAspect will automatically
+ * When applied to a method, the StudyAuthorizationInterceptor will automatically
  * check that the current user has the required permission on the study.
  *
  * The studyId is automatically extracted from method parameters named "studyId"
@@ -54,7 +54,7 @@ public annotation class RequiresStudyAccess(
 
     /**
      * The name of the method parameter that contains the study ID.
-     * If not specified, the aspect will look for a parameter named "studyId".
+     * If not specified, the interceptor looks for a parameter named "studyId".
      */
     val studyIdParam: String = "studyId"
 )

@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.filters
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory
 import com.openlattice.chronicle.authorization.StudyAuthorizationService
 import com.openlattice.chronicle.controllers.TestSecurityUtils
 import com.openlattice.chronicle.storage.StorageResolver
@@ -8,8 +10,6 @@ import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletResponse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.fail
 import org.junit.Test
 import org.mockito.Mockito.any
@@ -24,12 +24,35 @@ import org.mockito.Mockito.verifyNoInteractions
 import org.mockito.Mockito.`when`
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.mock.web.MockHttpServletResponse
+import java.io.File
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.util.UUID
 
 class CreateReceiptFilterTest {
+    private fun createRoutes(study: UUID) = listOf("/v3/study", "/v3/survey/$study/questionnaire",
+        "/v3/study/$study/api-keys", "/v3/study/$study/webhooks", "/v3/study/$study/clone",
+        "/v3/study/$study/api-keys/${UUID.randomUUID()}/rotate", "/v3/organization", "/v3/candidate")
+
+    /** Generated clients read the spec, so every documented create this filter guards must declare the header. */
+    @Test
+    fun everyDocumentedGuardedCreateDeclaresTheIdempotencyKey() {
+        val spec = ObjectMapper(YAMLFactory()).readTree(File("../chronicle-api/chronicle.yaml"))
+        val study = UUID.randomUUID()
+        val undeclared = spec["paths"].fields().asSequence().mapNotNull { (path, operations) ->
+            val post = operations["post"] ?: return@mapNotNull null
+            val route = path.removePrefix("/chronicle").replace(Regex("\\{[^}]+}"), study.toString())
+            val declared = post.path("parameters").any {
+                it.path("\$ref").asText() == "#/components/parameters/idempotencyKey"
+            }
+            path.takeIf { CreateReceiptFilter.createRoute(route) != null && !declared }
+        }.toList()
+        assertEquals(emptyList<String>(), undeclared)
+        assertEquals(ParticipantFormAccessFilter.IDEMPOTENCY_HEADER,
+            spec["components"]["parameters"]["idempotencyKey"]["name"].asText())
+    }
+
     @Test
     fun malformedCreateKeysAreRejectedBeforeReceiptStorage() {
         val storage = mock(StorageResolver::class.java)
@@ -43,38 +66,26 @@ class CreateReceiptFilterTest {
                 .doFilter(request, response, FilterChain { _, _ -> fail("Invalid keys must not create") })
             assertEquals(400, response.status)
             assertEquals("application/json", response.contentType)
-            assertEquals("""{"status":400,"message":"Idempotency-Key must contain 1–128 letters, digits, underscores or hyphens"}""", response.contentAsString)
+            assertFilterError(response, 400, "Idempotency-Key must contain 1–128 letters, digits, underscores or hyphens")
         }
         verifyNoInteractions(storage, authorization)
     }
 
     @Test
-    fun keylessCreatesKeepLegacyBehaviorWithoutReceiptStorageOrSecret() {
+    fun keylessCreatesRequireAKeyBeforeReceiptStorageOrSecret() {
         val storage = mock(StorageResolver::class.java)
         val authorization = mock(StudyAuthorizationService::class.java)
         val study = UUID.randomUUID()
-        for (route in listOf("/v3/study", "/v3/survey/$study/questionnaire", "/v3/study/$study/export/async", "/v3/study/$study/api-keys")) {
+        for (route in createRoutes(study)) {
             val filter = CreateReceiptFilter(storage, authorization) { throw AssertionError("Keyless creates need no receipt secret") }
             var created = 0
             repeat(2) {
-                val request = MockHttpServletRequest("POST", "/chronicle$route").apply {
-                    setContent("{\"title\":\"legacy create\"}".toByteArray())
-                }
+                val request = MockHttpServletRequest("POST", "/chronicle$route")
                 val response = MockHttpServletResponse()
-                filter.doFilter(request, response, FilterChain { req, res ->
-                    assertSame(request, req)
-                    assertEquals("{\"title\":\"legacy create\"}", req.reader.readText())
-                    created++
-                    (res as HttpServletResponse).apply {
-                        status = 201
-                        writer.write("created-$created")
-                    }
-                })
-                assertEquals(route, 201, response.status)
-                assertEquals("created-${it + 1}", response.contentAsString)
-                assertNull(response.getHeader("Idempotency-Replayed"))
+                filter.doFilter(request, response, FilterChain { _, _ -> created++ })
+                assertEquals(route, 428, response.status)
             }
-            assertEquals(2, created)
+            assertEquals(0, created)
         }
         verifyNoInteractions(storage, authorization)
     }
@@ -82,9 +93,10 @@ class CreateReceiptFilterTest {
     @Test
     fun lostCreateResponsesReplayAcrossFilterInstancesWithoutIssuingAnotherCredential() {
         TestSecurityUtils.setupSecurityContext(subject = "receipt-owner", admin = false)
+        setReceiptContext()
         try {
-            val study = UUID.randomUUID()
-            for (route in listOf("/v3/study", "/v3/survey/$study/questionnaire", "/v3/study/$study/export/async", "/v3/study/$study/api-keys")) {
+            val study = UUID(0x0000000a000b000cL, 0x000d00000000000eL)
+            for (route in createRoutes(study)) {
                 val storage = mock(StorageResolver::class.java)
                 val pool = mock(HikariDataSource::class.java)
                 val connection = mock(Connection::class.java)
@@ -128,42 +140,59 @@ class CreateReceiptFilterTest {
                 val authorization = mock(StudyAuthorizationService::class.java)
                 val first = MockHttpServletResponse()
                 CreateReceiptFilter(storage, authorization) { "test-receipt-secret-32-characters-minimum" }.doFilter(request(), first, action)
-                val replay = MockHttpServletResponse()
-                CreateReceiptFilter(storage, authorization) { "test-receipt-secret-32-characters-minimum" }.doFilter(request(), replay, action)
+                val shortStudy = study.toString().split('-').joinToString("-") { it.trimStart('0').ifEmpty { "0" } }
+                val replayFilter = CreateReceiptFilter(storage, authorization) { "test-receipt-secret-32-characters-minimum" }
+                for (spelling in listOf(study.toString().replace("-", "%2d"), study.toString().uppercase(), shortStudy, "%20$study%20")) {
+                    assertReplay(replayFilter, request(), first, action, "/chronicle${route.replace(study.toString(), spelling)}")
+                }
                 assertEquals(route, 1, created)
-                assertEquals(first.contentAsString, replay.contentAsString)
-                assertEquals("true", replay.getHeader("Idempotency-Replayed"))
                 assertFalse(sealed.orEmpty().contains("raw-key-sentinel"))
                 val unavailableReplay = MockHttpServletResponse()
                 CreateReceiptFilter(storage, authorization) { "different-receipt-secret-32-characters-minimum" }
                     .doFilter(request(), unavailableReplay, action)
                 assertEquals(409, unavailableReplay.status)
-                assertEquals("""{"status":409,"message":"This create already completed; its original result cannot be replayed"}""", unavailableReplay.contentAsString)
+                assertFilterError(unavailableReplay, 409, "This create already completed; its original result cannot be replayed")
                 val conflict = MockHttpServletResponse()
                 CreateReceiptFilter(storage, authorization) { "test-receipt-secret-32-characters-minimum" }
                     .doFilter(request("{\"title\":\"changed\"}"), conflict, action)
                 assertEquals(409, conflict.status)
-                assertEquals("""{"status":409,"message":"Idempotency-Key was already used for a different request"}""", conflict.contentAsString)
+                assertFilterError(conflict, 409, "Idempotency-Key was already used for a different request")
                 assertEquals(1, created)
-                if (route != "/v3/study") {
+                if (route.contains(study.toString())) {
                     doThrow(com.geekbeast.controllers.exceptions.ForbiddenException("private access diagnostic")).`when`(authorization)
-                        .requirePermission(study, if (route.endsWith(
-                            "/export/async")) com.openlattice.chronicle.authorization.StudyPermission.EXPORT_DATA
-                            else com.openlattice.chronicle.authorization.StudyPermission.MODIFY_STUDY)
+                        .requirePermission(study, com.openlattice.chronicle.authorization.StudyPermission.MODIFY_STUDY)
                     val denied = MockHttpServletResponse()
                     CreateReceiptFilter(storage, authorization) { "test-receipt-secret-32-characters-minimum" }.doFilter(request(), denied, action)
                     assertEquals(403, denied.status)
-                    assertEquals("""{"status":403,"message":"Access denied"}""", denied.contentAsString)
+                    assertFilterError(denied, 403, "Access denied")
                     assertFalse(denied.contentAsString.contains("private access diagnostic"))
                     assertEquals(1, created)
                 }
             }
-        } finally { TestSecurityUtils.clearSecurityContext() }
+        } finally {
+            com.openlattice.chronicle.storage.rls.RLSRequestContext.clear()
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    private fun assertReplay(
+        filter: CreateReceiptFilter,
+        request: MockHttpServletRequest,
+        expected: MockHttpServletResponse,
+        action: FilterChain,
+        requestUri: String,
+    ) {
+        request.requestURI = requestUri
+        val response = MockHttpServletResponse()
+        filter.doFilter(request, response, action)
+        assertEquals(expected.contentAsString, response.contentAsString)
+        assertEquals("true", response.getHeader(CreateReceiptFilter.REPLAYED_HEADER))
     }
 
     @Test
     fun failedCreatesRollBackBeforeSendingTheOriginalResponse() {
         TestSecurityUtils.setupSecurityContext(subject = "receipt-owner", admin = false)
+        setReceiptContext()
         try {
             val storage = mock(StorageResolver::class.java)
             val pool = mock(HikariDataSource::class.java)
@@ -193,6 +222,21 @@ class CreateReceiptFilterTest {
             verify(connection).rollback()
             verify(connection, never()).commit()
             verify(statement).executeUpdate()
-        } finally { TestSecurityUtils.clearSecurityContext() }
+        } finally {
+            com.openlattice.chronicle.storage.rls.RLSRequestContext.clear()
+            TestSecurityUtils.clearSecurityContext()
+        }
+    }
+
+    private fun setReceiptContext() {
+        val authorization = mock(com.openlattice.chronicle.authorization.AuthorizationManager::class.java)
+        `when`(authorization.getAuthorizedObjectsOfType(
+            org.mockito.kotlin.any<Set<com.openlattice.chronicle.authorization.Principal>>(),
+            org.mockito.kotlin.any<com.openlattice.chronicle.authorization.SecurableObjectType>(),
+            org.mockito.kotlin.any<java.util.EnumSet<com.openlattice.chronicle.authorization.Permission>>(),
+        )).thenAnswer { java.util.stream.Stream.empty<com.openlattice.chronicle.authorization.AclKey>() }
+        com.openlattice.chronicle.storage.rls.RLSRequestContext.set(
+            com.openlattice.chronicle.storage.rls.RLSContextManager(authorization).getCurrentUserContext(),
+        )
     }
 }

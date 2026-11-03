@@ -169,7 +169,7 @@ class RLSContextFilterMutationTest {
     fun `not-authenticated token is treated as unauthenticated`() {
         val auth = UsernamePasswordAuthenticationToken("user-1", "creds")
         auth.isAuthenticated = false
-        SecurityContextHolder.getContext().authentication = auth
+        SecurityContextHolder.getContext().setAuthentication(auth)
 
         val request = MockHttpServletRequest("GET", "/chronicle/api/web/studies")
         val response = MockHttpServletResponse()

@@ -7,7 +7,6 @@ import com.openlattice.chronicle.authorization.Principal
 import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.authorization.Role
 import com.openlattice.chronicle.authorization.SecurablePrincipal
-import com.openlattice.chronicle.authorization.reservations.AclKeyReservationService
 import com.openlattice.chronicle.authorization.principals.PrincipalsMapManager.Companion.findPrincipal
 import com.openlattice.chronicle.authorization.principals.PrincipalsMapManager.Companion.getFirstSecurablePrincipal
 import com.openlattice.chronicle.authorization.principals.PrincipalsMapManager.Companion.hasPrincipalType
@@ -20,7 +19,6 @@ import com.openlattice.chronicle.hazelcast.HazelcastMap
  */
 public open class HazelcastPrincipalsMapManager(
     hazelcastInstance: HazelcastInstance,
-    @Suppress("UnusedParameter") reservations: AclKeyReservationService
 ) : PrincipalsMapManager {
 
     private val principals = HazelcastMap.PRINCIPALS.getMap(hazelcastInstance)

@@ -1,107 +1,151 @@
 package com.openlattice.chronicle.filters
 
-import com.openlattice.chronicle.audit.AuditAction
-import com.openlattice.chronicle.audit.AuditService
-import com.openlattice.chronicle.audit.logWithContext
+import com.openlattice.chronicle.storage.withTransaction
+import com.geekbeast.controllers.exceptions.ForbiddenException
 import com.openlattice.chronicle.authorization.StudyAuthorizationService
 import com.openlattice.chronicle.authorization.StudyPermission
-import com.openlattice.chronicle.services.studies.StudyService
-import com.openlattice.chronicle.services.surveys.SurveysService
+import com.openlattice.chronicle.participantaccess.ParticipantFormKind
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessScope
+import com.openlattice.chronicle.services.studies.StudySnapshotRepository
+import com.openlattice.chronicle.services.surveys.QuestionnaireRepository
 import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.study.StudyApi
+import com.openlattice.chronicle.survey.SurveyApi
 import com.openlattice.chronicle.util.normalizeEntityTag
+import com.openlattice.chronicle.util.parsedPath
+import com.zaxxer.hikari.HikariDataSource
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
-import org.springframework.web.filter.OncePerRequestFilter
 import java.security.MessageDigest
+import java.sql.Connection
 import java.util.UUID
+import org.springframework.web.filter.OncePerRequestFilter
+import org.springframework.web.util.ContentCachingResponseWrapper
+import org.springframework.web.util.pattern.PathPatternParser
+import org.springframework.http.HttpStatus
 
 /** Strong content revisions, checked under the same row lock and transaction as the write. */
 internal class ConcurrentEditFilter(
     private val storage: StorageResolver,
     private val authorization: StudyAuthorizationService,
-    private val auditService: AuditService,
 ) : OncePerRequestFilter() {
     override fun doFilterInternal(request: HttpServletRequest, response: HttpServletResponse, chain: FilterChain) {
-        if (ANNOTATIONS.matches(request.requestURI.removePrefix("/chronicle")) || QUESTIONNAIRE.matches(request.requestURI.removePrefix(
-            "/chronicle"))) guarded(request, response, chain)
-        else chain.doFilter(request, response)
+        guarded(request, response, chain)
     }
 
     internal fun guarded(request: HttpServletRequest, response: HttpServletResponse, chain: FilterChain) {
-        val path = request.requestURI.removePrefix("/chronicle")
-        val annotation = ANNOTATIONS.matchEntire(path)
-        val questionnaire = QUESTIONNAIRE.matchEntire(path)
+        val path = request.parsedPath() ?: return chain.doFilter(request, response)
+        val annotation = ANNOTATIONS.matchAndExtract(path)
+        val questionnaire = QUESTIONNAIRE.matchAndExtract(path)
         val match = annotation ?: questionnaire ?: return chain.doFilter(request, response)
         if (request.method !in listOf("GET", "HEAD", "PATCH")) return chain.doFilter(request, response)
-        val study = runCatching { UUID.fromString(match.groupValues[1]) }.getOrNull()
+        val study = runCatching { UUID.fromString(match.uriVariables.getValue(StudyApi.STUDY_ID).trim()) }.getOrNull()
             ?: return chain.doFilter(request, response)
-        // ParticipantFormAccessFilter has already verified this capability and exact resource.
-        // A participant questionnaire read is not a researcher editing snapshot.
-        val formScope = request.getAttribute(ParticipantFormAccessFilter.REQUEST_SCOPE_ATTRIBUTE)
-            as? com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessScope
-        if (request.method == "GET" && questionnaire != null && formScope?.permits(
-                com.openlattice.chronicle.participantaccess.ParticipantFormKind.QUESTIONNAIRE,
-                study, null, UUID.fromString(match.groupValues[2]),
-            ) == true) return chain.doFilter(request, response)
-        try {
-            authorization.requirePermission(study, if (request.method == "PATCH") StudyPermission.MODIFY_STUDY else StudyPermission.READ_STUDY)
-        } catch (denied: com.geekbeast.controllers.exceptions.ForbiddenException) {
-            writeFilterError(response, 403, "Access denied")
-            return
+        val participant = annotation?.uriVariables?.getValue(StudyApi.PARTICIPANT_ID)
+        val questionnaireId = questionnaire?.let {
+            runCatching { UUID.fromString(it.uriVariables.getValue(SurveyApi.QUESTIONNAIRE_ID).trim()) }.getOrNull()
+                ?: return chain.doFilter(request, response)
         }
+        if (permitsParticipantQuestionnaireRead(request, study, questionnaireId)) return chain.doFilter(request, response)
+        if (!authorizeResearcherSnapshot(request, response, study)) return
         val pool = storage.getPlatformStorage()
         pool.connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                val json = if (annotation != null) {
-                    StudyService.loadLockedParticipantAnnotations(connection, study, match.groupValues[2])
+            connection.withTransaction {
+                val json = if (participant != null) {
+                    StudySnapshotRepository(connection).loadLockedParticipantAnnotations(study, participant)
                 } else {
-                    SurveysService.loadLockedQuestionnaireSnapshot(connection, study, UUID.fromString(match.groupValues[2]))
+                    QuestionnaireRepository(connection).loadSnapshot(
+                        studyId = study, questionnaireId = requireNotNull(questionnaireId),
+                    )
                 }
-                if (json == null) { writeFilterError(response, 404, "Resource not found"); connection.rollback(); return }
+                if (json == null) {
+                    writeFilterError(response, HttpStatus.NOT_FOUND.value(), "Resource not found")
+                    connection.rollback(); return@withTransaction
+                }
                 val revision = revision(json)
                 response.setHeader("ETag", revision)
-                if (request.method == "PATCH") {
-                    val expected = request.getHeader("If-Match")
-                    if (expected == null) { writeFilterError(response, 428, "Reload before saving; a resource revision is required");
-                        connection.rollback(); return }
-                    if (normalizeEntityTag(expected) != normalizeEntityTag(revision)) { writeFilterError(response, 412,
-                        "This resource changed; reload and merge before saving"); connection.rollback(); return }
+                if (request.method == "PATCH" && !matchesRevision(request, response, revision)) {
+                    connection.rollback(); return@withTransaction
                 }
-                if (annotation != null && request.method == "GET") {
-                    response.status = 200
-                    response.contentType = "application/json"
-                    response.characterEncoding = "UTF-8"
-                    response.writer.write(json)
+                if (request.method == "HEAD") {
                     connection.commit()
-                    auditService.logWithContext {
-                        action(AuditAction.PARTICIPANT_DATA_ACCESS)
-                        resourceType("ParticipantAnnotations")
-                        studyId(study)
-                        success(true)
-                        accessedPHI(true)
-                        phiFields(listOf("participantId", "participantNotes", "participantTags"))
-                        additionalData(mapOf("participantId" to match.groupValues[2]))
-                    }
-                } else if (request.method == "HEAD") {
-                    response.status = 204
-                    connection.commit()
+                    response.status = HttpStatus.NO_CONTENT.value()
                 } else {
                     if (request.method == "PATCH") response.setHeader("ETag", null)
-                    PinnedPlatformConnection.committing(pool, connection, { response.status < 400 }) {
-                        chain.doFilter(request, response)
+                    PinnedPlatformConnection.committing(pool, connection, response) { buffered ->
+                        chain.doFilter(request, buffered)
                     }
                 }
-            } catch (failure: Exception) { connection.rollback(); throw failure }
+            }
         }
     }
 
+    private fun matchesRevision(request: HttpServletRequest, response: HttpServletResponse, revision: String): Boolean {
+        val expected = request.getHeader("If-Match")
+        val failure = when {
+            expected == null -> HttpStatus.PRECONDITION_REQUIRED
+            normalizeEntityTag(expected) != normalizeEntityTag(revision) -> HttpStatus.PRECONDITION_FAILED
+            else -> return true
+        }
+        writeFilterError(response, failure.value(), if (failure == HttpStatus.PRECONDITION_REQUIRED)
+            "Reload before saving; a resource revision is required" else "This resource changed; reload and merge before saving")
+        return false
+    }
+
+    private fun authorizeResearcherSnapshot(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        studyId: UUID,
+    ): Boolean = try {
+        authorization.requirePermission(
+            studyId,
+            if (request.method == "PATCH") StudyPermission.MODIFY_STUDY else StudyPermission.READ_STUDY,
+        )
+        true
+    } catch (_: ForbiddenException) {
+        writeFilterError(response, HttpStatus.FORBIDDEN.value(), "Access denied")
+        false
+    }
+
+    /** A verified participant capability may read its questionnaire without researcher editing access. */
+    private fun permitsParticipantQuestionnaireRead(
+        request: HttpServletRequest,
+        studyId: UUID,
+        questionnaireId: UUID?,
+    ): Boolean {
+        if (request.method != "GET" || questionnaireId == null) return false
+        val scope = request.getAttribute(ParticipantFormAccessFilter.REQUEST_SCOPE_ATTRIBUTE) as? ParticipantFormAccessScope
+        return scope?.permits(
+            ParticipantFormKind.QUESTIONNAIRE,
+            studyId, null, questionnaireId,
+        ) == true
+    }
+
     internal companion object {
-        private val ANNOTATIONS = Regex("/v3/study/([0-9a-fA-F-]+)/participant/([^/]+)/annotations")
-        private val QUESTIONNAIRE = Regex("/v3/survey/([0-9a-fA-F-]+)/questionnaire/([0-9a-fA-F-]+)")
+        private val ANNOTATIONS = PathPatternParser.defaultInstance.parse(
+            StudyApi.BASE + StudyApi.STUDY_ID_PATH + StudyApi.PARTICIPANT_PATH +
+                StudyApi.PARTICIPANT_ID_PATH + StudyApi.ANNOTATIONS_PATH,
+        )
+        private val QUESTIONNAIRE = PathPatternParser.defaultInstance.parse(
+            SurveyApi.BASE + SurveyApi.STUDY_ID_PATH + SurveyApi.QUESTIONNAIRE_PATH + SurveyApi.QUESTIONNAIRE_ID_PATH,
+        )
+        val revisionReadPaths: Set<String> = setOf(ANNOTATIONS.patternString, QUESTIONNAIRE.patternString)
         fun revision(json: String): String = "\"" + MessageDigest.getInstance("SHA-256")
             .digest(json.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) } + "\""
     }
+}
+
+/** The servlet transaction entry point publishes its response only after the owner commits. */
+internal fun PinnedPlatformConnection.committing(
+    pool: HikariDataSource,
+    connection: Connection,
+    response: HttpServletResponse,
+    block: (HttpServletResponse) -> Unit,
+) {
+    check(owningConnection(pool) == null) { "A servlet response must own its outer transaction" }
+    val buffered = ContentCachingResponseWrapper(response)
+    committing(pool, connection, { buffered.status < HttpStatus.BAD_REQUEST.value() }) { block(buffered) }
+    buffered.copyBodyToResponse()
 }

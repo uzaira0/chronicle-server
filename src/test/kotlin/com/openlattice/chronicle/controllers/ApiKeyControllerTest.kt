@@ -24,6 +24,28 @@ import java.time.OffsetDateTime
 import java.util.*
 
 class ApiKeyControllerTest {
+    @Test
+    fun rotatingAnOlderPageKeyStillChecksItsScope() {
+        TestSecurityUtils.setupSecurityContext(admin = false)
+        val study = UUID.randomUUID()
+        val older = UUID.randomUUID()
+        val now = OffsetDateTime.now()
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenAnswer {
+            EnumSet.of(Permission.READ, Permission.WRITE).containsAll(it.getArgument<Set<Permission>>(2))
+        }
+        Mockito.`when`(apiKeyService.listApiKeys(study)).thenReturn(List(100) {
+            ApiKeyInfo(UUID.randomUUID(), study, "p", "page", ApiKeyScope.READ_ONLY, now, now.plusDays(1))
+        })
+        Mockito.`when`(apiKeyService.getApiKey(study, older))
+            .thenReturn(ApiKeyInfo(older, study, "p", "older admin", ApiKeyScope.ADMIN, now, now.plusDays(1)))
+        Mockito.`when`(apiKeyService.rotateApiKey(kEq(study), kEq(older), kAnyString()))
+            .thenReturn(Mockito.mock(ApiKeyCreateResponse::class.java))
+        val refused = assertThrows(ResponseStatusException::class.java) { controller.rotateApiKey(study, older) }
+        assertEquals(403, refused.statusCode.value())
+        verify(apiKeyService).getApiKey(study, older)
+        verify(apiKeyService, Mockito.never()).listApiKeys(study)
+        verify(apiKeyService, Mockito.never()).rotateApiKey(kAny(), kAny(), kAnyString())
+    }
 
     private val apiKeyService = Mockito.mock(ApiKeyService::class.java)
     private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
@@ -40,10 +62,7 @@ class ApiKeyControllerTest {
 
     // --- Constructor ---
 
-    @Test
-    fun testControllerConstructsSuccessfully() {
-        assertNotNull(controller)
-    }
+    
 
     @Test
     fun testControllerAcceptsApiKeyService() {
@@ -90,14 +109,16 @@ class ApiKeyControllerTest {
         verify(apiKeyService).createApiKey(kEq(studyId), kAnyString(), kEq(request))
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testCreateApiKeyPropagatesServiceException() {
         val studyId = UUID.randomUUID()
         val request = ApiKeyCreateRequest(name = "key")
         Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kEq(request)))
             .thenThrow(RuntimeException("create failed"))
 
-        controller.createApiKey(studyId, request)
+        assertThrows(RuntimeException::class.java) {
+            controller.createApiKey(studyId, request)
+        }
     }
 
     @Test
@@ -162,12 +183,14 @@ class ApiKeyControllerTest {
         verify(apiKeyService).listApiKeys(studyId)
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testListApiKeysPropagatesServiceException() {
         val studyId = UUID.randomUUID()
         Mockito.`when`(apiKeyService.listApiKeys(studyId)).thenThrow(RuntimeException("list failed"))
 
-        controller.listApiKeys(studyId)
+        assertThrows(RuntimeException::class.java) {
+            controller.listApiKeys(studyId)
+        }
     }
 
     @Test
@@ -210,14 +233,16 @@ class ApiKeyControllerTest {
         verify(apiKeyService).revokeApiKey(kEq(studyId), kEq(keyId), kAnyString())
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testRevokeApiKeyPropagatesServiceException() {
         val studyId = UUID.randomUUID()
         val keyId = UUID.randomUUID()
         Mockito.doThrow(RuntimeException("revoke failed"))
             .`when`(apiKeyService).revokeApiKey(kEq(studyId), kEq(keyId), kAnyString())
 
-        controller.revokeApiKey(studyId, keyId)
+        assertThrows(RuntimeException::class.java) {
+            controller.revokeApiKey(studyId, keyId)
+        }
     }
 
     @Test
@@ -268,14 +293,16 @@ class ApiKeyControllerTest {
         verify(apiKeyService).rotateApiKey(kEq(studyId), kEq(keyId), kAnyString())
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testRotateApiKeyPropagatesServiceException() {
         val studyId = UUID.randomUUID()
         val keyId = UUID.randomUUID()
         Mockito.`when`(apiKeyService.rotateApiKey(kEq(studyId), kEq(keyId), kAnyString()))
             .thenThrow(RuntimeException("rotate failed"))
 
-        controller.rotateApiKey(studyId, keyId)
+        assertThrows(RuntimeException::class.java) {
+            controller.rotateApiKey(studyId, keyId)
+        }
     }
 
     @Test
@@ -292,27 +319,6 @@ class ApiKeyControllerTest {
 
         assertSame(response1, controller.rotateApiKey(studyId, keyId1))
         assertSame(response2, controller.rotateApiKey(studyId, keyId2))
-    }
-
-    @Test
-    fun testServiceCalledOnceForCreate() {
-        val studyId = UUID.randomUUID()
-        val request = ApiKeyCreateRequest(name = "key")
-        val response = Mockito.mock(ApiKeyCreateResponse::class.java)
-        Mockito.`when`(apiKeyService.createApiKey(kEq(studyId), kAnyString(), kEq(request)))
-            .thenReturn(response)
-
-        controller.createApiKey(studyId, request)
-        verify(apiKeyService, Mockito.times(1)).createApiKey(kEq(studyId), kAnyString(), kEq(request))
-    }
-
-    @Test
-    fun testServiceCalledOnceForList() {
-        val studyId = UUID.randomUUID()
-        Mockito.`when`(apiKeyService.listApiKeys(studyId)).thenReturn(emptyList())
-
-        controller.listApiKeys(studyId)
-        verify(apiKeyService, Mockito.times(1)).listApiKeys(studyId)
     }
 
     // --- a key never outranks its creator ---
@@ -341,8 +347,8 @@ class ApiKeyControllerTest {
         )
         val adminKeyId = UUID.randomUUID()
         val now = OffsetDateTime.now()
-        Mockito.`when`(apiKeyService.listApiKeys(studyId))
-            .thenReturn(listOf(ApiKeyInfo(adminKeyId, studyId, "p", "k", ApiKeyScope.ADMIN, now, now.plusDays(30))))
+        Mockito.`when`(apiKeyService.getApiKey(studyId, adminKeyId))
+            .thenReturn(ApiKeyInfo(adminKeyId, studyId, "p", "k", ApiKeyScope.ADMIN, now, now.plusDays(30)))
         assertThrows(ResponseStatusException::class.java) { controller.rotateApiKey(studyId, adminKeyId) }
         verify(apiKeyService, Mockito.never()).rotateApiKey(kAny(), kAny(), kAnyString())
         verify(apiKeyService, Mockito.times(2)).createApiKey(kEq(studyId), kAnyString(), kAny())

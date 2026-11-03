@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.services.apikeys
 
+import org.junit.Assert.assertThrows
+
 import com.openlattice.chronicle.apikey.ApiKeyCreateRequest
 import com.openlattice.chronicle.apikey.ApiKeyScope
 import com.openlattice.chronicle.auditing.AuditingManager
@@ -208,11 +210,13 @@ class ApiKeyServiceTest {
         verify(mockPs).executeUpdate()
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun testRevokeApiKeyThrowsWhenNotFound() {
         `when`(mockPs.executeUpdate()).thenReturn(0)
 
-        service.revokeApiKey(UUID.randomUUID(), UUID.randomUUID(), "user-1")
+        assertThrows(IllegalStateException::class.java) {
+            service.revokeApiKey(UUID.randomUUID(), UUID.randomUUID(), "user-1")
+        }
     }
 
     // --- rotateApiKey tests ---
@@ -230,12 +234,14 @@ class ApiKeyServiceTest {
         Mockito.verifyNoInteractions(idGenerationService)
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testRotateApiKeyThrowsWhenKeyNotFound() {
         // listApiKeys returns empty
         `when`(mockRs.next()).thenReturn(false)
 
-        service.rotateApiKey(UUID.randomUUID(), UUID.randomUUID(), "user-1")
+        assertThrows(IllegalArgumentException::class.java) {
+            service.rotateApiKey(UUID.randomUUID(), UUID.randomUUID(), "user-1")
+        }
     }
 
     // --- authenticateApiKey tests ---
@@ -284,7 +290,7 @@ class ApiKeyServiceTest {
 
         verify(mockConnection).prepareStatement(sql.capture())
         assertTrue(sql.value.contains("participant_id IS NOT NULL"))
-        assertTrue(sql.value.contains("device_id IS NOT NULL"))
+        assertTrue(sql.value.contains("random_device_id IS NOT NULL"))
         assertTrue(sql.value.contains("mobile_withdrawal_requests"))
         assertTrue(sql.value.contains("request_id = ?"))
         assertTrue(sql.value.contains("candidate.revoked = false"))
@@ -296,7 +302,7 @@ class ApiKeyServiceTest {
     fun firstWithdrawalClaimsParticipantInsideTheReceiptTransaction() {
         val studyId = UUID.randomUUID()
         val participantId = "participant-claim"
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val keyId = UUID.randomUUID()
         val requestId = UUID.randomUUID()
         `when`(mockConnection.autoCommit).thenReturn(false)
@@ -304,7 +310,7 @@ class ApiKeyServiceTest {
         `when`(mockRs.getBoolean("revoked")).thenReturn(false)
         `when`(mockRs.getString("participation_status")).thenReturn("ENROLLED")
 
-        val intent = service.bindWithdrawalIntent(mockConnection, studyId, participantId, deviceId, keyId, requestId)
+        val intent = service.bindWithdrawalIntent(mockConnection, studyId, participantId, randomDeviceId, keyId, requestId)
 
         assertFalse(intent.alreadyWithdrawn)
         val sql = ArgumentCaptor.forClass(String::class.java)
@@ -326,7 +332,7 @@ class ApiKeyServiceTest {
     fun losingWithdrawalPersistsReplayReceiptWithoutClaimingAnotherPurge() {
         val studyId = UUID.randomUUID()
         val participantId = "participant-loser"
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val keyId = UUID.randomUUID()
         val requestId = UUID.randomUUID()
         `when`(mockConnection.autoCommit).thenReturn(false)
@@ -335,7 +341,7 @@ class ApiKeyServiceTest {
         `when`(mockRs.getString("participation_status")).thenReturn("NOT_ENROLLED")
         `when`(mockRs.getBoolean(1)).thenReturn(true) // Existing durable erasure, not status alone.
 
-        val intent = service.bindWithdrawalIntent(mockConnection, studyId, participantId, deviceId, keyId, requestId)
+        val intent = service.bindWithdrawalIntent(mockConnection, studyId, participantId, randomDeviceId, keyId, requestId)
 
         assertTrue(intent.alreadyWithdrawn)
         val sql = ArgumentCaptor.forClass(String::class.java)
@@ -348,7 +354,7 @@ class ApiKeyServiceTest {
     fun exactWithdrawalReceiptReplaySkipsStatusSnapshotAndReturnsOriginalOwnership() {
         val studyId = UUID.randomUUID()
         val participantId = "participant-replay"
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val keyId = UUID.randomUUID()
         val requestId = UUID.randomUUID()
         `when`(mockConnection.autoCommit).thenReturn(false)
@@ -357,10 +363,10 @@ class ApiKeyServiceTest {
         `when`(mockRs.getObject("request_id", UUID::class.java)).thenReturn(requestId)
         `when`(mockRs.getObject("study_id", UUID::class.java)).thenReturn(studyId)
         `when`(mockRs.getString("participant_id")).thenReturn(participantId)
-        `when`(mockRs.getObject("device_id", UUID::class.java)).thenReturn(deviceId)
+        `when`(mockRs.getObject("random_device_id", UUID::class.java)).thenReturn(randomDeviceId)
         `when`(mockRs.getBoolean("already_withdrawn")).thenReturn(false)
 
-        val intent = service.bindWithdrawalIntent(mockConnection, studyId, participantId, deviceId, keyId, requestId)
+        val intent = service.bindWithdrawalIntent(mockConnection, studyId, participantId, randomDeviceId, keyId, requestId)
 
         assertFalse(intent.alreadyWithdrawn)
         val sql = ArgumentCaptor.forClass(String::class.java)
@@ -398,59 +404,74 @@ class ApiKeyServiceTest {
         assertTrue(result.info.expiresAt.isAfter(expectedMinExpiry))
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testCreateApiKeyRejectsBlankNameAtServiceLayer() {
-        service.createApiKey(
-            UUID.randomUUID(),
-            "user",
-            ApiKeyCreateRequest(name = " ", scope = ApiKeyScope.READ_ONLY)
-        )
+        assertThrows(IllegalArgumentException::class.java) {
+            service.createApiKey(
+                UUID.randomUUID(),
+                "user",
+                ApiKeyCreateRequest(name = " ", scope = ApiKeyScope.READ_ONLY)
+            )
+        }
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testCreateApiKeyRejectsOversizedNameAtServiceLayer() {
-        service.createApiKey(
-            UUID.randomUUID(),
-            "user",
-            ApiKeyCreateRequest(name = "x".repeat(256), scope = ApiKeyScope.READ_ONLY)
-        )
+        assertThrows(IllegalArgumentException::class.java) {
+            service.createApiKey(
+                UUID.randomUUID(),
+                "user",
+                ApiKeyCreateRequest(name = "x".repeat(256), scope = ApiKeyScope.READ_ONLY)
+            )
+        }
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testCreateApiKeyRejectsNonPositiveExpirationAtServiceLayer() {
-        service.createApiKey(
-            UUID.randomUUID(),
-            "user",
-            ApiKeyCreateRequest(name = "Key", scope = ApiKeyScope.READ_ONLY, expiresInDays = 0)
-        )
+        assertThrows(IllegalArgumentException::class.java) {
+            service.createApiKey(
+                UUID.randomUUID(),
+                "user",
+                ApiKeyCreateRequest(name = "Key", scope = ApiKeyScope.READ_ONLY, expiresInDays = 0)
+            )
+        }
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testCreateApiKeyRejectsWriteExpirationOverNinetyDays() {
-        service.createApiKey(
-            UUID.randomUUID(),
-            "user",
-            ApiKeyCreateRequest(name = "Write Key", scope = ApiKeyScope.WRITE, expiresInDays = 91)
-        )
+        assertThrows(IllegalArgumentException::class.java) {
+            service.createApiKey(
+                UUID.randomUUID(),
+                "user",
+                ApiKeyCreateRequest(name = "Write Key", scope = ApiKeyScope.WRITE, expiresInDays = 91)
+            )
+        }
     }
 
-    @Test(expected = IllegalArgumentException::class)
+    @Test
     fun testCreateApiKeyRejectsAdminExpirationOverThirtyDays() {
-        service.createApiKey(
-            UUID.randomUUID(),
-            "user",
-            ApiKeyCreateRequest(name = "Admin Key", scope = ApiKeyScope.ADMIN, expiresInDays = 31)
-        )
+        assertThrows(IllegalArgumentException::class.java) {
+            service.createApiKey(
+                UUID.randomUUID(),
+                "user",
+                ApiKeyCreateRequest(name = "Admin Key", scope = ApiKeyScope.ADMIN, expiresInDays = 31)
+            )
+        }
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun testCreateMobileApiKeyRejectsExpirationOverOneYear() {
-        service.createMobileApiKey(
-            studyId = UUID.randomUUID(),
-            participantId = "participant-1",
-            deviceId = UUID.randomUUID(),
-            expiresInDays = 366
-        )
+    @Test
+    fun installedMobileKeyRejectsExpirationOverOneYear() {
+        val proposed = "ck_01234567_0123456789ABCDEFGHIJKLMNOPQRSTUV"
+        assertThrows(IllegalArgumentException::class.java) {
+            service.installMobileApiKey(
+                studyId = UUID.randomUUID(),
+                participantId = "participant-1",
+                randomDeviceId = UUID.randomUUID(),
+                enrollmentAttemptId = UUID.randomUUID(),
+                proposedApiKey = proposed,
+                expiresInDays = 366,
+            )
+        }
     }
 
     @Test
@@ -464,7 +485,7 @@ class ApiKeyServiceTest {
     @Test
     fun proposedMobileKeyIsReturnedExactlyButNeverPersistedInPlaintext() {
         val studyId = UUID.randomUUID()
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val attemptId = UUID.randomUUID()
         val keyId = UUID.randomUUID()
         val proposed = "ck_01234567_0123456789ABCDEFGHIJKLMNOPQRSTUV"
@@ -472,7 +493,7 @@ class ApiKeyServiceTest {
         `when`(mockRs.next()).thenReturn(true, false)
         `when`(mockRs.getBoolean(1)).thenReturn(true)
 
-        val result = service.installMobileApiKey(studyId, "participant-1", deviceId, attemptId, proposed)
+        val result = service.installMobileApiKey(studyId, "participant-1", randomDeviceId, attemptId, proposed)
 
         assertEquals(proposed, result.rawKey)
         assertEquals(keyId, result.keyId)
@@ -482,21 +503,21 @@ class ApiKeyServiceTest {
     @Test
     fun lostResponseReplayReturnsTheAlreadyInstalledProposedKeyWithoutRotatingIt() {
         val studyId = UUID.randomUUID()
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val attemptId = UUID.randomUUID()
         val keyId = UUID.randomUUID()
         val proposed = "ck_01234567_0123456789ABCDEFGHIJKLMNOPQRSTUV"
         stubExistingMobileKey(
             studyId,
             "participant-1",
-            deviceId,
+            randomDeviceId,
             keyId,
             checkNotNull(ApiKeyService.proposedMobileApiKeyHash(proposed)),
         )
         `when`(mockRs.next()).thenReturn(true, true)
         `when`(mockRs.getBoolean(1)).thenReturn(true)
 
-        val result = service.installMobileApiKey(studyId, "participant-1", deviceId, attemptId, proposed)
+        val result = service.installMobileApiKey(studyId, "participant-1", randomDeviceId, attemptId, proposed)
 
         assertEquals(keyId, result.keyId)
         assertEquals(proposed, result.rawKey)
@@ -507,14 +528,14 @@ class ApiKeyServiceTest {
     @Test
     fun freshInvitationCanReplaceAnOrphanedKeyForTheSameDevice() {
         val studyId = UUID.randomUUID()
-        val deviceId = UUID.randomUUID()
+        val randomDeviceId = UUID.randomUUID()
         val attemptId = UUID.randomUUID()
         val replacementKeyId = UUID.randomUUID()
         val proposed = "ck_01234567_0123456789ABCDEFGHIJKLMNOPQRSTUV"
         stubExistingMobileKey(
             studyId,
             "participant-1",
-            deviceId,
+            randomDeviceId,
             UUID.randomUUID(),
             "f".repeat(64),
         )
@@ -523,7 +544,7 @@ class ApiKeyServiceTest {
         `when`(mockRs.getBoolean(1)).thenReturn(true, false)
         `when`(idGenerationService.getNextId()).thenReturn(replacementKeyId)
 
-        val result = service.installMobileApiKey(studyId, "participant-1", deviceId, attemptId, proposed)
+        val result = service.installMobileApiKey(studyId, "participant-1", randomDeviceId, attemptId, proposed)
 
         assertEquals(replacementKeyId, result.keyId)
         assertEquals(proposed, result.rawKey)
@@ -557,7 +578,7 @@ class ApiKeyServiceTest {
     private fun stubExistingMobileKey(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         keyId: UUID,
         keyHash: String,
     ) {
@@ -566,17 +587,17 @@ class ApiKeyServiceTest {
         `when`(mockRs.getObject("key_id", UUID::class.java)).thenReturn(keyId)
         `when`(mockRs.getObject("study_id", UUID::class.java)).thenReturn(studyId)
         `when`(mockRs.getString("key_prefix")).thenReturn("01234567")
-        `when`(mockRs.getString("name")).thenReturn("device-${deviceId.toString().take(8)}")
+        `when`(mockRs.getString("name")).thenReturn("device-${randomDeviceId.toString().take(8)}")
         `when`(mockRs.getString("scope")).thenReturn(ApiKeyScope.WRITE.name)
         `when`(mockRs.getObject("created_at", OffsetDateTime::class.java)).thenReturn(now)
         `when`(mockRs.getObject("expires_at", OffsetDateTime::class.java)).thenReturn(now.plusDays(365))
         `when`(mockRs.getObject("last_used_at", OffsetDateTime::class.java)).thenReturn(null)
         `when`(mockRs.getLong("usage_count")).thenReturn(0L)
         `when`(mockRs.getString("participant_id")).thenReturn(participantId)
-        `when`(mockRs.getObject("device_id", UUID::class.java)).thenReturn(deviceId)
+        `when`(mockRs.getObject("random_device_id", UUID::class.java)).thenReturn(randomDeviceId)
     }
 
-    // Regression V-20/V-21: nothing renews a device key, so its fixed 365-day expiry stopped every
+    // Regression: nothing renews a device key, so its fixed 365-day expiry stopped every
     // upload on day 366. A successful lookup slides only device-bound keys forward.
     @Test
     fun successfulLookupSlidesOnlyDeviceBoundKeyExpiry() {
@@ -589,7 +610,7 @@ class ApiKeyServiceTest {
         val normalized = sql.allValues.single { it.contains("UPDATE api_keys") }.replace(Regex("\\s+"), " ")
         assertTrue(
             normalized.contains(
-                "expires_at = CASE WHEN participant_id IS NOT NULL AND device_id IS NOT NULL AND EXISTS ( " +
+                "expires_at = CASE WHEN participant_id IS NOT NULL AND random_device_id IS NOT NULL AND EXISTS ( " +
                     "SELECT 1 FROM study_participants sp WHERE sp.study_id = api_keys.study_id " +
                     "AND sp.participant_id = api_keys.participant_id " +
                     "AND sp.participation_status IN ('ENROLLED', 'PAUSED') ) AND NOT chronicle_has_participant_erasure( " +

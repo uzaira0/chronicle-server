@@ -1,29 +1,36 @@
 package com.openlattice.chronicle.authorization
 
+import com.openlattice.chronicle.contract.JwtSessionContract
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
 import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.Duration
+import java.time.ZoneOffset
 import java.util.concurrent.TimeUnit
 
 /**
  * Durable JWT revocations and activity, with Hazelcast coordination.
  * Blocked tokens are stored with TTL matching their remaining validity,
  * so entries auto-expire when the token would have expired anyway.
- *
- * HIPAA §164.312(d) — Authentication controls must support credential revocation.
  */
 public class JwtBlocklist(hazelcastInstance: HazelcastInstance,
-    private val storageResolver: com.openlattice.chronicle.storage.StorageResolver? = null) {
+    private val storageResolver: StorageResolver? = null) {
+
+    public data class ActivityTiming(val receivedAt: Instant, val age: Duration = Duration.ZERO) {
+        internal fun isWithin(window: Duration): Boolean = !age.isNegative && age < window
+    }
 
     internal companion object {
+        const val SESSION_IDLE_EXPIRED_MESSAGE = "Session has expired due to inactivity"
         const val IDLE_DEADLINE_HEADER = "X-Session-Idle-Expires-At"
         private const val ACTIVITY_MAP = "JWT_SESSION_ACTIVITY"
         private const val ACTIVITY_KEY_PREFIX = "SESSION_ACTIVITY:"
-        private const val REVOKE_ALL = "REVOKE_ALL_BEFORE"
+        private val REVOKE_ALL = JwtSessionContract.revokeAllBeforeKey
         internal const val EXPIRED_STATE_PURGE_LIMIT = 100
         private val logger = LoggerFactory.getLogger(JwtBlocklist::class.java)
     }
@@ -72,38 +79,44 @@ public class JwtBlocklist(hazelcastInstance: HazelcastInstance,
 
     private fun readState(map: IMap<String, Long>, key: String): Long? {
         val storage = storageResolver ?: return map[key]
-        return storage.getDefaultPlatformStorage().second.connection.use { connection ->
-            connection.prepareStatement(
-                "SELECT state_value FROM jwt_session_state WHERE state_group = ? AND state_key = ? AND (expires_at IS NULL OR expires_at > " +
-                "now())").use { statement ->
-                statement.setString(1, map.name); statement.setString(2, key)
-                statement.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
+        return RLSRequestContext.withSystemContext {
+            storage.getDefaultPlatformStorage().dataSource.connection.use { connection ->
+                connection.prepareStatement(
+                    "SELECT state_value FROM jwt_session_state WHERE state_group = ? AND state_key = ? AND (expires_at IS NULL OR expires_at > " +
+                    "now())").use { statement ->
+                    statement.setString(1, map.name); statement.setString(2, key)
+                    statement.executeQuery().use { rows -> if (rows.next()) rows.getLong(1) else null }
+                }
             }
         }
     }
 
     private fun writeState(map: IMap<String, Long>, key: String, value: Long, expiresAt: Instant?) {
-        storageResolver?.getDefaultPlatformStorage()?.second?.connection?.use { connection ->
-            connection.prepareStatement("""
-                INSERT INTO jwt_session_state (state_group, state_key, state_value, expires_at) VALUES (?, ?, ?, ?)
-                ON CONFLICT (state_group, state_key) DO UPDATE SET
-                    state_value = GREATEST(jwt_session_state.state_value, EXCLUDED.state_value),
-                    expires_at = CASE WHEN jwt_session_state.expires_at IS NULL OR EXCLUDED.expires_at IS NULL
-                        THEN NULL ELSE GREATEST(jwt_session_state.expires_at, EXCLUDED.expires_at) END
-            """.trimIndent()).use { statement ->
-                statement.setString(1, map.name); statement.setString(2, key); statement.setLong(3, value)
-                statement.setObject(4, expiresAt?.atOffset(java.time.ZoneOffset.UTC))
-                statement.executeUpdate()
-            }
-            connection.prepareStatement("""
-                DELETE FROM jwt_session_state WHERE (state_group, state_key) IN (
-                    SELECT state_group, state_key FROM jwt_session_state
-                    WHERE expires_at <= now() ORDER BY expires_at
-                    LIMIT ? FOR UPDATE SKIP LOCKED
-                )
-            """.trimIndent()).use { statement ->
-                statement.setInt(1, EXPIRED_STATE_PURGE_LIMIT)
-                statement.executeUpdate()
+        storageResolver?.let { storage ->
+            RLSRequestContext.withSystemContext {
+                storage.getDefaultPlatformStorage().dataSource.connection.use { connection ->
+                    connection.prepareStatement("""
+                        INSERT INTO jwt_session_state (state_group, state_key, state_value, expires_at) VALUES (?, ?, ?, ?)
+                        ON CONFLICT (state_group, state_key) DO UPDATE SET
+                            state_value = GREATEST(jwt_session_state.state_value, EXCLUDED.state_value),
+                            expires_at = CASE WHEN jwt_session_state.expires_at IS NULL OR EXCLUDED.expires_at IS NULL
+                                THEN NULL ELSE GREATEST(jwt_session_state.expires_at, EXCLUDED.expires_at) END
+                    """.trimIndent()).use { statement ->
+                        statement.setString(1, map.name); statement.setString(2, key); statement.setLong(3, value)
+                        statement.setObject(4, expiresAt?.atOffset(ZoneOffset.UTC))
+                        statement.executeUpdate()
+                    }
+                    connection.prepareStatement("""
+                        DELETE FROM jwt_session_state WHERE (state_group, state_key) IN (
+                            SELECT state_group, state_key FROM jwt_session_state
+                            WHERE expires_at <= now() ORDER BY expires_at
+                            LIMIT ? FOR UPDATE SKIP LOCKED
+                        )
+                    """.trimIndent()).use { statement ->
+                        statement.setInt(1, EXPIRED_STATE_PURGE_LIMIT)
+                        statement.executeUpdate()
+                    }
+                }
             }
         }
         if (expiresAt == null) map.set(key, value)
@@ -115,25 +128,11 @@ public class JwtBlocklist(hazelcastInstance: HazelcastInstance,
             .digest(input.toByteArray())
             .joinToString("") { "%02x".format(it) }
 
-    /**
-     * Revoke all tokens (nuclear option — e.g., after secret compromise).
-     * Sets a special "revoke-all" key with the current timestamp.
-     * Tokens issued before this timestamp are rejected.
-     */
-    public fun revokeAllBefore(timestamp: Instant) {
-        writeState(blocklist, REVOKE_ALL, timestamp.epochSecond, null)
-        logger.warn("REVOKED ALL TOKENS issued before {}", timestamp)
-    }
-
-    /**
-     * Get the "revoke all" timestamp, if set.
-     */
+    /** The "revoke all" cutoff a restore writes; tokens issued at or before it are rejected. */
     public fun getRevokeAllTimestamp(): Instant? {
         val epoch = readState(blocklist, REVOKE_ALL) ?: return null
         return Instant.ofEpochSecond(epoch)
     }
-
-    public fun getBlockedCount(): Long = blocklist.size.toLong()
 
     public fun credentialRejectionReason(
         jti: String?, tokenValue: String, issuedAt: Instant?, expiresAt: Instant?, idleWindow: Duration,
@@ -146,7 +145,7 @@ public class JwtBlocklist(hazelcastInstance: HazelcastInstance,
         }
         val activityKey = sessionActivityIdentity(jti, tokenValue)
         if (!isSessionActive(activityKey, issuedAt, expiresAt, idleWindow, now())) {
-            return "Session has expired due to inactivity"
+            return SESSION_IDLE_EXPIRED_MESSAGE
         }
         return null
     }
@@ -154,28 +153,38 @@ public class JwtBlocklist(hazelcastInstance: HazelcastInstance,
     public fun isSessionActive(tokenValue: String, issuedAt: Instant?, expiresAt: Instant?, idleWindow: Duration,
         now: Instant = Instant.now()): Boolean {
         if (issuedAt == null || expiresAt == null || !now.isBefore(expiresAt)) return false
-        val key = ACTIVITY_KEY_PREFIX + sha256(tokenValue)
+        if (isBlockedByValue(tokenValue)) return false
+        val cutoff = getRevokeAllTimestamp()
+        if (cutoff != null && !issuedAt.isAfter(cutoff)) return false
+        val lastActivity = readState(activity, activityKey(tokenValue))?.let(Instant::ofEpochSecond) ?: issuedAt
+        return Duration.between(lastActivity, now) < idleWindow
+    }
+
+    /** Only an explicit user-input signal may advance the shared idle deadline. */
+    public fun touchActivity(tokenValue: String, issuedAt: Instant?, expiresAt: Instant?, idleWindow: Duration,
+        timing: ActivityTiming = ActivityTiming(Instant.now())): Boolean {
+        if (!timing.isWithin(idleWindow)) return false
+        val key = activityKey(tokenValue)
         check(activity.tryLock(key, 1, TimeUnit.SECONDS, 5, TimeUnit.SECONDS)) { "Session activity store is unavailable" }
         try {
-            if (isBlockedByValue(tokenValue)) return false
-            val cutoff = getRevokeAllTimestamp()
-            if (cutoff != null && !issuedAt.isAfter(cutoff)) return false
-            val lastActivity = readState(activity, key)?.let(Instant::ofEpochSecond) ?: issuedAt
-            if (Duration.between(lastActivity, now) >= idleWindow) return false
-            writeState(activity, key, maxOf(lastActivity.epochSecond, now.epochSecond), expiresAt)
+            if (!isSessionActive(tokenValue, issuedAt, expiresAt, idleWindow, timing.receivedAt)) return false
+            val previous = readState(activity, key) ?: requireNotNull(issuedAt).epochSecond
+            writeState(activity, key, maxOf(previous, timing.receivedAt.minus(timing.age).epochSecond), expiresAt)
             return true
         } finally {
             activity.unlock(key)
         }
     }
 
+    private fun activityKey(tokenValue: String): String = ACTIVITY_KEY_PREFIX + sha256(tokenValue)
+
     public fun sessionIdleDeadline(jti: String?, tokenValue: String, issuedAt: Instant?,
         expiresAt: Instant?, idleWindow: Duration): Instant? {
-        val key = ACTIVITY_KEY_PREFIX + sha256(sessionActivityIdentity(jti, tokenValue))
+        val key = activityKey(sessionActivityIdentity(jti, tokenValue))
         val lastActivity = readState(activity, key)?.let(Instant::ofEpochSecond) ?: issuedAt ?: return null
         return minOf(lastActivity.plus(idleWindow), expiresAt ?: return null)
     }
 
-    private fun sessionActivityIdentity(jti: String?, tokenValue: String): String =
+    internal fun sessionActivityIdentity(jti: String?, tokenValue: String): String =
         jti?.takeIf(String::isNotBlank)?.let { "JTI:$it" } ?: tokenValue
 }

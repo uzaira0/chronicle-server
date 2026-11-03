@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.controllers
 
+import org.junit.Assert.assertThrows
+
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AccessCheck
 import com.openlattice.chronicle.authorization.AclKey
@@ -31,10 +33,7 @@ class AuthorizationsControllerTest {
         controller = AuthorizationsController(auditingManager, authorizationManager)
     }
 
-    @Test
-    fun testControllerConstructsSuccessfully() {
-        assertNotNull(controller)
-    }
+    
 
     @Test
     fun testControllerAcceptsDependencies() {
@@ -102,14 +101,16 @@ class AuthorizationsControllerTest {
         assertEquals(2, result.count())
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testCheckAuthorizationsPropagatesException() {
         val queries = setOf<AccessCheck>()
         Mockito.`when`(authorizationManager.accessChecksForPrincipals(
             kAny<Set<AccessCheck>>(), kAny<Set<Principal>>()
         )).thenThrow(RuntimeException("auth check error"))
 
-        controller.checkAuthorizations(queries).iterator().next()
+        assertThrows(RuntimeException::class.java) {
+            controller.checkAuthorizations(queries).iterator().next()
+        }
     }
 
     // --- getAccessibleObjects ---
@@ -181,13 +182,15 @@ class AuthorizationsControllerTest {
         assertNotNull(result2)
     }
 
-    @Test(expected = RuntimeException::class)
+    @Test
     fun testGetAccessibleObjectsPropagatesException() {
         Mockito.`when`(authorizationManager.getAuthorizedObjectsOfType(
             kAny<Set<Principal>>(), kAny<SecurableObjectType>(), kAny<EnumSet<Permission>>()
         )).thenThrow(RuntimeException("accessible objects error"))
 
-        controller.getAccessibleObjects(SecurableObjectType.Study, Permission.READ, "")
+        assertThrows(RuntimeException::class.java) {
+            controller.getAccessibleObjects(SecurableObjectType.Study, Permission.READ, "")
+        }
     }
 
     @Test

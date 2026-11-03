@@ -27,9 +27,14 @@ import com.openlattice.chronicle.controllers.TestSecurityUtils
 import com.openlattice.chronicle.controllers.kAny
 import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.openlattice.chronicle.services.apikeys.ApiKeyService
-import com.openlattice.chronicle.util.DeviceIdUtils
+import com.openlattice.chronicle.util.API_KEY_HEADER
+import com.openlattice.chronicle.util.RandomDeviceIdUtils
+import java.time.OffsetDateTime
+import java.util.EnumSet
+import java.util.UUID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import com.openlattice.chronicle.i18n.Messages
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -40,14 +45,11 @@ import org.springframework.mock.web.MockFilterChain
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.mock.web.MockHttpServletResponse
 import org.springframework.security.core.context.SecurityContextHolder
-import java.time.OffsetDateTime
-import java.util.EnumSet
-import java.util.UUID
 
 /**
  * Unit tests for [ApiKeyAuthenticationFilter] mobile-key path-binding enforcement.
  *
- * A mobile API key is issued for a specific (studyId, participantId, deviceId)
+ * A mobile API key is issued for a specific (studyId, participantId, randomDeviceId)
  * tuple. The filter must reject any request whose path doesn't match the key's
  * binding, and emit a `path_mismatch` metric so anomaly detection can react.
  *
@@ -66,15 +68,14 @@ class ApiKeyAuthenticationFilterTest {
     private val studyA = UUID.fromString("11111111-1111-1111-1111-111111111111")
     private val studyB = UUID.fromString("22222222-2222-2222-2222-222222222222")
     private val sourceDeviceX = "device-install-x"
-    private val deviceX = DeviceIdUtils.deriveDeviceId(studyA, "participant-p", sourceDeviceX)
+    private val deviceX = RandomDeviceIdUtils.deriveRandomDeviceId(studyA, "participant-p", sourceDeviceX)
     private val participantP = "participant-p"
     private val participantQ = "participant-q"
     private val withdrawalRequestId = UUID.fromString("aaaaaaaa-3333-4333-8333-333333333333")
 
     @Before
     fun setUp() {
-        // honeyTokenService=null skips the canary check; we only test the binding logic.
-        filter = ApiKeyAuthenticationFilter(apiKeyService, authorizationManager, honeyTokenService = null)
+        filter = ApiKeyAuthenticationFilter(apiKeyService, authorizationManager)
         TestSecurityUtils.initPrincipalsIfNeeded()
         Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenAnswer { call ->
             call.getArgument<AclKey>(0) == AclKey(studyA) &&
@@ -83,7 +84,7 @@ class ApiKeyAuthenticationFilterTest {
         }
     }
 
-    private fun mobileKey(studyId: UUID, participantId: String, deviceId: UUID): ApiKeyInfo =
+    private fun mobileKey(studyId: UUID, participantId: String, randomDeviceId: UUID): ApiKeyInfo =
         ApiKeyInfo(
             keyId = UUID.randomUUID(),
             studyId = studyId,
@@ -93,7 +94,7 @@ class ApiKeyAuthenticationFilterTest {
             createdAt = OffsetDateTime.now(),
             expiresAt = OffsetDateTime.now().plusDays(365),
             participantId = participantId,
-            deviceId = deviceId
+            randomDeviceId = randomDeviceId
         )
 
     private fun adminKey(studyId: UUID): ApiKeyInfo =
@@ -106,21 +107,21 @@ class ApiKeyAuthenticationFilterTest {
             createdAt = OffsetDateTime.now(),
             expiresAt = OffsetDateTime.now().plusDays(365),
             participantId = null,
-            deviceId = null,
+            randomDeviceId = null,
             createdBy = keyCreator,
         )
 
     private fun runFilter(
         uri: String,
         rawKey: String = "ck_abc12345_keyvalue",
-        sourceDeviceId: String? = sourceDeviceX,
+        sourceRandomDeviceId: String? = sourceDeviceX,
         method: String = "POST",
         withdrawalRequestIdHeader: String? = withdrawalRequestId.toString(),
     ): Pair<MockHttpServletResponse, MockFilterChain> {
         val request = MockHttpServletRequest(method, uri).apply {
             requestURI = uri
-            addHeader("X-Api-Key", rawKey)
-            sourceDeviceId?.let { addHeader("X-Chronicle-Device-Id", it) }
+            addHeader(API_KEY_HEADER, rawKey)
+            sourceRandomDeviceId?.let { addHeader("X-Chronicle-Random-Device-Id", it) }
             withdrawalRequestIdHeader?.let { addHeader("X-Chronicle-Withdrawal-Request-Id", it) }
         }
         val response = MockHttpServletResponse()
@@ -170,7 +171,7 @@ class ApiKeyAuthenticationFilterTest {
 
         val (response, chain) = runFilter(
             ApiKeyAuthenticationFilter.CURRENT_ENROLLMENT_PATH,
-            sourceDeviceId = "different-device-install",
+            sourceRandomDeviceId = "different-device-install",
             method = "DELETE",
         )
 
@@ -204,6 +205,7 @@ class ApiKeyAuthenticationFilterTest {
         Mockito.verifyNoInteractions(apiKeyService)
     }
 
+    /** A dead key can never withdraw: 410 routes the phone to support, while a transient 401 is retried. */
     @Test
     fun revokedCredentialCannotInitiateWithdrawalWithoutExactStoredIntent() {
         Mockito.`when`(
@@ -215,10 +217,29 @@ class ApiKeyAuthenticationFilterTest {
             method = "DELETE",
         )
 
-        assertEquals(401, response.status)
+        assertEquals(410, response.status)
         assertNull(chain.request)
         Mockito.verify(apiKeyService)
             .authenticateWithdrawalApiKey("ck_abc12345_keyvalue", withdrawalRequestId)
+    }
+
+    /** A phone key may read and write its own upload path, but no other HTTP method (TRACE, a custom verb) gets through. */
+    @Test
+    fun mobileKeyIsRefusedForMethodsOutsideReadAndWrite() {
+        Mockito.`when`(apiKeyService.authenticateApiKey("ck_abc12345_keyvalue"))
+            .thenReturn(mobileKey(studyA, participantP, deviceX))
+        val path = "/chronicle/v4/study/$studyA/participant/$participantP/android"
+        for (method in listOf("GET", "HEAD", "POST", "PUT")) {
+            val (response, chain) = runFilter(path, method = method)
+            assertEquals(method, 200, response.status)
+            assertNotNull(method, chain.request)
+        }
+        for (method in listOf("TRACE", "PROPFIND")) {
+            val (response, chain) = runFilter(path, method = method)
+            assertEquals(method, 403, response.status)
+            assertEquals(method, Messages.get("error.enrollment.apiKeyScope"), response.errorMessage)
+            assertNull(method, chain.request)
+        }
     }
 
     @Test
@@ -253,7 +274,7 @@ class ApiKeyAuthenticationFilterTest {
 
         val (response, chain) = runFilter(
             "/chronicle/v4/study/$studyA/participant/$participantP/android",
-            sourceDeviceId = null,
+            sourceRandomDeviceId = null,
         )
 
         assertEquals(403, response.status)
@@ -267,7 +288,7 @@ class ApiKeyAuthenticationFilterTest {
 
         val (response, chain) = runFilter(
             "/chronicle/v4/study/$studyA/participant/$participantP/android",
-            sourceDeviceId = "different-device-install",
+            sourceRandomDeviceId = "different-device-install",
         )
 
         assertEquals(403, response.status)
@@ -292,7 +313,7 @@ class ApiKeyAuthenticationFilterTest {
     private fun researcherStatus(scope: ApiKeyScope, method: String, uri: String): Int {
         Mockito.`when`(apiKeyService.authenticateApiKey("ck_abc12345_keyvalue")).thenReturn(researcherKey(scope))
         try {
-            val (response, chain) = runFilter(uri, method = method, sourceDeviceId = null)
+            val (response, chain) = runFilter(uri, method = method, sourceRandomDeviceId = null)
             assertEquals("chain runs only when the filter admits", response.status == 200, chain.request != null)
             return response.status
         } finally {
@@ -303,13 +324,10 @@ class ApiKeyAuthenticationFilterTest {
     @Test
     fun researcherKeyRouteScopeFollowsPermissionsNotHttpMethod() {
         val study = "/chronicle/v3/study/$studyA"
-        val exportId = UUID.randomUUID()
         val reads = listOf(
             "GET" to study,
             "GET" to "$study/participants",
             "GET" to "$study/participants/data",
-            "POST" to "$study/export/async",
-            "GET" to "$study/export/$exportId/download",
         )
         val writes = listOf(
             "POST" to "$study/participant",
@@ -354,7 +372,7 @@ class ApiKeyAuthenticationFilterTest {
         // Creator's ACL removed: a route the key reached before now answers 403, and no identity is set.
         creatorHolds = emptySet()
         Mockito.`when`(apiKeyService.authenticateApiKey("ck_abc12345_keyvalue")).thenReturn(researcherKey(ApiKeyScope.ADMIN))
-        val (response, chain) = runFilter(read.second, method = read.first, sourceDeviceId = null)
+        val (response, chain) = runFilter(read.second, method = read.first, sourceRandomDeviceId = null)
         assertEquals(403, response.status)
         assertEquals("The person who created this API key no longer has access to this study", response.errorMessage)
         assertNull(chain.request)
@@ -364,7 +382,7 @@ class ApiKeyAuthenticationFilterTest {
         creatorHolds = EnumSet.allOf(Permission::class.java)
         Mockito.`when`(apiKeyService.authenticateApiKey("ck_abc12345_keyvalue"))
             .thenReturn(researcherKey(ApiKeyScope.READ_ONLY).copy(createdBy = null))
-        assertEquals(403, runFilter(read.second, method = read.first, sourceDeviceId = null).first.status)
+        assertEquals(403, runFilter(read.second, method = read.first, sourceRandomDeviceId = null).first.status)
 
         // Device keys do not depend on a creator's access.
         creatorHolds = emptySet()
@@ -383,7 +401,6 @@ class ApiKeyAuthenticationFilterTest {
             // another study
             "GET" to other,
             "GET" to "$other/participants/data",
-            "POST" to "$other/export/async",
             // key management, ACLs and roles, study create/delete, admin, organizations, principals, auth
             "POST" to "$study/api-keys",
             "GET" to "$study/api-keys",
@@ -503,8 +520,8 @@ class ApiKeyAuthenticationFilterTest {
             for (credential in credentials) {
                 val request = MockHttpServletRequest("GET", uri).apply {
                     requestURI = uri
-                    addHeader("X-Api-Key", rawKey)
-                    addHeader("X-Chronicle-Device-Id", sourceDeviceX)
+                    addHeader(API_KEY_HEADER, rawKey)
+                    addHeader("X-Chronicle-Random-Device-Id", sourceDeviceX)
                     credential()
                 }
                 val response = MockHttpServletResponse()

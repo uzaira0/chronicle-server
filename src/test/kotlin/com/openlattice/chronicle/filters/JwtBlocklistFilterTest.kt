@@ -1,9 +1,12 @@
 package com.openlattice.chronicle.filters
 
-import com.hazelcast.config.Config
+import com.geekbeast.mappers.mappers.ObjectMappers
+import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.contract.JwtSessionContract
 import com.hazelcast.core.Hazelcast
 import com.hazelcast.core.HazelcastInstance
 import com.openlattice.chronicle.authorization.JwtBlocklist
+import com.openlattice.chronicle.testing.isolatedHazelcastConfig
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -32,9 +35,7 @@ class JwtBlocklistFilterTest {
         @BeforeClass
         @JvmStatic
         fun setUp() {
-            val config = Config()
-            config.clusterName = "jwt-filter-test-${UUID.randomUUID()}"
-            config.networkConfig.join.multicastConfig.isEnabled = false
+            val config = isolatedHazelcastConfig("jwt-filter-test")
             hz = Hazelcast.newHazelcastInstance(config)
             blocklist = JwtBlocklist(hz)
             filter = JwtBlocklistFilter(blocklist)
@@ -129,7 +130,7 @@ class JwtBlocklistFilterTest {
         val issuedAt = Instant.now().minusSeconds(7200)
         val revokeTime = Instant.now().minusSeconds(3600)
         val jwt = createJwt(jti = null, issuedAt = issuedAt)
-        blocklist.revokeAllBefore(revokeTime)
+        HazelcastMap.JWT_BLOCKLIST.getMap(hz).set(JwtSessionContract.revokeAllBeforeKey, revokeTime.epochSecond)
         setAuthentication(jwt)
 
         val request = MockHttpServletRequest("GET", "/api/data")
@@ -145,7 +146,7 @@ class JwtBlocklistFilterTest {
 
     @Test
     fun testRejectsTokenIssuedInTheSameSecondAsRevokeAll() {
-        // revokeAllBefore truncates to epoch seconds and a JWT `iat` is second-resolution, so a
+        // The revoke-all cutoff is stored in epoch seconds and a JWT `iat` is second-resolution, so a
         // token minted in the same second as /revoke-all had an equal iat and stayed usable.
         val revokeTime = Instant.now().minusSeconds(1800).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
         val jwt = createJwt(
@@ -153,7 +154,7 @@ class JwtBlocklistFilterTest {
             jti = null,
             issuedAt = revokeTime
         )
-        blocklist.revokeAllBefore(revokeTime)
+        HazelcastMap.JWT_BLOCKLIST.getMap(hz).set(JwtSessionContract.revokeAllBeforeKey, revokeTime.epochSecond)
         setAuthentication(jwt)
 
         val request = MockHttpServletRequest("GET", "/api/data")
@@ -176,7 +177,7 @@ class JwtBlocklistFilterTest {
             jti = null,
             issuedAt = issuedAt
         )
-        blocklist.revokeAllBefore(revokeTime)
+        HazelcastMap.JWT_BLOCKLIST.getMap(hz).set(JwtSessionContract.revokeAllBeforeKey, revokeTime.epochSecond)
         setAuthentication(jwt)
 
         val request = MockHttpServletRequest("GET", "/api/data")
@@ -206,9 +207,7 @@ class JwtBlocklistFilterTest {
 
     @Test
     fun testRejectsAuthenticatedRequestWhenBlocklistUnavailable() {
-        val localConfig = Config()
-        localConfig.clusterName = "jwt-filter-unavailable-test-${UUID.randomUUID()}"
-        localConfig.networkConfig.join.multicastConfig.isEnabled = false
+        val localConfig = isolatedHazelcastConfig("jwt-filter-unavailable-test")
         val localHz = Hazelcast.newHazelcastInstance(localConfig)
         val localFilter = JwtBlocklistFilter(JwtBlocklist(localHz))
         localHz.shutdown()
@@ -224,7 +223,11 @@ class JwtBlocklistFilterTest {
 
         assertNull("Token should NOT pass through when revocation state is unavailable", chain.request)
         assertEquals(503, response.status)
-        assertEquals("""{"error":"token_revocation_unavailable","message":"Token revocation status could not be verified"}""", response.contentAsString)
+        val error = ObjectMappers.getJsonMapper().readTree(response.contentAsByteArray)
+        assertEquals(503, error.path("status").asInt())
+        assertEquals("Service Unavailable", error.path("error").asText())
+        assertEquals("token_revocation_unavailable", error.path("code").asText())
+        assertEquals("Token revocation status could not be verified", error.path("message").asText())
         assertTrue(
             "Response body should report revocation unavailability",
             response.contentAsString.contains("token_revocation_unavailable")
@@ -250,7 +253,11 @@ class JwtBlocklistFilterTest {
 
         assertEquals(401, response.status)
         assertEquals("application/json", response.contentType)
-        assertEquals("""{"error":"token_revoked","message":"Token has been revoked"}""", response.contentAsString)
+        val error = ObjectMappers.getJsonMapper().readTree(response.contentAsByteArray)
+        assertEquals(401, error.path("status").asInt())
+        assertEquals("Unauthorized", error.path("error").asText())
+        assertEquals("token_revoked", error.path("code").asText())
+        assertEquals("Token has been revoked", error.path("message").asText())
         assertTrue(
             "Response body should contain error field",
             response.contentAsString.contains("token_revoked")

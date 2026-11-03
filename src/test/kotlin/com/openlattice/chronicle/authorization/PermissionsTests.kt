@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.authorization
 
+import org.junit.Assert.assertThrows
+
 import com.geekbeast.retrofit.RhizomeRetrofitCallException
 import com.openlattice.chronicle.ChronicleServerTests
 import com.openlattice.chronicle.util.tests.TestDataFactory
@@ -17,10 +19,12 @@ class PermissionsTests : ChronicleServerTests() {
         Assert.assertTrue("Owner should have ACEs", acl.aces.toList().isNotEmpty())
     }
 
-    @Test(expected = RhizomeRetrofitCallException::class)
+    @Test
     fun testGetAclNonOwner() {
         val studyId = clientUser1.studyApi.createStudy(TestDataFactory.study())
-        clientUser2.permissionsApi.getAcl(AclKey(studyId))
+        assertThrows(RhizomeRetrofitCallException::class.java) {
+            clientUser2.permissionsApi.getAcl(AclKey(studyId))
+        }
     }
 
     @Test

@@ -136,7 +136,6 @@ public open class AclKeyReservationService(private val resolver: StorageResolver
                 PreparedStatementHolderSupplier(
                     hds = resolver.getPlatformStorage(),
                     sql = SELECT_MULTIPLE_SQL,
-                    statementTimeoutMillis = 0L,
                     bind = { ps: PreparedStatement ->
                             ps.setArray(1, PostgresArrays.createTextArray(ps.connection, names))
                         })

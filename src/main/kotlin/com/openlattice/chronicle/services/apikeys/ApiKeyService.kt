@@ -12,7 +12,14 @@ import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.ids.IdConstants
+import com.openlattice.chronicle.services.participantaccess.AttemptCancellation
+import com.openlattice.chronicle.services.participantaccess.BoundEnrollmentAttempt
+import com.openlattice.chronicle.services.participantaccess.EnrollmentAttemptRepository
+import com.openlattice.chronicle.services.participantaccess.lockEnrollmentAttempt
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.API_KEYS
+import com.openlattice.chronicle.storage.DeletionStudyFence
+import com.openlattice.chronicle.storage.ParticipantErasureFence
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CREATED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.CREATED_BY
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.EXPIRES_AT
@@ -26,9 +33,9 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCOPE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.USAGE_COUNT
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
 import com.openlattice.chronicle.util.LogSanitizer
+import com.openlattice.chronicle.util.RandomDeviceIdUtils
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -65,24 +72,34 @@ public open class ApiKeyService(
 
         private val INSERT_MOBILE_API_KEY_SQL = """
             INSERT INTO ${API_KEYS.name}
-                (${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_HASH.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name}, ${CREATED_BY.name}, ${EXPIRES_AT.name}, participant_id, device_id)
+                (${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_HASH.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name}, ${CREATED_BY.name}, ${EXPIRES_AT.name}, participant_id, random_device_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """.trimIndent()
 
         private val SELECT_API_KEYS_SQL = """
             SELECT ${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name},
                    ${CREATED_AT.name}, ${EXPIRES_AT.name}, ${LAST_USED_AT.name}, ${USAGE_COUNT.name},
-                   participant_id, device_id
+                   participant_id, random_device_id
             FROM ${API_KEYS.name}
             WHERE ${STUDY_ID.name} = ? AND ${REVOKED.name} = false
         """.trimIndent()
-        private val LIST_API_KEYS_SQL = "$SELECT_API_KEYS_SQL ORDER BY ${CREATED_AT.name} DESC"
+        private val LIST_API_KEYS_SQL = "$SELECT_API_KEYS_SQL ORDER BY ${CREATED_AT.name} DESC, ${KEY_ID.name} LIMIT ? OFFSET ?"
         private val LOCK_API_KEY_FOR_ROTATION_SQL = "$SELECT_API_KEYS_SQL AND ${KEY_ID.name} = ? FOR UPDATE"
 
         private val REVOKE_API_KEY_SQL = """
             UPDATE ${API_KEYS.name}
             SET ${REVOKED.name} = true
             WHERE ${KEY_ID.name} = ? AND ${STUDY_ID.name} = ?
+        """.trimIndent()
+
+        // A live key: authentication admits it, and the pre-authentication limiter does not count it.
+        private val LIVE_KEY_PREDICATE = "${KEY_HASH.name} = ? AND ${REVOKED.name} = false AND ${EXPIRES_AT.name} > now()"
+
+        private val FIND_LIVE_KEY_SQL = """
+            SELECT ${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name},
+                   ${CREATED_AT.name}, ${EXPIRES_AT.name}, ${LAST_USED_AT.name}, ${USAGE_COUNT.name},
+                   participant_id, random_device_id
+            FROM ${API_KEYS.name} WHERE $LIVE_KEY_PREDICATE
         """.trimIndent()
 
         // Atomically validate, increment counter, and return key metadata in a single
@@ -98,7 +115,7 @@ public open class ApiKeyService(
             UPDATE ${API_KEYS.name}
             SET ${LAST_USED_AT.name} = now(), ${USAGE_COUNT.name} = ${USAGE_COUNT.name} + 1,
                 ${EXPIRES_AT.name} = CASE
-                    WHEN participant_id IS NOT NULL AND device_id IS NOT NULL AND EXISTS (
+                    WHEN participant_id IS NOT NULL AND random_device_id IS NOT NULL AND EXISTS (
                         SELECT 1 FROM study_participants sp
                         WHERE sp.study_id = ${API_KEYS.name}.${STUDY_ID.name}
                           AND sp.participant_id = ${API_KEYS.name}.participant_id
@@ -109,10 +126,10 @@ public open class ApiKeyService(
                         THEN now() + interval '$MAX_MOBILE_KEY_TTL_DAYS days'
                     ELSE ${EXPIRES_AT.name}
                 END
-            WHERE ${KEY_HASH.name} = ? AND ${REVOKED.name} = false AND ${EXPIRES_AT.name} > now()
+            WHERE $LIVE_KEY_PREDICATE
             RETURNING ${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name},
                       ${CREATED_AT.name}, ${EXPIRES_AT.name}, ${LAST_USED_AT.name}, ${USAGE_COUNT.name},
-                      participant_id, device_id, ${CREATED_BY.name}
+                      participant_id, random_device_id, ${CREATED_BY.name}
         """.trimIndent()
 
         // Revoked mobile credentials remain usable only for an idempotent withdrawal retry. A key
@@ -121,16 +138,16 @@ public open class ApiKeyService(
             SELECT candidate.${KEY_ID.name}, candidate.${STUDY_ID.name}, candidate.${KEY_PREFIX.name},
                    candidate.${NAME.name}, candidate.${SCOPE.name}, candidate.${CREATED_AT.name},
                    candidate.${EXPIRES_AT.name}, candidate.${LAST_USED_AT.name}, candidate.${USAGE_COUNT.name},
-                   candidate.participant_id, candidate.device_id
+                   candidate.participant_id, candidate.random_device_id
             FROM ${API_KEYS.name} candidate
             LEFT JOIN mobile_withdrawal_requests withdrawal
               ON withdrawal.api_key_id = candidate.${KEY_ID.name}
              AND withdrawal.request_id = ?
              AND withdrawal.${STUDY_ID.name} = candidate.${STUDY_ID.name}
              AND withdrawal.participant_id = candidate.participant_id
-             AND withdrawal.device_id = candidate.device_id
+             AND withdrawal.random_device_id = candidate.random_device_id
             WHERE candidate.${KEY_HASH.name} = ? AND candidate.${EXPIRES_AT.name} > now()
-              AND candidate.participant_id IS NOT NULL AND candidate.device_id IS NOT NULL
+              AND candidate.participant_id IS NOT NULL AND candidate.random_device_id IS NOT NULL
               AND (
                   candidate.${REVOKED.name} = false
                   OR (
@@ -139,7 +156,7 @@ public open class ApiKeyService(
                           SELECT 1 FROM ${API_KEYS.name} active
                           WHERE active.${STUDY_ID.name} = candidate.${STUDY_ID.name}
                             AND active.participant_id = candidate.participant_id
-                            AND active.device_id = candidate.device_id
+                            AND active.random_device_id = candidate.random_device_id
                             AND active.${REVOKED.name} = false
                             AND active.${EXPIRES_AT.name} > now()
                             AND active.${KEY_ID.name} <> candidate.${KEY_ID.name}
@@ -148,7 +165,7 @@ public open class ApiKeyService(
               )
         """.trimIndent()
 
-        // Erasure deletes a device key's api_keys row and keeps only its hash here (V114). A matching
+        // Erasure deletes a device key's api_keys row and keeps only its hash here. A matching
         // unexpired tombstone reaches the status read and the withdrawal acknowledgment, nothing else.
         // It never answers for a hash an api_keys row (live or revoked) still owns: a credential that
         // shared its material with an erased key before V115 stays an ordinary credential.
@@ -173,7 +190,7 @@ public open class ApiKeyService(
         private val REVOKE_PRIOR_MOBILE_KEYS_SQL = """
             UPDATE ${API_KEYS.name}
             SET ${REVOKED.name} = true
-            WHERE ${STUDY_ID.name} = ? AND participant_id = ? AND device_id = ? AND ${REVOKED.name} = false
+            WHERE ${STUDY_ID.name} = ? AND participant_id = ? AND random_device_id = ? AND ${REVOKED.name} = false
         """.trimIndent()
 
         // Key material an erasure tombstoned, or any api_keys row (live or revoked) already holds, is never
@@ -198,7 +215,7 @@ public open class ApiKeyService(
                 SELECT 1
                 FROM participant_form_access_codes
                 WHERE study_id = ? AND participant_id = ? AND form_kind = 'ENROLLMENT'
-                  AND enrollment_attempt_id = ? AND enrollment_device_id = ?
+                  AND enrollment_attempt_id = ? AND enrollment_random_device_id = ?
                   AND enrollment_proposed_key_hash = ? AND revoked_at IS NULL
                   AND enrollment_replay_expires_at > now()
             )
@@ -207,9 +224,9 @@ public open class ApiKeyService(
         private val FIND_MOBILE_API_KEY_SQL = """
             SELECT ${KEY_ID.name}, ${STUDY_ID.name}, ${KEY_HASH.name}, ${KEY_PREFIX.name}, ${NAME.name}, ${SCOPE.name},
                    ${CREATED_AT.name}, ${EXPIRES_AT.name}, ${LAST_USED_AT.name}, ${USAGE_COUNT.name},
-                   participant_id, device_id
+                   participant_id, random_device_id
             FROM ${API_KEYS.name}
-            WHERE ${STUDY_ID.name} = ? AND participant_id = ? AND device_id = ? AND ${REVOKED.name} = false
+            WHERE ${STUDY_ID.name} = ? AND participant_id = ? AND random_device_id = ? AND ${REVOKED.name} = false
             LIMIT 1
         """.trimIndent()
 
@@ -229,6 +246,11 @@ public open class ApiKeyService(
             return hashBytes.joinToString("") { "%02x".format(it) }
         }
 
+        private fun constantTimeHashEquals(first: String, second: String): Boolean = MessageDigest.isEqual(
+            first.toByteArray(Charsets.US_ASCII),
+            second.toByteArray(Charsets.US_ASCII),
+        )
+
         internal fun isValidProposedMobileApiKey(rawKey: String): Boolean {
             val match = PROPOSED_MOBILE_KEY_PATTERN.matchEntire(rawKey) ?: return false
             return match.groupValues[1] == match.groupValues[2].take(PREFIX_LENGTH)
@@ -236,6 +258,12 @@ public open class ApiKeyService(
 
         internal fun proposedMobileApiKeyHash(rawKey: String): String? =
             rawKey.takeIf(::isValidProposedMobileApiKey)?.let(::hashKey)
+
+        private fun maxTtlDaysForScope(scope: ApiKeyScope): Int = when (scope) {
+            ApiKeyScope.ADMIN -> MAX_ADMIN_KEY_TTL_DAYS
+            ApiKeyScope.WRITE -> MAX_WRITE_KEY_TTL_DAYS
+            ApiKeyScope.READ_ONLY -> MAX_READ_ONLY_KEY_TTL_DAYS
+        }
     }
 
     private val withdrawalIntentBinder = MobileWithdrawalIntentBinder(auditingManager)
@@ -298,11 +326,13 @@ public open class ApiKeyService(
         return ApiKeyCreateResponse(keyId = keyId, rawKey = fullKey, info = info)
     }
 
-    public open fun listApiKeys(studyId: UUID): List<ApiKeyInfo> {
+    public open fun listApiKeys(studyId: UUID, limit: Int = 100, offset: Int = 0): List<ApiKeyInfo> {
         val keys = mutableListOf<ApiKeyInfo>()
         storageResolver.getPlatformStorage().connection.use { connection ->
             connection.prepareStatement(LIST_API_KEYS_SQL).use { ps ->
                 ps.setObject(1, studyId)
+                ps.setInt(2, com.openlattice.chronicle.util.PaginationDefaults.clampLimit(limit))
+                ps.setInt(3, com.openlattice.chronicle.util.PaginationDefaults.clampOffset(offset))
                 val rs = ps.executeQuery()
                 while (rs.next()) {
                     keys.add(mapApiKeyInfo(rs))
@@ -311,6 +341,15 @@ public open class ApiKeyService(
         }
         return keys
     }
+
+    public open fun getApiKey(studyId: UUID, keyId: UUID): ApiKeyInfo? =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.prepareStatement("$SELECT_API_KEYS_SQL AND ${KEY_ID.name} = ?").use { statement ->
+                statement.setObject(1, studyId)
+                statement.setObject(2, keyId)
+                statement.executeQuery().use(::firstApiKeyInfo)
+            }
+        }
 
     public open fun revokeApiKey(studyId: UUID, keyId: UUID, userId: String) {
         storageResolver.getPlatformStorage().connection.use { connection ->
@@ -356,7 +395,7 @@ public open class ApiKeyService(
                             statement.setObject(2, keyId)
                             statement.executeQuery().use { rows ->
                                 require(rows.next()) { "API key $keyId not found for study $studyId" }
-                                require(rows.getString("participant_id") == null && rows.getObject("device_id", UUID::class.java) == null) {
+                                require(rows.getString("participant_id") == null && rows.getObject("random_device_id", UUID::class.java) == null) {
                                     "Mobile API keys must be replaced through enrollment"
                                 }
                                 mapApiKeyInfo(rows)
@@ -391,6 +430,25 @@ public open class ApiKeyService(
                     } else {
                         null
                     }
+                }
+            }
+        }
+    }
+
+    /**
+     * True when [authenticateApiKey] would admit [rawKey]: same hash, same live-key predicate. Read-only: no usage,
+     * expiry or audit writes, so the pre-authentication limiter can ask it before authentication runs.
+     */
+    public open fun isLiveApiKey(rawKey: String): Boolean = findLiveApiKey(rawKey) != null
+
+    /** The read-only live-credential check, returning the live key or null. */
+    internal open fun findLiveApiKey(rawKey: String): ApiKeyInfo? {
+        val hash = hashKey(rawKey)
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            return RLSConnectionCustomizer.withAdminContext(connection) {
+                connection.prepareStatement(FIND_LIVE_KEY_SQL).use { ps ->
+                    ps.setString(1, hash)
+                    ps.executeQuery().use { rs -> if (rs.next()) mapApiKeyInfo(rs) else null }
                 }
             }
         }
@@ -433,6 +491,85 @@ public open class ApiKeyService(
     }
 
     /**
+     * A phone cancelling its enrollment attempt: the attempt id, the key it proposed and its source device must name
+     * one binding exactly. Whether the key installed does not matter; possession of the attempt's key material is
+     * the proof, and the cancellation never withdraws. An attempt with no binding is recorded as cancelled under the
+     * attempt lock, so the enroll request still in flight for it never binds.
+     */
+    internal open fun authenticatePendingEnrollmentAttempt(
+        rawKey: String,
+        attemptId: UUID,
+        sourceRandomDeviceId: String?,
+    ): BoundEnrollmentAttempt? {
+        val hash = proposedMobileApiKeyHash(rawKey) ?: return null
+        return storageResolver.getPlatformStorage().connection.use { connection ->
+            RLSConnectionCustomizer.withAdminContext(connection) {
+                AuditedTransactionBuilder<BoundEnrollmentAttempt?>(connection, auditingManager)
+                    .transaction { conn ->
+                        lockEnrollmentAttempt(conn, attemptId)
+                        val attempts = EnrollmentAttemptRepository(conn)
+                        val bound = attempts.findBoundAttempt(attemptId, hash)
+                        if (bound == null && !isUsedKeyMaterial(conn, hash)) attempts.recordCancelled(setOf(attemptId))
+                        bound?.takeIf {
+                            !sourceRandomDeviceId.isNullOrBlank() && it.randomDeviceId ==
+                                RandomDeviceIdUtils.deriveRandomDeviceId(it.studyId, it.participantId, sourceRandomDeviceId)
+                        }
+                    }
+                    // Recording an attempt id that was never bound touches no participant, key or invitation.
+                    .audit { emptyList() }
+                    .buildAndRun()
+            }
+        }
+    }
+
+    /** Cancels the bound attempt under the device's key-installation lock, so installation commits before or never. */
+    internal open fun cancelPendingEnrollmentAttempt(
+        studyId: UUID,
+        participantId: String,
+        randomDeviceId: UUID,
+        attemptId: UUID,
+        proposedKeyHash: String,
+    ): PendingAttemptCancellation = storageResolver.getPlatformStorage().connection.use { connection ->
+        RLSConnectionCustomizer.withAdminContext(connection) {
+            AuditedTransactionBuilder<PendingAttemptCancellation>(connection, auditingManager)
+                .transaction { conn ->
+                    DeletionStudyFence.shared(conn, studyId)
+                    lockMobileKeyInstallation(conn, randomDeviceId)
+                    val attempts = EnrollmentAttemptRepository(conn)
+                    val attempt = attempts.findBoundAttempt(attemptId, proposedKeyHash)?.takeIf {
+                        it.studyId == studyId && it.participantId == participantId && it.randomDeviceId == randomDeviceId
+                    }
+                    if (attempt == null) PendingAttemptCancellation.UNKNOWN
+                    else attempts.cancelAttempts(studyId, participantId, setOf(attempt.accessCodeId), OffsetDateTime.now())
+                        .let { PendingAttemptCancellation.of(it) }
+                }
+                .audit { outcome ->
+                    if (outcome != PendingAttemptCancellation.CANCELLED) emptyList() else listOf(AuditableEvent(
+                        aclKey = AclKey(studyId),
+                        study = studyId,
+                        eventType = AuditEventType.REVOKE_PARTICIPANT_ACCESS_CODE,
+                        description = "Participant cancelled an enrollment attempt",
+                        data = mapOf(
+                            "participantRef" to LogSanitizer.stableFingerprint(participantId, "participant"),
+                            "deviceRef" to LogSanitizer.stableFingerprint(randomDeviceId.toString(), "device"),
+                        ),
+                    ))
+                }
+                .buildAndRun()
+        }
+    }
+
+    /** True when [rawKey] is the proposed key of a cancelled enrollment attempt: the phone is told so, not a bare 401. */
+    public open fun isCancelledEnrollmentKey(rawKey: String): Boolean {
+        val hash = proposedMobileApiKeyHash(rawKey) ?: return false
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            return RLSConnectionCustomizer.withAdminContext(connection) {
+                EnrollmentAttemptRepository(connection).isCancelledKey(hash)
+            }
+        }
+    }
+
+    /**
      * Persists the withdrawal intent before any status change, deletion scheduling, or key
      * revocation. One key can own exactly one request id; a changed id or tuple is rejected.
      */
@@ -440,7 +577,7 @@ public open class ApiKeyService(
         connection: Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         keyId: UUID,
         requestId: UUID,
     ): MobileWithdrawalIntent = RLSConnectionCustomizer.withAdminTransactionContext(connection) {
@@ -448,129 +585,10 @@ public open class ApiKeyService(
             connection,
             studyId,
             participantId,
-            deviceId,
+            randomDeviceId,
             keyId,
             requestId,
         )
-    }
-
-    private fun mapApiKeyInfo(rs: ResultSet): ApiKeyInfo {
-        val lastUsed = rs.getObject(LAST_USED_AT.name, OffsetDateTime::class.java)
-        // Both LOOKUP_AND_TOUCH_SQL and LIST_API_KEYS_SQL select these columns; SQL NULL
-        // returns null, exceptions here are real failures and should propagate.
-        val participantId = rs.getString("participant_id")
-        val deviceId = rs.getObject("device_id", UUID::class.java)
-        return ApiKeyInfo(
-            keyId = rs.getObject(KEY_ID.name, UUID::class.java),
-            studyId = rs.getObject(STUDY_ID.name, UUID::class.java),
-            prefix = rs.getString(KEY_PREFIX.name),
-            name = rs.getString(NAME.name),
-            scope = ApiKeyScope.valueOf(rs.getString(SCOPE.name)),
-            createdAt = rs.getObject(CREATED_AT.name, OffsetDateTime::class.java),
-            expiresAt = rs.getObject(EXPIRES_AT.name, OffsetDateTime::class.java),
-            lastUsedAt = lastUsed,
-            usageCount = rs.getLong(USAGE_COUNT.name),
-            participantId = participantId,
-            deviceId = deviceId
-        )
-    }
-
-    /**
-     * Issue a per-device API key bound to (studyId, participantId, deviceId).
-     * Called from the mobile enrollment endpoint. Scope is fixed at WRITE.
-     *
-     * Revokes any prior unrevoked key for the same tuple in the same transaction
-     * so a re-enrolling device can't accumulate live credentials over time.
-     * Audit-logged like [createApiKey] so credential issuance leaves a HIPAA trail.
-     */
-    // reason: security-sensitive credential issuance — single atomic revoke+insert+audit transaction;
-    // splitting the auth/crypto path risks the all-in-one-transaction guarantee
-    @Suppress("LongMethod")
-    public open fun createMobileApiKey(
-        studyId: UUID,
-        participantId: String,
-        deviceId: UUID,
-        name: String = "device-${deviceId.toString().take(8)}",
-        expiresInDays: Long = 365
-    ): ApiKeyCreateResponse {
-        validateMobileKeyRequest(name, expiresInDays)
-        val keyId = idGenerationService.getNextId()
-        val rawKey = generateRawKey()
-        val fullKey = "ck_${rawKey.take(PREFIX_LENGTH)}_$rawKey"
-        val prefix = rawKey.take(PREFIX_LENGTH)
-        val hash = hashKey(fullKey)
-        val expiresAt = OffsetDateTime.now(ZoneOffset.UTC).plusDays(expiresInDays)
-        var revokedCount = 0
-
-        val aclKey = AclKey(studyId)
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            RLSConnectionCustomizer.withAdminContext(connection) {
-                AuditedTransactionBuilder<Unit>(connection, auditingManager)
-                    .transaction { conn ->
-                        com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
-                        com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(conn, studyId, participantId)
-                        conn.prepareStatement(REVOKE_PRIOR_MOBILE_KEYS_SQL).use { ps ->
-                            ps.setObject(1, studyId)
-                            ps.setString(2, participantId)
-                            ps.setObject(3, deviceId)
-                            revokedCount = ps.executeUpdate()
-                        }
-                        conn.prepareStatement(INSERT_MOBILE_API_KEY_SQL).use { ps ->
-                            ps.setObject(1, keyId)
-                            ps.setObject(2, studyId)
-                            ps.setString(3, hash)
-                            ps.setString(4, prefix)
-                            ps.setString(5, name)
-                            ps.setString(6, ApiKeyScope.WRITE.name)
-                            ps.setString(7, "device:$deviceId")
-                            ps.setObject(8, expiresAt)
-                            ps.setString(9, participantId)
-                            ps.setObject(10, deviceId)
-                            ps.executeUpdate()
-                        }
-                    }
-                    .audit {
-                        listOf(
-                            AuditableEvent(
-                                aclKey,
-                                eventType = AuditEventType.CREATE_API_KEY,
-                                description = "Mobile API key issued: $name",
-                                study = studyId,
-                                organization = IdConstants.UNINITIALIZED.id,
-                                data = mapOf(
-                                    "keyId" to keyId.toString(),
-                                    "scope" to ApiKeyScope.WRITE.name,
-                                    "participantRef" to LogSanitizer.stableFingerprint(participantId, prefix = "participant"),
-                                    "deviceRef" to LogSanitizer.stableFingerprint(deviceId.toString(), prefix = "device"),
-                                    "priorKeysRevoked" to revokedCount.toString()
-                                )
-                            )
-                        )
-                    }
-                    .buildAndRun()
-            }
-        }
-
-        logger.info(
-            "Mobile API key {} issued for studyRef {} participantRef {} deviceRef {} (revoked {} prior keys)",
-            keyId,
-            LogSanitizer.stableFingerprint(studyId.toString(), prefix = "study"),
-            LogSanitizer.stableFingerprint(participantId, prefix = "participant"),
-            LogSanitizer.stableFingerprint(deviceId.toString(), prefix = "device"),
-            revokedCount
-        )
-        val info = ApiKeyInfo(
-            keyId = keyId,
-            studyId = studyId,
-            prefix = prefix,
-            name = name,
-            scope = ApiKeyScope.WRITE,
-            createdAt = OffsetDateTime.now(ZoneOffset.UTC),
-            expiresAt = expiresAt,
-            participantId = participantId,
-            deviceId = deviceId
-        )
-        return ApiKeyCreateResponse(keyId = keyId, rawKey = fullKey, info = info)
     }
 
     /**
@@ -581,10 +599,10 @@ public open class ApiKeyService(
     public open fun installMobileApiKey(
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         enrollmentAttemptId: UUID,
         proposedApiKey: String,
-        name: String = "device-${deviceId.toString().take(8)}",
+        name: String = "device-${randomDeviceId.toString().take(8)}",
         expiresInDays: Long = 365,
     ): ApiKeyCreateResponse {
         validateMobileKeyRequest(name, expiresInDays)
@@ -596,21 +614,15 @@ public open class ApiKeyService(
             RLSConnectionCustomizer.withAdminContext(connection) {
                 AuditedTransactionBuilder<MobileKeyInstallation>(connection, auditingManager)
                     .transaction { conn ->
-                        com.openlattice.chronicle.storage.DeletionStudyFence.shared(conn, studyId)
-                        com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(conn, studyId, participantId)
-                        lockMobileKeyInstallation(conn, deviceId)
+                        DeletionStudyFence.shared(conn, studyId)
+                        ParticipantErasureFence.requireReusable(conn, studyId, participantId)
+                        lockMobileKeyInstallation(conn, randomDeviceId)
                         if (!isAuthorizedEnrollmentAttempt(
-                                conn,
-                                studyId,
-                                participantId,
-                                deviceId,
-                                enrollmentAttemptId,
-                                proposedHash,
-                            )
-                        ) {
+                                conn, studyId, participantId, randomDeviceId, enrollmentAttemptId, proposedHash,
+                            )) {
                             throw InvalidEnrollmentAttemptException()
                         }
-                        val existing = findMobileApiKey(conn, studyId, participantId, deviceId)
+                        val existing = findMobileApiKey(conn, studyId, participantId, randomDeviceId)
                         if (existing != null && constantTimeHashEquals(existing.hash, proposedHash)) {
                             MobileKeyInstallation(
                                 ApiKeyCreateResponse(existing.info.keyId, proposedApiKey, existing.info),
@@ -624,7 +636,7 @@ public open class ApiKeyService(
                                 conn,
                                 studyId,
                                 participantId,
-                                deviceId,
+                                randomDeviceId,
                                 proposedApiKey,
                                 proposedHash,
                                 prefix,
@@ -633,7 +645,7 @@ public open class ApiKeyService(
                             )
                         }
                     }
-                    .audit { result -> mobileKeyInstallationAudit(result, studyId, participantId, deviceId, name) }
+                    .audit { result -> mobileKeyInstallationAudit(result, studyId, participantId, randomDeviceId, name) }
                     .buildAndRun()
             }
         }
@@ -643,16 +655,16 @@ public open class ApiKeyService(
                 installation.response.keyId,
                 LogSanitizer.stableFingerprint(studyId.toString(), prefix = "study"),
                 LogSanitizer.stableFingerprint(participantId, prefix = "participant"),
-                LogSanitizer.stableFingerprint(deviceId.toString(), prefix = "device"),
+                LogSanitizer.stableFingerprint(randomDeviceId.toString(), prefix = "device"),
                 installation.revokedCount,
             )
         }
         return installation.response
     }
 
-    private fun lockMobileKeyInstallation(connection: java.sql.Connection, deviceId: UUID) {
+    private fun lockMobileKeyInstallation(connection: java.sql.Connection, randomDeviceId: UUID) {
         connection.prepareStatement(LOCK_MOBILE_KEY_INSTALL_SQL).use { statement ->
-            statement.setObject(1, deviceId)
+            statement.setObject(1, randomDeviceId)
             statement.execute()
         }
     }
@@ -668,14 +680,14 @@ public open class ApiKeyService(
         connection: java.sql.Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         enrollmentAttemptId: UUID,
         proposedApiKeyHash: String,
     ): Boolean = connection.prepareStatement(AUTHORIZED_ENROLLMENT_ATTEMPT_SQL).use { statement ->
         statement.setObject(1, studyId)
         statement.setString(2, participantId)
         statement.setObject(3, enrollmentAttemptId)
-        statement.setObject(4, deviceId)
+        statement.setObject(4, randomDeviceId)
         statement.setString(5, proposedApiKeyHash)
         statement.executeQuery().use { resultSet -> resultSet.next() && resultSet.getBoolean(1) }
     }
@@ -691,11 +703,11 @@ public open class ApiKeyService(
         connection: java.sql.Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
     ): StoredMobileApiKey? = connection.prepareStatement(FIND_MOBILE_API_KEY_SQL).use { statement ->
         statement.setObject(1, studyId)
         statement.setString(2, participantId)
-        statement.setObject(3, deviceId)
+        statement.setObject(3, randomDeviceId)
         statement.executeQuery().use { resultSet ->
             if (resultSet.next()) {
                 StoredMobileApiKey(resultSet.getString(KEY_HASH.name), mapApiKeyInfo(resultSet))
@@ -710,7 +722,7 @@ public open class ApiKeyService(
         connection: java.sql.Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         proposedApiKey: String,
         proposedHash: String,
         prefix: String,
@@ -721,7 +733,7 @@ public open class ApiKeyService(
         connection.prepareStatement(REVOKE_PRIOR_MOBILE_KEYS_SQL).use { statement ->
             statement.setObject(1, studyId)
             statement.setString(2, participantId)
-            statement.setObject(3, deviceId)
+            statement.setObject(3, randomDeviceId)
             revokedCount = statement.executeUpdate()
         }
         val keyId = idGenerationService.getNextId()
@@ -734,10 +746,10 @@ public open class ApiKeyService(
             statement.setString(4, prefix)
             statement.setString(5, name)
             statement.setString(6, ApiKeyScope.WRITE.name)
-            statement.setString(7, "device:$deviceId")
+            statement.setString(7, "device:$randomDeviceId")
             statement.setObject(8, expiresAt)
             statement.setString(9, participantId)
-            statement.setObject(10, deviceId)
+            statement.setObject(10, randomDeviceId)
             check(statement.executeUpdate() == 1) { "Mobile API key installation failed" }
         }
         val info = ApiKeyInfo(
@@ -749,7 +761,7 @@ public open class ApiKeyService(
             createdAt = now,
             expiresAt = expiresAt,
             participantId = participantId,
-            deviceId = deviceId,
+            randomDeviceId = randomDeviceId,
         )
         return MobileKeyInstallation(
             ApiKeyCreateResponse(keyId, proposedApiKey, info),
@@ -762,7 +774,7 @@ public open class ApiKeyService(
         installation: MobileKeyInstallation,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         name: String,
     ): List<AuditableEvent> {
         if (!installation.created) return emptyList()
@@ -777,17 +789,12 @@ public open class ApiKeyService(
                     "keyId" to installation.response.keyId.toString(),
                     "scope" to ApiKeyScope.WRITE.name,
                     "participantRef" to LogSanitizer.stableFingerprint(participantId, prefix = "participant"),
-                    "deviceRef" to LogSanitizer.stableFingerprint(deviceId.toString(), prefix = "device"),
+                    "deviceRef" to LogSanitizer.stableFingerprint(randomDeviceId.toString(), prefix = "device"),
                     "priorKeysRevoked" to installation.revokedCount.toString(),
                 ),
             ),
         )
     }
-
-    private fun constantTimeHashEquals(first: String, second: String): Boolean = MessageDigest.isEqual(
-        first.toByteArray(Charsets.US_ASCII),
-        second.toByteArray(Charsets.US_ASCII),
-    )
 
     private fun validateCreateRequest(request: ApiKeyCreateRequest) {
         require(request.name.isNotBlank()) { "API key name is required" }
@@ -797,14 +804,6 @@ public open class ApiKeyService(
         val maxTtlDays = maxTtlDaysForScope(request.scope)
         require(request.expiresInDays <= maxTtlDays) {
             "${request.scope.name} API keys must expire within $maxTtlDays days"
-        }
-    }
-
-    private fun maxTtlDaysForScope(scope: ApiKeyScope): Int {
-        return when (scope) {
-            ApiKeyScope.ADMIN -> MAX_ADMIN_KEY_TTL_DAYS
-            ApiKeyScope.WRITE -> MAX_WRITE_KEY_TTL_DAYS
-            ApiKeyScope.READ_ONLY -> MAX_READ_ONLY_KEY_TTL_DAYS
         }
     }
 
@@ -825,6 +824,23 @@ public open class ApiKeyService(
     )
 }
 
+/** Shared row projection for scoped lookup, authentication and paginated metadata reads. */
+private fun mapApiKeyInfo(rs: ResultSet): ApiKeyInfo = ApiKeyInfo(
+    keyId = rs.getObject(KEY_ID.name, UUID::class.java),
+    studyId = rs.getObject(STUDY_ID.name, UUID::class.java),
+    prefix = rs.getString(KEY_PREFIX.name),
+    name = rs.getString(NAME.name),
+    scope = ApiKeyScope.valueOf(rs.getString(SCOPE.name)),
+    createdAt = rs.getObject(CREATED_AT.name, OffsetDateTime::class.java),
+    expiresAt = rs.getObject(EXPIRES_AT.name, OffsetDateTime::class.java),
+    lastUsedAt = rs.getObject(LAST_USED_AT.name, OffsetDateTime::class.java),
+    usageCount = rs.getLong(USAGE_COUNT.name),
+    participantId = rs.getString("participant_id"),
+    randomDeviceId = rs.getObject("random_device_id", UUID::class.java),
+)
+
+private fun firstApiKeyInfo(rows: ResultSet): ApiKeyInfo? = if (rows.next()) mapApiKeyInfo(rows) else null
+
 public data class MobileWithdrawalIntent(
     val requestId: UUID,
     val alreadyWithdrawn: Boolean,
@@ -843,3 +859,19 @@ internal object MobileWithdrawalRequestIds {
 internal class InvalidWithdrawalRequestException : RuntimeException("Invalid withdrawal request")
 
 internal class InvalidEnrollmentAttemptException : RuntimeException("Invalid enrollment attempt")
+
+/**
+ * A phone's cancel of its attempt: no such binding, this call cancelled it, an earlier call did (an exact replay), or
+ * the attempt completed its enrollment acknowledgment, after which only withdrawal ends the enrollment.
+ */
+internal enum class PendingAttemptCancellation {
+    UNKNOWN, CANCELLED, ALREADY_CANCELLED, NOT_CANCELLABLE;
+
+    companion object {
+        fun of(cancellation: AttemptCancellation): PendingAttemptCancellation = when {
+            cancellation.cancellable == 0 -> NOT_CANCELLABLE
+            cancellation.newlyCancelled > 0 -> CANCELLED
+            else -> ALREADY_CANCELLED
+        }
+    }
+}

@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.services.apikeys
 
+import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditingComponent
@@ -27,19 +28,19 @@ internal class MobileWithdrawalIntentBinder(
             SELECT revoked
             FROM api_keys
             WHERE key_id = ? AND study_id = ?
-              AND participant_id = ? AND device_id = ?
+              AND participant_id = ? AND random_device_id = ?
             FOR UPDATE
         """
 
         private const val LOAD_WITHDRAWAL_INTENT_SQL = """
-            SELECT request_id, study_id, participant_id, device_id, already_withdrawn
+            SELECT request_id, study_id, participant_id, random_device_id, already_withdrawn
             FROM mobile_withdrawal_requests
             WHERE api_key_id = ?
         """
 
         private const val INSERT_WITHDRAWAL_INTENT_SQL = """
             INSERT INTO mobile_withdrawal_requests (
-                request_id, api_key_id, study_id, participant_id, device_id, already_withdrawn
+                request_id, api_key_id, study_id, participant_id, random_device_id, already_withdrawn
             ) VALUES (?, ?, ?, ?, ?, ?)
         """
 
@@ -60,7 +61,7 @@ internal class MobileWithdrawalIntentBinder(
         private const val REVOKE_WITHDRAWAL_KEY_SQL = """
             UPDATE api_keys
             SET revoked = true
-            WHERE key_id = ? AND study_id = ? AND participant_id = ? AND device_id = ?
+            WHERE key_id = ? AND study_id = ? AND participant_id = ? AND random_device_id = ?
         """
     }
 
@@ -68,14 +69,14 @@ internal class MobileWithdrawalIntentBinder(
         connection: Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         keyId: UUID,
         requestId: UUID,
     ): MobileWithdrawalIntent {
         lockParticipant(connection, studyId, participantId)
-        val binding = resolveIntent(connection, studyId, participantId, deviceId, keyId, requestId)
-        revokeWithdrawalKey(connection, studyId, participantId, deviceId, keyId)
-        recordEvents(withdrawalAudit(binding, studyId, participantId, keyId))
+        val binding = resolveIntent(connection, studyId, participantId, randomDeviceId, keyId, requestId)
+        revokeWithdrawalKey(connection, studyId, participantId, randomDeviceId, keyId)
+        auditingManager.recordEvents(connection, withdrawalAudit(binding, studyId, participantId, keyId))
         return MobileWithdrawalIntent(binding.intent.requestId, binding.intent.alreadyWithdrawn)
     }
 
@@ -83,19 +84,19 @@ internal class MobileWithdrawalIntentBinder(
         connection: Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         keyId: UUID,
         requestId: UUID,
     ): WithdrawalBindingResult {
-        val revoked = requireWithdrawalKey(connection, studyId, participantId, deviceId, keyId)
-        resolveExistingIntent(connection, keyId, requestId, studyId, participantId, deviceId)?.let { return it }
+        val revoked = requireWithdrawalKey(connection, studyId, participantId, randomDeviceId, keyId)
+        resolveExistingIntent(connection, keyId, requestId, studyId, participantId, randomDeviceId)?.let { return it }
         if (revoked) invalidWithdrawal()
         val alreadyWithdrawn = RLSConnectionCustomizer.withWithdrawalEnrollmentContext(connection) {
             classifyParticipation(connection, studyId, participantId)
         }
         val intent = insertIntent(
             connection,
-            WithdrawalIntentRecord(requestId, studyId, participantId, deviceId, alreadyWithdrawn),
+            WithdrawalIntentRecord(requestId, studyId, participantId, randomDeviceId, alreadyWithdrawn),
             keyId,
         )
         if (!alreadyWithdrawn) RLSConnectionCustomizer.withWithdrawalEnrollmentContext(connection) {
@@ -110,13 +111,13 @@ internal class MobileWithdrawalIntentBinder(
         requestId: UUID,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
     ): WithdrawalBindingResult? = loadIntent(connection, keyId)?.let { existing ->
         val exact = existing.takeIf {
             it.requestId == requestId &&
                 it.studyId == studyId &&
                 it.participantId == participantId &&
-                it.deviceId == deviceId
+                it.randomDeviceId == randomDeviceId
         } ?: invalidWithdrawal()
         WithdrawalBindingResult(exact, statusChanged = false)
     }
@@ -200,7 +201,7 @@ internal class MobileWithdrawalIntentBinder(
                 aclKey = AclKey(studyId),
                 eventType = AuditEventType.UPDATE_PARTICIPATION_STATUS,
                 description =
-                    "Participant ${com.openlattice.chronicle.audit.AuditService.participantReference(participantId)} withdrew from study $studyId; collection stopped",
+                    "Participant ${AuditService.participantReference(participantId)} withdrew from study $studyId; collection stopped",
                 study = studyId,
                 data = mapOf("status" to ParticipationStatus.NOT_ENROLLED.name, "requestId" to result.intent.requestId.toString()),
             ),
@@ -220,14 +221,14 @@ internal class MobileWithdrawalIntentBinder(
         connection: Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         keyId: UUID,
     ) {
         connection.prepareStatement(REVOKE_WITHDRAWAL_KEY_SQL).use { statement ->
             statement.setObject(1, keyId)
             statement.setObject(2, studyId)
             statement.setString(3, participantId)
-            statement.setObject(4, deviceId)
+            statement.setObject(4, randomDeviceId)
             check(statement.executeUpdate() == 1) { "Withdrawal credential disappeared during revocation" }
         }
     }
@@ -236,13 +237,13 @@ internal class MobileWithdrawalIntentBinder(
         connection: Connection,
         studyId: UUID,
         participantId: String,
-        deviceId: UUID,
+        randomDeviceId: UUID,
         keyId: UUID,
     ): Boolean = connection.prepareStatement(LOCK_WITHDRAWAL_KEY_SQL).use { statement ->
         statement.setObject(1, keyId)
         statement.setObject(2, studyId)
         statement.setString(3, participantId)
-        statement.setObject(4, deviceId)
+        statement.setObject(4, randomDeviceId)
         statement.executeQuery().use { resultSet ->
             if (resultSet.next()) resultSet.getBoolean(REVOKED.name) else invalidWithdrawal()
         }
@@ -257,7 +258,7 @@ internal class MobileWithdrawalIntentBinder(
                         requestId = resultSet.getObject("request_id", UUID::class.java),
                         studyId = resultSet.getObject(STUDY_ID.name, UUID::class.java),
                         participantId = resultSet.getString("participant_id"),
-                        deviceId = resultSet.getObject("device_id", UUID::class.java),
+                        randomDeviceId = resultSet.getObject("random_device_id", UUID::class.java),
                         alreadyWithdrawn = resultSet.getBoolean("already_withdrawn"),
                     )
                 } else {
@@ -276,7 +277,7 @@ internal class MobileWithdrawalIntentBinder(
             statement.setObject(2, keyId)
             statement.setObject(3, intent.studyId)
             statement.setString(4, intent.participantId)
-            statement.setObject(5, intent.deviceId)
+            statement.setObject(5, intent.randomDeviceId)
             statement.setBoolean(6, intent.alreadyWithdrawn)
             check(statement.executeUpdate() == 1) { "Withdrawal intent was not persisted" }
         }
@@ -290,7 +291,7 @@ private data class WithdrawalIntentRecord(
     val requestId: UUID,
     val studyId: UUID,
     val participantId: String,
-    val deviceId: UUID,
+    val randomDeviceId: UUID,
     val alreadyWithdrawn: Boolean,
 )
 

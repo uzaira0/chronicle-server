@@ -26,7 +26,7 @@ import java.util.Date
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * HIPAA-2028 W3 — proves the MFA enforcement matrix end-to-end through the production JWT
+ * Proves the MFA enforcement matrix end-to-end through the production JWT
  * validator chain ([buildJwtValidatorChain]). Each token is HS256-signed and decoded by a
  * [NimbusJwtDecoder] configured exactly as [com.openlattice.chronicle.pods.servlet.ChronicleServerSecurityPod]
  * configures it, so a rejected token raises the same [JwtValidationException] the bearer-token
@@ -41,8 +41,6 @@ import javax.crypto.spec.SecretKeySpec
  *  true        | configured approved acr      | 200
  *  true        | lone otp/hwk or absent       | 401
  * ```
- *
- * HIPAA §164.312(d) (person/entity authentication — MFA).
  */
 class MfaEnforcementMatrixTest {
 
@@ -60,9 +58,10 @@ class MfaEnforcementMatrixTest {
         amr: Any?,
         acr: Any? = null,
         issuer: String = ISSUER,
+        subject: String? = "researcher",
     ): String {
         val claims = JWTClaimsSet.Builder()
-            .subject("researcher")
+            .subject(subject)
             .issuer(issuer)
             .audience(AUDIENCE)
             .issueTime(Date.from(Instant.now().minusSeconds(60)))
@@ -92,6 +91,30 @@ class MfaEnforcementMatrixTest {
                 )
             )
         }
+
+    /** A token's identity is its subject: one without a non-blank `sub` never authenticates (HTTP 401). */
+    @Test
+    fun aTokenWithoutANonBlankSubjectIsRejected() {
+        SecurityContextHolder.clearContext()
+        try {
+            for (subject in listOf(null, "", "   ")) {
+                val token = mint(amr = null, subject = subject)
+                assertThrows("subject <$subject>", JwtValidationException::class.java) {
+                    decoderFor(requireMfa = false).decode(token)
+                }
+                val request = MockHttpServletRequest("GET", "/chronicle/v3/study")
+                request.addHeader("Authorization", "Bearer $token")
+                val response = MockHttpServletResponse()
+                val chain = MockFilterChain()
+                bearerFilter(requireMfa = false).doFilter(request, response, chain)
+                assertEquals("subject <$subject>", 401, response.status)
+                assertNull(chain.request)
+            }
+        } finally {
+            SecurityContextHolder.clearContext()
+        }
+        assertEquals("researcher", decoderFor(requireMfa = false).decode(mint(amr = null)).subject)
+    }
 
     /** Decodes successfully — the resource server would let the request proceed (HTTP 200). */
     private fun assertAccepted(
@@ -156,7 +179,7 @@ class MfaEnforcementMatrixTest {
         assertRejected(requireMfa = true, amr = listOf("hwk"))
 
     @Test
-    fun `legacy access token without assurance is rejected by mfa chain`() =
+    fun `access token without assurance is rejected by mfa chain`() =
         assertRejected(requireMfa = true, amr = null)
 
     @Test

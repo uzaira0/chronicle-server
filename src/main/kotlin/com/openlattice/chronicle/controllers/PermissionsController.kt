@@ -25,13 +25,10 @@ import com.geekbeast.controllers.exceptions.ForbiddenException
 import com.geekbeast.streams.StreamUtil
 import com.google.common.collect.ImmutableList
 import com.google.common.collect.ImmutableMap
-import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.audit.logWithContext
-import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AccessCheck
 import com.openlattice.chronicle.authorization.Ace
@@ -57,7 +54,6 @@ import jakarta.validation.Valid
 import jakarta.validation.constraints.Size
 import org.slf4j.LoggerFactory
 import org.springframework.http.MediaType
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestMethod
@@ -69,8 +65,6 @@ import jakarta.inject.Inject
 
 @RestController
 @RequestMapping(PermissionsApi.CONTROLLER)
-@Validated
-@RateLimit(type = RateLimitType.SENSITIVE)
 @SuppressFBWarnings(
     value = [
         "NP_PARAMETER_MUST_BE_NONNULL_BUT_MARKED_AS_NULLABLE",
@@ -90,13 +84,6 @@ public open class PermissionsController @Inject constructor(
     @Timed
     @RequestMapping(method = [RequestMethod.PATCH], consumes = [MediaType.APPLICATION_JSON_VALUE])
     override fun updateAcl(@Valid @RequestBody req: AclData): OK {
-        auditService.logWithContext {
-            action(AuditAction.PERMISSION_CHANGE)
-            resourceType("Permission")
-            resourceId(req.acl.aclKey.first())
-            success(true)
-            additionalData(mapOf("action" to req.action.name))
-        }
         return updateAcls(ImmutableList.of(req))
     }
 
@@ -110,27 +97,27 @@ public open class PermissionsController @Inject constructor(
     @Suppress("TooGenericExceptionCaught")
     override fun updateAcls(@Valid @RequestBody @Size(max = 10_000) req: List<AclData>): OK {
         val requestsByActionType = req.groupBy({ it.action }) { it.acl }
-
-        /*
-         * Ensure that the user has alter permissions on Acl permissions being modified
-         */
-        val unauthorizedAclKeys: Set<AclKey> = authorizationManager.accessChecksForPrincipals(
-            requestsByActionType.entries
-                .filter { it.key != Action.REQUEST }
-                .flatMap { it.value }
-                .map { acl -> AccessCheck(acl.aclKey, EnumSet.of(Permission.OWNER)) }
-                .toSet(),
-            Principals.getCurrentPrincipals())
-            .filter { authorization -> !(authorization.permissions[Permission.OWNER] ?: false) }
-            .map(Authorization::aclKey)
-            .toSet()
-        if (unauthorizedAclKeys.isNotEmpty()) {
-            throw ForbiddenException(
-                "Only owner of securable objects " + unauthorizedAclKeys +
-                        " can access other users' access rights."
-            )
-        }
+        val singleResourceId = req.singleOrNull()?.acl?.aclKey?.first()
         try {
+            /*
+             * Ensure that the user has alter permissions on Acl permissions being modified
+             */
+            val unauthorizedAclKeys: Set<AclKey> = authorizationManager.accessChecksForPrincipals(
+                requestsByActionType.entries
+                    .filter { it.key != Action.REQUEST }
+                    .flatMap { it.value }
+                    .map { acl -> AccessCheck(acl.aclKey, EnumSet.of(Permission.OWNER)) }
+                    .toSet(),
+                Principals.getCurrentPrincipals())
+                .filter { authorization -> !(authorization.permissions[Permission.OWNER] ?: false) }
+                .map(Authorization::aclKey)
+                .toSet()
+            if (unauthorizedAclKeys.isNotEmpty()) {
+                throw ForbiddenException(
+                    "Only owner of securable objects " + unauthorizedAclKeys +
+                            " can access other users' access rights."
+                )
+            }
             requestsByActionType.forEach { (action: Action, acls: List<Acl>) ->
                 val eventType = when (action) {
                     Action.ADD -> {
@@ -150,19 +137,21 @@ public open class PermissionsController @Inject constructor(
                         throw BadRequestException("Invalid action specified: $action")
                     }
                 }
-                recordEvents(createAuditableEvents(acls, eventType))
+                recordCommittedEvents(createAuditableEvents(acls, eventType))
             }
             auditService.logWithContext {
-                action(AuditAction.PERMISSION_CHANGE)
+                action(AuditEventType.PERMISSION_CHANGE)
                 resourceType("Permission")
+                resourceId(singleResourceId)
                 success(true)
                 additionalData(mapOf("aclCount" to req.size))
             }
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.PERMISSION_CHANGE)
+                action(AuditEventType.PERMISSION_CHANGE)
                 resourceType("Permission")
-                failed(ex.message ?: "ACL update failed")
+                resourceId(singleResourceId)
+                success(false)
             }
             throw ex
         }
@@ -184,7 +173,7 @@ public open class PermissionsController @Inject constructor(
         }
         val acl = authorizationManager.getAllSecurableObjectPermissions(aclKey)
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("Permission")
             resourceId(aclKey.first())
             success(true)
@@ -203,7 +192,7 @@ public open class PermissionsController @Inject constructor(
         ensureOwnerAccess(aclKeys)
         val acls = authorizationManager.getAllSecurableObjectPermissions(aclKeys)
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("Permission")
             success(true)
             additionalData(mapOf("aclKeyCount" to aclKeys.size))
@@ -225,7 +214,7 @@ public open class PermissionsController @Inject constructor(
     override fun getAclExplanation(@Valid @RequestBody aclKey: AclKey): Collection<AclExplanation> {
         ensureOwnerAccess(aclKey)
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("Permission")
             resourceId(aclKey.first())
             success(true)

@@ -21,26 +21,15 @@
 
 package com.openlattice.chronicle.users
 
-import java.time.Instant
-
 /**
  *
  * @author Matthew Tamayo-Rios &lt;matthew@openlattice.com&gt;
  */
 public interface UserListingService {
     /**
-     * Retrieves all users as a sequence.
-     */
-    public fun getAllUsers() : Sequence<ChronicleUserProfile>
-
-    /**
-     * Retrieves updated users where update was happening after [from] (exclusive) and at or before [to] (inclusive)
-     * as a sequence.
-     */
-    public fun getUpdatedUsers(from: Instant, to: Instant) : Sequence<ChronicleUserProfile>
-
-    /**
-     * Retrieves a single user by id
+     * Retrieves a single user by id.
+     *
+     * @throws NoSuchElementException when the listing has no user with [userId]
      */
     public fun getUser(userId: String): ChronicleUserProfile
 

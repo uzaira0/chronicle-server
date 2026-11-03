@@ -1,6 +1,10 @@
 package com.openlattice.chronicle.filters
 
 import com.openlattice.chronicle.authorization.JwtBlocklist
+import com.openlattice.chronicle.generated.ChronicleHeaders
+import org.springframework.security.oauth2.jwt.Jwt
+import java.time.Clock
+import java.time.Duration
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -17,73 +21,70 @@ import org.springframework.web.filter.OncePerRequestFilter
  * allow explicitly revoked credentials during a blocklist outage.
  */
 public class JwtBlocklistFilter(private val jwtBlocklist: JwtBlocklist,
-    private val idleWindow: java.time.Duration = java.time.Duration.ofMinutes(15),
-    private val clock: java.time.Clock = java.time.Clock.systemUTC()) : OncePerRequestFilter() {
+    private val idleWindow: Duration = Duration.ofMinutes(15),
+    private val clock: Clock = Clock.systemUTC()) : OncePerRequestFilter() {
 
     // Use a different name than 'logger' to avoid KT-56386 clash with OncePerRequestFilter.logger
     private val log = LoggerFactory.getLogger(JwtBlocklistFilter::class.java)
 
-    // reason: JWT-revocation security filter — the nested checks (JTI block, value-hash block,
-    // global revoke-before timestamp) are sequential token-validation gates that must each be able
-    // to reject-and-return; restructuring this auth-critical path risks altering the revocation order
-    @Suppress("NestedBlockDepth", "TooGenericExceptionCaught")
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
-        filterChain: FilterChain
+        filterChain: FilterChain,
     ) {
         val authentication = SecurityContextHolder.getContext().authentication
-
-        if (authentication is JwtAuthenticationToken) {
-            try {
-                val jwt = authentication.token
-
-                val rejection = jwtBlocklist.credentialRejectionReason(
-                    jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt, idleWindow, clock::instant, subject = jwt.subject,
-                )
-                if (rejection != null) {
-                    rejectToken(response, rejection)
-                    return
-                }
-                jwtBlocklist.sessionIdleDeadline(jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt, idleWindow)
-                    ?.let { response.setHeader(JwtBlocklist.IDLE_DEADLINE_HEADER, it.toEpochMilli().toString()) }
-
-                // Check "revoke all before" timestamp
-                val revokeAllBefore = jwtBlocklist.getRevokeAllTimestamp()
-                if (revokeAllBefore != null) {
-                    val issuedAt = jwt.issuedAt
-                    // The cutoff and `iat` are both truncated to whole seconds, so a token minted
-                    // in the same second as the revocation must also be rejected.
-                    if (issuedAt != null && !issuedAt.isAfter(revokeAllBefore)) {
-                        rejectToken(response, "Token was issued before a global revocation event")
-                        return
-                    }
-                }
-            } catch (ex: RuntimeException) {
-                log.error("JWT blocklist check failed, rejecting request", ex)
-                rejectRevocationUnavailable(response)
-                return
-            }
-        }
-
+        if (authentication is JwtAuthenticationToken && !validateToken(request, response, authentication.token)) return
         filterChain.doFilter(request, response)
     }
 
-    private fun rejectToken(response: HttpServletResponse, reason: String) {
+    // Revocation infrastructure failures must reject the credential before dispatching the request.
+    @Suppress("TooGenericExceptionCaught")
+    private fun validateToken(request: HttpServletRequest, response: HttpServletResponse, jwt: Jwt): Boolean {
+        try {
+            val rejection = rejectionReason(request, jwt)
+            if (rejection != null) {
+                rejectToken(request, response, rejection)
+                return false
+            }
+            jwtBlocklist.sessionIdleDeadline(jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt, idleWindow)
+                ?.let { response.setHeader(JwtBlocklist.IDLE_DEADLINE_HEADER, it.toEpochMilli().toString()) }
+            val cutoff = jwtBlocklist.getRevokeAllTimestamp()
+            val issuedAt = jwt.issuedAt
+            if (cutoff != null && issuedAt != null && !issuedAt.isAfter(cutoff)) {
+                rejectToken(request, response, "Token was issued before a global revocation event")
+                return false
+            }
+            return true
+        } catch (exception: RuntimeException) {
+            log.error("JWT blocklist check failed, rejecting request", exception)
+            rejectRevocationUnavailable(response)
+            return false
+        }
+    }
+
+    private fun rejectionReason(request: HttpServletRequest, jwt: Jwt): String? {
+        val rejection = jwtBlocklist.credentialRejectionReason(
+            jwt.id, jwt.tokenValue, jwt.issuedAt, jwt.expiresAt, idleWindow, clock::instant, subject = jwt.subject,
+        )
+        if (rejection != null) return rejection
+        val age = request.getHeader(ChronicleHeaders.USER_ACTIVITY_HEADER)?.toLongOrNull() ?: return null
+        val timing = JwtBlocklist.ActivityTiming(clock.instant(), Duration.ofMillis(age))
+        if (!timing.isWithin(idleWindow)) return null
+        val renewed = jwtBlocklist.touchActivity(
+            jwtBlocklist.sessionActivityIdentity(jwt.id, jwt.tokenValue), jwt.issuedAt, jwt.expiresAt, idleWindow, timing,
+        )
+        return if (renewed) null else JwtBlocklist.SESSION_IDLE_EXPIRED_MESSAGE
+    }
+
+    private fun rejectToken(request: HttpServletRequest, response: HttpServletResponse, reason: String) {
         SecurityContextHolder.clearContext()
-        response.status = HttpServletResponse.SC_UNAUTHORIZED
-        response.contentType = "application/json"
-        response.writer.write("""{"error":"token_revoked","message":"$reason"}""")
-        response.writer.flush()
+        if (NativeExportDownload.redirectForExpiredForm(request, response)) return
+        writeFilterError(response, HttpServletResponse.SC_UNAUTHORIZED, reason, "token_revoked")
     }
 
     private fun rejectRevocationUnavailable(response: HttpServletResponse) {
         SecurityContextHolder.clearContext()
-        response.status = HttpServletResponse.SC_SERVICE_UNAVAILABLE
-        response.contentType = "application/json"
-        response.writer.write(
-            """{"error":"token_revocation_unavailable","message":"Token revocation status could not be verified"}"""
-        )
-        response.writer.flush()
+        writeFilterError(response, HttpServletResponse.SC_SERVICE_UNAVAILABLE,
+            "Token revocation status could not be verified", "token_revocation_unavailable")
     }
 }

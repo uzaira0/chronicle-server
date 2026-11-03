@@ -1,5 +1,7 @@
 package com.openlattice.chronicle.controllers
 
+import org.junit.Assert.assertThrows
+
 import com.geekbeast.controllers.exceptions.ForbiddenException
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.auditing.AuditingManager
@@ -30,7 +32,8 @@ class PermissionsControllerTest {
     private val securePrincipalsManager = Mockito.mock(SecurePrincipalsManager::class.java)
     private val auditingManager = Mockito.mock(AuditingManager::class.java)
     private val authorizationManager = Mockito.mock(AuthorizationManager::class.java)
-    private val auditService = Mockito.mock(AuditService::class.java)
+    private val audit = com.openlattice.chronicle.audit.RecordingAuditingManager()
+    private val auditService = AuditService(audit)
 
     private lateinit var controller: PermissionsController
 
@@ -48,10 +51,7 @@ class PermissionsControllerTest {
         TestSecurityUtils.clearSecurityContext()
     }
 
-    @Test
-    fun testControllerConstructsSuccessfully() {
-        assertNotNull(controller)
-    }
+    
 
     @Test
     fun testControllerAcceptsDependencies() {
@@ -69,6 +69,26 @@ class PermissionsControllerTest {
     }
 
     // --- updateAcl ---
+
+    @Test
+    fun deniedSingleAclUpdateEmitsOnlyAFailedPermissionChange() {
+        val aclKey = AclKey(UUID.randomUUID())
+        val request = AclData(Acl(aclKey, emptyList()), Action.ADD)
+        val authorization = Mockito.mock(Authorization::class.java)
+        Mockito.`when`(authorization.permissions).thenReturn(mapOf(Permission.OWNER to false))
+        Mockito.`when`(authorization.aclKey).thenReturn(aclKey)
+        Mockito.`when`(authorizationManager.accessChecksForPrincipals(kAny(), kAny()))
+            .thenReturn(listOf(authorization))
+
+        org.junit.Assert.assertThrows(ForbiddenException::class.java) { controller.updateAcl(request) }
+
+        val event = audit.events.single()
+        assertEquals(com.openlattice.chronicle.auditing.AuditEventType.PERMISSION_CHANGE, event.eventType)
+        assertEquals(aclKey.first().toString(), event.data["resourceId"])
+        org.junit.Assert.assertEquals(false, event.data["success"])
+        verify(authorizationManager, Mockito.never()).addPermissions(org.mockito.kotlin.any())
+        Mockito.verifyNoInteractions(auditingManager)
+    }
 
     @Test
     fun testUpdateAclDelegatesToUpdateAcls() {
@@ -164,7 +184,7 @@ class PermissionsControllerTest {
         verify(authorizationManager).setPermissions(Mockito.anyList<Acl>())
     }
 
-    @Test(expected = ForbiddenException::class)
+    @Test
     fun testUpdateAclsThrowsForbiddenWhenNotOwner() {
         val aclKey = AclKey(UUID.randomUUID())
         val acl = Acl(aclKey, emptyList())
@@ -177,7 +197,9 @@ class PermissionsControllerTest {
             kAny(), kAny()
         )).thenReturn(listOf(authorization))
 
-        controller.updateAcls(listOf(aclData))
+        assertThrows(ForbiddenException::class.java) {
+            controller.updateAcls(listOf(aclData))
+        }
     }
 
     @Test
@@ -203,7 +225,7 @@ class PermissionsControllerTest {
         assertSame(acl, result)
     }
 
-    @Test(expected = ForbiddenException::class)
+    @Test
     fun testGetAclThrowsForbiddenWhenNotOwner() {
         val aclKey = AclKey(UUID.randomUUID())
 
@@ -211,7 +233,9 @@ class PermissionsControllerTest {
             kAny(), kAny(), kAny()
         )).thenReturn(false)
 
-        controller.getAcl(aclKey)
+        assertThrows(ForbiddenException::class.java) {
+            controller.getAcl(aclKey)
+        }
     }
 
     // --- getAcls ---
@@ -279,9 +303,5 @@ class PermissionsControllerTest {
         assertTrue(result.isEmpty())
     }
 
-    @Test
-    fun testControllerImplementsAuthorizingComponent() {
-        assertNotNull(controller.authorizationManager)
-        assertNotNull(controller.auditingManager)
-    }
+    
 }

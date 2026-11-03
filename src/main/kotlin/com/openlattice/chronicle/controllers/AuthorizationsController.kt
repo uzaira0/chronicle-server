@@ -21,8 +21,6 @@ package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AccessCheck
 import com.openlattice.chronicle.authorization.Authorization
 import com.openlattice.chronicle.authorization.AuthorizationManager
@@ -34,7 +32,6 @@ import com.openlattice.chronicle.authorization.SecurableObjectType
 import com.openlattice.chronicle.authorization.principals.Principals
 import jakarta.validation.Valid
 import org.springframework.http.MediaType
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestMethod
@@ -46,8 +43,6 @@ import jakarta.inject.Inject
 
 @RestController
 @RequestMapping(AuthorizationsApi.CONTROLLER)
-@Validated
-@RateLimit(type = RateLimitType.DEFAULT)
 public open class AuthorizationsController @Inject constructor(
     override val auditingManager: AuditingManager,
     override val authorizationManager: AuthorizationManager

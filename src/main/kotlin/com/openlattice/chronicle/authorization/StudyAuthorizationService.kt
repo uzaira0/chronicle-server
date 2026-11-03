@@ -16,6 +16,8 @@
  */
 package com.openlattice.chronicle.authorization
 
+import com.openlattice.chronicle.auditing.AuditObservation
+
 import com.geekbeast.controllers.exceptions.ForbiddenException
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
@@ -27,7 +29,7 @@ import java.util.*
 
 /**
  * Service responsible for enforcing role-based access control (RBAC) and study-level isolation.
- * Implements HIPAA's "minimum necessary" principle by ensuring users only access data they need for their role.
+ * Users reach only the data their role needs.
  *
  * This service provides:
  * - Study-level access control based on user roles
@@ -48,16 +50,6 @@ public open class StudyAuthorizationService(
 
     public companion object {
         private val logger = LoggerFactory.getLogger(StudyAuthorizationService::class.java)
-    }
-
-    /**
-     * Checks if the current user can access a study (read access).
-     *
-     * @param studyId The UUID of the study to check access for.
-     * @return true if the user can access the study, false otherwise.
-     */
-    public fun canAccessStudy(studyId: UUID): Boolean {
-        return canAccessStudy(Principals.getCurrentPrincipals(), studyId)
     }
 
     /**
@@ -83,16 +75,6 @@ public open class StudyAuthorizationService(
     }
 
     /**
-     * Checks if the current user can modify a study (write access).
-     *
-     * @param studyId The UUID of the study to check access for.
-     * @return true if the user can modify the study, false otherwise.
-     */
-    public fun canModifyStudy(studyId: UUID): Boolean {
-        return canModifyStudy(Principals.getCurrentPrincipals(), studyId)
-    }
-
-    /**
      * Checks if a set of principals can modify a study (write access).
      *
      * @param principals The set of principals to check.
@@ -112,17 +94,6 @@ public open class StudyAuthorizationService(
             principals,
             WRITE_PERMISSION
         )
-    }
-
-    /**
-     * Checks if the current user can manage participants in a study.
-     * Requires WRITE permission on the study.
-     *
-     * @param studyId The UUID of the study to check access for.
-     * @return true if the user can manage participants, false otherwise.
-     */
-    public fun canManageParticipants(studyId: UUID): Boolean {
-        return canManageParticipants(Principals.getCurrentPrincipals(), studyId)
     }
 
     /**
@@ -148,17 +119,6 @@ public open class StudyAuthorizationService(
     }
 
     /**
-     * Checks if the current user can export data from a study.
-     * Requires READ permission on the study.
-     *
-     * @param studyId The UUID of the study to check access for.
-     * @return true if the user can export data, false otherwise.
-     */
-    public fun canExportData(studyId: UUID): Boolean {
-        return canExportData(Principals.getCurrentPrincipals(), studyId)
-    }
-
-    /**
      * Checks if a set of principals can export data from a study.
      *
      * @param principals The set of principals to check.
@@ -178,17 +138,6 @@ public open class StudyAuthorizationService(
             principals,
             READ_PERMISSION
         )
-    }
-
-    /**
-     * Checks if the current user owns a study.
-     * Required for destructive operations like deleting the study.
-     *
-     * @param studyId The UUID of the study to check ownership for.
-     * @return true if the user owns the study, false otherwise.
-     */
-    public fun ownsStudy(studyId: UUID): Boolean {
-        return ownsStudy(Principals.getCurrentPrincipals(), studyId)
     }
 
     /**
@@ -321,8 +270,7 @@ public open class StudyAuthorizationService(
                 currentUser.title,
                 currentUser.principal.id
             )
-            auditingManager.recordEvents(
-                listOf(
+            auditingManager.recordObservations(AuditObservation.Read(listOf(
                     AuditableEvent(
                         aclKey = AclKey(currentUser.id),
                         eventType = AuditEventType.AUTHORIZATION_CHECK_FAILED,
@@ -332,8 +280,7 @@ public open class StudyAuthorizationService(
                             "userId" to currentUser.principal.id
                         )
                     )
-                )
-            )
+                )))
             throw ForbiddenException("System administrator access required")
         }
     }
@@ -377,35 +324,6 @@ public open class StudyAuthorizationService(
     }
 
     /**
-     * Gets the effective role for the current user on a specific study.
-     *
-     * @param studyId The UUID of the study.
-     * @return The ChronicleStudyRole for the user on this study, or null if no access.
-     */
-    public fun getEffectiveRole(studyId: UUID): ChronicleStudyRole? {
-        val principals = Principals.getCurrentPrincipals()
-
-        // Check for system admin first
-        if (isSystemAdmin(principals)) {
-            return ChronicleStudyRole.SYSTEM_ADMIN
-        }
-
-        val aclKey = AclKey(studyId)
-
-        // Check for ownership (study admin)
-        if (authorizationManager.checkIfHasPermissions(aclKey, principals, OWNER_PERMISSION)) {
-            return ChronicleStudyRole.STUDY_ADMIN
-        }
-
-        // Check for read access (researcher)
-        if (authorizationManager.checkIfHasPermissions(aclKey, principals, READ_PERMISSION)) {
-            return ChronicleStudyRole.RESEARCHER
-        }
-
-        return null
-    }
-
-    /**
      * Logs an unauthorized access attempt to the audit log.
      *
      * @param studyId The UUID of the study that was accessed.
@@ -421,8 +339,7 @@ public open class StudyAuthorizationService(
             permission.name
         )
 
-        auditingManager.recordEvents(
-            listOf(
+        auditingManager.recordObservations(AuditObservation.Read(listOf(
                 AuditableEvent(
                     aclKey = AclKey(studyId),
                     securablePrincipalId = currentUser.id,
@@ -436,7 +353,6 @@ public open class StudyAuthorizationService(
                         "userName" to currentUser.title
                     )
                 )
-            )
-        )
+            )))
     }
 }

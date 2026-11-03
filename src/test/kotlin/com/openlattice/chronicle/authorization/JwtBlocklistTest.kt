@@ -1,12 +1,16 @@
 package com.openlattice.chronicle.authorization
 
-import com.hazelcast.config.Config
+import com.openlattice.chronicle.storage.ResolvedStorage
+
+import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.contract.JwtSessionContract
 import com.hazelcast.core.Hazelcast
 import com.hazelcast.core.HazelcastInstance
 import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.openlattice.chronicle.contract.ChronicleContractTestSchema
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.upgrades.FlywayMigrationService
+import com.openlattice.chronicle.storage.rls.RLSDataSources
+import com.openlattice.chronicle.testing.isolatedHazelcastConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.junit.AfterClass
 import org.junit.Assert.assertEquals
@@ -18,6 +22,7 @@ import org.junit.BeforeClass
 import org.junit.Test
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
+import org.testcontainers.containers.PostgreSQLContainer
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.*
@@ -31,9 +36,7 @@ class JwtBlocklistTest {
         @BeforeClass
         @JvmStatic
         fun setUp() {
-            val config = Config()
-            config.clusterName = "jwt-blocklist-test-${UUID.randomUUID()}"
-            config.networkConfig.join.multicastConfig.isEnabled = false
+            val config = isolatedHazelcastConfig("jwt-blocklist-test")
             hz = Hazelcast.newHazelcastInstance(config)
             blocklist = JwtBlocklist(hz)
         }
@@ -64,9 +67,12 @@ class JwtBlocklistTest {
         val absolute = now.plusSeconds(3600)
         val window = java.time.Duration.ofMinutes(5)
         assertNull(blocklist.credentialRejectionReason(jti, token, issued, absolute, window, { now }))
-        assertEquals(now.plus(window), blocklist.sessionIdleDeadline(jti, token, issued, absolute, window))
+        assertEquals(issued.plus(window), blocklist.sessionIdleDeadline(jti, token, issued, absolute, window))
         val renewed = now.plusSeconds(120)
         assertNull(blocklist.credentialRejectionReason(jti, token, issued, absolute, window, { renewed }))
+        assertEquals(issued.plus(window), blocklist.sessionIdleDeadline(jti, token, issued, absolute, window))
+        assertTrue(blocklist.touchActivity(blocklist.sessionActivityIdentity(jti, token), issued, absolute, window,
+            JwtBlocklist.ActivityTiming(renewed)))
         assertEquals(renewed.plus(window), blocklist.sessionIdleDeadline(jti, token, issued, absolute, window))
         assertEquals(absolute, blocklist.sessionIdleDeadline(jti, token, issued, absolute, java.time.Duration.ofHours(2)))
     }
@@ -117,9 +123,9 @@ class JwtBlocklistTest {
     }
 
     @Test
-    fun testRevokeAllBeforeSetsTimestamp() {
+    fun testRevokeAllWrittenByRestoreIsRead() {
         val timestamp = Instant.now()
-        blocklist.revokeAllBefore(timestamp)
+        HazelcastMap.JWT_BLOCKLIST.getMap(hz).set(JwtSessionContract.revokeAllBeforeKey, timestamp.epochSecond)
 
         val retrieved = blocklist.getRevokeAllTimestamp()
         assertNotNull("Revoke-all timestamp should be set", retrieved)
@@ -129,9 +135,7 @@ class JwtBlocklistTest {
     @Test
     fun testGetRevokeAllTimestampReturnsNullWhenNotSet() {
         // Use a fresh Hazelcast instance with its own blocklist to ensure no prior state
-        val freshConfig = Config()
-        freshConfig.clusterName = "jwt-blocklist-fresh-${UUID.randomUUID()}"
-        freshConfig.networkConfig.join.multicastConfig.isEnabled = false
+        val freshConfig = isolatedHazelcastConfig("jwt-blocklist-fresh")
         val freshHz = Hazelcast.newHazelcastInstance(freshConfig)
         try {
             val freshBlocklist = JwtBlocklist(freshHz)
@@ -142,20 +146,17 @@ class JwtBlocklistTest {
     }
 
     @Test
-    fun testGetBlockedCountIncrementsAfterBlocking() {
-        val freshConfig = Config()
-        freshConfig.clusterName = "jwt-blocklist-count-${UUID.randomUUID()}"
-        freshConfig.networkConfig.join.multicastConfig.isEnabled = false
+    fun testEachBlockedTokenIsBlockedIndependently() {
+        val freshConfig = isolatedHazelcastConfig("jwt-blocklist-count")
         val freshHz = Hazelcast.newHazelcastInstance(freshConfig)
         try {
             val freshBlocklist = JwtBlocklist(freshHz)
-            assertEquals(0L, freshBlocklist.getBlockedCount())
-
             freshBlocklist.blockToken("count-test-1", Instant.now().plusSeconds(3600))
-            assertEquals(1L, freshBlocklist.getBlockedCount())
+            assertTrue(freshBlocklist.isBlocked("count-test-1"))
+            assertFalse(freshBlocklist.isBlocked("count-test-2"))
 
             freshBlocklist.blockToken("count-test-2", Instant.now().plusSeconds(3600))
-            assertEquals(2L, freshBlocklist.getBlockedCount())
+            assertTrue(freshBlocklist.isBlocked("count-test-2"))
         } finally {
             freshHz.shutdown()
         }
@@ -173,14 +174,53 @@ class JwtBlocklistTest {
             java.time.Duration.ofMinutes(15), subject = "unrelated"))
     }
 
+    @Test fun blockTokenByValueReportsWhetherTheTokenWasBlocked() {
+        val live = "value-${UUID.randomUUID()}"
+        assertTrue(blocklist.blockTokenByValue(live, Instant.now().plusSeconds(3600)))
+        assertTrue(blocklist.isBlockedByValue(live))
+        val expired = "expired-value-${UUID.randomUUID()}"
+        assertFalse(blocklist.blockTokenByValue(expired, Instant.now().minusSeconds(1)))
+        assertFalse(blocklist.isBlockedByValue(expired))
+    }
+
+    @Test fun privilegeCutoffRejectsATokenIssuedAtTheCutoffOrWithoutAnIssueTime() {
+        val cutoff = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+        val subject = "boundary-${UUID.randomUUID()}"
+        blocklist.revokePrincipalBefore(subject, cutoff)
+        for (issued in listOf(cutoff, null)) {
+            assertEquals("Token was issued before a privilege change", blocklist.credentialRejectionReason(
+                null, "boundary-${UUID.randomUUID()}", issued, cutoff.plusSeconds(3600), java.time.Duration.ofMinutes(15),
+                now = { cutoff.plusSeconds(1) }, subject = subject,
+            ))
+        }
+    }
+
+    @Test fun aSessionWithoutAnIssueTimeOrBeforeItsExpiryIsNeverActive() {
+        val now = Instant.now()
+        val window = java.time.Duration.ofMinutes(15)
+        assertFalse(blocklist.isSessionActive("no-issue-${UUID.randomUUID()}", null, now.plusSeconds(60), window, now))
+        assertFalse(blocklist.isSessionActive("no-expiry-${UUID.randomUUID()}", now, null, window, now))
+        assertFalse(blocklist.isSessionActive("at-expiry-${UUID.randomUUID()}", now.minusSeconds(60), now, window, now))
+    }
+
+    @Test fun activityIsKeyedByANonBlankJtiElseByTheTokenValue() {
+        assertEquals("JTI:abc", blocklist.sessionActivityIdentity("abc", "token-value"))
+        assertEquals("token-value", blocklist.sessionActivityIdentity(" ", "token-value"))
+        assertEquals("token-value", blocklist.sessionActivityIdentity(null, "token-value"))
+    }
+
+    @Test fun noIdleDeadlineWithoutAnIssueOrExpiryTime() {
+        val window = java.time.Duration.ofMinutes(15)
+        assertNull(blocklist.sessionIdleDeadline(null, "deadline-${UUID.randomUUID()}", null, Instant.now().plusSeconds(60), window))
+        assertNull(blocklist.sessionIdleDeadline(null, "deadline-${UUID.randomUUID()}", Instant.now(), null, window))
+    }
+
     @Test fun durableWritesPurgeOnlyABoundedBatchOfExpiredState() {
         val limit = JwtBlocklist.EXPIRED_STATE_PURGE_LIMIT
         ChronicleContractTestSchema.prodPostgresContainer("jwt_state_cleanup").use { pg ->
             pg.start()
             ChronicleContractTestSchema.waitForQueryReady(pg)
-            pg.createConnection("").use(ChronicleContractTestSchema::applyFrameworkSchema)
-            assertTrue(FlywayMigrationService.baseConfiguration().dataSource(pg.jdbcUrl, pg.username, pg.password)
-                .target("122").load().migrate().success)
+            ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(pg)
             pg.createConnection("").use { connection ->
                 connection.createStatement().use { statement ->
                     statement.executeUpdate("""
@@ -195,7 +235,6 @@ class JwtBlocklistTest {
                     """.trimIndent())
                 }
             }
-            assertTrue(ChronicleContractTestSchema.migrate(pg).success)
             for ((index, role) in listOf("chronicle_app", "chronicle").withIndex()) {
                 HikariDataSource().apply {
                     jdbcUrl = pg.jdbcUrl
@@ -204,12 +243,13 @@ class JwtBlocklistTest {
                     connectionInitSql = "SET ROLE $role"
                 }.use { dataSource ->
                     val storage = mock<StorageResolver>()
-                    whenever(storage.getDefaultPlatformStorage()).thenReturn(PostgresFlavor.VANILLA to dataSource)
+                    whenever(storage.getDefaultPlatformStorage()).thenReturn(
+                        ResolvedStorage(PostgresFlavor.VANILLA, RLSDataSources.wrapUncachedRequestScoped(dataSource)))
                     val durable = JwtBlocklist(hz, storage)
                     val tokenId = "cleanup-${UUID.randomUUID()}"
                     assertTrue(durable.blockToken(tokenId, Instant.now().plusSeconds(3600)))
                     assertTrue(durable.isBlocked(tokenId))
-                    dataSource.connection.use { connection ->
+                    pg.createConnection("").use { connection ->
                         connection.createStatement().use { statement ->
                             statement.executeQuery("""
                                 SELECT count(*) FILTER (WHERE expires_at <= now()),
@@ -229,4 +269,54 @@ class JwtBlocklistTest {
         }
     }
 
+    /** `./chronicle rotate-secret dashboard` and restore write this cutoff; the running backend must honour it. */
+    @Test fun selfhostSessionCutoffRefusesEarlierTokensAndAcceptsLaterOnes() {
+        ChronicleContractTestSchema.prodPostgresContainer("jwt_session_cutoff").use { pg ->
+            pg.start()
+            ChronicleContractTestSchema.waitForQueryReady(pg)
+            ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(pg)
+            HikariDataSource().apply {
+                jdbcUrl = pg.jdbcUrl
+                username = pg.username
+                password = pg.password
+                connectionInitSql = "SET ROLE chronicle_app"
+            }.use { dataSource -> assertSelfhostCutoffHonoured(pg, dataSource) }
+        }
+    }
+
+    private fun assertSelfhostCutoffHonoured(pg: PostgreSQLContainer<*>, dataSource: HikariDataSource) {
+        val storage = mock<StorageResolver>()
+        whenever(storage.getDefaultPlatformStorage()).thenReturn(
+            ResolvedStorage(PostgresFlavor.VANILLA, RLSDataSources.wrapUncachedRequestScoped(dataSource)))
+        val durable = JwtBlocklist(hz, storage)
+        val window = java.time.Duration.ofMinutes(15)
+        val earlier = Instant.now().minusSeconds(60)
+        fun rejection(issued: Instant) = durable.credentialRejectionReason(
+            null, "cutoff-token-${issued.epochSecond}", issued, issued.plusSeconds(3600), window, { issued.plusSeconds(1) })
+        assertNull(rejection(earlier))
+
+        pg.createConnection("").use { connection ->
+            connection.createStatement().use { it.execute(selfhostSessionCutoffSql()) }
+        }
+
+        val cutoff = requireNotNull(durable.getRevokeAllTimestamp())
+        assertNotNull(rejection(earlier))
+        assertNotNull(rejection(cutoff))
+        assertNull(rejection(cutoff.plusSeconds(1)))
+    }
+
+    /** The exact text selfhost/chronicle_ops/dump.py hands restore.sh and rotate-secret.sh. */
+    private fun selfhostSessionCutoffSql(): String {
+        val selfhost = generateSequence(java.io.File(System.getProperty("user.dir")).absoluteFile) { it.parentFile }
+            .map { it.resolve("selfhost") }
+            .first { it.resolve("chronicle_ops/dump.py").isFile }
+        val process = ProcessBuilder("python3", "-c",
+            "from chronicle_ops.dump import SESSION_CUTOFF_SQL; print(SESSION_CUTOFF_SQL)")
+            .apply { environment()["PYTHONPATH"] = selfhost.path }
+            .start()
+        val sql = process.inputStream.bufferedReader().readText()
+        assertTrue(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(process.errorStream.bufferedReader().readText(), 0, process.exitValue())
+        return sql
+    }
 }

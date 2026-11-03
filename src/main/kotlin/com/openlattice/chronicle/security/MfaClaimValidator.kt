@@ -22,8 +22,6 @@ import org.springframework.security.oauth2.jwt.Jwt
  * Enforcement is configured via `chronicle.security.require-mfa` (secure
  * default: true). Approved assurance contexts are configured via
  * `chronicle.security.approved-mfa-acr-values` (secure default: empty).
- *
- * HIPAA §164.312(d) — MFA strengthens authentication controls.
  */
 public class MfaClaimValidator(
     private val approvedAcrValues: Set<String> = emptySet(),

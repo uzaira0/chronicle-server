@@ -76,7 +76,7 @@ public open class ConfiguredUserListingService(
         if (configuredClient == null) {
             return null
         }
-        if (configuredClient.testingTokenIssuer.not() || configuredClient.jwkSetUri?.isNotBlank() == true) {
+        if (configuredClient.jwkSetUri?.isNotBlank() == true) {
             return null
         }
 
@@ -85,6 +85,7 @@ public open class ConfiguredUserListingService(
         val roles = (metadataRoles as? Collection<*>)?.filterIsInstance<String>() ?: emptyList()
 
         return JWT.create()
+            .withKeyId(if (jwtKeyMaterial.isRs256()) jwtKeyMaterial.keyId else configuredClient.keyId())
             .withSubject(profile.id)
             .withClaim("user_id", profile.id)
             .withClaim("email", profile.email)
@@ -96,14 +97,6 @@ public open class ConfiguredUserListingService(
             .withJWTId(UUID.randomUUID().toString())
             .withClaim(roleClaimNamespace, mapOf("roles" to roles))
             .sign(parseAlgorithm(configuredClient, jwtKeyMaterial))
-    }
-
-    override fun getAllUsers(): Sequence<ChronicleUserProfile> {
-        return users.values.map { it.toChronicleUserProfile() }.asSequence()
-    }
-
-    override fun getUpdatedUsers(from: Instant, to: Instant): Sequence<ChronicleUserProfile> {
-        return users.values.map { it.toChronicleUserProfile() }.asSequence()
     }
 
     override fun getUser(userId: String): ChronicleUserProfile {

@@ -6,12 +6,12 @@ import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.SecurablePrincipal
 import com.openlattice.chronicle.authorization.AclKeySet
 import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.controllers.TestSecurityUtils
 import com.openlattice.chronicle.users.ChronicleUserProfile
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.mock
-import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.whenever
 import java.util.UUID
 
@@ -30,6 +30,28 @@ class RootPrincipalTest {
         } finally { context.authentication = previous }
     }
 
+    /** A token's identity is its non-blank subject, never the token object's own text. */
+    @Test
+    fun aTokenWithoutASubjectHasNoIdentity() {
+        val context = org.springframework.security.core.context.SecurityContextHolder.getContext()
+        val previous = context.authentication
+        try {
+            for (subject in listOf(null, " ")) {
+                context.authentication = jwtAuthentication(subject)
+                org.junit.Assert.assertThrows(org.springframework.security.authentication.AuthenticationCredentialsNotFoundException::class.java) {
+                    Principals.getCurrentUser()
+                }
+            }
+            context.authentication = jwtAuthentication("researcher")
+            org.junit.Assert.assertEquals("researcher", Principals.getCurrentUser().id)
+        } finally { context.authentication = previous }
+    }
+
+    private fun jwtAuthentication(subject: String?) = org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken(
+        org.springframework.security.oauth2.jwt.Jwt.withTokenValue("token").header("alg", "HS256").claim("scope", "openid")
+            .apply { subject?.let(this::subject) }.build()
+    )
+
     @Test
     fun unreservedUsersResolveThroughTheirUserPrincipal() {
         val hz = mock<HazelcastInstance>()
@@ -38,9 +60,7 @@ class RootPrincipalTest {
         val principal = com.openlattice.chronicle.authorization.Principal(com.openlattice.chronicle.authorization.PrincipalType.USER, "local-user")
         val stored = SecurablePrincipal(java.util.Optional.of(UUID.randomUUID()), principal, "local-user", java.util.Optional.empty())
         whenever(map.values(any<com.hazelcast.query.Predicate<AclKey, SecurablePrincipal>>())).thenReturn(listOf(stored))
-        val reservations = mock<com.openlattice.chronicle.authorization.reservations.AclKeyReservationService>()
-        org.junit.Assert.assertEquals(stored, HazelcastPrincipalsMapManager(hz, reservations).getSecurablePrincipal(principal.id))
-        verifyNoInteractions(reservations)
+        org.junit.Assert.assertEquals(stored, HazelcastPrincipalsMapManager(hz).getSecurablePrincipal(principal.id))
     }
 
     @Test
@@ -51,20 +71,23 @@ class RootPrincipalTest {
         val stored = SecurablePrincipal(java.util.Optional.of(UUID.randomUUID()), user, user.id, java.util.Optional.empty())
         whenever(manager.getSecurablePrincipals(setOf(user))).thenReturn(listOf(stored))
         whenever(resolver.resolve(user.id)).thenReturn(setOf(user))
-        val fields = mapOf(
-            "principalManager" to manager,
-            "principalResolver" to resolver,
-            "principals" to mock<IMap<String, com.openlattice.chronicle.authorization.SortedPrincipalSet>>(),
-            "securablePrincipals" to mock<IMap<String, SecurablePrincipal>>(),
-        ).mapKeys { (name, _) -> Principals::class.java.getDeclaredField(name).apply { isAccessible = true } }
-        val previous = fields.mapValues { (field, _) -> field.get(null) }
+        val hazelcast = mock<HazelcastInstance>()
+        whenever(hazelcast.getMap<String, com.openlattice.chronicle.authorization.SortedPrincipalSet>(
+            HazelcastMap.RESOLVED_PRINCIPAL_TREES.name)).thenReturn(mock())
+        whenever(hazelcast.getMap<String, SecurablePrincipal>(HazelcastMap.SECURABLE_PRINCIPALS.name)).thenReturn(mock())
         val context = org.springframework.security.core.context.SecurityContextHolder.getContext()
         val oldAuthentication = context.authentication
         try {
-            fields.forEach { (field, value) -> field.set(null, value) }
+            Principals.init(manager, hazelcast, resolver)
             context.authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken(user.id, "unused", emptyList())
-            repeat(2) { org.junit.Assert.assertEquals(stored.id, com.openlattice.chronicle.audit.AuditRequestContext.getCurrentUserId()) }
+            repeat(2) { org.junit.Assert.assertEquals(stored.id, Principals.getCurrentSecurablePrincipal().id) }
             org.junit.Assert.assertEquals(setOf(user), Principals.getUserPrincipals(user.id))
+            // H-admin-fallback: a user with no stored role and only unknown or malformed authorities holds no role at all.
+            context.authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken(user.id, "unused",
+                listOf(org.springframework.security.core.GrantedAuthority { null },
+                    org.springframework.security.core.authority.SimpleGrantedAuthority("admin"),
+                    org.springframework.security.core.authority.SimpleGrantedAuthority("NOT_A_TYPE|admin")))
+            org.junit.Assert.assertEquals(setOf(user), Principals.getCurrentPrincipals())
             context.authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken(user.id, "unused",
                 listOf(org.springframework.security.core.GrantedAuthority { null },
                     Principals.fromPrincipal(com.openlattice.chronicle.authorization.SystemRole.adminRole)))
@@ -76,10 +99,9 @@ class RootPrincipalTest {
             org.junit.Assert.assertEquals(Principals.getUserId(user.id), Principals.getCurrentSecurablePrincipal().id)
             context.authentication = org.springframework.security.authentication.AnonymousAuthenticationToken("test", "anonymousUser",
                 listOf(org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_ANONYMOUS")))
-            org.junit.Assert.assertNull(com.openlattice.chronicle.audit.AuditRequestContext.getCurrentUserId())
-            org.junit.Assert.assertNull(com.openlattice.chronicle.audit.AuditRequestContext.getCurrentUserRole())
+            org.junit.Assert.assertFalse(com.openlattice.chronicle.audit.AuditRequestContext.isAuthenticated())
         } finally {
-            fields.keys.forEach { field -> field.set(null, previous[field]) }
+            TestSecurityUtils.initPrincipalsIfNeeded()
             context.authentication = oldAuthentication
         }
     }
@@ -91,4 +113,41 @@ class RootPrincipalTest {
         val service = HazelcastPrincipalService(hz, mock(), mock(), mock(), mock())
         assertTrue(service.getParentPrincipalsOfPrincipal(AclKey(UUID.randomUUID())).isEmpty())
     }
+
+    /** A user's stored membership walks user -> role -> a parentless root role and ends there. */
+    @Test fun storedMembershipTraversalEndsAtAParentlessRoot() {
+        com.openlattice.chronicle.contract.ChronicleContractTestSchema.prodPostgresContainer("root_principal").use { pg ->
+            pg.start()
+            com.openlattice.chronicle.contract.ChronicleContractTestSchema.waitForQueryReady(pg)
+            com.openlattice.chronicle.contract.ChronicleContractTestSchema.applyFrameworkSchemaAndMigrations(pg)
+            val user = com.openlattice.chronicle.authorization.Principal(com.openlattice.chronicle.authorization.PrincipalType.USER, "member")
+            val role = com.openlattice.chronicle.authorization.Principal(com.openlattice.chronicle.authorization.PrincipalType.ROLE, "team")
+            val root = com.openlattice.chronicle.authorization.Principal(com.openlattice.chronicle.authorization.PrincipalType.ROLE, "root")
+            val keys = listOf(user, role, root).associateWith { UUID.randomUUID() }
+            pg.createConnection("").use { connection ->
+                insertRows(connection, "INSERT INTO principals (acl_key, principal_type, principal_id) VALUES (ARRAY[?::uuid], ?, ?)",
+                    keys.map { (principal, key) -> listOf(key.toString(), principal.type.name, principal.id) })
+                insertRows(connection,
+                    "INSERT INTO principal_trees (acl_key, principal_of_acl_key) VALUES (ARRAY[?::uuid], ARRAY[?::uuid])",
+                    listOf(role to user, root to role).map { (parent, child) ->
+                        listOf(keys.getValue(parent).toString(), keys.getValue(child).toString())
+                    })
+            }
+            val pool = mock<com.zaxxer.hikari.HikariDataSource>()
+            whenever(pool.connection).thenAnswer { pg.createConnection("") }
+            val storage = mock<com.openlattice.chronicle.storage.StorageResolver>()
+            whenever(storage.getPlatformStorage()).thenReturn(pool)
+            val resolver = com.openlattice.chronicle.authorization.CreatorPrincipalResolver(storage,
+                com.openlattice.chronicle.configuration.ChronicleAuthConfiguration())
+            org.junit.Assert.assertEquals(setOf(user, role, root), resolver.resolve(user.id))
+        }
+    }
+
+    private fun insertRows(connection: java.sql.Connection, sql: String, rows: List<List<String>>) =
+        connection.prepareStatement(sql).use { statement ->
+            for (row in rows) {
+                row.forEachIndexed { index, value -> statement.setString(index + 1, value) }
+                statement.executeUpdate()
+            }
+        }
 }

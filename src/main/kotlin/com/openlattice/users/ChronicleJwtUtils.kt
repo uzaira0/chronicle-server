@@ -1,7 +1,3 @@
-// reason: intentional package layout — declared package (com.openlattice.users) differs from the
-// directory by design; renaming the package would break all importers of these JWT utils
-@file:Suppress("InvalidPackageDeclaration")
-
 package com.openlattice.users
 
 import com.auth0.jwt.algorithms.Algorithm
@@ -15,13 +11,13 @@ import java.security.InvalidAlgorithmParameterException
  */
 
 internal fun parseAlgorithm(aac: ChronicleJwtClientConfiguration): Algorithm {
-    val algorithm: (String) -> Algorithm = when (aac.signingAlgorithm) {
+    val algorithm: (ByteArray) -> Algorithm = when (aac.signingAlgorithm) {
         "HS256" -> Algorithm::HMAC256
         "HS384" -> Algorithm::HMAC384
         "HS512" -> Algorithm::HMAC512
         else -> throw InvalidAlgorithmParameterException("Algorithm ${aac.signingAlgorithm} not recognized.")
     }
-    return algorithm(aac.secret)
+    return algorithm(aac.secretBytes())
 }
 
 /**

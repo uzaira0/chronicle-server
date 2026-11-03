@@ -51,7 +51,6 @@ public open class HazelcastAuthorizationService(
     private val eventBus: EventBus,
     private val principalsMapManager: PrincipalsMapManager,
     private val jwtBlocklist: JwtBlocklist? = null,
-    private val refreshTokenService: com.openlattice.chronicle.services.auth.RefreshTokenService? = null,
 ) : AuthorizationManager {
     private val authorizationStorage = storageResolver.getDefaultPlatformStorage()
     private val aces: IMap<AceKey, AceValue> = HazelcastMap.PERMISSIONS.getMap(hazelcastInstance)
@@ -163,7 +162,7 @@ public open class HazelcastAuthorizationService(
         objectType: SecurableObjectType,
         expirationDate: OffsetDateTime
     ) {
-        authorizationStorage.second.connection.use { connection ->
+        authorizationStorage.dataSource.connection.use { connection ->
             createUnnamedSecurableObject(
                 connection,
                 aclKey,
@@ -726,7 +725,7 @@ public open class HazelcastAuthorizationService(
         */
         BasePostgresIterable(
             PreparedStatementHolderSupplier(
-                authorizationStorage.second,
+                authorizationStorage.dataSource,
                 DELETE_PRINCIPAL_PERMISSIONS
             ) {
                 it.setString(1, principal.type.name)
@@ -802,7 +801,6 @@ public open class HazelcastAuthorizationService(
     private fun revokeSessions(principals: Collection<Principal>) {
         principals.filter { it.type == PrincipalType.USER }.distinct().forEach {
             jwtBlocklist?.revokePrincipalBefore(it.id)
-            refreshTokenService?.revokeAllForUser(it.id)
         }
     }
 

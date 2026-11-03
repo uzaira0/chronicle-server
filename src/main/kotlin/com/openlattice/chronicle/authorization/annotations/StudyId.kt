@@ -18,7 +18,7 @@ package com.openlattice.chronicle.authorization.annotations
 
 /**
  * Annotation to mark a method parameter as containing the study ID.
- * Used by StudyAuthorizationAspect to identify which parameter contains
+ * Used by StudyAuthorizationInterceptor to identify which parameter contains
  * the study ID for authorization checks.
  *
  * Usage:

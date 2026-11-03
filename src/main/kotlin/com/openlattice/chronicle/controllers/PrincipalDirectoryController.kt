@@ -21,9 +21,10 @@ package com.openlattice.chronicle.controllers
 
 import com.codahale.metrics.annotation.Timed
 import com.google.common.base.Preconditions
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
@@ -56,7 +57,6 @@ import com.openlattice.chronicle.users.UserListingService
 import jakarta.validation.Valid
 import org.springframework.http.MediaType
 import org.springframework.security.authentication.BadCredentialsException
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -71,15 +71,14 @@ import kotlin.streams.asSequence
 
 @RestController
 @RequestMapping(CONTROLLER)
-@Validated
-@RateLimit(type = RateLimitType.DEFAULT)
 public open class PrincipalDirectoryController(
     override val authorizationManager: AuthorizationManager,
     public val userDirectoryService: UserDirectoryService,
     public val userListingService: UserListingService,
     public val spm: SecurePrincipalsManager,
     public val organizationService: ChronicleOrganizationService,
-    override val auditingManager: AuditingManager
+    override val auditingManager: AuditingManager,
+    private val auditService: AuditService,
 ) : PrincipalApi, AuthorizingComponent {
 
 
@@ -90,15 +89,6 @@ public open class PrincipalDirectoryController(
         ensureReadAccess(aclKey)
         return spm.getSecurablePrincipal(aclKey)
     }
-
-    @RequestMapping(
-        path = [USERS],
-        method = [RequestMethod.GET],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    @Timed
-    override fun getAllUsers(): Map<String, ChronicleUserProfile> =
-        userDirectoryService.getAllUsers()
 
     @RequestMapping(
         path = [ROLES + CURRENT],
@@ -134,25 +124,6 @@ public open class PrincipalDirectoryController(
     }
 
     @Timed
-    @RequestMapping(
-        path = [USERS + USER_ID_PATH],
-        method = [RequestMethod.GET],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    override fun getUser(@PathVariable(USER_ID) userId: String): ChronicleUserProfile =
-        userDirectoryService.getUser(userId)
-
-    @Timed
-    @RequestMapping(
-        path = [USERS],
-        method = [RequestMethod.POST],
-        consumes = [MediaType.APPLICATION_JSON_VALUE],
-        produces = [MediaType.APPLICATION_JSON_VALUE]
-    )
-    override fun getUsers(@Valid @RequestBody userIds: Set<String>): Map<String, ChronicleUserProfile> =
-        userDirectoryService.getUsers(userIds)
-
-    @Timed
     @RequestMapping(path = [SYNC], method = [RequestMethod.GET])
     override fun syncCallingUser(): OK {
         /*
@@ -166,7 +137,7 @@ public open class PrincipalDirectoryController(
         try {
             // Verify the user exists in the local user listing
             userListingService.getUser(principal.id)
-        } catch (e: IllegalArgumentException) {
+        } catch (e: NoSuchElementException) {
             throw BadCredentialsException("Unable to retrieve user profile information", e)
         }
 
@@ -190,6 +161,7 @@ public open class PrincipalDirectoryController(
         ensureWriteAccess(directedAclKeys.target)
         ensureOwnerAccess(directedAclKeys.source)
         spm.addPrincipalToPrincipal(directedAclKeys.source, directedAclKeys.target)
+        auditMembershipChange(AuditEventType.PERMISSION_GRANT, directedAclKeys)
         return ok
     }
 
@@ -199,6 +171,7 @@ public open class PrincipalDirectoryController(
         ensureWriteAccess(directedAclKeys.target)
         ensureOwnerAccess(directedAclKeys.source)
         spm.removePrincipalFromPrincipal(directedAclKeys.source, directedAclKeys.target)
+        auditMembershipChange(AuditEventType.PERMISSION_REVOKE, directedAclKeys)
         return ok
     }
 
@@ -213,6 +186,21 @@ public open class PrincipalDirectoryController(
 
         //Delete from the backing identity directory
         userDirectoryService.deleteUser(userId)
+        auditService.logWithContext {
+            action(AuditEventType.DELETE)
+            resourceType("User")
+            success(true)
+            additionalData(mapOf("principalId" to userId))
+        }
         return ok
+    }
+
+    private fun auditMembershipChange(action: AuditEventType, directedAclKeys: DirectedAclKeys) {
+        auditService.logWithContext {
+            action(action)
+            resourceType("Principal")
+            success(true)
+            additionalData(mapOf("source" to directedAclKeys.source.toString(), "target" to directedAclKeys.target.toString()))
+        }
     }
 }

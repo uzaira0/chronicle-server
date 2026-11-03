@@ -1,11 +1,15 @@
 package com.openlattice.chronicle.controllers
 
+import com.openlattice.chronicle.configuration.CookiePolicy
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
-import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.ScopedLogCapture
+import com.openlattice.chronicle.audit.RecordingAuditingManager
+import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.authorization.JwtBlocklist
+import com.openlattice.chronicle.generated.SessionMetadataFields
 import com.openlattice.chronicle.filters.JwtBlocklistFilter
 import jakarta.servlet.http.Cookie
 import org.springframework.mock.web.MockFilterChain
@@ -13,15 +17,8 @@ import org.springframework.security.core.context.SecurityContextHolder
 import com.openlattice.chronicle.configuration.MobileSecurityConfiguration
 import com.openlattice.chronicle.configuration.ChronicleAuthConfiguration
 import com.openlattice.chronicle.configuration.ChronicleRoleClaims
-import com.openlattice.chronicle.services.auth.RefreshTokenService
 import com.openlattice.chronicle.users.UserListingService
 import com.openlattice.chronicle.util.ClientIpRecord
-import org.apache.logging.log4j.LogManager
-import org.apache.logging.log4j.core.Appender
-import org.apache.logging.log4j.core.LogEvent
-import org.apache.logging.log4j.core.Logger
-import org.apache.logging.log4j.core.appender.AbstractAppender
-import org.apache.logging.log4j.core.config.Property
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -31,12 +28,13 @@ import org.junit.Test
 import org.mockito.Mockito
 import org.springframework.mock.web.MockHttpServletRequest
 import org.springframework.mock.web.MockHttpServletResponse
+import org.springframework.security.oauth2.jwt.BadJwtException
 import org.springframework.security.oauth2.jwt.Jwt
 import org.springframework.security.oauth2.jwt.JwtDecoder
 import org.springframework.core.env.Environment
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken
 import java.time.Instant
-import java.util.concurrent.CopyOnWriteArrayList
+import java.time.Duration
 
 class AuthTokenControllerTest {
 
@@ -56,11 +54,20 @@ class AuthTokenControllerTest {
     private val chronicleAuthConfiguration = ChronicleAuthConfiguration()
     private val objectMapper = ObjectMapper()
     private val userListingService = Mockito.mock(UserListingService::class.java)
-    private val refreshTokenService = Mockito.mock(RefreshTokenService::class.java)
     private val environment = Mockito.mock(Environment::class.java).also {
         Mockito.`when`(it.activeProfiles).thenReturn(emptyArray())
     }
-    private val auditService = Mockito.mock(AuditService::class.java)
+    private val audit = RecordingAuditingManager()
+    private val auditService = AuditService(audit)
+
+    /** The last audit row is [type] from the caller's keyed reference with exactly [data] and the failure [reason]. */
+    private fun assertAuthAudited(type: AuditEventType, reason: String?, data: Map<String, String>) {
+        val event = audit.events.last()
+        assertEquals(type, event.eventType)
+        assertEquals("Authentication", event.description)
+        assertEquals(ClientIpRecord.staffSurfaceReference(MockHttpServletRequest()), event.request?.clientIpRef)
+        assertEquals(data + listOfNotNull(reason?.let { "reason" to it }), event.data - "success" - "accessedPHI")
+    }
     private val jwtBlocklist = Mockito.spy(JwtBlocklist(org.mockito.kotlin.mock<HazelcastInstance>().also {
         val state = org.mockito.kotlin.mock<IMap<String, Long>>()
         Mockito.`when`(it.getMap<String, Long>(org.mockito.kotlin.any()))
@@ -74,10 +81,10 @@ class AuthTokenControllerTest {
         chronicleAuthConfiguration,
         objectMapper,
         userListingService,
-        refreshTokenService,
         environment,
         auditService,
         jwtBlocklist,
+        cookiePolicy = CookiePolicy(environment),
     )
 
     @Test
@@ -160,6 +167,8 @@ class AuthTokenControllerTest {
         assertEquals("existing-csrf", result.body?.get("csrfToken"))
         assertEquals("user-456", result.body?.get("subject"))
         assertEquals(idleDeadline.toEpochMilli(), result.body?.get("idleExpiresAt"))
+        assertEquals(Duration.ofMinutes(chronicleAuthConfiguration.sessionIdleMinutes).toMillis(),
+            result.body?.get(SessionMetadataFields.IDLE_WINDOW_MS))
         assertEquals("sso-session", result.body?.get("tokenSource"))
         assertEquals(0, response.cookies.size)
     }
@@ -183,15 +192,17 @@ class AuthTokenControllerTest {
     fun testingLoginRefusesMissingForgedAndUnconfiguredInternalMarkersBeforeIssuingTokens() {
         for (secret in listOf(INTERNAL_SECRET, "")) {
             val enabled = AuthTokenController(jwtDecoder, chronicleAuthConfiguration.copy(testingLoginEnabled = true),
-                objectMapper, userListingService, refreshTokenService, environment, auditService, jwtBlocklist,
-                MobileSecurityConfiguration(internalWebSecret = secret))
+                objectMapper, userListingService, environment, auditService, jwtBlocklist,
+                MobileSecurityConfiguration(internalWebSecret = secret),
+                cookiePolicy = CookiePolicy(environment),
+            )
             for (marker in listOf(null, "true", "forged", INTERNAL_SECRET.takeIf { secret.isEmpty() })) {
                 val request = MockHttpServletRequest()
                 marker?.let { request.addHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER, it) }
                 val response = MockHttpServletResponse()
                 assertEquals(403, enabled.testingLogin(null, request, response).statusCode.value())
                 assertTrue(response.cookies.isEmpty())
-                Mockito.verifyNoInteractions(userListingService, jwtDecoder, refreshTokenService)
+                Mockito.verifyNoInteractions(userListingService, jwtDecoder)
             }
         }
     }
@@ -203,11 +214,11 @@ class AuthTokenControllerTest {
             chronicleAuthConfiguration.copy(testingLoginEnabled = true),
             objectMapper,
             userListingService,
-            refreshTokenService,
-            environment,
+                environment,
             auditService,
             jwtBlocklist,
             mobileSecurity,
+            cookiePolicy = CookiePolicy(environment),
         )
         val jwt = createJwt("testing-token", "user-789")
         Mockito.`when`(userListingService.issueTestingToken("test-user")).thenReturn("testing-token")
@@ -230,35 +241,32 @@ class AuthTokenControllerTest {
     fun testingLoginAuditsSuccessAndEveryRejectionWithoutCredentialPayload() {
         val request = MockHttpServletRequest()
         controller.testingLogin(null, request, MockHttpServletResponse())
-        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
-            AuditAction.LOGIN_FAILED, false, "disabled", mapOf("method" to "testing"))
-        Mockito.clearInvocations(auditService)
+        assertAuthAudited(AuditEventType.LOGIN_FAILED, "disabled", mapOf("method" to "testing"))
+        audit.observations.clear()
         val enabled = AuthTokenController(jwtDecoder, chronicleAuthConfiguration.copy(testingLoginEnabled = true),
-            objectMapper, userListingService, refreshTokenService, environment, auditService, jwtBlocklist, mobileSecurity)
+            objectMapper, userListingService, environment, auditService, jwtBlocklist, mobileSecurity,
+            cookiePolicy = CookiePolicy(environment),
+        )
         request.addHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER, INTERNAL_SECRET)
         val token = "credentialPayloadSentinel"
         Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(token)
         Mockito.`when`(jwtDecoder.decode(token)).thenReturn(createJwt(token, "issued-user"))
         assertEquals(200, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
-        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
-            AuditAction.LOGIN, true, null, mapOf("method" to "testing", "subject" to "issued-user"))
-        Mockito.clearInvocations(auditService)
+        assertAuthAudited(AuditEventType.LOGIN, null, mapOf("method" to "testing", "subject" to "issued-user"))
+        audit.observations.clear()
         Mockito.`when`(environment.activeProfiles).thenReturn(arrayOf("production"))
         assertEquals(404, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
-        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
-            AuditAction.LOGIN_FAILED, false, "production_disabled", mapOf("method" to "testing"))
-        Mockito.clearInvocations(auditService)
+        assertAuthAudited(AuditEventType.LOGIN_FAILED, "production_disabled", mapOf("method" to "testing"))
+        audit.observations.clear()
         Mockito.`when`(environment.activeProfiles).thenReturn(emptyArray())
         Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(null)
         assertEquals(403, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
-        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
-            AuditAction.LOGIN_FAILED, false, "no_local_user", mapOf("method" to "testing"))
-        Mockito.clearInvocations(auditService)
+        assertAuthAudited(AuditEventType.LOGIN_FAILED, "no_local_user", mapOf("method" to "testing"))
+        audit.observations.clear()
         Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(token)
         Mockito.`when`(jwtDecoder.decode(token)).thenThrow(org.springframework.security.oauth2.jwt.BadJwtException("credentialPayloadSentinel"))
         assertEquals(500, enabled.testingLogin(null, request, MockHttpServletResponse()).statusCode.value())
-        Mockito.verify(auditService).logAuthEvent(null, null, ClientIpRecord.staffSurfaceReference(request), null,
-            AuditAction.LOGIN_FAILED, false, "invalid_token", mapOf("method" to "testing"))
+        assertAuthAudited(AuditEventType.LOGIN_FAILED, "invalid_token", mapOf("method" to "testing"))
     }
 
     @Test
@@ -295,10 +303,7 @@ class AuthTokenControllerTest {
         assertEquals("/chronicle", csrfCookie.path)
         assertEquals("Strict", csrfCookie.getAttribute("SameSite"))
         assertEquals(csrfCookie.value, result.body?.get("csrfToken"))
-        Mockito.verify(auditService).logAuthEvent(
-            null, null, ClientIpRecord.staffSurfaceReference(MockHttpServletRequest()), null, AuditAction.LOGIN, true, null,
-            mapOf("method" to "dashboard", "subject" to "local-admin"),
-        )
+        assertAuthAudited(AuditEventType.LOGIN, null, mapOf("method" to "dashboard", "subject" to "local-admin"))
     }
 
     @Test
@@ -315,10 +320,7 @@ class AuthTokenControllerTest {
         assertEquals(false, result.body?.get("authenticated"))
         assertEquals("invalid dashboard password", result.body?.get("error"))
         assertEquals(0, response.cookies.size)
-        Mockito.verify(auditService).logAuthEvent(
-            null, null, ClientIpRecord.staffSurfaceReference(MockHttpServletRequest()), null, AuditAction.LOGIN_FAILED, false, "password_mismatch",
-            mapOf("method" to "dashboard"),
-        )
+        assertAuthAudited(AuditEventType.LOGIN_FAILED, "password_mismatch", mapOf("method" to "dashboard"))
     }
 
     @Test
@@ -347,20 +349,8 @@ class AuthTokenControllerTest {
     @Test
     fun testDashboardLoginLogsStableIpReferenceNeverRawClientIp() {
         val rawClientIp = "203.0.113.77"
-        val captured = CopyOnWriteArrayList<String>()
-        val appender: Appender = object : AbstractAppender(
-            "dashboard-login-ip-redaction-capture",
-            null,
-            null,
-            true,
-            Property.EMPTY_ARRAY,
-        ) {
-            override fun append(event: LogEvent) {
-                captured.add(event.message.formattedMessage)
-            }
-        }.also { it.start() }
-        val coreLogger = LogManager.getLogger(AuthTokenController::class.java) as Logger
-        coreLogger.addAppender(appender)
+        val capture = ScopedLogCapture(AuthTokenController::class.java, pattern = "%m")
+        val captured = capture.messages
 
         try {
             val request = MockHttpServletRequest().apply { remoteAddr = rawClientIp }
@@ -372,8 +362,7 @@ class AuthTokenControllerTest {
 
             assertEquals(401, result.statusCode.value())
         } finally {
-            coreLogger.removeAppender(appender)
-            appender.stop()
+            capture.close()
         }
 
         val log = captured.joinToString("\n")
@@ -477,6 +466,33 @@ class AuthTokenControllerTest {
     }
 
     @Test
+    fun sessionCookiesExpireWithTheSessionToken() {
+        val jwt = Jwt.withTokenValue("short-token").header("alg", "HS256").subject("researcher")
+            .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(600)).build()
+        Mockito.`when`(jwtDecoder.decode("short-token")).thenReturn(jwt)
+        val response = MockHttpServletResponse()
+
+        controller.setAuthCookie(mapOf("token" to "short-token"), MockHttpServletRequest(), response)
+
+        for (name in listOf(AuthTokenController.AUTH_COOKIE_NAME, AuthTokenController.CSRF_COOKIE_NAME)) {
+            val maxAge = response.cookies.first { it.name == name }.maxAge
+            assertTrue("$name Max-Age $maxAge must end with the token", maxAge in 1..600)
+        }
+    }
+
+    @Test
+    fun logoutAuditsTheSubjectItEnds() {
+        val jwt = Jwt.withTokenValue("ending-token").header("alg", "HS256").subject("researcher")
+            .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(600)).build()
+        Mockito.`when`(jwtDecoder.decode("ending-token")).thenReturn(jwt)
+        val request = MockHttpServletRequest().apply { addHeader("Authorization", "Bearer ending-token") }
+
+        controller.logout(request, MockHttpServletResponse())
+
+        assertAuthAudited(AuditEventType.LOGOUT, null, mapOf("subject" to "researcher"))
+    }
+
+    @Test
     fun testLogoutClearsBothCookies() {
         val request = MockHttpServletRequest()
         val response = MockHttpServletResponse()
@@ -502,10 +518,10 @@ class AuthTokenControllerTest {
         chronicleAuthConfiguration.copy(dashboardPasswordHash = passwordHash),
         objectMapper,
         userListingService,
-        refreshTokenService,
         environment,
         auditService,
         jwtBlocklist,
+        cookiePolicy = CookiePolicy(environment),
     )
 
     private fun createJwt(tokenValue: String, subject: String): Jwt {
@@ -533,6 +549,135 @@ class AuthTokenControllerTest {
         assertNotNull(response.cookies.firstOrNull { it.name == AuthTokenController.CSRF_COOKIE_NAME })
     }
 
+
+    @Test
+    fun setCookieRefusesAForgedOrExpiredTokenWithoutWritingCookies() {
+        Mockito.`when`(jwtDecoder.decode("forged")).thenThrow(BadJwtException("signature mismatch"))
+        val response = MockHttpServletResponse()
+
+        val result = controller.setAuthCookie(mapOf("token" to "forged"), MockHttpServletRequest(), response)
+
+        assertEquals(401, result.statusCode.value())
+        assertEquals("invalid token", result.body?.get("error"))
+        assertTrue(response.cookies.isEmpty())
+    }
+
+    /** Operator override first, then the proxy's scheme: only an explicit "http" from the proxy drops Secure. */
+    @Test
+    fun cookieSecureFlagFollowsTheOperatorOverrideBeforeTheProxyScheme() {
+        val jwt = createJwt("scheme-token", "researcher")
+        Mockito.`when`(jwtDecoder.decode("scheme-token")).thenReturn(jwt)
+        val cases = listOf(
+            Triple("false", "https", false),
+            Triple("true", "http", true),
+            Triple(null, "http", false),
+            Triple(null, "HTTPS", true),
+            Triple(null, null, true),
+            Triple("not-a-boolean", "http", false),
+        )
+        for ((override, proto, secure) in cases) {
+            val env = Mockito.mock(Environment::class.java)
+            Mockito.`when`(env.activeProfiles).thenReturn(emptyArray())
+            Mockito.`when`(env.getProperty("chronicle.security.cookie.secure")).thenReturn(override)
+            val scoped = AuthTokenController(jwtDecoder, chronicleAuthConfiguration, objectMapper, userListingService,
+                env, auditService, jwtBlocklist,
+                cookiePolicy = CookiePolicy(env),
+            )
+            val request = MockHttpServletRequest().apply { proto?.let { addHeader("X-Forwarded-Proto", it) } }
+            val response = MockHttpServletResponse()
+            scoped.setAuthCookie(mapOf("token" to "scheme-token"), request, response)
+            assertEquals(2, response.cookies.size)
+            response.cookies.forEach { assertEquals("override=$override proto=$proto ${it.name}", secure, it.secure) }
+        }
+    }
+
+    /**
+     * The cookie a login writes is replayed on every later request through the same [JwtDecoder]. A token that
+     * decoder refuses must therefore not become a cookie: before the fix a second, laxer decoder (no issuer,
+     * audience or MFA check) accepted it, the login answered 200, and the very next request was 401.
+     */
+    @Test
+    fun loginsNeverIssueASessionCookieTheRequestDecoderRefuses() {
+        val secret = "testing-issuer-secret-with-at-least-32-bytes!"
+        val minted = com.auth0.jwt.JWT.create().withSubject("local-admin").withIssuer("https://localhost/")
+            .withAudience("chronicle").withExpiresAt(Instant.now().plusSeconds(600))
+            .sign(com.auth0.jwt.algorithms.Algorithm.HMAC256(secret))
+        Mockito.`when`(jwtDecoder.decode(minted)).thenThrow(BadJwtException("issuer not accepted by the request decoder"))
+        Mockito.`when`(userListingService.issueDashboardToken(null)).thenReturn(minted)
+        Mockito.`when`(userListingService.issueTestingToken(null)).thenReturn(minted)
+        val config = chronicleAuthConfiguration.copy(
+            dashboardPasswordHash = DASHBOARD_PASSWORD_HASH,
+            testingLoginEnabled = true,
+            configurations = setOf(com.openlattice.chronicle.configuration.ChronicleJwtClientConfiguration(
+                audience = "chronicle", issuer = "https://localhost/", secret = secret)),
+        )
+        val scoped = AuthTokenController(jwtDecoder, config, objectMapper, userListingService, environment,
+            auditService, jwtBlocklist, mobileSecurity,
+            cookiePolicy = CookiePolicy(environment),
+        )
+
+        val dashboardResponse = MockHttpServletResponse()
+        val dashboard = scoped.dashboardLogin(mapOf("password" to DASHBOARD_PASSWORD), MockHttpServletRequest(),
+            dashboardResponse)
+        assertEquals(401, dashboard.statusCode.value())
+        assertEquals("invalid dashboard password", dashboard.body?.get("error"))
+        assertTrue(dashboardResponse.cookies.isEmpty())
+        assertAuthAudited(AuditEventType.LOGIN_FAILED, "invalid_token", mapOf("method" to "dashboard"))
+
+        val testingResponse = MockHttpServletResponse()
+        val testing = scoped.testingLogin(null, MockHttpServletRequest().apply {
+            addHeader(MobileSecurityConfiguration.INTERNAL_WEB_HEADER, INTERNAL_SECRET)
+        }, testingResponse)
+        assertEquals(500, testing.statusCode.value())
+        assertTrue(testingResponse.cookies.isEmpty())
+    }
+
+    @Test
+    fun logoutOfAnExpiredOrForgedCookieStillClearsItWithoutBlocklisting() {
+        Mockito.`when`(jwtDecoder.decode("expired")).thenThrow(BadJwtException("expired"))
+        val request = MockHttpServletRequest().apply { setCookies(Cookie(AuthTokenController.AUTH_COOKIE_NAME, "expired")) }
+        val response = MockHttpServletResponse()
+
+        assertEquals(204, controller.logout(request, response).statusCode.value())
+
+        assertEquals(setOf(0), response.cookies.map { it.maxAge }.toSet())
+        assertEquals(setOf(AuthTokenController.AUTH_COOKIE_NAME, AuthTokenController.CSRF_COOKIE_NAME),
+            response.cookies.map { it.name }.toSet())
+        Mockito.verify(jwtBlocklist, Mockito.never()).blockToken(org.mockito.kotlin.any(), org.mockito.kotlin.any())
+        Mockito.verify(jwtBlocklist, Mockito.never()).blockTokenByValue(org.mockito.kotlin.any(), org.mockito.kotlin.any())
+        assertTrue(audit.events.none { it.eventType == AuditEventType.LOGOUT })
+    }
+
+    /** A signed-in tab whose CSRF cookie was cleared gets a fresh pair instead of a session it cannot write with. */
+    @Test
+    fun authenticatedSessionWithoutCsrfCookieMintsAFreshPair() {
+        val jwt = createJwt("bearer-only", "researcher")
+        val request = MockHttpServletRequest().apply {
+            setUserPrincipal(JwtAuthenticationToken(jwt).also { it.isAuthenticated = true })
+        }
+        val response = MockHttpServletResponse()
+
+        val result = controller.getSession(request, response)
+
+        assertEquals(true, result.body?.get("authenticated"))
+        val csrf = response.cookies.single { it.name == AuthTokenController.CSRF_COOKIE_NAME }
+        assertEquals(csrf.value, result.body?.get("csrfToken"))
+        assertEquals("bearer-only", response.cookies.single { it.name == AuthTokenController.AUTH_COOKIE_NAME }.value)
+    }
+
+    /** A token without an expiry would outlive every idle and revocation window, so it never becomes a session. */
+    @Test
+    fun tokenWithoutExpiryIsRefusedAndWritesNoCookie() {
+        val jwt = Jwt.withTokenValue("no-exp").header("alg", "HS256").subject("researcher").issuedAt(Instant.now()).build()
+        Mockito.`when`(jwtDecoder.decode("no-exp")).thenReturn(jwt)
+        val response = MockHttpServletResponse()
+
+        val result = controller.setAuthCookie(mapOf("token" to "no-exp"), MockHttpServletRequest(), response)
+
+        assertEquals(401, result.statusCode.value())
+        assertEquals("session expired", result.body?.get("error"))
+        assertTrue(response.cookies.isEmpty())
+    }
 
     @Test fun cookieSessionChecksTheSubjectsPrivilegeCutoff() {
         val jwt = createJwt("revoked-cookie", "changed-subject")

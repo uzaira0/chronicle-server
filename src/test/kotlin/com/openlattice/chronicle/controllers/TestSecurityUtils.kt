@@ -1,7 +1,22 @@
 package com.openlattice.chronicle.controllers
 
 import com.hazelcast.map.IMap
+import com.hazelcast.core.HazelcastInstance
+import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessScope
+import org.springframework.mock.web.MockHttpServletRequest
+import org.springframework.web.context.request.RequestContextHolder
+import org.springframework.web.context.request.ServletRequestAttributes
 import com.openlattice.chronicle.authorization.CreatorPrincipalResolver
+import com.openlattice.chronicle.authorization.AuthorizationManager
+import com.openlattice.chronicle.authorization.Permission
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
+import org.mockito.kotlin.any
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.mock
+import java.util.EnumSet
 import com.openlattice.chronicle.authorization.Principal
 import com.openlattice.chronicle.authorization.PrincipalType
 import com.openlattice.chronicle.authorization.SecurablePrincipal
@@ -19,9 +34,35 @@ import java.util.TreeSet
 import java.util.UUID
 
 object TestSecurityUtils {
+    fun <T> withServletRequest(request: HttpServletRequest, response: HttpServletResponse? = null, action: () -> T): T {
+        val previous = RequestContextHolder.getRequestAttributes()
+        RequestContextHolder.setRequestAttributes(ServletRequestAttributes(request, response))
+        return try { action() } finally { RequestContextHolder.setRequestAttributes(previous) }
+    }
+
+    fun <T> withParticipantFormScope(scope: ParticipantFormAccessScope, action: () -> T): T {
+        val request = MockHttpServletRequest().apply {
+            setAttribute(ParticipantFormAccessFilter.REQUEST_SCOPE_ATTRIBUTE, scope)
+            setAttribute(ParticipantFormAccessFilter.IDEMPOTENCY_ATTRIBUTE, UUID.randomUUID())
+        }
+        return withServletRequest(request, action = action)
+    }
+
+    fun setupAuthorizedResearcher(authorization: AuthorizationManager) {
+        setupSecurityContext()
+        Mockito.`when`(authorization.checkIfHasPermissions(any(), any(), eq(EnumSet.of(Permission.READ)))).thenReturn(true)
+    }
+
     @JvmStatic
     @JvmOverloads
     fun setupSecurityContext(subject: String = "test-user", admin: Boolean = true) {
+        initPrincipalsIfNeeded(subject, admin)
+        authenticate(subject)
+    }
+
+    @JvmStatic
+    @JvmOverloads
+    fun authenticate(subject: String = "test-user") {
         val jwt = Jwt.withTokenValue("test-token")
             .header("alg", "HS256")
             .subject(subject)
@@ -33,23 +74,18 @@ object TestSecurityUtils {
         val securityContext = SecurityContextHolder.createEmptyContext()
         securityContext.authentication = authToken
         SecurityContextHolder.setContext(securityContext)
-        initPrincipalsIfNeeded(subject, admin)
     }
 
-    // The companion's lateinit vars compile to static fields on the OUTER Principals class
-    // (see `javap -p Principals.class`), not the Companion inner class. Inject mock IMaps so
-    // unit tests don't need a real Hazelcast cluster.
     @JvmStatic
     @JvmOverloads
     fun initPrincipalsIfNeeded(subject: String = "test-user", admin: Boolean = true) {
-        @Suppress("UNCHECKED_CAST")
-        val principalsMap = injectStaticMock(Principals::class.java, "principals") {
-            Mockito.mock(IMap::class.java)
-        } as IMap<String, SortedPrincipalSet>
-        @Suppress("UNCHECKED_CAST")
-        val securableMap = injectStaticMock(Principals::class.java, "securablePrincipals") {
-            Mockito.mock(IMap::class.java)
-        } as IMap<String, SecurablePrincipal>
+        val principalsMap = mock<IMap<String, SortedPrincipalSet>>()
+        val securableMap = mock<IMap<String, SecurablePrincipal>>()
+        val hazelcast = mock<HazelcastInstance>()
+        Mockito.`when`(hazelcast.getMap<String, SortedPrincipalSet>(HazelcastMap.RESOLVED_PRINCIPAL_TREES.name))
+            .thenReturn(principalsMap)
+        Mockito.`when`(hazelcast.getMap<String, SecurablePrincipal>(HazelcastMap.SECURABLE_PRINCIPALS.name))
+            .thenReturn(securableMap)
 
         val userPrincipal = Principal(PrincipalType.USER, subject)
         val principalSet = TreeSet<Principal>().apply {
@@ -66,29 +102,12 @@ object TestSecurityUtils {
         )
         Mockito.`when`(securableMap[subject]).thenReturn(securableUser)
 
-        // Principals outside the injected maps resolve through persisted membership; here: the user alone.
-        val resolver = injectStaticMock(Principals::class.java, "principalResolver") {
-            Mockito.mock(CreatorPrincipalResolver::class.java)
-        } as CreatorPrincipalResolver
+        // Principals outside the fixture maps resolve through persisted membership; here: the user alone.
+        val resolver = mock<CreatorPrincipalResolver>()
         Mockito.`when`(resolver.resolve(Mockito.anyString())).thenAnswer {
             setOf(Principal(PrincipalType.USER, it.getArgument(0)))
         }
-        injectStaticMock(Principals::class.java, "principalManager") {
-            Mockito.mock(SecurePrincipalsManager::class.java)
-        }
-    }
-
-    private fun injectStaticMock(targetClass: Class<*>, fieldName: String, factory: () -> Any): Any {
-        val field = targetClass.getDeclaredField(fieldName)
-        field.isAccessible = true
-        val existing = field.get(null)
-        if (existing != null && Mockito.mockingDetails(existing).isMock) {
-            Mockito.reset(existing)
-            return existing
-        }
-        val created = factory()
-        field.set(null, created)
-        return created
+        Principals.init(mock<SecurePrincipalsManager>(), hazelcast, resolver)
     }
 
     @JvmStatic

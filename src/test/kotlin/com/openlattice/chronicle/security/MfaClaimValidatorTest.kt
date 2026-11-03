@@ -8,10 +8,10 @@ import org.springframework.security.oauth2.jwt.Jwt
 import java.time.Instant
 
 /**
- * HIPAA-2028 W3 — unit coverage for [MfaClaimValidator]: the assurance gate that, when
+ * Unit coverage for [MfaClaimValidator]: the assurance gate that, when
  * MFA is enforced, requires explicit MFA, two complementary methods, or an approved ACR.
  * Companion to [MfaEnforcementMatrixTest], which proves the same logic end-to-end through the
- * production JWT decoder chain. HIPAA §164.312(d).
+ * production JWT decoder chain.
  */
 class MfaClaimValidatorTest {
 
