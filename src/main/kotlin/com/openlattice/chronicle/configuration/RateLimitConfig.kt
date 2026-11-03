@@ -18,12 +18,20 @@ package com.openlattice.chronicle.configuration
 
 import com.hazelcast.config.MapConfig
 import com.hazelcast.core.HazelcastInstance
+import com.openlattice.chronicle.authorization.JwtBlocklist
+import com.openlattice.chronicle.services.apikeys.ApiKeyService
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
+import org.springframework.security.oauth2.jwt.JwtDecoder
 import org.slf4j.LoggerFactory
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.DependsOn
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
+import io.github.bucket4j.TimeMeter
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.beans.factory.annotation.Qualifier
 import jakarta.inject.Inject
 import jakarta.servlet.Filter
 
@@ -35,10 +43,8 @@ import jakarta.servlet.Filter
  * 2. Creates the rate limit filter bean
  * 3. Logs the rate limiting configuration on startup
  *
- * Rate limiting protects against:
- * - Brute force attacks on authentication endpoints
- * - DoS attacks from individual clients
- * - API abuse and excessive usage
+ * Rate limiting protects unauthenticated endpoints against brute force; authenticated
+ * requests are never limited.
  *
  * The filter runs at HIGHEST_PRECEDENCE + 20, after:
  * - Security filters (TRACE blocking, headers, validation)
@@ -51,8 +57,7 @@ import jakarta.servlet.Filter
  * Configuration is loaded from rate-limit.yaml:
  * ```yaml
  * enabled: true
- * default-requests-per-minute: 100
- * auth-requests-per-minute: 5
+ * auth-requests-per-minute: 10
  * whitelisted-ips:
  *   - "127.0.0.1"
  * whitelisted-paths:
@@ -73,6 +78,20 @@ public open class RateLimitConfig {
 
     @Autowired(required = false)
     private var rateLimitConfiguration: RateLimitConfiguration? = null
+
+    @Bean
+    @DependsOn("rateLimitFilter")
+    public fun preAuthenticationRateLimitFilter(
+        jwtDecoder: JwtDecoder,
+        jwtBlocklist: JwtBlocklist,
+        authConfig: ChronicleAuthConfiguration,
+        apiKeyService: ApiKeyService,
+        participantFormAccessService: ParticipantFormAccessService,
+        @Qualifier("preAuthenticationRateLimitClock") bucketClock: ObjectProvider<TimeMeter>,
+    ): PreAuthenticationRateLimitFilter = PreAuthenticationRateLimitFilter(
+        hazelcastInstance, rateLimitConfiguration ?: RateLimitConfiguration(), jwtDecoder, jwtBlocklist, authConfig,
+        apiKeyService, participantFormAccessService, bucketClock.getIfAvailable(),
+    )
 
     /**
      * Creates the distributed rate limit filter.
@@ -95,36 +114,26 @@ public open class RateLimitConfig {
 
         logger.info(
             """
-            Rate limiting is ENABLED:
-              - Default limit: {} req/min
-              - Health endpoint limit: {} req/min
-              - Read endpoint limit: {} req/min (per study)
-              - Write endpoint limit: {} req/min (per participant per study)
-              - Admin endpoint limit: {} req/min
-              - Auth endpoint limit: {} req/min (per IP)
-              - Sensitive endpoint limit: {} req/min
+            Rate limiting of unauthenticated work is ENABLED:
+              - Auth limit: {} req/min (per IP)
+              - Enrollment preview limit: {} req/min
+              - Enrollment and form exchange limit: {} req/min
               - Burst capacity: {}x
               - Whitelisted IPs: {}
               - Whitelist private networks: {}
               - Whitelisted paths: {}
               - Client IP header: {}
               - Trust proxy headers: {}
-              - Per-study overrides: {}
             """.trimIndent(),
-            config.defaultRequestsPerMinute,
-            config.healthRequestsPerMinute,
+            config.authRequestsPerMinute,
             config.readRequestsPerMinute,
             config.writeRequestsPerMinute,
-            config.adminRequestsPerMinute,
-            config.authRequestsPerMinute,
-            config.sensitiveRequestsPerMinute,
             config.burstCapacityMultiplier,
             config.whitelistedIps.size,
             config.whitelistPrivateNetworks,
             config.whitelistedPaths,
             config.clientIpHeader,
             config.trustProxyHeaders,
-            config.studyOverrides.size
         )
 
         return RateLimitFilter(

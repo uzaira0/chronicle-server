@@ -19,6 +19,7 @@ package com.openlattice.chronicle.configuration
 import com.google.common.net.InetAddresses
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.map.IMap
+import com.openlattice.chronicle.filters.writeFilterError
 import com.openlattice.chronicle.util.ClientIpRecord
 import com.openlattice.chronicle.util.ClientIpResolver
 import com.openlattice.chronicle.util.LogSanitizer
@@ -26,32 +27,33 @@ import io.github.bucket4j.Bandwidth
 import io.github.bucket4j.Bucket
 import io.github.bucket4j.BucketConfiguration
 import io.github.bucket4j.ConsumptionProbe
+import io.github.bucket4j.TimeMeter
+import io.github.bucket4j.distributed.proxy.ClientSideConfig
 import io.github.bucket4j.distributed.proxy.ProxyManager
 import io.github.bucket4j.grid.hazelcast.HazelcastProxyManager
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
 import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.security.authentication.AnonymousAuthenticationToken
+import org.springframework.security.web.util.matcher.IpAddressMatcher
 import org.springframework.web.filter.OncePerRequestFilter
 import org.springframework.web.method.HandlerMethod
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping
 import java.net.InetAddress
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import java.util.function.Supplier
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 
 /**
- * Distributed rate limiting filter using Bucket4j with Hazelcast backend.
+ * Distributed rate limiting of unauthenticated work, using Bucket4j with a Hazelcast backend.
  *
- * This filter provides:
- * - Global rate limiting per IP (for unauthenticated) or per user (for authenticated)
- * - Endpoint-specific rate limits via @RateLimit annotation
- * - Stricter limits for authentication endpoints
- * - IP/path whitelisting for internal services and health checks
- * - Rate limit response headers (X-RateLimit-*)
- * - Retry-After header for rate-limited responses
+ * Only pre-authentication endpoints marked with [RateLimit] (login, enrollment) are limited here;
+ * authenticated endpoints are never limited. [PreAuthenticationRateLimitFilter] is the IP-keyed
+ * instance that counts failed unauthenticated attempts on every path. A 429 carries Retry-After.
  *
  * Rate limiting algorithm: Token Bucket
  * - Tokens are added at a fixed rate (requestsPerMinute / 60 per second)
@@ -67,7 +69,9 @@ import jakarta.servlet.http.HttpServletResponse
 public open class RateLimitFilter(
     hazelcastInstance: HazelcastInstance,
     private val config: RateLimitConfiguration,
-    @Volatile private var handlerMapping: RequestMappingHandlerMapping?
+    @Volatile private var handlerMapping: RequestMappingHandlerMapping?,
+    private val preAuthentication: Boolean = false,
+    bucketClock: TimeMeter? = null,
 ) : OncePerRequestFilter() {
 
     private val log = LoggerFactory.getLogger(RateLimitFilter::class.java)
@@ -78,11 +82,13 @@ public open class RateLimitFilter(
     }
 
     internal companion object {
+        private const val AUTHENTICATION_RESERVATION = "chronicle.authenticationRateLimitReservation"
+        internal const val VALIDATED_CREDENTIAL = "chronicle.validatedCredential"
 
-        // Response headers
-        public const val HEADER_LIMIT = "X-RateLimit-Limit"
-        public const val HEADER_REMAINING = "X-RateLimit-Remaining"
-        public const val HEADER_RESET = "X-RateLimit-Reset"
+        internal fun refundAuthenticationReservation(request: HttpServletRequest) {
+            (request.getAttribute(AUTHENTICATION_RESERVATION) as? Runnable)?.run()
+        }
+
         public const val HEADER_RETRY_AFTER = "Retry-After"
 
         // Private IP ranges for CIDR matching
@@ -104,31 +110,33 @@ public open class RateLimitFilter(
     private val bucketMap: IMap<String, ByteArray> = hazelcastInstance.getMap(config.hazelcastMapName)
 
     // Bucket4j proxy manager for distributed buckets
-    private val proxyManager: ProxyManager<String> = HazelcastProxyManager<String>(bucketMap)
+    private val proxyManager: ProxyManager<String> = if (bucketClock == null) {
+        HazelcastProxyManager<String>(bucketMap)
+    } else {
+        HazelcastProxyManager(bucketMap, ClientSideConfig.getDefault().withClientClock(bucketClock))
+    }
 
     // Cache for parsed CIDR ranges
-    private val cidrCache = ConcurrentHashMap<String, CidrRange>()
+    private val cidrCache = ConcurrentHashMap<String, IpAddressMatcher>()
 
     // Pre-parsed trusted proxy CIDR ranges for hot-path client IP extraction.
-    private val trustedProxyRanges: List<CidrRange> = ClientIpResolver.parseTrustedProxyCidrs(
+    private val trustedProxyRanges: List<IpAddressMatcher> = ClientIpResolver.parseTrustedProxyCidrs(
         ClientIpResolver.deploymentTrustedProxyCidrs(config.trustedProxyCidrs)
     )
 
     // Cache for endpoint rate limit annotations
     private val annotationCache = ConcurrentHashMap<HandlerMethod, RateLimit?>()
 
-    // Regex to extract study ID from URL paths like /chronicle/v3/study/{uuid}/...
-    // and /chronicle/v4/study/{uuid}/...
-    private val studyIdPattern = Regex("/study/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
-
-    // Regex to extract participant ID from URL paths like .../participant/{participantId}/...
-    private val participantIdPattern = Regex("/participant/([^/]+)")
-
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
         filterChain: FilterChain
     ) {
+        if (request.getAttribute(VALIDATED_CREDENTIAL) == true || isAuthenticated()) {
+            refundAuthenticationReservation(request)
+            filterChain.doFilter(request, response)
+            return
+        }
         // Skip if rate limiting is disabled
         if (!config.enabled) {
             filterChain.doFilter(request, response)
@@ -152,36 +160,43 @@ public open class RateLimitFilter(
             return
         }
 
-        // Get rate limit configuration for this endpoint
-        val rateLimitConfig = resolveRateLimitConfig(request, requestPath)
-
-        // Check for bypass annotation
-        if (rateLimitConfig.bypass) {
-            log.debug("Rate limit bypass - annotation bypass for: {}", LogSanitizer.sanitizeRequestPath(requestPath))
+        // Authenticated and unmarked endpoints are not limited.
+        val rateLimitConfig = resolveRateLimitConfig(request) ?: run {
             filterChain.doFilter(request, response)
             return
         }
 
-        // Generate rate limit key
         val rateLimitKey = generateRateLimitKey(request, clientIp, rateLimitConfig)
-
-        // Get or create bucket for this key
         val bucket = getOrCreateBucket(rateLimitKey, rateLimitConfig)
-
-        // Try to consume a token
         val probe: ConsumptionProbe = bucket.tryConsumeAndReturnRemaining(1)
 
-        // Add rate limit headers
-        if (config.includeHeaders) {
-            addRateLimitHeaders(response, probe, rateLimitConfig.limit)
-        }
-
         if (probe.isConsumed) {
-            // Request allowed - proceed
-            filterChain.doFilter(request, response)
+            filterWithReservation(bucket, request, response, filterChain)
         } else {
             // Rate limited
-            handleRateLimited(response, probe, clientIp, requestPath)
+            handleRateLimited(response, probe, requestPath)
+        }
+    }
+
+    private fun filterWithReservation(
+        bucket: Bucket,
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        filterChain: FilterChain,
+    ) {
+        if (!preAuthentication) {
+            filterChain.doFilter(request, response)
+            return
+        }
+        val reserved = AtomicReference<Bucket?>(bucket)
+        request.setAttribute(AUTHENTICATION_RESERVATION, Runnable { reserved.getAndSet(null)?.addTokens(1) })
+        var completed = false
+        try {
+            filterChain.doFilter(request, response)
+            completed = true
+        } finally {
+            if (completed && response.status < HttpServletResponse.SC_BAD_REQUEST) refundAuthenticationReservation(request)
+            request.removeAttribute(AUTHENTICATION_RESERVATION)
         }
     }
 
@@ -252,8 +267,7 @@ public open class RateLimitFilter(
     @Suppress("TooGenericExceptionCaught")
     private fun isIpInCidr(ip: String, cidr: String): Boolean {
         return try {
-            val range = cidrCache.computeIfAbsent(cidr) { CidrRange.parse(it) }
-            range.contains(ip)
+            cidrCache.computeIfAbsent(cidr) { IpAddressMatcher(it) }.matches(ip)
         } catch (e: Exception) {
             log.warn("Invalid CIDR notation: {}", cidr, e)
             false
@@ -287,91 +301,23 @@ public open class RateLimitFilter(
         return unbracketed.substringBefore('%')
     }
 
-    /**
-     * Resolves the rate limit configuration for the current request.
-     * Checks for @RateLimit annotation on method/class, falls back to config defaults.
-     *
-     * Tiered limits:
-     * - HEALTH: 1000/min (health/status endpoints)
-     * - READ: 100/min per study (GET data endpoints)
-     * - WRITE: 60/min per participant per study (POST upload endpoints)
-     * - ADMIN: 20/min (administrative endpoints)
-     * - AUTH: 10/min per IP (authentication, prevents brute force)
-     * - SENSITIVE: 20/min (exports, bulk operations)
-     * - DEFAULT: 100/min (everything else)
-     */
-    // reason: security rate-limit tier resolution — branch-by-branch precedence is load-bearing; restructuring risks altering enforced limits
-    @Suppress("CyclomaticComplexMethod")
-    private fun resolveRateLimitConfig(request: HttpServletRequest, path: String): ResolvedRateLimitConfig {
-        // Try to get annotation from handler method
-        val annotation = getEndpointAnnotation(request)
-
-        // Check for bypass
-        if (annotation?.bypass == true || annotation?.type == RateLimitType.UNLIMITED) {
-            return ResolvedRateLimitConfig(
-                limit = Long.MAX_VALUE,
-                burstCapacity = Long.MAX_VALUE,
-                keyStrategy = RateLimitKeyStrategy.IP,
-                bypass = true
-            )
+    /** The pre-authentication tier, or null when this request is not rate limited. */
+    private fun resolveRateLimitConfig(request: HttpServletRequest): ResolvedRateLimitConfig? {
+        if (preAuthentication) return tier(config.authRequestsPerMinute, 0, RateLimitKeyStrategy.IP)
+        val annotation = getEndpointAnnotation(request) ?: return null
+        val limit = annotation.requestsPerMinute.takeIf { it > 0 } ?: when (annotation.type) {
+            RateLimitType.AUTH -> config.authRequestsPerMinute
+            RateLimitType.READ -> config.readRequestsPerMinute
+            RateLimitType.WRITE -> config.writeRequestsPerMinute
         }
-
-        // Determine the effective rate limit type
-        val effectiveType = when {
-            annotation != null && annotation.requestsPerMinute > 0 -> null // explicit override
-            annotation != null -> annotation.type
-            isAuthPath(path) -> RateLimitType.AUTH
-            else -> RateLimitType.DEFAULT
-        }
-
-        // Determine base rate limit, checking for per-study overrides
-        val studyId = extractStudyId(path)
-        val studyOverrideLimit = if (studyId != null) config.studyOverrides[studyId] else null
-
-        val baseLimit = when {
-            annotation != null && annotation.requestsPerMinute > 0 -> annotation.requestsPerMinute
-            studyOverrideLimit != null -> studyOverrideLimit
-            effectiveType == RateLimitType.HEALTH -> config.healthRequestsPerMinute
-            effectiveType == RateLimitType.READ -> config.readRequestsPerMinute
-            effectiveType == RateLimitType.WRITE -> config.writeRequestsPerMinute
-            effectiveType == RateLimitType.ADMIN -> config.adminRequestsPerMinute
-            effectiveType == RateLimitType.AUTH -> config.authRequestsPerMinute
-            effectiveType == RateLimitType.SENSITIVE -> config.sensitiveRequestsPerMinute
-            else -> config.defaultRequestsPerMinute
-        }
-
-        // Determine burst capacity
-        val burstCapacity = when {
-            annotation != null && annotation.burstCapacity > 0 -> annotation.burstCapacity
-            else -> (baseLimit * config.burstCapacityMultiplier).toLong()
-        }
-
-        // Determine key strategy — annotation takes precedence, then type-based defaults
-        val keyStrategy = when {
-            annotation != null && annotation.keyStrategy != RateLimitKeyStrategy.AUTO -> annotation.keyStrategy
-            effectiveType == RateLimitType.WRITE -> RateLimitKeyStrategy.PARTICIPANT_STUDY
-            effectiveType == RateLimitType.READ -> RateLimitKeyStrategy.STUDY
-            effectiveType == RateLimitType.AUTH -> RateLimitKeyStrategy.IP
-            effectiveType == RateLimitType.ADMIN -> RateLimitKeyStrategy.USER
-            else -> annotation?.keyStrategy ?: RateLimitKeyStrategy.AUTO
-        }
-
-        return ResolvedRateLimitConfig(
-            limit = baseLimit,
-            burstCapacity = burstCapacity,
-            keyStrategy = keyStrategy,
-            bypass = false
-        )
+        return tier(limit, annotation.burstCapacity, annotation.keyStrategy)
     }
 
-    /**
-     * Checks if the path is an authentication endpoint.
-     */
-    private fun isAuthPath(path: String): Boolean {
-        return config.authPaths.any { authPath ->
-            path.startsWith(authPath)
-        }
-    }
+    private fun tier(limit: Long, burstCapacity: Long, keyStrategy: RateLimitKeyStrategy) = ResolvedRateLimitConfig(
+        limit = limit,
+        burstCapacity = burstCapacity.takeIf { it > 0 } ?: (limit * config.burstCapacityMultiplier).toLong(),
+        keyStrategy = keyStrategy,
+    )
 
     /**
      * Gets the @RateLimit annotation from the endpoint handler, if present.
@@ -383,10 +329,7 @@ public open class RateLimitFilter(
 
         return try {
             val handler = handlerMapping.getHandler(request)?.handler as? HandlerMethod ?: return null
-            annotationCache.computeIfAbsent(handler) {
-                it.getMethodAnnotation(RateLimit::class.java)
-                    ?: it.beanType.getAnnotation(RateLimit::class.java)
-            }
+            annotationCache.computeIfAbsent(handler) { it.getMethodAnnotation(RateLimit::class.java) }
         } catch (e: Exception) {
             log.debug("Could not resolve handler for rate limit annotation: {}", e.message)
             null
@@ -396,97 +339,21 @@ public open class RateLimitFilter(
     /**
      * Generates a unique key for rate limiting.
      */
-    // reason: security rate-limit key strategy — each branch maps to a distinct bucketing scheme; restructuring risks cross-contaminating buckets
-    @Suppress("CyclomaticComplexMethod")
     private fun generateRateLimitKey(
         request: HttpServletRequest,
         clientIp: String,
         config: ResolvedRateLimitConfig
     ): String {
-        val userId = getAuthenticatedUserId()
-        val path = request.requestURI
+        val subject = if (preAuthentication) RateLimitSubject(null, null) else RateLimitSubject.from(request)
         val clientRef = LogSanitizer.stableFingerprint(clientIp, prefix = "ip")
-        val userRef = userId?.let { LogSanitizer.stableFingerprint(it, prefix = "user") }
-
-        val keyPart = when (config.keyStrategy) {
-            RateLimitKeyStrategy.IP -> mobileIdentityRef() ?: clientRef
-            RateLimitKeyStrategy.USER -> userRef ?: clientRef
-            RateLimitKeyStrategy.USER_AND_IP -> "user_ip:${userRef ?: "user:anon"}:$clientRef"
-            RateLimitKeyStrategy.ENDPOINT -> "endpoint:${LogSanitizer.sanitizeRequestPath(path)}:${userRef ?: clientRef}"
-            RateLimitKeyStrategy.STUDY -> {
-                val studyId = extractStudyId(path) ?: "unknown"
-                "study:${stableRefOrUnknown(studyId, "study")}:${userRef ?: clientRef}"
-            }
-            RateLimitKeyStrategy.PARTICIPANT_STUDY -> {
-                val studyId = extractStudyId(path) ?: "unknown"
-                val participantId = extractParticipantId(path) ?: "unknown"
-                // Include the authenticated user or client IP so an unauthenticated attacker who guesses a
-                // participant ID cannot exhaust that participant's upload quota before authentication runs.
-                "participant:${stableRefOrUnknown(studyId, "study")}:" +
-                    "${stableRefOrUnknown(participantId, "participant")}:${userRef ?: clientRef}"
-            }
-            RateLimitKeyStrategy.AUTO -> {
-                userRef ?: clientRef
-            }
-        }
-
-        return "$KEY_PREFIX${config.keyStrategy}:${config.limit}:${config.burstCapacity}:$keyPart"
+        val keyPart = subject.quotaKey(config.keyStrategy, clientRef)
+        return "$KEY_PREFIX${if (preAuthentication) "preauth:" else ""}${config.keyStrategy}:${config.limit}:${config.burstCapacity}:$keyPart"
     }
 
-    private fun stableRefOrUnknown(value: String, prefix: String): String {
-        return if (value == "unknown") {
-            "$prefix:unknown"
-        } else {
-            LogSanitizer.stableFingerprint(value, prefix = prefix)
-        }
-    }
 
-    /**
-     * Extracts study UUID from the request path.
-     * Matches patterns like /chronicle/v3/study/{uuid} or /chronicle/v4/study/{uuid}
-     */
-    private fun extractStudyId(path: String): String? {
-        return studyIdPattern.find(path)?.groupValues?.get(1)
-    }
-
-    /**
-     * Extracts participant ID from the request path.
-     * Matches patterns like .../participant/{participantId}/...
-     */
-    private fun extractParticipantId(path: String): String? {
-        return participantIdPattern.find(path)?.groupValues?.get(1)
-    }
-
-    /**
-     * Gets the authenticated user ID from the security context.
-     */
-    // reason: boundary catch — auth lookup must never break the rate-limit filter regardless of failure type
-    @Suppress("TooGenericExceptionCaught")
-    private fun getAuthenticatedUserId(): String? {
-        return try {
-            val authentication = SecurityContextHolder.getContext().authentication
-            if (authentication != null && authentication.isAuthenticated) {
-                mobileIdentityRef() ?: resolvePrincipalUserId(authentication.principal, authentication.name)
-            } else {
-                null
-            }
-        } catch (e: Exception) {
-            log.debug("Could not resolve authenticated user id for rate limiting: {}", e.message)
-            null
-        }
-    }
-
-    private fun mobileIdentityRef(): String? =
-        (SecurityContextHolder.getContext().authentication as? com.openlattice.chronicle.filters.ApiKeyAuthenticationToken)
-            ?.takeIf { it.isAuthenticated && (it.deviceId != null || it.erased) }
-            ?.let { LogSanitizer.stableFingerprint(if (it.erased) it.name else "${it.studyId}:${it.deviceId}", "device") }
-
-    private fun resolvePrincipalUserId(principal: Any?, name: String?): String? {
-        return when (principal) {
-            is String -> if (principal != "anonymousUser") principal else null
-            else -> name?.takeIf { it != "anonymousUser" }
-        }
-    }
+    /** A request that passed authentication never counts as a failed credential attempt. */
+    private fun isAuthenticated(): Boolean = SecurityContextHolder.getContext().authentication
+        ?.let { it.isAuthenticated && it !is AnonymousAuthenticationToken } == true
 
     /**
      * Gets or creates a rate limit bucket for the given key.
@@ -516,28 +383,11 @@ public open class RateLimitFilter(
     }
 
     /**
-     * Adds rate limit headers to the response.
-     */
-    private fun addRateLimitHeaders(
-        response: HttpServletResponse,
-        probe: ConsumptionProbe,
-        limit: Long
-    ) {
-        response.setHeader(HEADER_LIMIT, limit.toString())
-        response.setHeader(HEADER_REMAINING, probe.remainingTokens.toString())
-
-        // Reset time in seconds since epoch
-        val resetSeconds = System.currentTimeMillis() / 1000 + (probe.nanosToWaitForRefill / 1_000_000_000)
-        response.setHeader(HEADER_RESET, resetSeconds.toString())
-    }
-
-    /**
      * Handles a rate-limited request.
      */
     private fun handleRateLimited(
         response: HttpServletResponse,
         probe: ConsumptionProbe,
-        clientIp: String,
         path: String
     ) {
         val retryAfterSeconds = (probe.nanosToWaitForRefill / 1_000_000_000) + 1
@@ -549,21 +399,10 @@ public open class RateLimitFilter(
             retryAfterSeconds
         )
 
-        if (config.includeRetryAfter) {
-            response.setHeader(HEADER_RETRY_AFTER, retryAfterSeconds.toString())
-        }
+        response.setHeader(HEADER_RETRY_AFTER, retryAfterSeconds.toString())
 
-        response.status = HttpStatus.TOO_MANY_REQUESTS.value()
-        response.contentType = "application/json"
-        response.writer.write(
-            """{
-                "error": "Rate limit exceeded",
-                "status": 429,
-                "retryAfter": $retryAfterSeconds,
-                "message": "Too many requests. Please wait $retryAfterSeconds seconds before retrying."
-            }""".trimIndent()
-        )
-        response.writer.flush()
+        writeFilterError(response, HttpStatus.TOO_MANY_REQUESTS.value(),
+            "Rate limit exceeded. Please wait $retryAfterSeconds seconds before retrying.", retryAfterSeconds = retryAfterSeconds)
     }
 
     /**
@@ -573,71 +412,5 @@ public open class RateLimitFilter(
         val limit: Long,
         val burstCapacity: Long,
         val keyStrategy: RateLimitKeyStrategy,
-        val bypass: Boolean
     )
-}
-
-/**
- * Utility class for CIDR range parsing and IP matching.
- * Supports both IPv4 and IPv6 using byte-array comparison with prefix masking.
- */
-public open class CidrRange private constructor(
-    private val networkBytes: ByteArray,
-    private val prefixLength: Int
-) {
-    internal companion object {
-        public fun parse(cidr: String): CidrRange {
-            val parts = cidr.split("/")
-            require(parts.size == 2) { "Invalid CIDR notation: $cidr" }
-
-            val ip = parts[0]
-            val prefixLength = parts[1].toInt()
-            val address = InetAddress.getByName(ip)
-            val addrBytes = address.address
-            val maxPrefix = addrBytes.size * 8
-
-            require(prefixLength in 0..maxPrefix) {
-                "Invalid prefix length $prefixLength for ${if (addrBytes.size == 4) "IPv4" else "IPv6"}"
-            }
-
-            // Mask the network address to the prefix
-            val masked = maskBytes(addrBytes, prefixLength)
-            return CidrRange(masked, prefixLength)
-        }
-
-        private fun maskBytes(bytes: ByteArray, prefixLength: Int): ByteArray {
-            val masked = bytes.copyOf()
-            var remainingBits = prefixLength
-            for (i in masked.indices) {
-                if (remainingBits >= 8) {
-                    remainingBits -= 8
-                } else if (remainingBits > 0) {
-                    val maskByte = (0xFF shl (8 - remainingBits)) and 0xFF
-                    masked[i] = (masked[i].toInt() and maskByte).toByte()
-                    remainingBits = 0
-                } else {
-                    masked[i] = 0
-                }
-            }
-            return masked
-        }
-    }
-
-    public fun contains(ip: String): Boolean {
-        val address = try {
-            InetAddress.getByName(ip)
-        } catch (_: Exception) {
-            return false
-        }
-
-        val ipBytes = address.address
-
-        // IPv4 (4 bytes) vs IPv6 (16 bytes) must match
-        if (ipBytes.size != networkBytes.size) {
-            return false
-        }
-
-        val maskedIp = maskBytes(ipBytes, prefixLength)
-        return maskedIp.contentEquals(networkBytes)
-    }
 }

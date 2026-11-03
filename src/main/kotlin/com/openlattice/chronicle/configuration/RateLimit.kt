@@ -17,171 +17,47 @@
 package com.openlattice.chronicle.configuration
 
 /**
- * Annotation to specify custom rate limits for individual endpoints.
+ * Rate-limits a pre-authentication endpoint (login, enrollment, participant form code exchange).
  *
- * Can be applied at the method level (for specific endpoints) or at the
- * class level (for all endpoints in a controller).
- *
- * Method-level annotations override class-level annotations.
- *
- * Example usage:
- * ```kotlin
- * @RestController
- * @RateLimit(requestsPerMinute = 50)  // Controller-level default
- * class MyController {
- *
- *     @GetMapping("/fast")
- *     @RateLimit(requestsPerMinute = 200)  // Override for this endpoint
- *     fun fastEndpoint(): Response { ... }
- *
- *     @PostMapping("/sensitive")
- *     @RateLimit(requestsPerMinute = 5, type = RateLimitType.AUTH)  // Strict limit
- *     fun sensitiveEndpoint(): Response { ... }
- *
- *     @GetMapping("/internal")
- *     @RateLimit(bypass = true)  // No rate limiting
- *     fun internalEndpoint(): Response { ... }
- * }
- * ```
+ * Authenticated endpoints carry no rate limit. Brute force against credentials is bounded here
+ * and by [PreAuthenticationRateLimitFilter], which counts every failed unauthenticated attempt per IP.
  *
  * @author uzaira0
  */
-@Target(AnnotationTarget.FUNCTION, AnnotationTarget.CLASS)
+@Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.RUNTIME)
 @MustBeDocumented
 public annotation class RateLimit(
-    /**
-     * Maximum requests per minute.
-     * If set to 0, uses the default from configuration based on [type].
-     */
+    /** Requests per minute; 0 uses the configured rate of [type]. */
     val requestsPerMinute: Long = 0,
 
-    /**
-     * Burst capacity - maximum tokens the bucket can hold.
-     * Allows temporary bursts above the steady-state rate.
-     * If set to 0, calculated as requestsPerMinute * burstCapacityMultiplier.
-     */
+    /** Bucket size; 0 derives it from the rate and the burst multiplier. */
     val burstCapacity: Long = 0,
 
-    /**
-     * Type of rate limit to apply.
-     * Determines the default rate if requestsPerMinute is not specified.
-     */
-    val type: RateLimitType = RateLimitType.DEFAULT,
+    /** Configured rate used when [requestsPerMinute] is 0. */
+    val type: RateLimitType = RateLimitType.AUTH,
 
-    /**
-     * Whether to bypass rate limiting entirely for this endpoint.
-     * Use with caution - only for internal/admin endpoints.
-     */
-    val bypass: Boolean = false,
-
-    /**
-     * Key generation strategy for rate limiting.
-     * Determines how to identify unique clients.
-     */
-    val keyStrategy: RateLimitKeyStrategy = RateLimitKeyStrategy.AUTO
+    /** Who shares one bucket. */
+    val keyStrategy: RateLimitKeyStrategy = RateLimitKeyStrategy.IP,
 )
 
-/**
- * Type of rate limit, determining default rate if not explicitly specified.
- */
+/** Which configured rate a pre-authentication endpoint gets. */
 public enum class RateLimitType {
-    /**
-     * Default rate limit (100 req/min by default).
-     * For general API endpoints.
-     */
-    DEFAULT,
-
-    /**
-     * Authentication rate limit (10 req/min per IP by default).
-     * For login, password reset, and similar auth endpoints.
-     * Stricter to prevent brute force attacks.
-     */
+    /** Credential checks: login, session exchange, reviewer enrollment. */
     AUTH,
 
-    /**
-     * Sensitive/admin operation rate limit (20 req/min by default).
-     * For operations like data export, admin operations, bulk operations, etc.
-     */
-    SENSITIVE,
-
-    /**
-     * Health/status endpoint rate limit (1000 req/min by default).
-     * Generous limit for monitoring and health checks.
-     */
-    HEALTH,
-
-    /**
-     * Read endpoint rate limit (100 req/min per study by default).
-     * For GET endpoints that retrieve study data.
-     */
+    /** Enrollment preview. */
     READ,
 
-    /**
-     * Write endpoint rate limit (60 req/min per participant per study by default).
-     * For POST endpoints that upload data (phone telemetry, sensors, etc.).
-     */
+    /** Enrollment, participant form code exchange and form session recovery. */
     WRITE,
-
-    /**
-     * Admin endpoint rate limit (20 req/min by default).
-     * For administrative operations like cache reload, import, etc.
-     */
-    ADMIN,
-
-    /**
-     * No rate limit applied.
-     * Same as bypass=true.
-     */
-    UNLIMITED
 }
 
-/**
- * Strategy for generating rate limit keys (identifying unique clients).
- */
+/** Who shares one rate-limit bucket. */
 public enum class RateLimitKeyStrategy {
-    /**
-     * Automatically choose based on authentication status:
-     * - Authenticated: Use user ID
-     * - Unauthenticated: Use client IP
-     */
-    AUTO,
-
-    /**
-     * Always use client IP address.
-     * Useful for public endpoints where user tracking isn't meaningful.
-     */
+    /** The client IP address. */
     IP,
 
-    /**
-     * Always use authenticated user ID.
-     * Requests without authentication will fail or fall back to IP.
-     */
-    USER,
-
-    /**
-     * Use combination of user ID (if authenticated) and IP.
-     * Provides rate limiting per user-IP pair.
-     */
-    USER_AND_IP,
-
-    /**
-     * Use the endpoint path + IP/user.
-     * Rate limits are per-endpoint rather than global per client.
-     */
-    ENDPOINT,
-
-    /**
-     * Per-study rate limiting.
-     * Extracts study ID from the URL path and limits per study.
-     * Prevents one compromised study from affecting others.
-     */
-    STUDY,
-
-    /**
-     * Per-participant-per-study rate limiting.
-     * Extracts study and participant IDs from the URL path and scopes the bucket to the authenticated user or IP.
-     * Used for write/upload endpoints to limit per participant within a study.
-     */
-    PARTICIPANT_STUDY
+    /** One participant of one study from one IP, so a shared network never blocks a whole cohort. */
+    PARTICIPANT_STUDY,
 }

@@ -21,7 +21,7 @@ import com.geekbeast.rhizome.configuration.Configuration
 import com.geekbeast.rhizome.configuration.ConfigurationKey
 import com.geekbeast.rhizome.configuration.SimpleConfigurationKey
 import com.geekbeast.rhizome.configuration.configuration.annotation.ReloadableConfiguration
-import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
+import com.openlattice.chronicle.util.ClientIpResolver
 
 /**
  * Configuration data class for distributed rate limiting settings.
@@ -31,8 +31,7 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings
  * Example configuration:
  * ```yaml
  * enabled: true
- * default-requests-per-minute: 100
- * auth-requests-per-minute: 5
+ * auth-requests-per-minute: 10
  * whitelisted-ips:
  *   - "127.0.0.1"
  * whitelisted-paths:
@@ -52,63 +51,19 @@ public data class RateLimitConfiguration(
     val enabled: Boolean = true,
 
     /**
-     * Default rate limit: requests per minute per IP/user.
-     * Applied to endpoints without specific @RateLimit annotation.
-     */
-    @param:JsonProperty("default-requests-per-minute")
-    val defaultRequestsPerMinute: Long = 100,
-
-    /**
-     * Rate limit for authentication endpoints: requests per minute per IP.
-     * Applied to /auth/[*], /login, /oauth/[*] endpoints.
+     * Rate for credential checks and failed unauthenticated attempts: requests per minute per IP.
      * Stricter to prevent brute force attacks.
      */
     @param:JsonProperty("auth-requests-per-minute")
     val authRequestsPerMinute: Long = 10,
 
-    /**
-     * Rate limit for sensitive API endpoints: requests per minute per IP/user.
-     * Applied to endpoints with @RateLimit(type = RateLimitType.SENSITIVE).
-     */
-    @param:JsonProperty("sensitive-requests-per-minute")
-    val sensitiveRequestsPerMinute: Long = 20,
-
-    /**
-     * Rate limit for health/status endpoints: requests per minute.
-     * Generous limit for monitoring probes.
-     */
-    @param:JsonProperty("health-requests-per-minute")
-    val healthRequestsPerMinute: Long = 1000,
-
-    /**
-     * Rate limit for read endpoints (GET): requests per minute per study.
-     * Applied to data retrieval endpoints.
-     */
+    /** Rate for the enrollment preview: requests per minute per participant per IP. */
     @param:JsonProperty("read-requests-per-minute")
     val readRequestsPerMinute: Long = 100,
 
-    /**
-     * Rate limit for write endpoints (POST upload): requests per minute per participant per study.
-     * Applied to data upload endpoints (phone telemetry, sensors, etc.).
-     */
+    /** Rate for enrollment and participant form code exchange: requests per minute per participant or IP. */
     @param:JsonProperty("write-requests-per-minute")
     val writeRequestsPerMinute: Long = 60,
-
-    /**
-     * Rate limit for admin endpoints: requests per minute.
-     * Applied to administrative operations.
-     */
-    @param:JsonProperty("admin-requests-per-minute")
-    val adminRequestsPerMinute: Long = 20,
-
-    /**
-     * Per-study rate limit overrides.
-     * Keys are study UUIDs, values are the per-study request-per-minute limit.
-     * Studies not in this map use the default limits.
-     * Useful for studies with more participants or higher data volumes.
-     */
-    @param:JsonProperty("study-overrides")
-    val studyOverrides: Map<String, Long> = emptyMap(),
 
     /**
      * Burst capacity multiplier.
@@ -167,19 +122,6 @@ public data class RateLimitConfiguration(
     ),
 
     /**
-     * Authentication endpoint path patterns.
-     * These paths use the stricter authRequestsPerMinute limit.
-     */
-    @param:JsonProperty("auth-paths")
-    val authPaths: List<String> = listOf(
-        "/auth/",
-        "/login",
-        "/oauth/",
-        "/api/auth/",
-        "/chronicle/v4/mobile/reviewer-enrollment",
-    ),
-
-    /**
      * Header name to extract real client IP from reverse proxy.
      * Common values: X-Forwarded-For, X-Real-IP, CF-Connecting-IP
      */
@@ -214,19 +156,6 @@ public data class RateLimitConfiguration(
     val entryTtlSeconds: Long = 120,
 
     /**
-     * Whether to include rate limit headers in responses.
-     * Headers: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
-     */
-    @param:JsonProperty("include-headers")
-    val includeHeaders: Boolean = true,
-
-    /**
-     * Whether to include Retry-After header when rate limited.
-     */
-    @param:JsonProperty("include-retry-after")
-    val includeRetryAfter: Boolean = true,
-
-    /**
      * CIDR ranges of trusted direct reverse proxies (e.g., Traefik, nginx).
      * When parsing X-Forwarded-For, IPs matching these ranges are skipped
      * and the rightmost non-trusted IP is used as the client IP.
@@ -234,12 +163,11 @@ public data class RateLimitConfiguration(
      *
      * Do not use broad private ranges here. If F5 or another upstream proxy is
      * part of the XFF chain, add its explicit CIDR in deployment config.
+     * CHRONICLE_TRUSTED_PROXY_CIDRS replaces this list; without it, only loopback
+     * proxies are trusted, the same default [ClientIpResolver] applies.
      */
     @param:JsonProperty("trusted-proxy-cidrs")
-    val trustedProxyCidrs: List<String> = listOf(
-        "127.0.0.0/8",
-        "::1/128"
-    )
+    val trustedProxyCidrs: List<String> = ClientIpResolver.LOOPBACK_PROXY_CIDRS
 ) : Configuration {
 
     internal companion object {
@@ -247,19 +175,5 @@ public data class RateLimitConfiguration(
         public val key = SimpleConfigurationKey("rate-limit.yaml")
     }
 
-    @SuppressFBWarnings(
-        value = ["IL_INFINITE_RECURSIVE_LOOP"],
-        justification = "Kotlin companion-object key accessed from getKey(); findbugs misreads " +
-            "companion-member access as self-recursion. Not recursive.",
-    )
-    override fun getKey(): ConfigurationKey = key
+    override fun getKey(): ConfigurationKey = Companion.key
 }
-
-/**
- * Endpoint-specific rate limit configuration.
- * Used to override the default rate limit for specific endpoints.
- */
-public data class EndpointRateLimitConfig(
-    val requestsPerMinute: Long,
-    val burstCapacity: Long
-)
