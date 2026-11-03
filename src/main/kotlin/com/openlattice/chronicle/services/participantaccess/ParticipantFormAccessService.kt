@@ -1,25 +1,43 @@
 package com.openlattice.chronicle.services.participantaccess
 
-import com.fasterxml.jackson.module.kotlin.readValue
-import com.geekbeast.mappers.mappers.ObjectMappers
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.auditing.AuditableEvent
+import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
+import com.openlattice.chronicle.auditing.AuditingManager
+import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.collection.CollectionModuleId
+import com.openlattice.chronicle.exceptions.CollectionUnavailableException
+import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.participantaccess.ParticipantFormAccessCodeResponse
 import com.openlattice.chronicle.participantaccess.ParticipantFormKind
 import com.openlattice.chronicle.participantaccess.ParticipantFormSessionResponse
-import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.services.participantaccess.ParticipantSessionSecrets.generateToken
+import com.openlattice.chronicle.services.participantaccess.ParticipantSessionSecrets.isPlausibleToken
+import com.openlattice.chronicle.services.participantaccess.ParticipantSessionSecrets.sha256
 import com.openlattice.chronicle.storage.DeletionStudyFence
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+import com.openlattice.chronicle.storage.ParticipantErasureFence
+import com.openlattice.chronicle.storage.ParticipantProcessingBlockedException
+import com.openlattice.chronicle.storage.ParticipantProcessingGate
+import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.storage.rls.RLSConnectionContext
+import com.openlattice.chronicle.storage.rls.RLSConnectionCustomizer
+import com.openlattice.chronicle.storage.rls.RLSRequestContext
+import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.util.LogSanitizer
+import com.openlattice.chronicle.util.SqlFailures
+import org.springframework.http.HttpStatus
+import org.springframework.web.server.ResponseStatusException
 import java.security.MessageDigest
-import java.security.SecureRandom
 import java.sql.Connection
-import java.sql.PreparedStatement
-import java.sql.ResultSet
 import java.sql.SQLException
 import java.time.Clock
 import java.time.Duration
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-import java.util.Base64
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 
 public enum class ParticipantAccessCodeIssuerType {
@@ -37,7 +55,11 @@ public data class ParticipantAccessCodeCommand(
     val requestedExpiresAt: OffsetDateTime?,
     val issuerType: ParticipantAccessCodeIssuerType,
     val issuedBy: String,
-)
+) {
+    /** A researcher's enrollment invitation: its code derives from its id, so the link already sent can be shown again. */
+    val isEnrollmentInvitation: Boolean
+        get() = formKind == ParticipantFormKind.ENROLLMENT && issuerType == ParticipantAccessCodeIssuerType.RESEARCHER
+}
 
 /** Request scope produced only after a stored, unexpired capability session is verified. */
 public data class ParticipantFormAccessScope(
@@ -54,7 +76,9 @@ public data class ParticipantFormAccessScope(
         requiredStudyId: UUID,
         requiredParticipantId: String?,
         requiredResourceId: UUID?,
+        window: ParticipantFormWindow? = null,
     ): Boolean {
+        if (logicalDate != null && window != null && !window.isWithin(logicalDate)) return false
         if (studyId != requiredStudyId || (formKind != ParticipantFormKind.PORTAL && formKind != requiredKind)) {
             return false
         }
@@ -77,6 +101,7 @@ public data class EnrollmentAccessCodeScope(
     val participantId: String,
     val issuedAt: OffsetDateTime,
     val expiresAt: OffsetDateTime,
+    val committedBinding: EnrollmentAttemptBinding? = null,
 )
 
 /** Hash-only identity of one public enrollment request. No client credential is retained in plaintext. */
@@ -85,31 +110,35 @@ public data class EnrollmentAttemptBinding(
     val studyId: UUID,
     val participantId: String,
     val sourceDeviceHash: String,
-    val deviceId: UUID,
+    val randomDeviceId: UUID,
     val manifestDigest: String,
     val requestHash: String,
     val proposedApiKeyHash: String,
-    /** Authoritative consent evidence stamped with new V91 receipts; null marks a legacy V89 receipt. */
-    val enrollmentSettingsVersion: Int? = null,
-    val enrollmentDisclosureVersion: String? = null,
-    val enrollmentEnabledModules: Set<CollectionModuleId>? = null,
-    val enrollmentRequiredModules: Set<CollectionModuleId>? = null,
+    /** Replay requires complete consent evidence; incomplete bindings never authorize a retry. */
+    val enrollmentSettingsVersion: Int?,
+    val enrollmentDisclosureVersion: String?,
+    val enrollmentEnabledModules: Set<CollectionModuleId>?,
+    val enrollmentRequiredModules: Set<CollectionModuleId>?,
 ) {
     internal fun securelyMatches(other: EnrollmentAttemptBinding): Boolean =
-        attemptId == other.attemptId &&
-            studyId == other.studyId &&
-            participantId == other.participantId &&
-            deviceId == other.deviceId &&
-            constantTimeAsciiEquals(sourceDeviceHash, other.sourceDeviceHash) &&
+        sameIdentity(other) && sameHashes(other) && sameEnrollmentTerms(other)
+
+    private fun sameIdentity(other: EnrollmentAttemptBinding): Boolean =
+        attemptId == other.attemptId && studyId == other.studyId &&
+            participantId == other.participantId && randomDeviceId == other.randomDeviceId
+
+    private fun sameHashes(other: EnrollmentAttemptBinding): Boolean =
+        constantTimeAsciiEquals(sourceDeviceHash, other.sourceDeviceHash) &&
             constantTimeAsciiEquals(manifestDigest, other.manifestDigest) &&
             constantTimeAsciiEquals(requestHash, other.requestHash) &&
-            constantTimeAsciiEquals(proposedApiKeyHash, other.proposedApiKeyHash) &&
-            legacyOrEqual(enrollmentSettingsVersion, other.enrollmentSettingsVersion) &&
-            legacyOrEqual(enrollmentDisclosureVersion, other.enrollmentDisclosureVersion) &&
-            legacyOrEqual(enrollmentEnabledModules, other.enrollmentEnabledModules) &&
-            legacyOrEqual(enrollmentRequiredModules, other.enrollmentRequiredModules)
+            constantTimeAsciiEquals(proposedApiKeyHash, other.proposedApiKeyHash)
 
-    private fun <T> legacyOrEqual(stored: T?, candidate: T?): Boolean = stored == null || stored == candidate
+    /** Every enrollment term must be recorded on this binding and equal on the candidate. */
+    private fun sameEnrollmentTerms(other: EnrollmentAttemptBinding): Boolean =
+        enrollmentSettingsVersion != null && enrollmentSettingsVersion == other.enrollmentSettingsVersion &&
+            enrollmentDisclosureVersion != null && enrollmentDisclosureVersion == other.enrollmentDisclosureVersion &&
+            enrollmentEnabledModules != null && enrollmentEnabledModules == other.enrollmentEnabledModules &&
+            enrollmentRequiredModules != null && enrollmentRequiredModules == other.enrollmentRequiredModules
 }
 
 /** A consumed invitation may authorize only its exact request binding, and only for a bounded recovery window. */
@@ -134,16 +163,30 @@ private fun constantTimeAsciiEquals(first: String, second: String): Boolean = Me
  */
 public class ParticipantFormAccessService(
     private val storageResolver: StorageResolver,
+    auditingManager: AuditingManager,
+    sessionSecret: ByteArray,
     private val clock: Clock = Clock.systemUTC(),
 ) {
+    private val sessionSecret = sessionSecret.copyOf().also {
+        require(it.size >= 32) { "Participant sessions require the deployment's internal web secret" }
+    }
+    private val pendingEnrollments = PendingEnrollmentService(storageResolver, auditingManager, clock)
+    private val sessionAdmission = ParticipantSessionAdmission(storageResolver, clock)
+
+    public fun getPendingEnrollments(studyId: UUID, limit: Int = 100, offset: Int = 0): List<String> =
+        pendingEnrollments.getPendingEnrollments(studyId, limit, offset)
+
+    public fun getSettingLocks(studyId: UUID): List<StudySettingType> = pendingEnrollments.getSettingLocks(studyId)
+
+    public fun cancelPendingEnrollment(studyId: UUID, participantId: String): Int =
+        pendingEnrollments.cancelPendingEnrollment(studyId, participantId)
+
     internal companion object {
-        private val secureRandom = SecureRandom()
-        private const val TOKEN_BYTES = 48
-        private const val MAX_TOKEN_CHARS = 256
         private val DEFAULT_ACCESS_CODE_LIFETIME: Duration = Duration.ofDays(7)
         private val MAX_ACCESS_CODE_LIFETIME: Duration = Duration.ofDays(30)
         private val SESSION_LIFETIME: Duration = Duration.ofHours(24)
-        private val IDLE_LIFETIME: Duration = Duration.ofMinutes(30)
+        internal val IDLE_LIFETIME: Duration = Duration.ofMinutes(30)
+        internal val FORM_EXCHANGE_REPLAY_WINDOW: Duration = Duration.ofMinutes(5)
         private val ENROLLMENT_REPLAY_LIFETIME: Duration = Duration.ofHours(24)
         private const val UNIQUE_VIOLATION_SQL_STATE = "23505"
     }
@@ -221,55 +264,54 @@ public class ParticipantFormAccessService(
         }
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
         return storageResolver.getPlatformStorage().connection.use { connection ->
-            val originalAutoCommit = connection.autoCommit
-            connection.autoCommit = false
-            try {
+            connection.withTransaction {
                 DeletionStudyFence.shared(connection, commands.map { it.studyId })
-                if (replacePrior) {
-                    lockAccessCodeIssuanceScopes(connection, commands)
-                }
+                lockAccessCodeIssuanceScopes(connection, commands.filter { shouldReplaceCode(it, replacePrior) })
                 val responses = commands.map { command ->
-                    com.openlattice.chronicle.storage.ParticipantErasureFence.requireReusable(connection, command.studyId, command.participantId)
+                    ParticipantErasureFence.requireReusable(connection, command.studyId, command.participantId)
+                    // Enrollment codes precede consent; every other form follows its admission rule.
+                    if (command.formKind != ParticipantFormKind.ENROLLMENT &&
+                        !ParticipantCollectionGate(connection).admitsForm(command.formKind, command.studyId, command.participantId)) {
+                        throw CollectionUnavailableException(CollectionUnavailableException.Scope.PARTICIPANT)
+                    }
                     createAccessCode(connection, command, now, replacePrior)
                 }
                 connection.commit()
                 responses
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = originalAutoCommit
             }
         }
     }
 
-    private fun accessCodeRevocationScope(command: ParticipantAccessCodeCommand): List<Any?> = listOf(
-        command.studyId,
-        command.participantId,
-        command.formKind,
-        command.resourceId,
-        command.issuerType,
-        command.issuedBy.take(200),
-    )
+    private fun shouldReplaceCode(command: ParticipantAccessCodeCommand, replacePrior: Boolean): Boolean =
+        replacePrior || command.issuerType == ParticipantAccessCodeIssuerType.DEVICE ||
+            command.issuerType == ParticipantAccessCodeIssuerType.RESEARCHER
 
-    private fun accessCodeIssuanceLockKey(command: ParticipantAccessCodeCommand): String =
-        accessCodeRevocationScope(command).joinToString(separator = "|") { it?.toString() ?: "-" }
+    private data class IssuanceScope(
+        val studyId: UUID,
+        val participantId: String,
+        val formKind: ParticipantFormKind,
+        val resourceId: UUID?,
+        val issuerType: ParticipantAccessCodeIssuerType,
+        val issuedBy: String?,
+    ) {
+        fun lockKey(): String = "$studyId|$participantId|${formKind.name}|$resourceId|${issuerType.name}|$issuedBy"
+    }
+
+    private fun accessCodeRevocationScope(command: ParticipantAccessCodeCommand): IssuanceScope = IssuanceScope(
+        studyId = command.studyId,
+        participantId = command.participantId,
+        formKind = command.formKind,
+        resourceId = command.resourceId,
+        issuerType = command.issuerType,
+        issuedBy = command.issuedBy.take(200).takeUnless { command.issuerType == ParticipantAccessCodeIssuerType.RESEARCHER },
+    )
 
     private fun lockAccessCodeIssuanceScopes(
         connection: Connection,
         commands: List<ParticipantAccessCodeCommand>,
     ) {
-        commands.sortedBy(::accessCodeIssuanceLockKey).forEach { command ->
-            lockAccessCodeIssuanceScope(connection, command)
-        }
-    }
-
-    private fun lockAccessCodeIssuanceScope(connection: Connection, command: ParticipantAccessCodeCommand) {
-        connection.prepareStatement(
-            "SELECT pg_advisory_xact_lock(hashtextextended(?::text, 0))",
-        ).use { statement ->
-            statement.setString(1, accessCodeIssuanceLockKey(command))
-            statement.execute()
+        commands.map { accessCodeRevocationScope(it).lockKey() }.sorted().forEach { key ->
+            EnrollmentAccessCodeRepository(connection).lockScope(key)
         }
     }
 
@@ -282,6 +324,10 @@ public class ParticipantFormAccessService(
         require(command.formKind == ParticipantFormKind.QUESTIONNAIRE || command.resourceId == null) {
             "resourceId is only valid for QUESTIONNAIRE access codes"
         }
+        // The server's survey days decide which app-usage days are answerable; a code is never bound to one.
+        require(command.formKind != ParticipantFormKind.APP_USAGE || command.logicalDate == null) {
+            "APP_USAGE access codes are not bound to a day"
+        }
     }
 
     private fun createAccessCode(
@@ -293,28 +339,32 @@ public class ParticipantFormAccessService(
         val expiresAt = command.requestedExpiresAt ?: now.plus(DEFAULT_ACCESS_CODE_LIFETIME)
         require(expiresAt.isAfter(now)) { "Access code expiry must be in the future" }
         require(!expiresAt.isAfter(now.plus(MAX_ACCESS_CODE_LIFETIME))) { "Access code expiry exceeds 30 days" }
-        val rawToken = generateToken()
-        val tokenHash = sha256(rawToken)
         val accessCodeId = UUID.randomUUID()
+        val rawToken = if (!command.isEnrollmentInvitation) generateToken()
+        else ParticipantSessionSecrets.enrollmentInvitationCode(accessCodeId, sessionSecret)
 
-        if (replacePrior || command.issuerType == ParticipantAccessCodeIssuerType.DEVICE) {
+        if (shouldReplaceCode(command, replacePrior)) {
             connection.prepareStatement(
                 """
                 UPDATE participant_form_access_codes
                 SET revoked_at = ?
                 WHERE study_id = ? AND participant_id = ? AND form_kind = ?
                   AND resource_id IS NOT DISTINCT FROM ?
-                  AND issuer_type = ? AND issued_by = ?
+                  AND logical_date IS NOT DISTINCT FROM ?
+                  AND issuer_type = ? AND (? OR issued_by = ?)
                   AND exchanged_at IS NULL AND revoked_at IS NULL
                 """.trimIndent()
             ).use { statement ->
+                // One live code per form and day: a diary link for yesterday never revokes today's.
                 statement.setObject(1, now)
                 statement.setObject(2, command.studyId)
                 statement.setString(3, command.participantId)
                 statement.setString(4, command.formKind.name)
                 statement.setObject(5, command.resourceId)
-                statement.setString(6, command.issuerType.name)
-                statement.setString(7, command.issuedBy.take(200))
+                statement.setObject(6, command.logicalDate)
+                statement.setString(7, command.issuerType.name)
+                statement.setBoolean(8, command.issuerType == ParticipantAccessCodeIssuerType.RESEARCHER)
+                statement.setString(9, command.issuedBy.take(200))
                 statement.executeUpdate()
             }
         }
@@ -327,7 +377,7 @@ public class ParticipantFormAccessService(
             """.trimIndent()
         ).use { statement ->
             statement.setObject(1, accessCodeId)
-            statement.setBytes(2, tokenHash)
+            statement.setBytes(2, sha256(rawToken))
             statement.setObject(3, command.studyId)
             statement.setString(4, command.participantId)
             statement.setString(5, command.formKind.name)
@@ -347,95 +397,124 @@ public class ParticipantFormAccessService(
         )
     }
 
+    /** Whether a cancel (dashboard or phone) ended this enrollment attempt; its enroll is answered as cancelled. */
+    public fun isCancelledEnrollmentAttempt(attemptId: UUID): Boolean =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            RLSConnectionCustomizer.withAdminContext(connection) { EnrollmentAttemptRepository(connection).isCancelled(attemptId) }
+        }
+
+    /**
+     * The researcher's live enrollment invitation for this participant, the link already sent: unexchanged, unrevoked
+     * and unexpired. Null when there is none, or when it was issued under another deployment secret.
+     */
+    public fun liveEnrollmentInvitation(studyId: UUID, participantId: String): ParticipantFormAccessCodeResponse? {
+        val live = storageResolver.getPlatformStorage().connection.use { connection ->
+            EnrollmentAccessCodeRepository(connection).liveInvitation(studyId, participantId, OffsetDateTime.now(clock))
+        } ?: return null
+        val code = ParticipantSessionSecrets.enrollmentInvitationCode(live.accessCodeId, sessionSecret)
+        if (!MessageDigest.isEqual(sha256(code), live.tokenHash)) return null
+        return ParticipantFormAccessCodeResponse(code, live.expiresAt.withOffsetSameInstant(ZoneOffset.UTC),
+            ParticipantFormKind.ENROLLMENT)
+    }
+
     @Suppress("TooGenericExceptionCaught")
-    public fun exchangeAccessCode(rawAccessCode: String): ExchangedParticipantFormSession? {
+    public fun exchangeAccessCode(rawAccessCode: String, attemptId: UUID = UUID.randomUUID()): ExchangedParticipantFormSession? {
         if (!isPlausibleToken(rawAccessCode)) return null
         val tokenHash = sha256(rawAccessCode)
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                val studyId = connection.prepareStatement(
-                    "SELECT study_id FROM participant_form_access_codes WHERE token_hash = ?",
-                ).use { statement ->
-                    statement.setBytes(1, tokenHash)
-                    statement.executeQuery().use { result ->
-                        if (result.next()) result.getObject(1, UUID::class.java) else null
-                    }
-                } ?: run { connection.rollback(); return@use null }
+        return storageResolver.withParticipantCredentialStorage(studyId = null) { connection ->
+            connection.withTransaction {
+                val sessions = ParticipantFormSessionRepository(connection)
+                val studyId = sessions.findStudy(tokenHash) ?: run { connection.rollback(); return@withTransaction null }
                 DeletionStudyFence.shared(connection, studyId)
-                val accessCode = loadExchangeableAccessCode(connection, tokenHash) ?: run {
+                val accessCode = sessions.loadExchangeableAccessCode(tokenHash) ?: run {
                     connection.rollback()
-                    return@use null
+                    return@withTransaction null
                 }
-                if (accessCode.studyId != studyId ||
-                    !com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, studyId, accessCode.participantId)
-                ) { connection.rollback(); return@use null }
-                val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
-                val absoluteExpiry = minOf(accessCode.expiresAt, now.plus(SESSION_LIFETIME))
-                val idleExpiry = minOf(absoluteExpiry, now.plus(IDLE_LIFETIME))
-                val rawSessionToken = generateToken()
-                val csrfToken = generateToken()
-                val sessionId = UUID.randomUUID()
-
-                val reserved = connection.prepareStatement(
-                    "UPDATE participant_form_access_codes SET exchanged_at = ? WHERE access_code_id = ? AND exchanged_at IS NULL"
-                ).use { statement ->
-                    statement.setObject(1, now)
-                    statement.setObject(2, accessCode.accessCodeId)
-                    statement.executeUpdate() == 1
+                if (accessCode.studyId != studyId) { connection.rollback(); return@withTransaction null }
+                val rawSessionToken = ParticipantSessionSecrets.sessionToken(rawAccessCode, attemptId, sessionSecret)
+                val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC).truncatedTo(ChronoUnit.MICROS)
+                val replayExpiry = if (accessCode.exchangedAt == null) null else {
+                    if (!now.isBefore(accessCode.exchangedAt.plus(FORM_EXCHANGE_REPLAY_WINDOW))) {
+                        connection.rollback()
+                        return@withTransaction null
+                    }
+                    sessions.replayExpiry(accessCode.accessCodeId, sha256(rawSessionToken)) ?: run {
+                        connection.rollback()
+                        return@withTransaction null
+                    }
                 }
-                // Losing the reservation means a concurrent request exchanged this same code
-                // between the load above and this UPDATE. That is exactly the "already used"
-                // outcome loadExchangeableAccessCode reports by returning null, and the caller
-                // turns into a 401 -- so answer it the same way. Throwing here made it a 500,
-                // which surfaced as a browser sending the exchange twice for one page load and
-                // getting an unexplained server error on the second.
-                if (!reserved) {
-                    connection.rollback()
-                    return@use null
+                // Only a live, unused capability may reveal an unavailable participation scope.
+                ParticipantProcessingGate.requireAvailable(connection, studyId, accessCode.participantId)
+                if (!ParticipantCollectionGate(connection).admitsForm(accessCode.formKind, studyId, accessCode.participantId)) {
+                    throw ResponseStatusException(HttpStatus.CONFLICT, Messages.get("error.form.accessInactive"))
                 }
-                connection.prepareStatement(
-                    """
-                    INSERT INTO participant_form_sessions
-                        (session_id, session_hash, access_code_id, study_id, participant_id, form_kind,
-                         resource_id, logical_date, csrf_hash, idle_expires_at, absolute_expires_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """.trimIndent()
-                ).use { statement ->
-                    statement.setObject(1, sessionId)
-                    statement.setBytes(2, sha256(rawSessionToken))
-                    statement.setObject(3, accessCode.accessCodeId)
-                    statement.setObject(4, accessCode.studyId)
-                    statement.setString(5, accessCode.participantId)
-                    statement.setString(6, accessCode.formKind.name)
-                    statement.setObject(7, accessCode.resourceId)
-                    statement.setObject(8, accessCode.logicalDate)
-                    statement.setBytes(9, sha256(csrfToken))
-                    statement.setObject(10, idleExpiry)
-                    statement.setObject(11, absoluteExpiry)
-                    statement.setObject(12, now)
-                    check(statement.executeUpdate() == 1) { "Participant session was not persisted" }
-                }
-                connection.commit()
-                ExchangedParticipantFormSession(
-                    rawSessionToken = rawSessionToken,
-                    response = ParticipantFormSessionResponse(
-                        csrfToken = csrfToken,
-                        studyId = accessCode.studyId,
-                        participantId = accessCode.participantId,
-                        formKind = accessCode.formKind,
-                        resourceId = accessCode.resourceId,
-                        logicalDate = accessCode.logicalDate,
-                        expiresAt = absoluteExpiry,
-                    ),
-                )
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = true
+                val session = createSession(sessions, accessCode, now, rawSessionToken, replayExpiry)
+                if (session == null) connection.rollback() else connection.commit()
+                session
             }
         }
+    }
+
+    public fun recoverSession(rawSessionToken: String): ParticipantFormSessionResponse? {
+        val scope = resolveSession(rawSessionToken, null, requireCsrf = false) ?: return null
+        return ParticipantFormSessionResponse(
+            csrfToken = ParticipantSessionSecrets.csrfToken(rawSessionToken),
+            studyId = scope.studyId,
+            participantId = scope.participantId,
+            formKind = scope.formKind,
+            resourceId = scope.resourceId,
+            logicalDate = scope.logicalDate,
+            expiresAt = scope.absoluteExpiresAt,
+        )
+    }
+
+    private fun createSession(
+        sessions: ParticipantFormSessionRepository,
+        accessCode: StoredAccessCode,
+        now: OffsetDateTime,
+        rawSessionToken: String,
+        replayExpiry: OffsetDateTime?,
+    ): ExchangedParticipantFormSession? {
+        val sessionHash = sha256(rawSessionToken)
+        val absoluteExpiry = replayExpiry ?: minOf(accessCode.expiresAt, now.plus(SESSION_LIFETIME))
+        val idleExpiry = minOf(absoluteExpiry, now.plus(IDLE_LIFETIME))
+        val csrfToken = ParticipantSessionSecrets.csrfToken(rawSessionToken)
+        val sessionId = UUID.randomUUID()
+
+        val reserved = replayExpiry != null || sessions.reserve(accessCode.accessCodeId, now)
+        // Losing the reservation means a concurrent request exchanged this same code
+        // between the load above and this UPDATE. That is exactly the "already used"
+        // outcome loadExchangeableAccessCode reports by returning null, and the caller
+        // turns into a 401 -- so answer it the same way. Throwing here made it a 500,
+        // which surfaced as a browser sending the exchange twice for one page load and
+        // getting an unexplained server error on the second.
+        if (!reserved) return null
+        if (replayExpiry == null) sessions.insert(ParticipantFormSessionRecord(
+            sessionId = sessionId,
+            sessionHash = sessionHash,
+            accessCodeId = accessCode.accessCodeId,
+            studyId = accessCode.studyId,
+            participantId = accessCode.participantId,
+            formKind = accessCode.formKind,
+            resourceId = accessCode.resourceId,
+            logicalDate = accessCode.logicalDate,
+            csrfHash = sha256(csrfToken),
+            idleExpiresAt = idleExpiry,
+            absoluteExpiresAt = absoluteExpiry,
+            lastSeenAt = now,
+        ))
+        return ExchangedParticipantFormSession(
+            rawSessionToken = rawSessionToken,
+            response = ParticipantFormSessionResponse(
+                csrfToken = csrfToken,
+                studyId = accessCode.studyId,
+                participantId = accessCode.participantId,
+                formKind = accessCode.formKind,
+                resourceId = accessCode.resourceId,
+                logicalDate = accessCode.logicalDate,
+                expiresAt = absoluteExpiry,
+            ),
+        )
     }
 
     /** Resolves an unexpired enrollment invitation without consuming it. */
@@ -446,13 +525,9 @@ public class ParticipantFormAccessService(
     ): EnrollmentAccessCodeScope? {
         if (!isPlausibleToken(rawAccessCode) || participantId.isBlank()) return null
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            loadEnrollmentAccessCode(
-                connection,
-                sha256(rawAccessCode),
-                studyId,
-                participantId,
-                now,
+        return storageResolver.withParticipantCredentialStorage(studyId = studyId) { connection ->
+            EnrollmentAttemptRepository(connection).load(
+                EnrollmentAccessCodeQuery(sha256(rawAccessCode), studyId, participantId), now,
             )
         }
     }
@@ -469,8 +544,10 @@ public class ParticipantFormAccessService(
     ): EnrollmentAccessCodeScope? {
         if (!isPlausibleToken(rawAccessCode) || participantId.isBlank()) return null
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            loadEnrollmentAccessCodeForRequest(connection, sha256(rawAccessCode), studyId, participantId, now)
+        return storageResolver.withParticipantCredentialStorage(studyId = studyId) { connection ->
+            EnrollmentAttemptRepository(connection).loadForRequest(
+                EnrollmentAccessCodeQuery(sha256(rawAccessCode), studyId, participantId), now,
+            )
         }
     }
 
@@ -490,101 +567,53 @@ public class ParticipantFormAccessService(
         if (!isPlausibleToken(rawAccessCode) || participantId.isBlank()) return false
         if (binding.studyId != studyId || binding.participantId != participantId) return false
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            val originalAutoCommit = connection.autoCommit
-            connection.autoCommit = false
+        return storageResolver.withParticipantCredentialStorage(studyId = studyId) { connection ->
             try {
-                val authorized = authorizeLockedEnrollmentAttempt(
-                    connection,
-                    sha256(rawAccessCode),
-                    studyId,
-                    participantId,
-                    binding,
-                    now,
-                    predicate,
-                )
-                if (authorized) connection.commit() else connection.rollback()
-                authorized
+                connection.withTransaction {
+                    val authorized = authorizeLockedEnrollmentAttempt(
+                        connection,
+                        EnrollmentAccessCodeQuery(sha256(rawAccessCode), studyId, participantId),
+                        binding,
+                        now,
+                        predicate,
+                    )
+                    if (authorized) connection.commit() else connection.rollback()
+                    authorized
+                }
             } catch (exception: SQLException) {
-                connection.rollback()
-                if (exception.sqlState == UNIQUE_VIOLATION_SQL_STATE) false else throw exception
-            } catch (exception: Exception) {
-                connection.rollback()
-                throw exception
-            } finally {
-                connection.autoCommit = originalAutoCommit
+                if (exception.sqlState == UNIQUE_VIOLATION_SQL_STATE) false else throw SqlFailures.sanitize(exception)
             }
         }
     }
 
     private fun authorizeLockedEnrollmentAttempt(
         connection: Connection,
-        tokenHash: ByteArray,
-        studyId: UUID,
-        participantId: String,
+        query: EnrollmentAccessCodeQuery,
         binding: EnrollmentAttemptBinding,
         now: OffsetDateTime,
         predicate: (Connection, EnrollmentAccessCodeScope) -> Boolean,
     ): Boolean {
-        DeletionStudyFence.shared(connection, studyId)
-        lockEnrollmentDevice(connection, binding.deviceId)
-        val stored = loadEnrollmentAttempt(connection, tokenHash, studyId, participantId) ?: return false
+        DeletionStudyFence.shared(connection, query.studyId)
+        lockEnrollmentAttempt(connection, binding.attemptId)
+        lockDeviceEvidence(connection, binding.randomDeviceId)
+        val attempts = EnrollmentAttemptRepository(connection)
+        val stored = attempts.loadAttempt(query) ?: return false
         return when {
             stored.exchangedAt != null -> stored.receipt?.accepts(binding, now) == true
             !now.isBefore(stored.scope.expiresAt) || stored.receipt != null -> false
+            // A phone cancelled this attempt before the server bound it; its delayed request never binds.
+            RLSConnectionCustomizer.withRestoredAdminTransactionContext(connection) {
+                attempts.isCancelled(binding.attemptId)
+            } -> false
             !predicate(connection, stored.scope) -> false
             else -> {
-                revokeOtherEnrollmentReceipts(connection, stored.scope.accessCodeId, binding, now)
-                bindEnrollmentAttempt(
-                    connection,
+                attempts.revokeOtherEnrollmentReceipts(stored.scope.accessCodeId, binding, now)
+                attempts.bindEnrollmentAttempt(
                     stored.scope.accessCodeId,
                     binding,
                     now,
                     now.plus(ENROLLMENT_REPLAY_LIFETIME),
                 )
-            }
-        }
-    }
-
-    /**
-     * Atomically consumes a one-time code scoped to one participant enrollment.
-     * Enrollment codes never become browser form sessions and cannot be replayed.
-     */
-    public fun consumeEnrollmentAccessCode(
-        rawAccessCode: String,
-        studyId: UUID,
-        participantId: String,
-    ): Boolean {
-        if (!isPlausibleToken(rawAccessCode) || participantId.isBlank()) return false
-        val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            val originalAutoCommit = connection.autoCommit
-            connection.autoCommit = false
-            try {
-                DeletionStudyFence.shared(connection, studyId)
-                val claimed = connection.prepareStatement(
-                """
-                UPDATE participant_form_access_codes
-                SET exchanged_at = ?
-                WHERE token_hash = ? AND study_id = ? AND participant_id = ?
-                  AND form_kind = 'ENROLLMENT' AND exchanged_at IS NULL
-                  AND revoked_at IS NULL AND expires_at > ?
-                """.trimIndent()
-            ).use { statement ->
-                statement.setObject(1, now)
-                statement.setBytes(2, sha256(rawAccessCode))
-                statement.setObject(3, studyId)
-                statement.setString(4, participantId)
-                statement.setObject(5, now)
-                statement.executeUpdate() == 1
-            }
-                connection.commit()
-                claimed
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
-            } finally {
-                connection.autoCommit = originalAutoCommit
             }
         }
     }
@@ -601,353 +630,114 @@ public class ParticipantFormAccessService(
         rawSessionToken: String,
         mutationCsrfToken: String?,
         requireCsrf: Boolean,
+    ): ParticipantFormAccessScope? = sessionAdmission.admitted(rawSessionToken, mutationCsrfToken, requireCsrf, touch = true)
+
+    /**
+     * Whether [resolveSession] would admit these credentials now, decided by the same rules but read-only: the
+     * session's idle clock is not extended and nothing is written, so a caller that checks before the participant
+     * filter resolves does not refresh the session twice. A participant whose processing is blocked is not admitted.
+     * Database failures propagate as [SQLException], allowing the limiter to count an unverified credential.
+     */
+    public fun isAdmittedSession(rawSessionToken: String, mutationCsrfToken: String?, requireCsrf: Boolean): Boolean = try {
+        sessionAdmission.admitted(rawSessionToken, mutationCsrfToken, requireCsrf, touch = false) != null
+    } catch (_: ParticipantProcessingBlockedException) {
+        false
+    }
+}
+
+/** Token-only lookups precede identity establishment and must opt in to database privilege. */
+internal fun <T> StorageResolver.withParticipantCredentialStorage(studyId: UUID?, block: (Connection) -> T): T {
+    val context = RLSConnectionContext("participant-credential", setOfNotNull(studyId), isAdmin = studyId == null)
+    return RLSRequestContext.withContext(context) {
+        getPlatformStorage().connection.use(block)
+    }
+}
+
+/** The one owner of form-session admission rules, for both the participant filter and the pre-authentication limiter. */
+internal class ParticipantSessionAdmission(private val storageResolver: StorageResolver, private val clock: Clock) {
+    /** The admitted scope; [touch] refreshes its idle clock, otherwise rollback releases the read's locks before returning. */
+    fun admitted(
+        rawSessionToken: String,
+        mutationCsrfToken: String?,
+        requireCsrf: Boolean,
+        touch: Boolean,
     ): ParticipantFormAccessScope? {
         if (!isPlausibleToken(rawSessionToken) || (requireCsrf && !isPlausibleToken(mutationCsrfToken))) return null
         val csrfHash = mutationCsrfToken?.takeIf(::isPlausibleToken)?.let(::sha256)
         val now = OffsetDateTime.now(clock).withOffsetSameInstant(ZoneOffset.UTC)
-        return storageResolver.getPlatformStorage().connection.use { connection ->
-            val originalAutoCommit = connection.autoCommit
-            connection.autoCommit = false
-            try {
-                val cookieSession = loadSession(
-                    connection,
-                    "session_hash = ? AND revoked_at IS NULL AND absolute_expires_at > ?",
-                ) { statement ->
-                    statement.setBytes(1, sha256(rawSessionToken))
-                    statement.setObject(2, now)
-                }
+        return storageResolver.withParticipantCredentialStorage(studyId = null) { connection ->
+            connection.withTransaction(rollbackOnSuccess = !touch) {
+                val sessions = ParticipantFormSessionRepository(connection)
+                val cookieSession = sessions.cookieSession(sha256(rawSessionToken), now)
                 val session = when {
                     cookieSession == null -> null
                     csrfHash == null || MessageDigest.isEqual(cookieSession.csrfHash, csrfHash) ->
                         cookieSession.takeIf { it.idleExpiresAt.isAfter(now) }
-                    else -> loadSession(
-                        connection,
-                        """
-                        study_id = ? AND participant_id = ? AND csrf_hash = ? AND revoked_at IS NULL
-                          AND idle_expires_at > ? AND absolute_expires_at > ?
-                        """.trimIndent(),
-                    ) { statement ->
-                        statement.setObject(1, cookieSession.scope.studyId)
-                        statement.setString(2, cookieSession.scope.participantId)
-                        statement.setBytes(3, csrfHash)
-                        statement.setObject(4, now)
-                        statement.setObject(5, now)
-                    } ?: cookieSession.takeIf { !requireCsrf && it.idleExpiresAt.isAfter(now) }
+                    else -> sessions.tabSession(cookieSession.scope, csrfHash, now)
+                        ?: cookieSession.takeIf { !requireCsrf && it.idleExpiresAt.isAfter(now) }
                 }
                 val activeSession = session?.takeIf {
-                    com.openlattice.chronicle.storage.ParticipantCollectionGate.isActive(connection, it.scope.studyId, it.scope.participantId)
+                    ParticipantProcessingGate.requireAvailable(connection, it.scope.studyId, it.scope.participantId)
+                    ParticipantCollectionGate(connection).admitsForm(it.scope.formKind, it.scope.studyId, it.scope.participantId)
                 }
-                activeSession?.let {
-                    connection.prepareStatement(
-                        "UPDATE participant_form_sessions SET last_seen_at = ?, idle_expires_at = ? WHERE session_id = ?"
-                    ).use { update ->
-                        update.setObject(1, now)
-                        update.setObject(2, minOf(it.scope.absoluteExpiresAt, now.plus(IDLE_LIFETIME)))
-                        update.setObject(3, it.sessionId)
-                        check(update.executeUpdate() == 1) { "Participant session refresh failed" }
+                if (touch) {
+                    activeSession?.let {
+                        sessions.refresh(
+                            it, now, minOf(it.scope.absoluteExpiresAt, now.plus(ParticipantFormAccessService.IDLE_LIFETIME)),
+                        )
                     }
+                    connection.commit()
                 }
-                connection.commit()
                 activeSession?.scope
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
-            } finally {
-                connection.autoCommit = originalAutoCommit
             }
         }
     }
-
-    private fun loadSession(
-        connection: Connection,
-        predicate: String,
-        bind: (PreparedStatement) -> Unit,
-    ): StoredSession? = connection.prepareStatement(
-        """
-        SELECT session_id, access_code_id, study_id, participant_id, form_kind, resource_id,
-               logical_date, csrf_hash, idle_expires_at, absolute_expires_at
-        FROM participant_form_sessions
-        WHERE $predicate
-        """.trimIndent()
-    ).use { statement ->
-        bind(statement)
-        statement.executeQuery().use { resultSet ->
-            if (!resultSet.next()) return@use null
-            StoredSession(
-                sessionId = resultSet.getObject("session_id", UUID::class.java),
-                csrfHash = resultSet.getBytes("csrf_hash"),
-                idleExpiresAt = resultSet.getObject("idle_expires_at", OffsetDateTime::class.java),
-                scope = ParticipantFormAccessScope(
-                    accessCodeId = resultSet.getObject("access_code_id", UUID::class.java),
-                    studyId = resultSet.getObject("study_id", UUID::class.java),
-                    participantId = resultSet.getString("participant_id"),
-                    formKind = ParticipantFormKind.valueOf(resultSet.getString("form_kind")),
-                    resourceId = resultSet.getObject("resource_id", UUID::class.java),
-                    logicalDate = resultSet.getObject("logical_date", LocalDate::class.java),
-                    absoluteExpiresAt = resultSet.getObject("absolute_expires_at", OffsetDateTime::class.java),
-                ),
-            )
-        }
-    }
-
-    private class StoredSession(
-        val sessionId: UUID,
-        val csrfHash: ByteArray,
-        val idleExpiresAt: OffsetDateTime,
-        val scope: ParticipantFormAccessScope,
-    )
-
-    private fun loadExchangeableAccessCode(connection: Connection, tokenHash: ByteArray): StoredAccessCode? {
-        return connection.prepareStatement(
-            """
-            SELECT access_code_id, study_id, participant_id, form_kind, resource_id, logical_date, expires_at
-            FROM participant_form_access_codes
-            WHERE token_hash = ? AND form_kind <> 'ENROLLMENT'
-              AND exchanged_at IS NULL AND revoked_at IS NULL AND expires_at > now()
-            FOR UPDATE
-            """.trimIndent()
-        ).use { statement ->
-            statement.setBytes(1, tokenHash)
-            statement.executeQuery().use { resultSet ->
-                if (resultSet.next()) resultSet.toStoredAccessCode() else null
-            }
-        }
-    }
-
-    private fun ResultSet.toStoredAccessCode(): StoredAccessCode = StoredAccessCode(
-        accessCodeId = getObject("access_code_id", UUID::class.java),
-        studyId = getObject("study_id", UUID::class.java),
-        participantId = getString("participant_id"),
-        formKind = ParticipantFormKind.valueOf(getString("form_kind")),
-        resourceId = getObject("resource_id", UUID::class.java),
-        logicalDate = getObject("logical_date", LocalDate::class.java),
-        expiresAt = getObject("expires_at", OffsetDateTime::class.java),
-    )
-
-    private fun generateToken(): String {
-        val bytes = ByteArray(TOKEN_BYTES)
-        secureRandom.nextBytes(bytes)
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-    }
-
-    private fun sha256(value: String): ByteArray =
-        MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
-
-    private fun isPlausibleToken(value: String?): Boolean =
-        value != null && value.length in 32..MAX_TOKEN_CHARS && value.all { it.isLetterOrDigit() || it == '-' || it == '_' }
-
-    private data class StoredAccessCode(
-        val accessCodeId: UUID,
-        val studyId: UUID,
-        val participantId: String,
-        val formKind: ParticipantFormKind,
-        val resourceId: UUID?,
-        val logicalDate: LocalDate?,
-        val expiresAt: OffsetDateTime,
-    )
-
 }
 
-private fun lockEnrollmentDevice(connection: Connection, deviceId: UUID) {
-    connection.prepareStatement(
-        "SELECT pg_advisory_xact_lock(hashtextextended(?::text, 0))",
-    ).use { statement ->
-        statement.setObject(1, deviceId)
-        statement.execute()
-    }
-}
-
-private fun revokeOtherEnrollmentReceipts(
-    connection: Connection,
-    accessCodeId: UUID,
-    binding: EnrollmentAttemptBinding,
-    now: OffsetDateTime,
+internal class PendingEnrollmentService(
+    private val storageResolver: StorageResolver,
+    private val auditingManager: AuditingManager,
+    private val clock: Clock,
 ) {
-    connection.prepareStatement(
-        """
-        UPDATE participant_form_access_codes
-        SET revoked_at = ?
-        WHERE study_id = ? AND participant_id = ? AND form_kind = 'ENROLLMENT'
-          AND enrollment_device_id = ? AND access_code_id <> ?
-          AND enrollment_attempt_id IS NOT NULL AND revoked_at IS NULL
-        """.trimIndent(),
-    ).use { statement ->
-        statement.setObject(1, now)
-        statement.setObject(2, binding.studyId)
-        statement.setString(3, binding.participantId)
-        statement.setObject(4, binding.deviceId)
-        statement.setObject(5, accessCodeId)
-        statement.executeUpdate()
-    }
-}
-
-private fun loadEnrollmentAccessCodeForRequest(
-    connection: Connection,
-    tokenHash: ByteArray,
-    studyId: UUID,
-    participantId: String,
-    now: OffsetDateTime,
-): EnrollmentAccessCodeScope? = connection.prepareStatement(
-    """
-    SELECT access_code_id, created_at, expires_at
-    FROM participant_form_access_codes
-    WHERE token_hash = ? AND study_id = ? AND participant_id = ?
-      AND form_kind = 'ENROLLMENT' AND revoked_at IS NULL
-      AND (
-          (exchanged_at IS NULL AND expires_at > ?)
-          OR (enrollment_attempt_id IS NOT NULL AND enrollment_replay_expires_at > ?)
-      )
-    """.trimIndent(),
-).use { statement ->
-    statement.setBytes(1, tokenHash)
-    statement.setObject(2, studyId)
-    statement.setString(3, participantId)
-    statement.setObject(4, now)
-    statement.setObject(5, now)
-    statement.executeQuery().use { resultSet ->
-        if (resultSet.next()) enrollmentAccessCodeScope(resultSet, studyId, participantId) else null
-    }
-}
-
-private fun loadEnrollmentAttempt(
-    connection: Connection,
-    tokenHash: ByteArray,
-    studyId: UUID,
-    participantId: String,
-): StoredEnrollmentAttempt? = connection.prepareStatement(
-    """
-    SELECT access_code_id, created_at, expires_at, exchanged_at,
-           enrollment_attempt_id, enrollment_source_device_hash, enrollment_device_id,
-           enrollment_manifest_digest, enrollment_request_hash, enrollment_proposed_key_hash,
-           enrollment_replay_expires_at, enrollment_settings_version,
-           enrollment_disclosure_version, enrollment_enabled_modules, enrollment_required_modules
-    FROM participant_form_access_codes
-    WHERE token_hash = ? AND study_id = ? AND participant_id = ?
-      AND form_kind = 'ENROLLMENT' AND revoked_at IS NULL
-    FOR UPDATE
-    """.trimIndent(),
-).use { statement ->
-    statement.setBytes(1, tokenHash)
-    statement.setObject(2, studyId)
-    statement.setString(3, participantId)
-    statement.executeQuery().use { resultSet ->
-        if (!resultSet.next()) return@use null
-        val scope = enrollmentAccessCodeScope(resultSet, studyId, participantId)
-        val attemptId = resultSet.getObject("enrollment_attempt_id", UUID::class.java)
-        val receipt = attemptId?.let {
-            EnrollmentAttemptReceipt(
-                EnrollmentAttemptBinding(
-                    attemptId = it,
-                    studyId = studyId,
-                    participantId = participantId,
-                    sourceDeviceHash = resultSet.getString("enrollment_source_device_hash"),
-                    deviceId = resultSet.getObject("enrollment_device_id", UUID::class.java),
-                    manifestDigest = resultSet.getString("enrollment_manifest_digest"),
-                    requestHash = resultSet.getString("enrollment_request_hash"),
-                    proposedApiKeyHash = resultSet.getString("enrollment_proposed_key_hash"),
-                    enrollmentSettingsVersion = resultSet.getObject("enrollment_settings_version") as? Int,
-                    enrollmentDisclosureVersion = resultSet.getString("enrollment_disclosure_version"),
-                    enrollmentEnabledModules = resultSet.getString("enrollment_enabled_modules")
-                        ?.let(::decodeCollectionModules),
-                    enrollmentRequiredModules = resultSet.getString("enrollment_required_modules")
-                        ?.let(::decodeCollectionModules),
-                ),
-                checkNotNull(resultSet.getObject("enrollment_replay_expires_at", OffsetDateTime::class.java))
-                    .withOffsetSameInstant(ZoneOffset.UTC),
-            )
+    public fun getPendingEnrollments(studyId: UUID, limit: Int, offset: Int): List<String> =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            EnrollmentAccessCodeRepository(connection).pendingParticipantIds(studyId, limit, offset)
         }
-        StoredEnrollmentAttempt(
-            scope,
-            resultSet.getObject("exchanged_at", OffsetDateTime::class.java),
-            receipt,
-        )
-    }
-}
 
-private fun bindEnrollmentAttempt(
-    connection: Connection,
-    accessCodeId: UUID,
-    binding: EnrollmentAttemptBinding,
-    now: OffsetDateTime,
-    replayExpiresAt: OffsetDateTime,
-): Boolean = connection.prepareStatement(
-    """
-    UPDATE participant_form_access_codes
-    SET exchanged_at = ?, enrollment_attempt_id = ?, enrollment_source_device_hash = ?,
-        enrollment_device_id = ?, enrollment_manifest_digest = ?, enrollment_request_hash = ?,
-        enrollment_proposed_key_hash = ?, enrollment_replay_expires_at = ?,
-        enrollment_settings_version = ?, enrollment_disclosure_version = ?,
-        enrollment_enabled_modules = ?::jsonb, enrollment_required_modules = ?::jsonb
-    WHERE access_code_id = ? AND exchanged_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-      AND enrollment_attempt_id IS NULL
-    """.trimIndent(),
-).use { statement ->
-    statement.setObject(1, now)
-    statement.setObject(2, binding.attemptId)
-    statement.setString(3, binding.sourceDeviceHash)
-    statement.setObject(4, binding.deviceId)
-    statement.setString(5, binding.manifestDigest)
-    statement.setString(6, binding.requestHash)
-    statement.setString(7, binding.proposedApiKeyHash)
-    statement.setObject(8, replayExpiresAt)
-    statement.setObject(9, binding.enrollmentSettingsVersion)
-    statement.setString(10, binding.enrollmentDisclosureVersion)
-    statement.setString(11, binding.enrollmentEnabledModules?.let(::encodeCollectionModules))
-    statement.setString(12, binding.enrollmentRequiredModules?.let(::encodeCollectionModules))
-    statement.setObject(13, accessCodeId)
-    statement.setObject(14, now)
-    statement.executeUpdate() == 1
-}
-
-private fun encodeCollectionModules(modules: Set<CollectionModuleId>): String =
-    ObjectMappers.getJsonMapper().writeValueAsString(modules.map { it.id }.sorted())
-
-private fun decodeCollectionModules(json: String): Set<CollectionModuleId> =
-    ObjectMappers.getJsonMapper().readValue<List<String>>(json)
-        .mapNotNull(CollectionModuleId::fromIdOrNull)
-        .toCollection(LinkedHashSet())
-
-private fun loadEnrollmentAccessCode(
-    connection: Connection,
-    tokenHash: ByteArray,
-    studyId: UUID,
-    participantId: String,
-    now: OffsetDateTime,
-): EnrollmentAccessCodeScope? {
-    val sql = """
-        SELECT access_code_id, created_at, expires_at
-        FROM participant_form_access_codes
-        WHERE token_hash = ? AND study_id = ? AND participant_id = ?
-          AND form_kind = 'ENROLLMENT' AND exchanged_at IS NULL
-          AND revoked_at IS NULL AND expires_at > ?
-    """.trimIndent()
-    return connection.prepareStatement(sql).use { statement ->
-        statement.setBytes(1, tokenHash)
-        statement.setObject(2, studyId)
-        statement.setString(3, participantId)
-        statement.setObject(4, now)
-        statement.executeQuery().use { resultSet ->
-            if (resultSet.next()) enrollmentAccessCodeScope(resultSet, studyId, participantId) else null
+    public fun getSettingLocks(studyId: UUID): List<StudySettingType> =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            if (EnrollmentAccessCodeRepository(connection).hasActiveEnrollment(studyId))
+                StudySettingType.entries.filter { it.lockedAfterEnrollment } else emptyList()
         }
-    }
+
+    public fun cancelPendingEnrollment(studyId: UUID, participantId: String): Int =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            AuditedTransactionBuilder<Int>(connection, auditingManager)
+                .transaction {
+                    DeletionStudyFence.shared(it, studyId)
+                    val codes = EnrollmentAccessCodeRepository(it)
+                    val pending = codes.pendingAttempts(studyId, participantId)
+                    // Recheck after the device locks, preserving acknowledgments that won the race.
+                    pending.map { attempt -> attempt.enrollmentRandomDeviceId }.distinct().sortedBy(UUID::toString)
+                        .forEach { randomDeviceId -> lockDeviceEvidence(it, randomDeviceId) }
+                    if (pending.isEmpty()) 0 else EnrollmentAttemptRepository(it).cancelAttempts(
+                        studyId = studyId,
+                        participantId = participantId,
+                        accessCodeIds = pending.mapTo(mutableSetOf()) { attempt -> attempt.accessCodeId },
+                        now = OffsetDateTime.now(clock),
+                    ).cancellable
+                }
+                .audit { revoked -> listOf(AuditableEvent(
+                    aclKey = AclKey(studyId),
+                    study = studyId,
+                    eventType = AuditEventType.REVOKE_PARTICIPANT_ACCESS_CODE,
+                    data = mapOf(
+                        "participantRef" to LogSanitizer.stableFingerprint(participantId, "participant"),
+                        "formKind" to ParticipantFormKind.ENROLLMENT.name,
+                        "revokedCount" to revoked,
+                    ),
+                )) }
+                .buildAndRun()
+        }
+
 }
-
-private fun enrollmentAccessCodeScope(
-    resultSet: ResultSet,
-    studyId: UUID,
-    participantId: String,
-): EnrollmentAccessCodeScope = EnrollmentAccessCodeScope(
-    accessCodeId = resultSet.getObject("access_code_id", UUID::class.java),
-    studyId = studyId,
-    participantId = participantId,
-    issuedAt = resultSet.getObject("created_at", OffsetDateTime::class.java)
-        .withOffsetSameInstant(ZoneOffset.UTC),
-    expiresAt = resultSet.getObject("expires_at", OffsetDateTime::class.java)
-        .withOffsetSameInstant(ZoneOffset.UTC),
-)
-
-private data class StoredEnrollmentAttempt(
-    val scope: EnrollmentAccessCodeScope,
-    val exchangedAt: OffsetDateTime?,
-    val receipt: EnrollmentAttemptReceipt?,
-)

@@ -1,6 +1,13 @@
 package com.openlattice.chronicle.controllers
 
+import com.geekbeast.postgres.streams.BasePostgresIterable
+import com.geekbeast.postgres.streams.StatementHolder
 import com.openlattice.chronicle.audit.AuditService
+import com.openlattice.chronicle.converters.TimeUseDiaryDownloadCsvHttpMessageConverter
+import com.openlattice.chronicle.converters.TimeUseDiaryPostgresDownloadWrapper
+import com.openlattice.chronicle.participantaccess.ParticipantFormKind
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessScope
+import java.time.LocalDate
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
@@ -10,6 +17,7 @@ import com.openlattice.chronicle.services.timeusediary.TimeUseDiaryService
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormSubmissionReceiptService
 import com.openlattice.chronicle.storage.StorageResolver
 import com.openlattice.chronicle.study.StudySettingType
+import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryDownloadDataType
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryResponse
 import com.openlattice.chronicle.timeusediary.TimeUseDiarySettings
@@ -23,6 +31,10 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.springframework.http.HttpMethod
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers
+import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import org.mockito.Mockito
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
@@ -31,8 +43,17 @@ import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.ZoneId
 import java.util.*
+import java.util.function.Supplier
 
 class TimeUseDiaryControllerTest {
+    @Test
+    fun missingStudyIsNotFound() {
+        TestSecurityUtils.setupAuthorizedResearcher(authorizationManager)
+        org.junit.Assert.assertThrows(com.openlattice.chronicle.exceptions.StudyNotFoundException::class.java) {
+            controller.getTimeUseDiarySettings(UUID.randomUUID())
+        }
+    }
+
     // A leaked login makes later filter tests in the same JVM skip their authentication checks.
     @After
     fun clearSecurityContext() = TestSecurityUtils.clearSecurityContext()
@@ -57,12 +78,30 @@ class TimeUseDiaryControllerTest {
     }
 
     @Test
-    fun testControllerConstructsSuccessfully() {
-        assertNotNull(controller)
+    fun datedCapabilityRejectsHistoricalDiaryReadsAndSubmissions() {
+        val study = UUID.randomUUID()
+        val scope = ParticipantFormAccessScope(UUID.randomUUID(), study, "dated-diary", ParticipantFormKind.TIME_USE_DIARY,
+            null, LocalDate.parse("2026-10-17"), OffsetDateTime.now().plusHours(1))
+        val start = OffsetDateTime.parse("2026-09-01T12:00:00Z")
+        Mockito.`when`(studyService.getStudyId(study)).thenReturn(study)
+        TestSecurityUtils.setupSecurityContext()
+        TestSecurityUtils.withParticipantFormScope(scope) {
+            assertThrows(ForbiddenException::class.java) {
+                controller.getParticipantTUDSubmissionIdsByDate(study, scope.participantId, start, start.plusHours(1))
+            }
+            assertThrows(ForbiddenException::class.java) {
+                controller.submitTimeUseDiary(study, scope.participantId,
+                    listOf(TimeUseDiaryResponse("activity", "Activity", setOf("read"), start, start.plusHours(1))))
+            }
+        }
+        Mockito.verifyNoInteractions(timeUseDiaryService, participantFormSubmissionReceiptService)
     }
+
+    
 
     @Test
     fun testGetTimeUseDiarySettingsProjectsConfiguredStudySettings() {
+        TestSecurityUtils.setupAuthorizedResearcher(authorizationManager)
         val studyId = UUID.randomUUID()
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
         Mockito.`when`(studyService.getStudySettings(studyId)).thenReturn(
@@ -78,7 +117,7 @@ class TimeUseDiaryControllerTest {
         )
 
         // An OSU/Sherbrooke/24h-locked study must project those flags into the participant-readable
-        // response, so the web diary renders the configured instrument (R2 backwards-parity).
+        // response, so the web diary renders the configured instrument.
         val response = controller.getTimeUseDiarySettings(studyId)
 
         assertTrue(response.enableChangesForOhioStateUniversity)
@@ -90,6 +129,7 @@ class TimeUseDiaryControllerTest {
 
     @Test
     fun testGetTimeUseDiarySettingsDefaultsWhenSettingAbsent() {
+        TestSecurityUtils.setupAuthorizedResearcher(authorizationManager)
         val studyId = UUID.randomUUID()
         Mockito.`when`(studyService.getStudyId(studyId)).thenReturn(studyId)
         Mockito.`when`(studyService.getStudySettings(studyId)).thenReturn(emptyMap())
@@ -302,24 +342,53 @@ class TimeUseDiaryControllerTest {
         verify(authorizationManager).checkIfHasPermissions(kAny(), kAny(), kAny())
     }
 
+    // The download routes bind the API's query names into request classes, for GET and for the browser form POST.
     @Test
-    fun failedDiaryResponseNeverReachesEitherAuditSink() {
+    fun downloadRoutesBindTheApiQueryNamesForGetAndFormPost() {
+        val studyId = UUID.randomUUID()
+        val start = OffsetDateTime.of(2024, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+        val end = OffsetDateTime.of(2024, 1, 2, 0, 0, 0, 0, ZoneOffset.UTC)
+        val dataType = TimeUseDiaryDownloadDataType.NightTime
+        val participantIds = setOf("p-1", "p-2")
+        Mockito.`when`(authorizationManager.checkIfHasPermissions(kAny(), kAny(), kAny())).thenReturn(true)
+        Mockito.`when`(timeUseDiaryService.getStudyTUDSubmissions(kAny(), Mockito.any(), kAny(), kAny(), kAny()))
+            .thenAnswer { emptyDiaryDownload() }
+        TestSecurityUtils.setupSecurityContext()
+        val mvc = MockMvcBuilders.standaloneSetup(controller)
+            .setMessageConverters(TimeUseDiaryDownloadCsvHttpMessageConverter())
+            .build()
+        val base = TimeUseDiaryApi.CONTROLLER + "/" + studyId
+        for (method in listOf(HttpMethod.GET, HttpMethod.POST)) {
+            mvc.perform(MockMvcRequestBuilders.request(method, base + TimeUseDiaryApi.DATA_PATH)
+                .param(TimeUseDiaryApi.DATA_TYPE, dataType.name)
+                .param(TimeUseDiaryApi.START_DATE, start.toString())
+                .param(TimeUseDiaryApi.END_DATE, end.toString()))
+                .andExpect(MockMvcResultMatchers.status().isOk)
+            mvc.perform(MockMvcRequestBuilders.request(method, base + TimeUseDiaryApi.PARTICIPANTS_PATH + TimeUseDiaryApi.DATA_PATH)
+                .param(TimeUseDiaryApi.PARTICIPANT_ID, *participantIds.toTypedArray())
+                .param(TimeUseDiaryApi.DATA_TYPE, dataType.name)
+                .param(TimeUseDiaryApi.START_DATE, start.toString())
+                .param(TimeUseDiaryApi.END_DATE, end.toString())
+                .param(TimeUseDiaryApi.FILE_NAME, "diary"))
+                .andExpect(MockMvcResultMatchers.status().isOk)
+                .andExpect { assertTrue(it.response.getHeader("Content-Disposition").orEmpty().contains("diary")) }
+        }
+        verify(timeUseDiaryService, Mockito.times(2)).getStudyTUDSubmissions(studyId, null, dataType, start, end)
+        verify(timeUseDiaryService, Mockito.times(2)).getStudyTUDSubmissions(studyId, participantIds, dataType, start, end)
+    }
+
+    private fun emptyDiaryDownload(): TimeUseDiaryPostgresDownloadWrapper {
+        val rows = Mockito.mock(java.sql.ResultSet::class.java)
+        return TimeUseDiaryPostgresDownloadWrapper(BasePostgresIterable(Supplier {
+            StatementHolder(Mockito.mock(Connection::class.java), Mockito.mock(java.sql.Statement::class.java), rows)
+        }) { emptyList<Map<String, Any>>() }).withColumnAdvice(listOf("diary_column"))
+    }
+
+    @Test
+    fun failedDiaryResponseNeverReachesTheAuditRecord() {
         val studyId = UUID.randomUUID()
         val sentinel = "health-response-sentinel"
-        val repository = Mockito.mock(com.openlattice.chronicle.audit.AuditLogRepository::class.java)
-        Mockito.`when`(repository.saveBatch(org.mockito.kotlin.any())).thenAnswer {
-            it.getArgument<List<com.openlattice.chronicle.audit.AuditLogEntry>>(0).size }
-        val audit = AuditService(repository, com.geekbeast.mappers.mappers.ObjectMappers.newJsonMapper())
-        val logger = org.apache.logging.log4j.LogManager.getLogger("AUDIT") as org.apache.logging.log4j.core.Logger
-        val messages = mutableListOf<String>()
-        val appender = Mockito.mock(org.apache.logging.log4j.core.Appender::class.java)
-        Mockito.`when`(appender.name).thenReturn("diary-audit-${UUID.randomUUID()}")
-        Mockito.`when`(appender.isStarted).thenReturn(true)
-        Mockito.doAnswer {
-            messages += it.getArgument<org.apache.logging.log4j.core.LogEvent>(0).message.formattedMessage
-            null
-        }.`when`(appender).append(org.mockito.kotlin.any())
-        logger.addAppender(appender)
+        val (audit, recorded) = com.openlattice.chronicle.audit.recordingAuditService()
         try {
             val connection = Mockito.mock(Connection::class.java)
             val source = Mockito.mock(HikariDataSource::class.java)
@@ -333,15 +402,12 @@ class TimeUseDiaryControllerTest {
             val controller = TimeUseDiaryController(authorizationManager, auditingManager, storageResolver,
                 idGenerationService, timeUseDiaryService, studyService, audit, enrollmentManager, participantFormSubmissionReceiptService)
             assertThrows(java.sql.SQLException::class.java) { controller.submitTimeUseDiary(studyId, "participant-1", emptyList()) }
-            audit.flushBatch()
-            val entries = org.mockito.kotlin.argumentCaptor<List<com.openlattice.chronicle.audit.AuditLogEntry>>()
-            verify(repository).saveBatch(entries.capture())
-            org.junit.Assert.assertFalse(entries.firstValue.single().errorMessage.orEmpty().contains(sentinel))
-            org.junit.Assert.assertTrue("Audit file sink must have received the failure", messages.isNotEmpty())
-            org.junit.Assert.assertFalse(messages.joinToString().contains(sentinel))
+            // The database row and the SIEM line are both written from this one event.
+            val event = recorded.events.single()
+            org.junit.Assert.assertEquals(false, event.data["success"])
+            org.junit.Assert.assertFalse(event.toString().contains(sentinel))
         } finally {
-            logger.removeAppender(appender)
-            audit.shutdown()
+            TestSecurityUtils.clearSecurityContext()
         }
     }
 

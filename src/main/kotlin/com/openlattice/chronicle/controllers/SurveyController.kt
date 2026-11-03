@@ -1,16 +1,16 @@
 package com.openlattice.chronicle.controllers
 
+
 import com.codahale.metrics.annotation.Timed
+import com.geekbeast.controllers.exceptions.ForbiddenException
+import com.openlattice.chronicle.exceptions.CollectionUnavailableException
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.util.validateParticipantId
-import com.openlattice.chronicle.audit.AuditAction
-import com.openlattice.chronicle.audit.AuditLogEntryBuilder
+import com.openlattice.chronicle.auditing.AuditEventType
+import com.openlattice.chronicle.audit.AuditEntryBuilder
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
@@ -18,26 +18,36 @@ import com.openlattice.chronicle.base.OK
 import com.openlattice.chronicle.base.OK.Companion.ok
 import com.openlattice.chronicle.data.FileType
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
-import com.openlattice.chronicle.organizations.ChronicleDataCollectionSettings
 import com.openlattice.chronicle.services.download.DataDownloadService
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
 import com.openlattice.chronicle.participantaccess.ParticipantFormKind
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormWindow
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormSubmissionReceiptService
+import com.openlattice.chronicle.services.participantaccess.SubmissionReceiptScope
 import com.openlattice.chronicle.services.studies.StudyService
+import com.openlattice.chronicle.services.studies.requireStudyId
 import com.openlattice.chronicle.services.surveys.SurveysService
-import com.openlattice.chronicle.settings.AppUsageFrequency
+import com.openlattice.chronicle.study.StudySettings
 import com.openlattice.chronicle.study.StudySettingType
-import com.openlattice.chronicle.survey.AppUsage
+import com.openlattice.chronicle.services.surveys.AppUsageDayRules
+import com.openlattice.chronicle.services.surveys.appUsageDayRules
+import com.openlattice.chronicle.survey.AppUsageAnswer
+import com.openlattice.chronicle.survey.AppUsageDaySurvey
 import com.openlattice.chronicle.survey.AppUsageFrequencyResponse
+import com.openlattice.chronicle.survey.AppUsageSurveyDays
 import com.openlattice.chronicle.survey.DeviceUsage
 import com.openlattice.chronicle.survey.Questionnaire
 import com.openlattice.chronicle.survey.QuestionnaireResponse
 import com.openlattice.chronicle.survey.QuestionnaireUpdate
 import com.openlattice.chronicle.survey.SurveyApi
+import com.openlattice.chronicle.EditRevisionApi
+import org.springframework.web.bind.annotation.RequestHeader
 import com.openlattice.chronicle.survey.SurveySettings
 import com.openlattice.chronicle.survey.SurveyApi.Companion.APP_USAGE_FREQUENCY_PATH
+import com.openlattice.chronicle.survey.SurveyApi.Companion.APP_USAGE_DAYS_PATH
 import com.openlattice.chronicle.survey.SurveyApi.Companion.APP_USAGE_PATH
+import com.openlattice.chronicle.survey.SurveyApi.Companion.DATE
 import com.openlattice.chronicle.survey.SurveyApi.Companion.CONTROLLER
 import com.openlattice.chronicle.survey.SurveyApi.Companion.DATA_PATH
 import com.openlattice.chronicle.survey.SurveyApi.Companion.DEVICE_USAGE_PATH
@@ -62,7 +72,6 @@ import jakarta.validation.constraints.Size
 import org.springframework.format.annotation.DateTimeFormat
 import org.springframework.http.MediaType
 import org.springframework.http.HttpStatus
-import org.springframework.validation.annotation.Validated
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PatchMapping
@@ -87,8 +96,6 @@ import jakarta.servlet.http.HttpServletResponse
 
 @RestController
 @RequestMapping(CONTROLLER)
-@Validated
-@RateLimit(type = RateLimitType.READ, keyStrategy = RateLimitKeyStrategy.STUDY)
 public open class SurveyController @Inject constructor(
     public val surveysService: SurveysService,
     public val studyService: StudyService,
@@ -115,9 +122,13 @@ public open class SurveyController @Inject constructor(
     )
     override fun getAppsFilteredForStudyAppUsageSurvey(@PathVariable(STUDY_ID) studyId: UUID): Collection<String> {
         ensureReadAccess(AclKey(studyId))
-        val result = surveysService.getAppsFilteredForStudyAppUsageSurvey(studyId)
+        val snapshot = surveysService.getFilteredAppsSnapshot(studyId)
+        val request = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes()
+            as? org.springframework.web.context.request.ServletRequestAttributes
+        request?.response?.setHeader("ETag", "\"${snapshot.revision}\"")
+        val result = snapshot.appPackages
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("SurveyFilter")
             studyId(studyId)
             success(true)
@@ -133,14 +144,19 @@ public open class SurveyController @Inject constructor(
     override fun setAppsFilteredForStudyAppUsageSurvey(
         @PathVariable(STUDY_ID) studyId: UUID,
         @Valid @RequestBody appPackages: Set<String>,
+        @org.springframework.web.bind.annotation.RequestHeader(value = "If-Match", required = false) ifMatch: String?,
     ): OK {
         ensureWriteAccess(AclKey(studyId))
         return audited(
-            AuditAction.SETTINGS_CHANGE, "SurveyFilter", studyId,
-            failureMessage = "Set filtered apps failed",
+            AuditEventType.SETTINGS_CHANGE, "SurveyFilter", studyId,
             onSuccess = { additionalData(mapOf("appCount" to appPackages.size)) },
         ) {
-            surveysService.setAppsFilteredForStudyAppUsageSurvey(studyId, appPackages)
+            val request = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes()
+                as? org.springframework.web.context.request.ServletRequestAttributes
+            val expected = parseSettingsRevisionPrecondition(ifMatch)
+            val revision = surveysService.setAppsFilteredForStudyAppUsageSurvey(studyId, appPackages, expected)
+            studyService.refreshStudyCache(setOf(studyId))
+            request?.response?.setHeader("ETag", "\"$revision\"")
             ok
         }
     }
@@ -156,11 +172,11 @@ public open class SurveyController @Inject constructor(
     ): OK {
         ensureWriteAccess(AclKey(studyId))
         return audited(
-            AuditAction.SETTINGS_CHANGE, "SurveyFilter", studyId,
-            failureMessage = "Filter app failed",
+            AuditEventType.SETTINGS_CHANGE, "SurveyFilter", studyId,
             onSuccess = { additionalData(mapOf("appCount" to appPackages.size, "operation" to "filter")) },
         ) {
             surveysService.filterAppForStudyAppUsageSurvey(studyId, appPackages)
+            studyService.refreshStudyCache(setOf(studyId))
             ok
         }
     }
@@ -170,14 +186,17 @@ public open class SurveyController @Inject constructor(
         path = [STUDY_ID_PATH + FILTERED_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
-    override fun allowAppForStudyAppUsageSurvey(studyId: UUID, @Valid @RequestBody appPackages: Set<String>): OK {
+    override fun allowAppForStudyAppUsageSurvey(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @Valid @RequestBody appPackages: Set<String>,
+    ): OK {
         ensureWriteAccess(AclKey(studyId))
         return audited(
-            AuditAction.SETTINGS_CHANGE, "SurveyFilter", studyId,
-            failureMessage = "Allow app failed",
+            AuditEventType.SETTINGS_CHANGE, "SurveyFilter", studyId,
             onSuccess = { additionalData(mapOf("appCount" to appPackages.size, "operation" to "allow")) },
         ) {
             surveysService.allowAppForStudyAppUsageSurvey(studyId, appPackages)
+            studyService.refreshStudyCache(setOf(studyId))
             ok
         }
     }
@@ -185,16 +204,23 @@ public open class SurveyController @Inject constructor(
     private fun resolveUsageSurveyStudy(
         studyId: UUID, participantId: String, startDateTime: OffsetDateTime, endDateTime: OffsetDateTime,
     ): UUID {
-        val realStudyId = checkNotNull(studyService.getStudyId(studyId)) { "invalid study id" }
-        if (ParticipantFormAccessFilter.currentScope() == null) ensureReadAccess(AclKey(realStudyId))
+        val realStudyId = studyService.requireStudyId(studyId)
+        val scope = ParticipantFormAccessFilter.currentScope()
+        if (scope == null) ensureReadAccess(AclKey(realStudyId))
+        else if (!scope.permits(
+                ParticipantFormKind.APP_USAGE, realStudyId, participantId, null,
+                window = ParticipantFormWindow(startDateTime, endDateTime),
+            )) {
+            throw ForbiddenException(Messages.get(ParticipantFormAccessFilter.INVALID_SESSION_MESSAGE_KEY))
+        }
         requireKnownParticipant(realStudyId, participantId)
         SynchronousExportLimits.validate(setOf(participantId), startDateTime, endDateTime)
         return realStudyId
     }
 
-    private fun appUsageThreshold(studyId: UUID, thresholdInSeconds: Int?): Int =
-        thresholdInSeconds ?: (studyService.getStudySettings(studyId)
-            .getOrDefault(StudySettingType.Survey, SurveySettings()) as SurveySettings).appUsageThresholdInSeconds
+    private fun usageThreshold(studyId: UUID, thresholdInSeconds: Int?, setting: (SurveySettings) -> Int): Int =
+        thresholdInSeconds ?: setting(studyService.getStudySettings(studyId)
+            .getOrDefault(StudySettingType.Survey, SurveySettings()) as SurveySettings)
 
     @Timed
     @GetMapping(
@@ -212,11 +238,11 @@ public open class SurveyController @Inject constructor(
         // Participant format validation prevents injection; data query is scoped to (studyId, participantId)
         val deviceUsageData = surveysService.getDeviceUsageData(realStudyId, participantId, startDateTime, endDateTime)
 
-        val threshold = appUsageThreshold(realStudyId, thresholdInSeconds)
+        val threshold = usageThreshold(realStudyId, thresholdInSeconds, SurveySettings::deviceUsageThresholdInSeconds)
         val packagesToKeep = deviceUsageData.usageByPackage.filterValues { it <= threshold }.keys
         val usageByPackage = deviceUsageData.usageByPackage - packagesToKeep
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
             resourceType("UsageData")
             studyId(realStudyId)
             success(true)
@@ -231,6 +257,44 @@ public open class SurveyController @Inject constructor(
         )
     }
 
+    /** A participant session reaches every ended day of its own participant; the day rule is the server's. */
+    private fun resolveAppUsageSurvey(studyId: UUID, participantId: String): Pair<UUID, AppUsageDayRules> {
+        val realStudyId = studyService.requireStudyId(studyId)
+        val scope = ParticipantFormAccessFilter.currentScope()
+        if (scope == null) ensureReadAccess(AclKey(realStudyId))
+        else if (!scope.permits(ParticipantFormKind.APP_USAGE, realStudyId, participantId, null)) {
+            throw ForbiddenException(Messages.get(ParticipantFormAccessFilter.INVALID_SESSION_MESSAGE_KEY))
+        }
+        requireKnownParticipant(realStudyId, participantId)
+        return realStudyId to appUsageDayRules(StudySettings(studyService.getStudySettings(realStudyId)))
+    }
+
+    private fun auditAppUsageRead(studyId: UUID, participantId: String) = auditService.logWithContext {
+        action(AuditEventType.PARTICIPANT_DATA_ACCESS)
+        resourceType("AppUsageSurvey")
+        studyId(studyId)
+        success(true)
+        accessedPHI(true)
+        phiFields(listOf("participantId", "appUsage"))
+        additionalData(mapOf("participantRef" to LogSanitizer.stableFingerprint(participantId, "participant")))
+    }
+
+    @Timed
+    @GetMapping(
+        path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + APP_USAGE_DAYS_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE]
+    )
+    override fun getAppUsageSurveyDays(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @PathVariable(PARTICIPANT_ID) participantId: String,
+    ): AppUsageSurveyDays {
+        val (realStudyId, rules) = resolveAppUsageSurvey(studyId, participantId)
+        val days = surveysService.getAppUsageDays(realStudyId, participantId, rules)
+            ?: throw CollectionUnavailableException(CollectionUnavailableException.Scope.PARTICIPANT)
+        auditAppUsageRead(realStudyId, participantId)
+        return days
+    }
+
     @Timed
     @GetMapping(
         path = [STUDY_ID_PATH + PARTICIPANT_PATH + PARTICIPANT_ID_PATH + APP_USAGE_PATH],
@@ -239,29 +303,12 @@ public open class SurveyController @Inject constructor(
     override fun getAppUsageSurveyData(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @RequestParam(value = START_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) startDateTime: OffsetDateTime,
-        @RequestParam(value = END_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) endDateTime: OffsetDateTime,
-        @RequestParam(THRESHOLD, required = false) thresholdInSeconds: Int?,
-    ): List<AppUsage> {
-        val realStudyId = resolveUsageSurveyStudy(studyId, participantId, startDateTime, endDateTime)
-        // Participant format validation prevents injection; data query is scoped to (studyId, participantId)
-        val appUsageData = surveysService.getAndroidAppUsageData(realStudyId, participantId, startDateTime, endDateTime)
-        val aggregate = surveysService.computeAggregateUsage(startDateTime, appUsageData)
-
-        val threshold = appUsageThreshold(realStudyId, thresholdInSeconds)
-
-        //Only keep packages that exceed threshold usage time for query.
-        val packagesToKeep = aggregate.filterValues { it > threshold }.keys
-        auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
-            resourceType("AppUsageSurvey")
-            studyId(realStudyId)
-            success(true)
-            accessedPHI(true)
-            phiFields(listOf("participantId", "appUsage"))
-            additionalData(mapOf("participantRef" to LogSanitizer.stableFingerprint(participantId, "participant")))
-        }
-        return appUsageData.filter { packagesToKeep.contains(it.appPackageName) }
+        @RequestParam(DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) date: LocalDate,
+    ): AppUsageDaySurvey {
+        val (realStudyId, rules) = resolveAppUsageSurvey(studyId, participantId)
+        val day = surveysService.getAppUsageDay(realStudyId, participantId, date, rules)
+        auditAppUsageRead(realStudyId, participantId)
+        return day
     }
 
     @Timed
@@ -272,17 +319,11 @@ public open class SurveyController @Inject constructor(
     override fun getAppUsageFrequency(
         @PathVariable(STUDY_ID) studyId: UUID,
     ): AppUsageFrequencyResponse {
-        // Participant-readable: study-scoped, RLS-enforced via getStudyId, no ACL (mirrors
-        // getAppUsageSurveyData). Returns only the DAILY/HOURLY flag the web survey needs to pick
-        // its variant. The DataCollection setting is polymorphic — only ChronicleDataCollectionSettings
-        // carries the frequency (the modular AndroidDataCollectionSetting does not) — so anything
-        // else falls back to DAILY, matching upstream's study-level, default-DAILY read.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        val frequency = (studyService.getStudySettings(realStudyId)[StudySettingType.DataCollection]
-            as? ChronicleDataCollectionSettings)?.appUsageFrequency ?: AppUsageFrequency.DAILY
+        ensureParticipantInstrumentRead(studyId, ParticipantFormKind.APP_USAGE)
+        val realStudyId = studyService.requireStudyId(studyId)
+        val frequency = StudySettings(studyService.getStudySettings(realStudyId)).appUsageSurvey().appUsageFrequency
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("AppUsageFrequency")
             studyId(realStudyId)
             success(true)
@@ -298,21 +339,20 @@ public open class SurveyController @Inject constructor(
     override fun submitAppUsageSurvey(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(PARTICIPANT_ID) participantId: String,
-        @Valid @RequestBody @Size(max = 10_000) surveyResponses: List<AppUsage>,
+        @RequestParam(DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) date: LocalDate,
+        @Valid @RequestBody @Size(max = 10_000) answers: List<AppUsageAnswer>,
     ) {
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
+        val realStudyId = studyService.requireStudyId(studyId)
         requireKnownParticipant(realStudyId, participantId)
         audited(
-            AuditAction.DATA_SUBMISSION, "AppUsageSurvey", realStudyId,
-            failureMessage = "App usage survey submission failed",
+            AuditEventType.DATA_SUBMISSION, "AppUsageSurvey", realStudyId,
             onSuccess = {
                 accessedPHI(true)
                 phiFields(listOf("participantId", "surveyResponses"))
                 additionalData(
                     mapOf(
                         "participantRef" to LogSanitizer.stableFingerprint(participantId, "participant"),
-                        "responseCount" to surveyResponses.size,
+                        "responseCount" to answers.size,
                     )
                 )
             },
@@ -320,23 +360,29 @@ public open class SurveyController @Inject constructor(
                 additionalData(mapOf("participantRef" to LogSanitizer.stableFingerprint(participantId, "participant")))
             },
         ) {
+            val rules = appUsageDayRules(StudySettings(studyService.getStudySettings(realStudyId)))
             val scope = ParticipantFormAccessFilter.currentScope()
             if (scope == null) {
                 // No participant capability was presented, so this is an authenticated caller.
                 // Authentication alone is not authorization to write another study's PHI.
                 ensureWriteAccess(AclKey(realStudyId))
-                surveysService.submitAppUsageSurvey(realStudyId, participantId, surveyResponses)
+                surveysService.submitAppUsageDay(realStudyId, participantId, date, answers, rules)
             } else {
+                if (!scope.permits(ParticipantFormKind.APP_USAGE, realStudyId, participantId, null)) {
+                    throw ForbiddenException(Messages.get(ParticipantFormAccessFilter.INVALID_SESSION_MESSAGE_KEY))
+                }
+                val idempotencyKey = ParticipantFormAccessFilter.requireIdempotencyKey()
                 participantFormSubmissionReceiptService.executeWithoutResult(
-                    scope = scope,
-                    formKind = ParticipantFormKind.APP_USAGE,
-                    resourceKey = "app-usage:${scope.logicalDate ?: "unspecified"}",
-                    idempotencyKey = requireNotNull(ParticipantFormAccessFilter.currentIdempotencyKey()) {
-                        "Participant idempotency key was not established by the access filter"
-                    },
-                    payload = surveyResponses,
+                    receiptScope = SubmissionReceiptScope(
+                        participant = scope,
+                        formKind = ParticipantFormKind.APP_USAGE,
+                        // One receipt per attempt: a later attempt answers the blocks the day still lists.
+                        resourceKey = "app-usage:$date:$idempotencyKey",
+                        idempotencyKey = idempotencyKey,
+                    ),
+                    payload = answers,
                 ) { connection ->
-                    surveysService.submitAppUsageSurvey(connection, realStudyId, participantId, surveyResponses)
+                    surveysService.submitAppUsageDay(connection, realStudyId, participantId, date, answers, rules)
                 }
                 Unit
             }
@@ -354,8 +400,7 @@ public open class SurveyController @Inject constructor(
     ): UUID {
         ensureWriteAccess(AclKey(studyId))
         return audited(
-            AuditAction.CREATE, "Questionnaire", studyId,
-            failureMessage = "Questionnaire creation failed",
+            AuditEventType.CREATE, "Questionnaire", studyId,
             onSuccess = { resourceId(it) },
         ) {
             surveysService.createQuestionnaire(studyId, questionnaire)
@@ -372,9 +417,8 @@ public open class SurveyController @Inject constructor(
     ): OK {
         ensureOwnerAccess(AclKey(studyId))
         return audited(
-            AuditAction.DELETE, "Questionnaire", studyId,
+            AuditEventType.DELETE, "Questionnaire", studyId,
             resourceId = questionnaireId,
-            failureMessage = "Questionnaire deletion failed",
         ) {
             surveysService.deleteQuestionnaire(studyId, questionnaireId)
             OK("Successfully deleted questionnaire $questionnaireId")
@@ -390,9 +434,10 @@ public open class SurveyController @Inject constructor(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(QUESTIONNAIRE_ID) questionnaireId: UUID,
     ): Questionnaire {
+        ensureParticipantInstrumentRead(studyId, ParticipantFormKind.QUESTIONNAIRE, questionnaireId)
         val questionnaire = surveysService.getQuestionnaire(studyId, questionnaireId)
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("Questionnaire")
             resourceId(questionnaireId)
             studyId(studyId)
@@ -410,12 +455,12 @@ public open class SurveyController @Inject constructor(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(QUESTIONNAIRE_ID) questionnaireId: UUID,
         @Valid @RequestBody update: QuestionnaireUpdate,
+        @RequestHeader(EditRevisionApi.IF_MATCH) revision: String,
     ): OK {
         ensureWriteAccess(AclKey(studyId))
         return audited(
-            AuditAction.UPDATE, "Questionnaire", studyId,
+            AuditEventType.UPDATE, "Questionnaire", studyId,
             resourceId = questionnaireId,
-            failureMessage = "Questionnaire update failed",
         ) {
             surveysService.updateQuestionnaire(studyId, questionnaireId, update)
             OK("Successfully updated questionnaire $questionnaireId")
@@ -428,11 +473,11 @@ public open class SurveyController @Inject constructor(
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
     override fun getStudyQuestionnaires(@PathVariable(STUDY_ID) studyId: UUID): List<Questionnaire> {
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
+        ensureReadAccess(AclKey(studyId))
+        val realStudyId = studyService.requireStudyId(studyId)
         val questionnaires = surveysService.getStudyQuestionnaires(realStudyId)
         auditService.logWithContext {
-            action(AuditAction.LIST)
+            action(AuditEventType.LIST)
             resourceType("Questionnaire")
             studyId(realStudyId)
             success(true)
@@ -452,13 +497,11 @@ public open class SurveyController @Inject constructor(
         @PathVariable(QUESTIONNAIRE_ID) questionnaireId: UUID,
         @Valid @RequestBody @Size(max = 10_000) responses: List<QuestionnaireResponse>,
     ): OK {
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
+        val realStudyId = studyService.requireStudyId(studyId)
         requireKnownParticipant(realStudyId, participantId)
         return audited(
-            AuditAction.DATA_SUBMISSION, "Questionnaire", realStudyId,
+            AuditEventType.DATA_SUBMISSION, "Questionnaire", realStudyId,
             resourceId = questionnaireId,
-            failureMessage = "Questionnaire response submission failed",
             onSuccess = {
                 accessedPHI(true)
                 phiFields(listOf("participantId", "questionnaireResponses"))
@@ -480,12 +523,12 @@ public open class SurveyController @Inject constructor(
                 surveysService.submitQuestionnaireResponses(realStudyId, participantId, questionnaireId, responses)
             } else {
                 participantFormSubmissionReceiptService.executeWithSubmissionId(
-                    scope = scope,
-                    formKind = ParticipantFormKind.QUESTIONNAIRE,
-                    resourceKey = "questionnaire:$questionnaireId",
-                    idempotencyKey = requireNotNull(ParticipantFormAccessFilter.currentIdempotencyKey()) {
-                        "Participant idempotency key was not established by the access filter"
-                    },
+                    receiptScope = SubmissionReceiptScope(
+                        participant = scope.copy(logicalDate = ParticipantFormAccessFilter.requireSubmissionDate()),
+                        formKind = ParticipantFormKind.QUESTIONNAIRE,
+                        resourceKey = "questionnaire:$questionnaireId",
+                        idempotencyKey = ParticipantFormAccessFilter.requireIdempotencyKey(),
+                    ),
                     payload = responses,
                 ) { connection ->
                     surveysService.submitQuestionnaireResponses(
@@ -509,7 +552,7 @@ public open class SurveyController @Inject constructor(
         ensureReadAccess(AclKey(studyId))
         val data = downloadService.getQuestionnaireResponses(studyId, questionnaireId)
         auditService.logWithContext {
-            action(AuditAction.DOWNLOAD)
+            action(AuditEventType.DOWNLOAD)
             resourceType("Questionnaire")
             resourceId(questionnaireId)
             studyId(studyId)
@@ -529,19 +572,36 @@ public open class SurveyController @Inject constructor(
         @PathVariable(STUDY_ID) studyId: UUID,
         @PathVariable(QUESTIONNAIRE_ID) questionnaireId: UUID,
         @RequestParam(value = TYPE) fileType: FileType,
-        @RequestParam(value = FILE_NAME) fileName: String? = "Questionnaire_${questionnaireId}_${
-            LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)
-        }",
+        @RequestParam(value = FILE_NAME) fileName: String?,
         httpServletResponse: HttpServletResponse,
     ): Iterable<Map<String, Any>> {
 
         val data = getQuestionnaireResponses(studyId, questionnaireId, fileType)
 
         ChronicleServerUtil.setDownloadContentType(httpServletResponse, fileType)
-        ChronicleServerUtil.setContentDisposition(httpServletResponse, fileName, fileType)
+        ChronicleServerUtil.setContentDisposition(
+            httpServletResponse,
+            fileName ?: "Questionnaire_${questionnaireId}_${LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)}",
+            fileType,
+        )
 
         return data
     }
+
+    /** Browser form POST of [getQuestionnaireResponses]; the token resolver checks its CSRF form field. */
+    @Timed
+    @PostMapping(
+        path = [STUDY_ID_PATH + QUESTIONNAIRE_PATH + QUESTIONNAIRE_ID_PATH + DATA_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE]
+    )
+    public fun postQuestionnaireResponses(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @PathVariable(QUESTIONNAIRE_ID) questionnaireId: UUID,
+        @RequestParam(value = TYPE) fileType: FileType,
+        @RequestParam(value = FILE_NAME) fileName: String?,
+        httpServletResponse: HttpServletResponse,
+    ): Iterable<Map<String, Any>> =
+        getQuestionnaireResponses(studyId, questionnaireId, fileType, fileName, httpServletResponse)
 
     /**
      * Executes [block] inside a try/catch that logs a success or failure audit entry
@@ -553,13 +613,12 @@ public open class SurveyController @Inject constructor(
     // failure type then rethrow unchanged (boundary catch). Bundling params would alter every call site.
     @Suppress("LongParameterList", "TooGenericExceptionCaught")
     private inline fun <T> audited(
-        auditAction: AuditAction,
+        auditAction: AuditEventType,
         resource: String,
         studyId: UUID,
         resourceId: UUID? = null,
-        failureMessage: String = "Operation failed",
-        noinline onSuccess: (AuditLogEntryBuilder.(T) -> Unit)? = null,
-        noinline onFailure: (AuditLogEntryBuilder.() -> Unit)? = null,
+        noinline onSuccess: (AuditEntryBuilder.(T) -> Unit)? = null,
+        noinline onFailure: (AuditEntryBuilder.() -> Unit)? = null,
         block: () -> T,
     ): T {
         return try {
@@ -579,7 +638,7 @@ public open class SurveyController @Inject constructor(
                 resourceType(resource)
                 studyId(studyId)
                 resourceId?.let { resourceId(it) }
-                failed(ex.message ?: failureMessage)
+                success(false)
                 onFailure?.invoke(this)
             }
             throw ex

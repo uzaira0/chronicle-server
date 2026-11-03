@@ -1,5 +1,10 @@
 package com.openlattice.chronicle.services.surveys
 
+import com.openlattice.chronicle.storage.withTransaction
+import com.openlattice.chronicle.services.studies.StudySnapshotRepository
+import com.openlattice.chronicle.services.studies.checkLockedStudyRevision
+import com.openlattice.chronicle.services.studies.loadLockedStudySettings
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.codahale.metrics.annotation.Timed
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.PostgresArrays
@@ -7,25 +12,41 @@ import com.geekbeast.postgres.PostgresDatatype
 import com.geekbeast.postgres.streams.BasePostgresIterable
 import com.geekbeast.postgres.streams.PreparedStatementHolderSupplier
 import com.hazelcast.core.HazelcastInstance
-import com.openlattice.chronicle.android.ChronicleUsageEventType
 import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
 import com.openlattice.chronicle.auditing.AuditingComponent
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AclKey
-import com.openlattice.chronicle.constants.EdmConstants
-import com.openlattice.chronicle.data.LegacyChronicleQuestionnaire
 import com.openlattice.chronicle.hazelcast.HazelcastMap
+import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.postgres.ResultSetAdapters
 import com.openlattice.chronicle.services.ScheduledTasksManager
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
-import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.APP_USAGE_SURVEY
+import com.openlattice.chronicle.services.studies.StudyDeletionGuard
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_APP_NAME
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_BUNDLE_IDENTIFIER
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_CATEGORY_NAME
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_DURATION_SECONDS
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_OBSERVATION_END
+import com.openlattice.chronicle.storage.PostgresColumns.Companion.SCREEN_TIME_WEB_DOMAIN
+import com.openlattice.chronicle.storage.ScreenTimeUsageCaptures
+import com.openlattice.chronicle.storage.PostgresColumns
+import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.FILTERED_APPS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.QUESTIONNAIRES
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.QUESTIONNAIRE_SUBMISSIONS
-import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.FILTERED_APPS
 import com.openlattice.chronicle.storage.ChroniclePostgresTables.Companion.SYSTEM_APPS
+import com.openlattice.chronicle.exceptions.CollectionUnavailableException
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+import com.openlattice.chronicle.storage.SurveyEnrollment
+import com.openlattice.chronicle.survey.AppUsageAnswer
+import com.openlattice.chronicle.survey.AppUsageBlock
+import com.openlattice.chronicle.survey.AppUsageDayApp
+import com.openlattice.chronicle.survey.AppUsageDayConflict
+import com.openlattice.chronicle.survey.AppUsageDaySurvey
+import com.openlattice.chronicle.survey.AppUsageSurveyDay
+import com.openlattice.chronicle.survey.AppUsageSurveyDays
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.ACTIVE
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.COMPLETED_AT
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.DESCRIPTION
@@ -37,35 +58,20 @@ import com.openlattice.chronicle.storage.PostgresColumns.Companion.RECURRENCE_RU
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.RESPONSES
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.STUDY_ID
 import com.openlattice.chronicle.storage.PostgresColumns.Companion.TITLE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APPLICATION_LABEL
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_CATEGORY
 import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_PACKAGE_NAME
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.APP_USAGE_TIME
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.BUNDLE_IDENTIFIER
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.END_DATE_TIME
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.EVENT_TYPE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.INTERACTION_TYPE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.TIMESTAMP
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.TIMEZONE
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.UPLOADED_AT
-import com.openlattice.chronicle.storage.PostgresEventColumns.Companion.USERNAME
-import com.openlattice.chronicle.storage.PostgresEventTables.Companion.CHRONICLE_USAGE_EVENTS
-import com.openlattice.chronicle.storage.PostgresEventTables.Companion.IOS_SENSOR_DATA
 import com.openlattice.chronicle.storage.StorageResolver
-import com.openlattice.chronicle.survey.AppUsage
 import com.openlattice.chronicle.survey.DeviceUsage
 import com.openlattice.chronicle.survey.Questionnaire
 import com.openlattice.chronicle.survey.QuestionnaireResponse
 import com.openlattice.chronicle.survey.QuestionnaireUpdate
 import com.openlattice.chronicle.util.LogSanitizer
-import org.apache.olingo.commons.api.edm.FullQualifiedName
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.sql.Connection
+import java.time.Clock
+import java.time.Duration
 import java.time.LocalDate
 import java.time.OffsetDateTime
-import java.time.ZoneId
-import java.time.temporal.ChronoUnit
 import java.util.*
 
 /**
@@ -76,6 +82,8 @@ import java.util.*
 /**
  * @author alfoncenzioka &lt;alfonce@openlattice.com&gt;
  */
+internal data class FilteredAppsSnapshot(val appPackages: Collection<String>, val revision: Long)
+
 @Service
 public open class SurveysService(
     hazelcast: HazelcastInstance,
@@ -84,6 +92,7 @@ public open class SurveysService(
     private val scheduledTasksManager: ScheduledTasksManager,
     override val auditingManager: AuditingManager,
     public val idGenerationService: HazelcastIdGenerationService,
+    private val clock: Clock = Clock.systemUTC(),
 ) : SurveysManager, AuditingComponent {
     private val filteredApps = HazelcastMap.FILTERED_APPS.getMap(hazelcast)
 
@@ -91,116 +100,38 @@ public open class SurveysService(
         private val logger = LoggerFactory.getLogger(SurveysService::class.java)
         private val mapper = ObjectMappers.newJsonMapper()
 
-        internal fun loadLockedQuestionnaireSnapshot(connection: Connection, studyId: UUID, questionnaireId: UUID): String? =
-            connection.prepareStatement(
-                "SELECT jsonb_build_object('title', title, 'description', description, 'questions', questions, " +
-                    "'active', active, 'recurrenceRule', recurrence_rule)::text " +
-                    "FROM questionnaires WHERE study_id = ? AND questionnaire_id = ? FOR UPDATE"
-            ).use { statement ->
-                statement.setObject(1, studyId)
-                statement.setObject(2, questionnaireId)
-                statement.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-            }
-
         public const val UNKNOWN_BUNDLE = "Unknown"
-        private val DEVICE_USAGE_EVENT_TYPES = setOf(
-            ChronicleUsageEventType.MOVE_TO_BACKGROUND.value,
-            ChronicleUsageEventType.MOVE_TO_FOREGROUND.value,
-            ChronicleUsageEventType.ACTIVITY_PAUSED.value,
-            ChronicleUsageEventType.ACTIVITY_RESUMED.value
-        )
-        private val APP_USAGE_SURVEY_COLS = APP_USAGE_SURVEY.columns.joinToString(",") { it.name }
-        private val APP_USAGE_SURVEY_PARAMS = APP_USAGE_SURVEY.columns.joinToString(",") { "?" }
-
-        /**
-         * PreparedStatement bind order
-         * 1) studyId
-         * 2) participantId
-         * 3) date
-         */
-        internal val GET_APP_USAGE_SQL = """
-            SELECT ${APP_PACKAGE_NAME.name}, ${APPLICATION_LABEL.name}, ${UPLOADED_AT.name}, ${TIMESTAMP.name}, ${TIMEZONE.name}, ${EVENT_TYPE.name}
-            FROM ${CHRONICLE_USAGE_EVENTS.name}
-            WHERE ${STUDY_ID.name} = ?
-                AND ${PARTICIPANT_ID.name} = ?
-                AND ${TIMESTAMP.name} >=  ?
-                AND ${TIMESTAMP.name} < ?
-                AND ( ${EVENT_TYPE.name} = 1 
-                      OR ${EVENT_TYPE.name} = 2
-                      OR ${INTERACTION_TYPE.name} = 'Move to Foreground' 
-                      OR ${INTERACTION_TYPE.name} = 'Move to Background' )
-                AND (${USERNAME.name} IS NULL OR ${USERNAME.name} = '')
-            ORDER BY ${TIMESTAMP.name},${APP_PACKAGE_NAME.name}
-        """.trimIndent()
-
         public const val TOTAL_USAGE_FIELD = "total_usage"
-        internal val GET_APP_USAGE_IOS_SQL = """
-            SELECT ${STUDY_ID.name}, ${PARTICIPANT_ID.name}, ${BUNDLE_IDENTIFIER.name}, sum(${APP_USAGE_TIME.name}) as $TOTAL_USAGE_FIELD
-            FROM ${IOS_SENSOR_DATA.name}
-            WHERE ${STUDY_ID.name} = ?
-                AND ${PARTICIPANT_ID.name} = ?
-                AND ${END_DATE_TIME.name} > ?
-                AND ${END_DATE_TIME.name} <= ?
-                AND ${APP_USAGE_TIME.name} > 0 
-                AND ${BUNDLE_IDENTIFIER.name} IS NOT NULL
-                AND ${BUNDLE_IDENTIFIER.name}
-        """.trimIndent()
-
         public const val CATEGORIES_FIELD = "categories"
 
+        private const val IOS_CATEGORY = "category"
+
         /**
+         * iOS app usage per app and its Apple category (the app's own label when Apple names none): the newest
+         * capture of each Screen Time window that ended inside the survey span, summed. Web-domain rows are not app usage.
          * 1. study id
          * 2. participant id
          * 3. start of time window
          * 4. end of time window
          */
         internal val GET_DEVICE_USAGE_IOS_SQL = """
-            SELECT ${BUNDLE_IDENTIFIER.name}, ${APP_CATEGORY.name}, sum(${APP_USAGE_TIME.name}) as $TOTAL_USAGE_FIELD
-            FROM ${IOS_SENSOR_DATA.name}
-            WHERE ${STUDY_ID.name} = ?
-                AND ${PARTICIPANT_ID.name} = ?
-                AND ${END_DATE_TIME.name} > ?
-                AND ${END_DATE_TIME.name} <= ?
-                AND ${APP_USAGE_TIME.name} > 0 
-                AND ${APP_CATEGORY.name} IS NOT NULL
-            GROUP BY (${APP_CATEGORY.name}, ${BUNDLE_IDENTIFIER.name})
-        """.trimIndent()
-
-        /**
-         * PreparedStatement bind order
-         * 1) studyId
-         * 2) participantId
-         * 3) submission_date
-         * 4) application_label
-         * 5) package_name
-         * 6) timestamp
-         * 7) timezone
-         * 8) users
-         */
-        internal val SUBMIT_APP_USAGE_SURVEY_SQL = """
-            INSERT INTO ${APP_USAGE_SURVEY.name} ($APP_USAGE_SURVEY_COLS) VALUES ($APP_USAGE_SURVEY_PARAMS)
-            ON CONFLICT DO NOTHING
+            SELECT ${SCREEN_TIME_BUNDLE_IDENTIFIER.name},
+                   COALESCE(${SCREEN_TIME_CATEGORY_NAME.name}, ${SCREEN_TIME_APP_NAME.name}, ${SCREEN_TIME_BUNDLE_IDENTIFIER.name})
+                       AS $IOS_CATEGORY,
+                   sum(${SCREEN_TIME_DURATION_SECONDS.name}) AS $TOTAL_USAGE_FIELD
+            FROM (
+                ${ScreenTimeUsageCaptures.newestCapturesSql(
+                    "${PostgresColumns.STUDY_ID.name} = ? AND ${PostgresColumns.PARTICIPANT_ID.name} = ? " +
+                        "AND ${SCREEN_TIME_OBSERVATION_END.name} > ? AND ${SCREEN_TIME_OBSERVATION_END.name} <= ?",
+                )}
+            ) AS newest
+            WHERE ${SCREEN_TIME_WEB_DOMAIN.name} IS NULL
+                AND ${SCREEN_TIME_DURATION_SECONDS.name} > 0
+                AND COALESCE(${SCREEN_TIME_APP_NAME.name}, ${SCREEN_TIME_BUNDLE_IDENTIFIER.name}) IS NOT NULL
+            GROUP BY ${SCREEN_TIME_BUNDLE_IDENTIFIER.name}, $IOS_CATEGORY
         """.trimIndent()
 
         private val QUESTIONNAIRE_COLUMNS = QUESTIONNAIRES.columns.joinToString { it.name }
-        private val QUESTIONNAIRE_PARAMS = QUESTIONNAIRES.columns.joinToString {
-            if (it.datatype == PostgresDatatype.JSONB) "?::jsonb" else "?"
-        }
-
-        /**
-         * PreparedStatement bind order
-         * 1) studyId
-         * 2) questionnaireId
-         * 3) title
-         * 4) description
-         * 5) questions
-         * 6) active
-         * 7) date
-         * 8) recurrenceRule
-         */
-        private val CREATE_QUESTIONNAIRE_SQL = """
-            INSERT INTO ${QUESTIONNAIRES.name} (${QUESTIONNAIRE_COLUMNS}) VALUES ($QUESTIONNAIRE_PARAMS)
-        """.trimIndent()
 
         /**
          * PreparedStatement bind order
@@ -264,6 +195,7 @@ public open class SurveysService(
          */
         private val INSERT_FILTERED_APP_FOR_STUDY = """
             INSERT INTO ${FILTERED_APPS.name} (${STUDY_ID.name},${APP_PACKAGE_NAME.name}) VALUES(?, ?)
+            ON CONFLICT (${STUDY_ID.name}, ${APP_PACKAGE_NAME.name}) DO NOTHING
         """.trimIndent()
 
         /**
@@ -290,169 +222,119 @@ public open class SurveysService(
          * 1) studyId
          * 2) questionnaireId
          */
-        internal val DELETE_QUESTIONNAIRE_SQL = """
+        private val DELETE_QUESTIONNAIRE_SQL = """
             DELETE FROM ${QUESTIONNAIRES.name}
             WHERE ${STUDY_ID.name} = ? AND ${QUESTIONNAIRE_ID.name} = ?
         """.trimIndent()
 
-        private fun getOptionalUpdateQuestionnaireSetClause(update: QuestionnaireUpdate): String {
-            var result = "";
-            update.description?.let { result += ", ${DESCRIPTION.name} = ? " }
-            update.recurrenceRule?.let { result += ", ${RECURRENCE_RULE.name} = ?" }
-            update.active?.let { result += ", ${ACTIVE.name} = ? " }
-            update.questions?.let { result += ", ${QUESTIONS.name} = ?::jsonb" }
-
-            return result
-        }
-
         private fun getUpdateQuestionnaireSql(update: QuestionnaireUpdate): String {
+            val optionalColumns = buildString {
+                update.description?.let { append(", ${DESCRIPTION.name} = ? ") }
+                update.recurrenceRule?.let { append(", ${RECURRENCE_RULE.name} = ?") }
+                update.active?.let { append(", ${ACTIVE.name} = ? ") }
+                update.questions?.let { append(", ${QUESTIONS.name} = ?::jsonb") }
+            }
             return """
             UPDATE ${QUESTIONNAIRES.name}
-              SET ${TITLE.name} = ? ${getOptionalUpdateQuestionnaireSetClause(update)}
+              SET ${TITLE.name} = ? $optionalColumns
             WHERE ${STUDY_ID.name} = ? AND ${QUESTIONNAIRE_ID.name} = ?
         """.trimIndent()
         }
     }
 
-    override fun getLegacyQuestionnaire(
-        organizationId: UUID, studyId: UUID, questionnaireEKID: UUID,
-    ): LegacyChronicleQuestionnaire {
-        val questionnaire = getQuestionnaire(studyId, questionnaireEKID)
-        val questionnaireDetails = mapOf<FullQualifiedName, Set<Any>>(
-            EdmConstants.NAME_FQN to setOf(questionnaire.title),
-            EdmConstants.ACTIVE_FQN to setOf(questionnaire.active),
-            EdmConstants.RRULE_FQN to setOf(questionnaire.recurrenceRule ?: ""),
-            EdmConstants.DESCRIPTION_FQN to setOf(questionnaire.description)
-        )
-        val questions = questionnaire.questions.map { question ->
-            mapOf<FullQualifiedName, Set<Any>>(
-                EdmConstants.TITLE_FQN to setOf(question.title),
-                EdmConstants.VALUES_FQN to question.choices
-            )
-        }
-        return LegacyChronicleQuestionnaire(questionnaireDetails, questions)
-    }
-
-    override fun getLegacyStudyQuestionnaires(
-        organizationId: UUID, studyId: UUID,
-    ): Map<UUID, Map<FullQualifiedName, Set<Any>>> {
-        val questionnaires = getStudyQuestionnaires(studyId)
-        return questionnaires.associate { questionnaire ->
-            questionnaire.id!! to mapOf(
-                EdmConstants.NAME_FQN to setOf(questionnaire.title),
-                EdmConstants.ACTIVE_FQN to setOf(questionnaire.active),
-                EdmConstants.RRULE_FQN to setOf(questionnaire.recurrenceRule ?: ""),
-                EdmConstants.DESCRIPTION_FQN to setOf(questionnaire.description)
-            )
-        }
-    }
 
 
-    override fun submitLegacyQuestionnaire(
-        organizationId: UUID, studyId: UUID, participantId: String,
-        questionnaireResponses: Map<UUID, Map<FullQualifiedName, Set<Any>>>,
-    ) {
-        questionnaireResponses.forEach { (questionnaireId, responsesMap) ->
-            val responses = responsesMap.map { (fqn, values) ->
-                QuestionnaireResponse(
-                    questionTitle = fqn.toString(),
-                    value = values.map { it.toString() }.toSet()
-                )
+
+
+
+    private val surveyStore = AppUsageSurveyStore(storageResolver)
+
+    private fun excludedApps(studyId: UUID): Collection<String> =
+        filteredApps[studyId] ?: scheduledTasksManager.systemAppPackageNames
+
+    /** Survey reads see the participant's admitted enrolled time (null when refused), in a transaction of their own. */
+    private fun <T> surveyRead(studyId: UUID, participantId: String, read: (Connection, SurveyEnrollment?) -> T): T =
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            connection.withTransaction(rollbackOnSuccess = true) {
+                read(connection, ParticipantCollectionGate(connection).surveyEnrollment(studyId, participantId))
             }
-            submitQuestionnaireResponses(studyId, participantId, questionnaireId, responses)
+        }
+
+    /** Each ended day's apps for [days], from one read of the span they cover. */
+    private fun listings(studyId: UUID, participantId: String, enrollment: SurveyEnrollment, days: List<LocalDate>,
+                         rules: AppUsageDayRules): Map<LocalDate, List<ListedApp>> {
+        if (days.isEmpty()) return emptyMap()
+        val span = AppUsageDays.bounds(days.first(), rules.zone).start..<AppUsageDays.bounds(days.last(), rules.zone).endExclusive
+        val transitions = surveyStore.transitions(studyId, participantId, span, excludedApps(studyId))
+        val intervals = AppUsageDays.foreground(transitions, span, enrollment.stops)
+        val labels = transitions.filter { !it.label.isNullOrBlank() }.sortedBy { it.at }.associate { it.app to checkNotNull(it.label) }
+        return days.associateWith { date ->
+            AppUsageDays.listing(intervals, labels, checkNotNull(AppUsageDays.window(date, rules.zone, enrollment)),
+                AppUsageDays.blocks(date, rules.zone, rules.frequency), rules.thresholdSeconds)
         }
     }
 
+    override fun getAppUsageDays(studyId: UUID, participantId: String, rules: AppUsageDayRules): AppUsageSurveyDays? =
+        surveyRead(studyId, participantId) { connection, admitted ->
+            val enrollment = admitted ?: return@surveyRead null
+            val now = clock.instant()
+            val days = AppUsageDays.endedDays(rules.zone, enrollment, now)
+            val stored = surveyStore.answers(connection, studyId, participantId)
+            val listed = listings(studyId, participantId, enrollment, days, rules)
+            AppUsageSurveyDays(rules.zone.id, now.atZone(rules.zone).toLocalDate(), days.map { date ->
+                AppUsageSurveyDay(date, AppUsageDays.state(listed.getValue(date), AppUsageDays.answersOf(date, rules.zone, stored)))
+            })
+        }
 
-    override fun submitAppUsageSurvey(
-        studyId: UUID,
-        participantId: String,
-        surveyResponses: List<AppUsage>,
-    ) {
-        require(surveyResponses.size <= 10_000) { "Survey response batch too large: ${surveyResponses.size} entries (max 10,000)" }
-        logger.info(
-            "submitting app usage survey studyId={} participant={}",
-            studyId,
-            LogSanitizer.stableFingerprint(participantId, "participant")
-        )
+    public fun getAppUsageDay(studyId: UUID, participantId: String, date: LocalDate, rules: AppUsageDayRules): AppUsageDaySurvey =
+        surveyRead(studyId, participantId) { connection, admitted ->
+            val enrollment = admitted ?: throw CollectionUnavailableException(CollectionUnavailableException.Scope.PARTICIPANT)
+            val listed = endedDayListing(studyId, participantId, enrollment, date, rules)
+            val answers = AppUsageDays.answersOf(date, rules.zone, surveyStore.answers(connection, studyId, participantId))
+            AppUsageDaySurvey(date, rules.zone.id, AppUsageDays.state(listed, answers), listed.map { app ->
+                AppUsageDayApp(app.app, app.label, app.blocks.map { block ->
+                    AppUsageBlock(block.start.atZone(rules.zone).toOffsetDateTime(),
+                        block.endExclusive.atZone(rules.zone).toOffsetDateTime(), app.answer(block, answers)?.users)
+                })
+            })
+        }
 
-        val numWritten = storageResolver.getPlatformStorage().connection.use { connection ->
-            AuditedTransactionBuilder<Int>(connection, auditingManager)
-                .transaction { submitAppUsageSurvey(it, studyId, participantId, surveyResponses) }
+    private fun endedDayListing(studyId: UUID, participantId: String, enrollment: SurveyEnrollment, date: LocalDate,
+                                rules: AppUsageDayRules): List<ListedApp> {
+        if (date !in AppUsageDays.endedDays(rules.zone, enrollment, clock.instant())) {
+            throw AppUsageDayConflictException(AppUsageDayConflict.DAY_UNAVAILABLE)
+        }
+        return listings(studyId, participantId, enrollment, listOf(date), rules).getValue(date)
+    }
+
+    /** A researcher's submission: the same day rules in a transaction of its own. */
+    public fun submitAppUsageDay(studyId: UUID, participantId: String, date: LocalDate, answers: List<AppUsageAnswer>,
+                                 rules: AppUsageDayRules) {
+        storageResolver.getPlatformStorage().connection.use { connection ->
+            AuditedTransactionBuilder<Unit>(connection, auditingManager)
+                .transaction { submitAppUsageDay(it, studyId, participantId, date, answers, rules) }
                 .audit { emptyList() }
                 .buildAndRun()
-        }
-
-        if (numWritten != surveyResponses.size) {
-            logger.warn("wrote {} entities but expected to write {} entities", numWritten, surveyResponses.size)
-        }
-    }
-
-    /** Transaction-participating adapter used by the participant idempotency boundary. */
-    public fun submitAppUsageSurvey(
-        connection: Connection,
-        studyId: UUID,
-        participantId: String,
-        surveyResponses: List<AppUsage>,
-    ): Int {
-        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId, participantId)
-        require(surveyResponses.size <= 10_000) {
-            "Survey response batch too large: ${surveyResponses.size} entries (max 10,000)"
-        }
-        val submissionDate = if (surveyResponses.isNotEmpty()) {
-            LocalDate.now(ZoneId.of(surveyResponses[0].timezone))
-        } else {
-            LocalDate.now()
-        }
-        return connection.prepareStatement(SUBMIT_APP_USAGE_SURVEY_SQL).use { statement ->
-            bindAppUsageRows(connection, statement, studyId, participantId, submissionDate, surveyResponses)
-            statement.executeBatch().sum()
         }
     }
 
     /**
-     * This function filters app usage data that is below the threshold for reporting.
+     * Stores answers for unanswered blocks of one ended day on the caller's transaction. An empty list confirms a day
+     * with no apps. Answering an answered block, or a block the day no longer lists, is a conflict for the page to show.
      */
-    override fun computeAggregateUsage(
-        startDateTime: OffsetDateTime,
-        appUsage: List<AppUsage>,
-    ): Map<String, Double> {
-
-        return appUsage
-            .filter { DEVICE_USAGE_EVENT_TYPES.contains(it.eventType) } // Filter out any usage events unrelated to calculated time.
-            .groupBy { it.appPackageName }
-            .mapValues { (_, au) ->
-                // Each resume re-anchors the interval, so a resume whose pause was never recorded (power
-                // loss) is not counted up to some much later pause. A pause while inactive adds nothing,
-                // except pauses before the first resume: those close usage already running at the window
-                // boundary and count once, as the union [startDateTime, last leading pause].
-                var total = 0.0
-                var currentStartTime: OffsetDateTime? = null
-                var seenResume = false
-                var leadingPauseEnd: OffsetDateTime? = null
-
-                au.forEach { a ->
-                    when (a.eventType) {
-                        ChronicleUsageEventType.ACTIVITY_RESUMED.value, ChronicleUsageEventType.MOVE_TO_FOREGROUND.value -> {
-                            seenResume = true
-                            currentStartTime = a.timestamp
-                        }
-
-                        ChronicleUsageEventType.ACTIVITY_PAUSED.value, ChronicleUsageEventType.MOVE_TO_BACKGROUND.value -> {
-                            if (!seenResume) {
-                                leadingPauseEnd = a.timestamp
-                            } else {
-                                currentStartTime?.let { total += ChronoUnit.SECONDS.between(it, a.timestamp).toDouble() }
-                            }
-                            currentStartTime = null
-                        }
-
-                        else -> error("Unrecognized event type.")
-                    }
-                }
-                leadingPauseEnd?.let { total += ChronoUnit.SECONDS.between(startDateTime, it).toDouble() }
-                total
-            }
+    public fun submitAppUsageDay(connection: Connection, studyId: UUID, participantId: String, date: LocalDate,
+                                 answers: List<AppUsageAnswer>, rules: AppUsageDayRules) {
+        val enrollment = ParticipantCollectionGate(connection).surveyEnrollment(studyId, participantId)
+            ?: throw CollectionUnavailableException(CollectionUnavailableException.Scope.PARTICIPANT)
+        val listed = endedDayListing(studyId, participantId, enrollment, date, rules)
+        val stored = AppUsageDays.answersOf(date, rules.zone, surveyStore.answers(connection, studyId, participantId))
+        require(answers.distinctBy { it.appPackageName to it.blockStart.toInstant() }.size == answers.size) {
+            "Each app and block is answered once"
+        }
+        val rows = AppUsageDays.rows(listed, stored, answers, AppUsageDays.bounds(date, rules.zone).start)
+        if (!surveyStore.insert(connection, studyId, participantId, date, rules.zone, OffsetDateTime.now(clock), rows)) {
+            throw AppUsageDayConflictException(AppUsageDayConflict.ALREADY_ANSWERED)
+        }
     }
 
     /**
@@ -471,19 +353,23 @@ public open class SurveysService(
     ): DeviceUsage {
         try {
 
-            val (_, hds) = storageResolver.resolveAndGetFlavor(studyId)
-
             //category = categoryByPackage[package]
             val categoryByPackage = mutableMapOf<String, String>()
 
             val result = BasePostgresIterable(
-                PreparedStatementHolderSupplier(hds, GET_DEVICE_USAGE_IOS_SQL) { ps ->
-                    ps.setString(1, studyId.toString())
+                PreparedStatementHolderSupplier(storageResolver.getPlatformReadStorage(), GET_DEVICE_USAGE_IOS_SQL) { ps ->
+                    ps.setObject(1, studyId)
                     ps.setString(2, participantId)
                     ps.setObject(3, startDateTime)
                     ps.setObject(4, endDateTime)
                 }
-            ) { ResultSetAdapters.iosDeviceUsageByCategory(it) }
+            ) { rs ->
+                IosDeviceUsageByCategory(
+                    rs.getString(SCREEN_TIME_BUNDLE_IDENTIFIER.name),
+                    rs.getString(IOS_CATEGORY),
+                    rs.getDouble(TOTAL_USAGE_FIELD),
+                )
+            }
                 .groupBy { it.category }
                 .mapValues { (category, usageByCategory) ->
                     usageByCategory.fold(0.0) { totalUsage, packageUsage ->
@@ -515,10 +401,12 @@ public open class SurveysService(
         startDateTime: OffsetDateTime,
         endDateTime: OffsetDateTime,
     ): DeviceUsage {
-        val appUsage = getAndroidAppUsageData(realStudyId, participantId, startDateTime, endDateTime)
         val iosDeviceUsage = getIosDeviceUsageData(realStudyId, participantId, startDateTime, endDateTime)
-
-        val filtered = computeAggregateUsage(startDateTime, appUsage)
+        // Android foreground time follows the survey's one session rule, up to the server's now.
+        val span = startDateTime.toInstant()..<minOf(endDateTime.toInstant(), clock.instant())
+        val filtered = if (span.isEmpty()) emptyMap() else AppUsageDays.foreground(
+            surveyStore.transitions(realStudyId, participantId, span, excludedApps(realStudyId)), span,
+        ).mapValues { (_, used) -> used.sumOf { Duration.between(it.start, it.endExclusive).seconds.toDouble() } }
         val totalTime = filtered.values.sum()
         val androidDeviceUsage = DeviceUsage(totalTime, filtered, mapOf())
         return DeviceUsage(
@@ -527,48 +415,6 @@ public open class SurveysService(
             androidDeviceUsage.categoryByPackage + iosDeviceUsage.categoryByPackage,
             androidDeviceUsage.users + iosDeviceUsage.users
         )
-    }
-
-    // Fetches data from UsageEvents table in Postgres event storage
-    // reason: boundary catch — must log and rethrow any failure type from the DB read path
-    @Suppress("TooGenericExceptionCaught")
-    override fun getAndroidAppUsageData(
-        studyId: UUID,
-        participantId: String,
-        startDateTime: OffsetDateTime,
-        endDateTime: OffsetDateTime,
-    ): List<AppUsage> {
-        try {
-
-            val (_, hds) = storageResolver.resolveAndGetFlavor(studyId)
-            val filtered = filteredApps[studyId] ?: scheduledTasksManager.systemAppPackageNames
-
-            val result = BasePostgresIterable(
-                PreparedStatementHolderSupplier(hds, GET_APP_USAGE_SQL) { ps ->
-                    ps.setString(1, studyId.toString())
-                    ps.setString(2, participantId)
-                    ps.setObject(3, startDateTime)
-                    ps.setObject(4, endDateTime)
-                }
-            ) {
-                ResultSetAdapters.appUsage(it)
-            }.filterNot { filtered.contains(it.appPackageName) }
-
-
-            logger.info(
-                "fetched {} app usage entities spanning {} to {} studyId={} participant={}",
-                result.size,
-                startDateTime,
-                endDateTime,
-                studyId,
-                LogSanitizer.stableFingerprint(participantId, "participant")
-            )
-
-            return result
-        } catch (ex: Exception) {
-            logger.error("unable to fetch data for app usage survey")
-            throw ex
-        }
     }
 
     // reason: boundary catch — must log and rethrow any failure type from the audited transaction
@@ -580,18 +426,11 @@ public open class SurveysService(
             storageResolver.getPlatformStorage().connection.use { connection ->
                 AuditedTransactionBuilder<Unit>(connection, auditingManager)
                     .transaction { conn ->
-                        conn.prepareStatement(CREATE_QUESTIONNAIRE_SQL).use { ps ->
-                            var index = 0
-                            ps.setObject(++index, studyId)
-                            ps.setObject(++index, questionnaireId)
-                            ps.setString(++index, questionnaire.title)
-                            ps.setString(++index, questionnaire.description)
-                            ps.setString(++index, mapper.writeValueAsString(questionnaire.questions))
-                            ps.setBoolean(++index, true)
-                            ps.setObject(++index, OffsetDateTime.now())
-                            ps.setString(++index, questionnaire.recurrenceRule)
-                            ps.executeUpdate()
-                        }
+                        QuestionnaireRepository(conn, mapper).insert(
+                            studyId = studyId,
+                            questionnaireId = questionnaireId,
+                            questionnaire = questionnaire,
+                        )
                     }
                     .audit {
                         listOf(
@@ -624,7 +463,7 @@ public open class SurveysService(
                             var index = 0
                             ps.setString(++index, update.title)
                             update.description?.let { ps.setString(++index, it) }
-                            update.recurrenceRule?.let { ps.setString(++index, it) }
+                            update.recurrenceRule?.let { ps.setString(++index, it.orElse(null)) }
                             update.active?.let { ps.setBoolean(++index, it) }
                             update.questions?.let { ps.setString(++index, mapper.writeValueAsString(it)) }
                             ps.setObject(++index, studyId)
@@ -678,9 +517,10 @@ public open class SurveysService(
             storageResolver.getPlatformStorage().connection.use { connection ->
                 AuditedTransactionBuilder<Unit>(connection, auditingManager)
                     .transaction {
-                        loadLockedQuestionnaireSnapshot(connection, studyId, questionnaireId)
+                        QuestionnaireRepository(connection, mapper).loadSnapshot(studyId = studyId, questionnaireId = questionnaireId)
                         connection.prepareStatement(
-                            "SELECT EXISTS (SELECT 1 FROM ${QUESTIONNAIRE_SUBMISSIONS.name} WHERE ${STUDY_ID.name} = ? AND ${QUESTIONNAIRE_ID.name} = ?)",
+                            // Counts responses that a processing block or quarantine hides from this connection.
+                            "SELECT public.chronicle_questionnaire_has_submissions(?, ?)",
                         ).use { statement ->
                             statement.setObject(1, studyId)
                             statement.setObject(2, questionnaireId)
@@ -688,7 +528,7 @@ public open class SurveysService(
                                 check(rows.next())
                                 if (rows.getBoolean(1)) throw org.springframework.web.server.ResponseStatusException(
                                     org.springframework.http.HttpStatus.CONFLICT,
-                                    com.openlattice.chronicle.i18n.Messages.get("error.questionnaire.responsesRetained"),
+                                    Messages.get("error.questionnaire.responsesRetained"),
                                 )
                             }
                         }
@@ -777,9 +617,9 @@ public open class SurveysService(
         questionnaireId: UUID,
         responses: List<QuestionnaireResponse>,
     ): UUID {
-        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId, participantId)
-        requireNotNull(loadLockedQuestionnaireSnapshot(connection, studyId, questionnaireId)) {
-            com.openlattice.chronicle.i18n.Messages.get("error.questionnaire.unavailable")
+        ParticipantCollectionGate(connection).requireActive(studyId, participantId)
+        requireNotNull(QuestionnaireRepository(connection, mapper).loadSnapshot(studyId = studyId, questionnaireId = questionnaireId)) {
+            Messages.get("error.questionnaire.unavailable")
         }
         val submissionId = idGenerationService.getNextId()
         connection.prepareStatement(SUBMIT_QUESTIONNAIRE_SQL).use { statement ->
@@ -799,45 +639,43 @@ public open class SurveysService(
     }
 
 
-    private fun requireVisibleFilteredApps(studyId: UUID) {
-        if (com.openlattice.chronicle.services.studies.StudyDeletionGuard(storageResolver)
+    @Timed
+    override fun getAppsFilteredForStudyAppUsageSurvey(studyId: UUID): Collection<String> =
+        getFilteredAppsSnapshot(studyId).appPackages
+
+    internal fun getFilteredAppsSnapshot(studyId: UUID): FilteredAppsSnapshot {
+        if (StudyDeletionGuard(storageResolver)
                 .blockedStudyIds(listOf(studyId)).isNotEmpty()) {
             try { filteredApps.evict(studyId) } catch (failure: Exception) {
                 logger.error("Study {} is erased or quarantined, but filtered-app eviction failed", studyId, failure)
             }
             throw NoSuchElementException("No study found for id $studyId")
         }
-    }
-
-    @Timed
-    override fun getAppsFilteredForStudyAppUsageSurvey(studyId: UUID): Collection<String> {
-        val hds = storageResolver.getPlatformStorage()
-        requireVisibleFilteredApps(studyId)
-        val apps = filteredApps[studyId] ?: scheduledTasksManager.systemAppPackageNames
-        requireVisibleFilteredApps(studyId)
-
-        hds.connection.use { connection ->
-            AuditedTransactionBuilder<Unit>(connection, auditingManager)
-                .transaction { }
-                .audit {
-                    listOf(
-                        AuditableEvent(
-                            aclKey = AclKey(studyId),
-                            eventType = AuditEventType.GET_FILTERED_APPS,
-                            description = "Retrieved list of filtered applications."
-                        )
-                    )
+        return storageResolver.getPlatformStorage().connection.use { connection ->
+            AuditedTransactionBuilder<FilteredAppsSnapshot>(connection, auditingManager)
+                .transaction { transaction ->
+                    loadLockedStudySettings(transaction, studyId)
+                    val apps = transaction.prepareStatement(
+                        "SELECT app_package_name FROM filtered_apps WHERE study_id = ? ORDER BY app_package_name",
+                    ).use { statement ->
+                        statement.setObject(1, studyId)
+                        statement.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+                    }
+                    FilteredAppsSnapshot(apps.ifEmpty { scheduledTasksManager.systemAppPackageNames.toList() },
+                        StudySnapshotRepository(transaction).settingsRevision(studyId))
+                }.audit {
+                    listOf(AuditableEvent(aclKey = AclKey(studyId), eventType = AuditEventType.GET_FILTERED_APPS,
+                        description = "Retrieved list of filtered applications."))
                 }.buildAndRun()
         }
-
-        return apps
     }
 
     @Timed
-    override fun setAppsFilteredForStudyAppUsageSurvey(studyId: UUID, appPackages: Set<String>) {
-        storageResolver.getPlatformStorage().connection.use { connection ->
-            AuditedTransactionBuilder<Unit>(connection, auditingManager)
+    override fun setAppsFilteredForStudyAppUsageSurvey(studyId: UUID, appPackages: Set<String>, expectedRevision: Long): Long {
+        val revision = storageResolver.getPlatformStorage().connection.use { connection ->
+            AuditedTransactionBuilder<Long>(connection, auditingManager)
                 .transaction { conn ->
+                    checkLockedStudyRevision(conn, studyId, expectedRevision)
                     val psDel = conn.prepareStatement(DELETE_FILTERED_APPS_FOR_STUDY)
                     psDel.setObject(1, studyId)
                     psDel.executeUpdate()
@@ -849,6 +687,7 @@ public open class SurveysService(
                         psInsert.addBatch()
                     }
                     psInsert.executeBatch()
+                    StudySnapshotRepository(conn).bumpSettingsRevision(studyId)
                 }
                 .audit {
                     listOf(
@@ -861,6 +700,7 @@ public open class SurveysService(
                 }.buildAndRun()
         }
         refreshMapstore(studyId)
+        return revision
     }
 
     @Timed
@@ -868,6 +708,7 @@ public open class SurveysService(
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
                 .transaction { conn ->
+                    loadLockedStudySettings(conn, studyId)
                     val psInsert = conn.prepareStatement(INSERT_FILTERED_APP_FOR_STUDY)
                     psInsert.setObject(1, studyId)
                     appPackages.forEach {
@@ -875,6 +716,7 @@ public open class SurveysService(
                         psInsert.addBatch()
                     }
                     psInsert.executeBatch()
+                    StudySnapshotRepository(conn).bumpSettingsRevision(studyId)
                 }
                 .audit {
                     listOf(
@@ -894,6 +736,7 @@ public open class SurveysService(
         storageResolver.getPlatformStorage().connection.use { connection ->
             AuditedTransactionBuilder<Unit>(connection, auditingManager)
                 .transaction { conn ->
+                    loadLockedStudySettings(conn, studyId)
                     val psInsert = conn.prepareStatement(DELETE_FILTERED_APP_FOR_STUDY)
                     psInsert.setObject(1, studyId)
                     appPackages.forEach {
@@ -901,6 +744,7 @@ public open class SurveysService(
                         psInsert.addBatch()
                     }
                     psInsert.executeBatch()
+                    StudySnapshotRepository(conn).bumpSettingsRevision(studyId)
                 }
                 .audit {
                     listOf(
@@ -916,7 +760,9 @@ public open class SurveysService(
     }
 
     public fun refreshMapstore(studyId: UUID) {
-        filteredApps.loadAll(setOf(studyId), true)
+        PinnedPlatformConnection.afterCommitOrNow(storageResolver.getPlatformStorage(), "filtered-apps:$studyId") {
+            filteredApps.loadAll(setOf(studyId), true)
+        }
     }
 
     override fun initializeFilterdApps(connection: Connection, studyId: UUID) {
@@ -926,28 +772,5 @@ public open class SurveysService(
         }
 
         logger.info("Initialized $inserted filtered apps for study $studyId based off defaults.")
-    }
-
-    // writes questionnaire responses to postgres and returns number of rows written
-    private fun bindAppUsageRows(
-        conn: Connection,
-        ps: java.sql.PreparedStatement,
-        studyId: UUID,
-        participantId: String,
-        submissionDate: LocalDate,
-        data: List<AppUsage>,
-    ) {
-        data.forEach { response ->
-            var index = 0
-            ps.setObject(++index, studyId)
-            ps.setString(++index, participantId)
-            ps.setObject(++index, submissionDate)
-            ps.setString(++index, response.appLabel)
-            ps.setString(++index, response.appPackageName)
-            ps.setObject(++index, response.timestamp)
-            ps.setString(++index, response.timezone)
-            ps.setArray(++index, PostgresArrays.createTextArray(conn, response.users))
-            ps.addBatch()
-        }
     }
 }

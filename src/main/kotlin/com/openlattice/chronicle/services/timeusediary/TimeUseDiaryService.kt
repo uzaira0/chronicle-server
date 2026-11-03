@@ -1,5 +1,12 @@
 package com.openlattice.chronicle.services.timeusediary
 
+import com.openlattice.chronicle.util.SqlFailures
+
+import com.openlattice.chronicle.storage.ParticipantCollectionGate
+
+import com.openlattice.chronicle.storage.StreamingReadTransaction
+import com.openlattice.chronicle.storage.studyReadScope
+
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.geekbeast.configuration.postgres.PostgresFlavor
 import com.geekbeast.mappers.mappers.ObjectMappers
@@ -28,11 +35,13 @@ import com.openlattice.chronicle.timeusediary.TimeUseDiarySummarizedEntity
 import com.openlattice.chronicle.util.LogSanitizer
 import org.slf4j.LoggerFactory
 import java.sql.Connection
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.*
@@ -71,7 +80,7 @@ public open class TimeUseDiaryService(
         participantId: String,
         responses: List<TimeUseDiaryResponse>
     ): UUID {
-        com.openlattice.chronicle.storage.ParticipantCollectionGate.requireActive(connection, studyId, participantId)
+        ParticipantCollectionGate(connection).requireActive(studyId, participantId)
         require(responses.size <= 1_000) { "Time use diary submission too large: ${responses.size} entries (max 1,000)" }
         val timeUseDiaryId = idGenerationService.getNextId()
         val submissionDate = OffsetDateTime.now()
@@ -138,13 +147,14 @@ public open class TimeUseDiaryService(
                 collectSubmissionsByDate(result, submissionsByDate)
             }
         } catch (ex: SQLException) {
+            val failure = SqlFailures.sanitize(ex)
             logger.error(
                 "Error fetching participant TUD submissions by date for studyId={}, participantRef={}",
                 studyId,
                 LogSanitizer.stableFingerprint(participantId, "participant"),
-                ex
+                failure
             )
-            throw ex
+            throw failure
         }
         return submissionsByDate
     }
@@ -156,11 +166,7 @@ public open class TimeUseDiaryService(
         while (result.next()) {
             val date = ResultSetAdapters.submissionDate(result)
             val id = ResultSetAdapters.submissionId(result)
-            if (submissionsByDate[date].isNullOrEmpty()) {
-                submissionsByDate[date] = mutableSetOf(id)
-            } else {
-                submissionsByDate[date]!!.add(id)
-            }
+            submissionsByDate.getOrPut(date) { mutableSetOf() }.add(id)
         }
     }
 
@@ -195,8 +201,9 @@ public open class TimeUseDiaryService(
 
             return submissionsByDate
         } catch (ex: SQLException) {
-            logger.error("Error fetching submission ids by date for studyId={}", studyId, ex)
-            throw ex
+            val failure = SqlFailures.sanitize(ex)
+            logger.error("Error fetching submission ids by date for studyId={}", studyId, failure)
+            throw failure
         }
     }
 
@@ -215,19 +222,12 @@ public open class TimeUseDiaryService(
         try {
             val hds = storageResolver.getPlatformReadStorage(PostgresFlavor.VANILLA)
             val postgresIterable = BasePostgresIterable(
-                PreparedStatementHolderSupplier(
+                StreamingReadTransaction(
                     hds,
                     getTimeUseDiaryDayOrNightTimeDataSql(participantIds),
-                    1024
-                ) { ps ->
-                    var index = 0
-                    ps.setObject(++index, studyId)
-                    ps.setObject(++index, startDate)
-                    ps.setObject(++index, endDate)
-                    participantIds?.let {
-                        ps.setArray(++index, PostgresArrays.createTextArray(ps.connection, it))
-                    }
-                }) { rs ->
+                    1024,
+                    studyScope = storageResolver.studyReadScope(studyId),
+                ) { ps -> bindSubmissionWindow(ps, studyId, startDate, endDate, participantIds) }) { rs ->
                 when (downloadType) {
                     TimeUseDiaryDownloadDataType.DayTime -> getDayTimeDataColumnMapping(rs)
                     TimeUseDiaryDownloadDataType.NightTime -> getNightTimeDataColumnMapping(rs)
@@ -251,19 +251,12 @@ public open class TimeUseDiaryService(
         try {
             val hds = storageResolver.getPlatformReadStorage()
             val iterable = BasePostgresIterable(
-                PreparedStatementHolderSupplier(
+                StreamingReadTransaction(
                     hds,
                     getSummarizedTimeUseDiarySql(participantIds),
-                    1024
-                ) { ps ->
-                    var index = 0
-                    ps.setObject(++index, studyId)
-                    ps.setObject(++index, startDate)
-                    ps.setObject(++index, endDate)
-                    participantIds?.let {
-                        ps.setArray(++index, PostgresArrays.createTextArray(ps.connection, it))
-                    }
-                }
+                    1024,
+                    studyScope = storageResolver.studyReadScope(studyId),
+                ) { ps -> bindSubmissionWindow(ps, studyId, startDate, endDate, participantIds) }
             ) { getSummarizedDataColumnMapping(it) }
 
             return TimeUseDiaryPostgresDownloadWrapper(iterable)
@@ -275,6 +268,19 @@ public open class TimeUseDiaryService(
     }
 
     /* -------- Download Utils -------- */
+
+    private fun bindSubmissionWindow(
+        ps: PreparedStatement,
+        studyId: UUID,
+        startDate: OffsetDateTime,
+        endDate: OffsetDateTime,
+        participantIds: Set<String>?,
+    ) {
+        ps.setObject(1, studyId)
+        ps.setObject(2, startDate)
+        ps.setObject(3, endDate)
+        participantIds?.let { ps.setArray(4, PostgresArrays.createTextArray(ps.connection, it)) }
+    }
 
     private fun getDefaultColumnMapping(rs: ResultSet): Map<String, Any> {
         return mapOf(
@@ -305,8 +311,10 @@ public open class TimeUseDiaryService(
         val defaultColumnMapping = getDefaultColumnMapping(rs)
 
         val timeUseDiaryResponses: List<TimeUseDiaryResponse> = mapper.readValue(rs.getString(SUBMISSION.name))
-        val responsesByStartDateTime =
-            timeUseDiaryResponses.groupBy { it.startDateTime }.filter { it.key != null }.toSortedMap(compareBy { it })
+        val responsesByStartDateTime = timeUseDiaryResponses
+            .mapNotNull { response -> response.startDateTime?.let { it to response } }
+            .groupBy({ it.first }, { it.second })
+            .toSortedMap()
         val responsesWithoutStartDateTime =
             timeUseDiaryResponses.filter { it.startDateTime == null }.associateBy { it.code }
 
@@ -316,11 +324,13 @@ public open class TimeUseDiaryService(
 
             val responsesByCode: Map<String, TimeUseDiaryResponse> = responses.associateBy { it.code }
 
+            // An activity saved without an end time exports blank end and duration cells.
             val mappedColumns = mapOf(
-                TimeUseDiaryColumnTitles.ACTIVITY_DURATION to ChronoUnit.MINUTES.between(startDateTime, endDateTime),
+                TimeUseDiaryColumnTitles.ACTIVITY_DURATION to
+                    (endDateTime?.let { ChronoUnit.MINUTES.between(startDateTime, it) } ?: ""),
                 TimeUseDiaryColumnTitles.ACTIVITY_COUNTER to ++counter,
-                TimeUseDiaryColumnTitles.ACTIVITY_START_TIME to startDateTime!!.toLocalTime().format(formatter),
-                TimeUseDiaryColumnTitles.ACTIVITY_END_TIME to endDateTime!!.toLocalTime().format(formatter)
+                TimeUseDiaryColumnTitles.ACTIVITY_START_TIME to startDateTime.toLocalTime().format(formatter),
+                TimeUseDiaryColumnTitles.ACTIVITY_END_TIME to (endDateTime?.toLocalTime()?.format(formatter) ?: ""),
             ) + defaultColumnMapping
 
             val additionalColumTitles = TimeUseDiaryDownloadDataType.DayTime.downloadColumnTitles - mappedColumns.keys
@@ -364,8 +374,11 @@ public open class TimeUseDiaryService(
         val responses: List<TimeUseDiaryResponse> = mapper.readValue(rs.getString(SUBMISSION.name))
         val responsesByCode = responses.associateBy { it.code }
 
+        // Only local times and their differences are exported, so a diary without a timed primary
+        // activity is read in UTC instead of failing the download.
         val zoneIdOfPrimaryActivity =
-            responsesByCode.getValue(TimeUseDiaryQuestionCodes.PRIMARY_ACTIVITY).startDateTime!!.toZonedDateTime().zone
+            responsesByCode[TimeUseDiaryQuestionCodes.PRIMARY_ACTIVITY]?.startDateTime?.toZonedDateTime()?.zone
+                ?: ZoneOffset.UTC
 
         val activityDate = safeReadActivityDate(responsesByCode)
 

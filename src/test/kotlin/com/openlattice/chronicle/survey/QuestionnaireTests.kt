@@ -1,17 +1,31 @@
 package com.openlattice.chronicle.survey
 
+import org.junit.Assert.assertThrows
+
+import java.util.Optional
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.openlattice.chronicle.ChronicleServerTests
+import com.openlattice.chronicle.UsageEnrollmentFixtures.enrollUsageFixture
+import com.openlattice.chronicle.UsageEnrollmentFixtures.prepareUsageFixture
+import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.EditRevisionApi
+import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
 import com.openlattice.chronicle.client.ChronicleClient
-import com.openlattice.chronicle.constants.EdmConstants
+import com.openlattice.chronicle.participantaccess.MobileReminderConfiguration
+import com.openlattice.chronicle.participantaccess.ParticipantFormKind
+import com.openlattice.chronicle.util.API_KEY_HEADER
 import com.openlattice.chronicle.util.tests.TestDataFactory
-import org.dmfs.rfc5545.recur.RecurrenceRule
-import org.junit.Assert
-import org.junit.Test
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.util.UUID
+import org.dmfs.rfc5545.recur.RecurrenceRule
+import org.junit.Assert
+import com.openlattice.chronicle.client.assertHttpStatus
+import org.junit.Test
+import org.springframework.http.HttpStatus
 
 /**
  * @author alfoncenzioka &lt;alfonce@openlattice.com&gt;
@@ -37,6 +51,60 @@ class QuestionnaireTests : ChronicleServerTests() {
     }
 
     @Test
+    fun testCreateQuestionnaireActiveFlagAndDefaultControlDeviceScheduling() {
+        val studyId = chronicleClient.studyApi.createStudy(TestDataFactory.study())
+        prepareUsageFixture(chronicleClient, studyId)
+        val participant = TestDataFactory.participant(ParticipationStatus.ENROLLED)
+        chronicleClient.studyApi.registerParticipant(studyId, participant)
+        val device = TestDataFactory.androidDevice()
+        val sourceRandomDeviceId = device.randomDeviceId
+        val deviceKey = enrollUsageFixture(studyId, participant.participantId, device).replay.proposedApiKey
+        val mapper = ObjectMappers.getJsonMapper()
+        val http = HttpClient.newHttpClient()
+        val questionnaireUri = URI("http://localhost:$testHttpPort/chronicle/v3/survey/$studyId/questionnaire")
+        val expectedActiveById = listOf(false, true, null).associate { active ->
+            val body = mapper.valueToTree<ObjectNode>(
+                questionnaire().copy(active = active ?: true, recurrenceRule = "FREQ=DAILY"),
+            )
+            if (active == null) body.remove("active")
+            val response = http.send(
+                HttpRequest.newBuilder(questionnaireUri)
+                    .header("Authorization", "Bearer ${activeFixtureToken(testUser1)}")
+                    .header(ParticipantFormAccessFilter.IDEMPOTENCY_HEADER, UUID.randomUUID().toString())
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            Assert.assertEquals(response.body(), 200, response.statusCode())
+            mapper.readValue(response.body(), UUID::class.java) to (active ?: true)
+        }
+        val storedActiveById = chronicleClient.surveyApi.getStudyQuestionnaires(studyId)
+            .associate { it.id to it.active }
+        val expectedScheduledIds = expectedActiveById.filterValues { it }.keys
+        val reminderUri = URI(
+            "http://localhost:$testHttpPort/chronicle/v4/study/$studyId/participant/${participant.participantId}/reminders",
+        )
+        fun reminders(method: String) = http.send(
+            HttpRequest.newBuilder(reminderUri).header(API_KEY_HEADER, deviceKey)
+                .header("X-Chronicle-Random-Device-Id", sourceRandomDeviceId)
+                .method(method, HttpRequest.BodyPublishers.noBody()).build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+        // The schedule is a read; no request mints codes for reminders.
+        Assert.assertEquals(405, reminders("POST").statusCode())
+        val scheduledIdsByMethod = listOf("GET").associateWith { method ->
+            val response = reminders(method)
+            Assert.assertEquals(method, 200, response.statusCode())
+            val configuration = mapper.readValue(response.body(), MobileReminderConfiguration::class.java)
+            configuration.forms.filter { it.formKind == ParticipantFormKind.QUESTIONNAIRE }
+                .map { it.resourceId }.toSet()
+        }
+
+        Assert.assertEquals(expectedActiveById, storedActiveById)
+        scheduledIdsByMethod.forEach { (method, ids) -> Assert.assertEquals(method, expectedScheduledIds, ids) }
+    }
+
+    @Test
     fun testUpdateQuestionnaire() {
         val studyApi = chronicleClient.studyApi
         val surveyApi = chronicleClient.surveyApi
@@ -45,45 +113,35 @@ class QuestionnaireTests : ChronicleServerTests() {
         val questionnaire = questionnaire()
         val questionnaireId = surveyApi.createQuestionnaire(studyId, questionnaire)
 
-        val http = HttpClient.newHttpClient()
-        val resource = URI("http://localhost:$testHttpPort/chronicle/v3/survey/$studyId/questionnaire/$questionnaireId")
-        val token = activeFixtureToken(testUser1)
-        val loaded = http.send(
-            HttpRequest.newBuilder(resource).header("Authorization", "Bearer $token").GET().build(),
-            HttpResponse.BodyHandlers.ofString(),
-        )
-        Assert.assertEquals(loaded.body(), 200, loaded.statusCode())
-        val revision = loaded.headers().firstValue("ETag").orElseThrow()
-        val snapshot = ObjectMappers.getJsonMapper().readValue(loaded.body(), Questionnaire::class.java)
+        val loaded = chronicleClient.editRevisionApi.questionnaire(studyId, questionnaireId).execute()
+        Assert.assertEquals(HttpStatus.NO_CONTENT.value(), loaded.code())
+        val revision = requireNotNull(loaded.headers()[EditRevisionApi.ETAG])
+        val snapshot = surveyApi.getQuestionnaire(studyId, questionnaireId)
         Assert.assertEquals(questionnaire.questions, snapshot.questions)
 
         val update = QuestionnaireUpdate(
             title = "Updated Title",
             description = null,
-            recurrenceRule = RecurrenceRule("FREQ=DAILY;BYHOUR=19;BYMINUTE=0;BYSECOND=0").toString(),
+            recurrenceRule = Optional.of(RecurrenceRule("FREQ=DAILY;BYHOUR=19;BYMINUTE=0;BYSECOND=0").toString()),
             active = false,
             questions = null
         )
-        fun patch() = HttpRequest.newBuilder(resource)
-            .header("Authorization", "Bearer $token")
-            .header("Content-Type", "application/json")
-            .method("PATCH", HttpRequest.BodyPublishers.ofString(ObjectMappers.getJsonMapper().writeValueAsString(update)))
-        val missingRevision = http.send(patch().build(), HttpResponse.BodyHandlers.ofString())
-        Assert.assertEquals(missingRevision.body(), 428, missingRevision.statusCode())
-        val saved = http.send(patch().header("If-Match", revision).build(), HttpResponse.BodyHandlers.ofString())
-        Assert.assertEquals(saved.body(), 200, saved.statusCode())
+        surveyApi.updateQuestionnaire(studyId, questionnaireId, update, revision)
+        assertHttpStatus(HttpStatus.PRECONDITION_FAILED) {
+            surveyApi.updateQuestionnaire(studyId, questionnaireId, update, revision)
+        }
         val updated = surveyApi.getQuestionnaire(studyId, questionnaireId)
 
          Assert.assertEquals( update.title, updated.title)
         //description field in update object, therefore description shouldn't be updated
         Assert.assertEquals(updated.description, questionnaire.description)
-        Assert.assertEquals(updated.recurrenceRule, update.recurrenceRule)
+        Assert.assertEquals(update.recurrenceRule?.orElse(null), updated.recurrenceRule)
         Assert.assertEquals(updated.active, update.active)
         Assert.assertEquals(updated.questions, questionnaire.questions) //questions field in update object is null, so questions shouldn't be updated
 
     }
 
-    @Test(expected = Exception::class)
+    @Test
     fun testDeleteQuestionnaire() {
         val studyApi = chronicleClient.studyApi
         val surveyApi = chronicleClient.surveyApi
@@ -93,7 +151,9 @@ class QuestionnaireTests : ChronicleServerTests() {
         val questionnaireId = surveyApi.createQuestionnaire(studyId, questionnaire)
 
         surveyApi.deleteQuestionnaire(studyId, questionnaireId)
-        surveyApi.getQuestionnaire(studyId, questionnaireId)
+        assertHttpStatus(HttpStatus.NOT_FOUND) {
+            surveyApi.getQuestionnaire(studyId, questionnaireId)
+        }
     }
 
     @Test
@@ -111,57 +171,39 @@ class QuestionnaireTests : ChronicleServerTests() {
     }
 
 
+
+
     @Test
-    fun testLegacyGetQuestionnaires() {
-        val studyApi = chronicleClient.studyApi
-        val surveyApi = chronicleClient.surveyApi
-        val legacyStudyApi = chronicleClient.legacyChronicleStudyApi
-
-        val studyId = studyApi.createStudy(TestDataFactory.study())
-        val questionnaire = questionnaire()
-        questionnaire.recurrenceRule = RecurrenceRule("FREQ=DAILY;BYHOUR=19;BYMINUTE=0;BYSECOND=0").toString()
-        val questionnaireId = surveyApi.createQuestionnaire(studyId, questionnaire)
-
-        val v3Questionnaire = surveyApi.getQuestionnaire(studyId, questionnaireId)
-        val legacyQuestionnaires = legacyStudyApi.getStudyQuestionnaires(studyId)
-
-        Assert.assertEquals(legacyQuestionnaires.size, 1)
-        Assert.assertEquals(legacyQuestionnaires.keys.first(), questionnaireId)
-
-        val legacyQuestionnaire = legacyQuestionnaires.getValue(questionnaireId)
-        Assert.assertEquals(legacyQuestionnaire.getValue(EdmConstants.NAME_FQN).iterator().next().toString(), v3Questionnaire.title)
-        Assert.assertEquals(legacyQuestionnaire.getValue(EdmConstants.DESCRIPTION_FQN).iterator().next().toString(), v3Questionnaire.description)
-        Assert.assertEquals(legacyQuestionnaire.getValue(EdmConstants.ACTIVE_FQN).iterator().next() as Boolean, v3Questionnaire.active)
-        Assert.assertEquals(legacyQuestionnaire.getValue(EdmConstants.RRULE_FQN).iterator().next().toString(), v3Questionnaire.recurrenceRule)
-    }
-
-    @Test(expected = Exception::class)
     fun testDuplicateQuestionsShouldThrow() {
-        Questionnaire(
-            id = null,
-            title = "Bad questionnaire",
-            description = "Questionnaire with duplicate titles",
-            recurrenceRule = null,
-            active = false,
-            questions = listOf(
-                Question("title1"),
-                Question("title1")
-            ),
-            dateCreated = null
-        )
+        assertThrows(Exception::class.java) {
+            Questionnaire(
+                id = null,
+                title = "Bad questionnaire",
+                description = "Questionnaire with duplicate titles",
+                recurrenceRule = null,
+                active = false,
+                questions = listOf(
+                    Question("title1"),
+                    Question("title1")
+                ),
+                dateCreated = null
+            )
+        }
     }
 
-    @Test(expected = Exception::class)
+    @Test
     fun testEmptyQuestionsListShouldThrow(){
-        Questionnaire(
-            id = null,
-            title = "Bad questionnaire",
-            description = "Questionnaire with no questions",
-            recurrenceRule = null,
-            active = false,
-            questions = listOf(),
-            dateCreated = null
-        )
+        assertThrows(Exception::class.java) {
+            Questionnaire(
+                id = null,
+                title = "Bad questionnaire",
+                description = "Questionnaire with no questions",
+                recurrenceRule = null,
+                active = false,
+                questions = listOf(),
+                dateCreated = null
+            )
+        }
     }
 
     @Test

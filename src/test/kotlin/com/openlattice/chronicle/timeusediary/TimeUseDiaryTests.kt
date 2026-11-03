@@ -1,8 +1,11 @@
 package com.openlattice.chronicle.timeusediary
 
+import org.junit.Assert.assertThrows
+
 import com.geekbeast.retrofit.RhizomeRetrofitCallException
 import com.openlattice.chronicle.ChronicleServerTests
 import com.openlattice.chronicle.data.ParticipationStatus
+import com.openlattice.chronicle.storage.rls.RLSDataSources
 import com.openlattice.chronicle.util.tests.TestDataFactory
 import org.junit.Assert
 import org.junit.Test
@@ -97,7 +100,7 @@ class TimeUseDiaryTests : ChronicleServerTests() {
             studyId, participantId, TestDataFactory.timeUseDiaryResponses()
         )
         val end = OffsetDateTime.parse("2026-10-02T00:00:00Z")
-        hds.connection.use { connection ->
+        RLSDataSources.bootstrapStorage(hds).connection.use { connection ->
             connection.prepareStatement("UPDATE time_use_diary_submissions SET submission_date = ? WHERE submission_id = ?").use {
                 it.setObject(1, end)
                 it.setObject(2, submissionId)
@@ -112,10 +115,12 @@ class TimeUseDiaryTests : ChronicleServerTests() {
         Assert.assertTrue(nextDay.values.any { submissionId in it })
     }
 
-    @Test(expected = RhizomeRetrofitCallException::class)
+    @Test
     fun testSubmitInvalidStudy() {
-        clientUser1.testTimeUseDiaryApi.submitTimeUseDiary(
-            UUID.randomUUID(), "nonexistent", TestDataFactory.timeUseDiaryResponses()
-        )
+        assertThrows(RhizomeRetrofitCallException::class.java) {
+            clientUser1.testTimeUseDiaryApi.submitTimeUseDiary(
+                UUID.randomUUID(), "nonexistent", TestDataFactory.timeUseDiaryResponses()
+            )
+        }
     }
 }

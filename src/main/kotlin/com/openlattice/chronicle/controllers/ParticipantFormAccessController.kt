@@ -1,14 +1,15 @@
 package com.openlattice.chronicle.controllers
 
-import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.audit.logWithContext
 import com.openlattice.chronicle.auditing.AuditingManager
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
+import com.openlattice.chronicle.configuration.CookiePolicy
+import com.openlattice.chronicle.configuration.CookiePurpose
 import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
 import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.filters.ApiKeyAuthenticationToken
@@ -22,6 +23,7 @@ import com.openlattice.chronicle.participantaccess.ParticipantFormSessionRespons
 import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessService
 import com.openlattice.chronicle.services.participantaccess.ParticipantAccessCodeIssuerType
+import com.openlattice.chronicle.services.studies.ParticipantCollectionAcknowledgmentService
 import com.openlattice.chronicle.services.studies.StudyManager
 import com.openlattice.chronicle.study.StudyParticipantPolicy
 import com.openlattice.chronicle.study.StudySetting
@@ -29,29 +31,64 @@ import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.validateParticipantId
 import jakarta.servlet.http.HttpServletResponse
+import jakarta.servlet.http.HttpServletRequest
 import jakarta.validation.Valid
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
-import org.springframework.http.ResponseCookie
 import org.springframework.security.core.Authentication
 import org.springframework.web.bind.annotation.PathVariable
+import org.springframework.web.bind.annotation.CookieValue
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.ResponseStatus
 import org.springframework.web.bind.annotation.RestController
 import org.springframework.web.server.ResponseStatusException
 import java.time.Duration
+import java.time.OffsetDateTime
 import java.util.UUID
 
 @RestController
-@RateLimit(type = RateLimitType.WRITE, keyStrategy = RateLimitKeyStrategy.STUDY)
 public open class ParticipantFormAccessController(
     private val participantFormAccessService: ParticipantFormAccessService,
     private val enrollmentManager: EnrollmentManager,
     private val studyManager: StudyManager,
+    private val participantCollectionAcknowledgmentService: ParticipantCollectionAcknowledgmentService,
     private val auditService: AuditService,
     override val authorizationManager: AuthorizationManager,
     override val auditingManager: AuditingManager,
+    private val cookiePolicy: CookiePolicy,
 ) : AuthorizingComponent {
+    @GetMapping(path = [
+        "/v3/study/{studyId}/pending-enrollments",
+        "/chronicle/v3/study/{studyId}/pending-enrollments",
+    ])
+    public fun getPendingEnrollments(
+        @PathVariable studyId: UUID,
+        @org.springframework.web.bind.annotation.RequestParam(defaultValue = "100") limit: Int = 100,
+        @org.springframework.web.bind.annotation.RequestParam(defaultValue = "0") offset: Int = 0,
+    ): List<String> {
+        ensureReadAccess(AclKey(studyId))
+        return participantFormAccessService.getPendingEnrollments(studyId, limit, offset)
+    }
+
+    @GetMapping(path = ["/v3/study/{studyId}/settings/locks", "/chronicle/v3/study/{studyId}/settings/locks"])
+    public fun getSettingLocks(@PathVariable studyId: UUID): List<StudySettingType> {
+        ensureReadAccess(AclKey(studyId))
+        return participantFormAccessService.getSettingLocks(studyId)
+    }
+
+    @PostMapping(path = [
+        "/v3/study/{studyId}/participant/{participantId}/pending-enrollment/cancel",
+        "/chronicle/v3/study/{studyId}/participant/{participantId}/pending-enrollment/cancel",
+    ])
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public fun cancelPendingEnrollment(@PathVariable studyId: UUID, @PathVariable participantId: String) {
+        ensureWriteAccess(AclKey(studyId))
+        validateParticipantId(participantId)
+        participantFormAccessService.cancelPendingEnrollment(studyId, participantId)
+    }
+
     @PostMapping(
         path = [
             "/v3/study/{studyId}/participant/{participantId}/form-access-codes",
@@ -72,7 +109,7 @@ public open class ParticipantFormAccessController(
             throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.enrollment.participantNotRegistered"))
         }
 
-        val (issuerType, issuedBy) = if (authentication is ApiKeyAuthenticationToken) {
+        val issuer = if (authentication is ApiKeyAuthenticationToken) {
             if (authentication.studyId != studyId || authentication.participantId != participantId) {
                 throw ResponseStatusException(HttpStatus.FORBIDDEN, Messages.get("error.enrollment.deviceNotBound"))
             }
@@ -84,28 +121,28 @@ public open class ParticipantFormAccessController(
             if (enrollmentManager.getDeviceParticipationStatus(studyId, participantId) != ParticipationStatus.ENROLLED) {
                 throw ResponseStatusException(HttpStatus.FORBIDDEN, Messages.get("error.enrollment.notEnrolled"))
             }
-            ParticipantAccessCodeIssuerType.DEVICE to "device:${authentication.keyId}"
+            if (authentication.randomDeviceId?.let {
+                    participantCollectionAcknowledgmentService.isCollectionHalted(studyId, participantId, it)
+                } != false
+            ) {
+                throw ResponseStatusException(HttpStatus.FORBIDDEN, Messages.get("error.enrollment.collectionHalted"))
+            }
+            FormCodeIssuer(ParticipantAccessCodeIssuerType.DEVICE, "device:${authentication.keyId}")
         } else {
             ensureWriteAccess(AclKey(studyId))
-            ParticipantAccessCodeIssuerType.RESEARCHER to authentication.name
+            FormCodeIssuer(ParticipantAccessCodeIssuerType.RESEARCHER, authentication.name)
         }
 
         val accessCodeResponse = try {
-            val issue = if (issuerType == ParticipantAccessCodeIssuerType.RESEARCHER &&
-                request.formKind == ParticipantFormKind.ENROLLMENT) {
-                participantFormAccessService::createReplacingAccessCode
-            } else {
-                participantFormAccessService::createAccessCode
-            }
-            issue(
+            participantFormAccessService.createAccessCode(
                 studyId, participantId, request.formKind, request.resourceId, request.logicalDate,
-                request.expiresAt, issuerType, issuedBy,
+                request.expiresAt, issuer.type, issuer.id,
             )
         } catch (exception: IllegalArgumentException) {
             throw ResponseStatusException(HttpStatus.BAD_REQUEST, exception.message, exception)
         }
         auditService.logWithContext {
-            action(AuditAction.CREATE)
+            action(AuditEventType.CREATE)
             resourceType("ParticipantFormAccessCode")
             studyId(studyId)
             success(true)
@@ -113,7 +150,7 @@ public open class ParticipantFormAccessController(
                 mapOf(
                     "participantRef" to LogSanitizer.stableFingerprint(participantId, "participant"),
                     "formKind" to request.formKind.name,
-                    "issuerType" to issuerType.name,
+                    "issuerType" to issuer.type.name,
                 )
             )
         }
@@ -122,6 +159,51 @@ public open class ParticipantFormAccessController(
         return accessCodeResponse
     }
 
+    /**
+     * The enrollment link already sent to this participant, for the QR dialog to show again. 404 when there is
+     * none; issuing a new one is the explicit POST to form-access-codes, which replaces the sent link.
+     */
+    @GetMapping(path = [
+        "/v3/study/{studyId}/participant/{participantId}/enrollment-code",
+        "/chronicle/v3/study/{studyId}/participant/{participantId}/enrollment-code",
+    ])
+    public fun getLiveEnrollmentCode(
+        @PathVariable studyId: UUID,
+        @PathVariable participantId: String,
+        response: HttpServletResponse,
+    ): ParticipantFormAccessCodeResponse {
+        ensureWriteAccess(AclKey(studyId))
+        validateParticipantId(participantId)
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store")
+        response.setHeader("Pragma", "no-cache")
+        val live = participantFormAccessService.liveEnrollmentInvitation(studyId, participantId)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND)
+        auditService.logWithContext {
+            action(AuditEventType.VIEW)
+            resourceType("ParticipantFormAccessCode")
+            studyId(studyId)
+            success(true)
+            additionalData(mapOf(
+                "participantRef" to LogSanitizer.stableFingerprint(participantId, "participant"),
+                "formKind" to ParticipantFormKind.ENROLLMENT.name,
+            ))
+        }
+        return live
+    }
+
+    @RateLimit(type = RateLimitType.WRITE)
+    @GetMapping(path = ["/chronicle/v3/participant-access/session", "/v3/participant-access/session"])
+    public fun recoverSession(
+        @CookieValue(name = ParticipantFormAccessFilter.SESSION_COOKIE, required = false) token: String?,
+        response: HttpServletResponse,
+    ): ParticipantFormSessionResponse {
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store")
+        val context = token?.let(participantFormAccessService::recoverSession)
+            ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED)
+        return withPolicyLinks(context)
+    }
+
+    @RateLimit(type = RateLimitType.WRITE)
     @PostMapping(
         path = [
             "/chronicle/v3/participant-access/exchange",
@@ -131,38 +213,39 @@ public open class ParticipantFormAccessController(
     public fun exchangeAccessCode(
         @Valid @RequestBody request: ExchangeParticipantFormAccessCodeRequest,
         response: HttpServletResponse,
+        servletRequest: HttpServletRequest? = null,
     ): ParticipantFormSessionResponse {
-        val exchanged = participantFormAccessService.exchangeAccessCode(request.accessCode)
+        val exchanged = participantFormAccessService.exchangeAccessCode(request.accessCode, request.attemptId)
             ?: throw ResponseStatusException(HttpStatus.UNAUTHORIZED, Messages.get("error.form.accessCodeInvalid"))
 
-        val cookie = ResponseCookie.from(
-            ParticipantFormAccessFilter.SESSION_COOKIE,
-            exchanged.rawSessionToken,
+        cookiePolicy.addCookie(
+            response = response,
+            request = servletRequest,
+            purpose = CookiePurpose.PARTICIPANT_SESSION,
+            name = ParticipantFormAccessFilter.SESSION_COOKIE,
+            value = exchanged.rawSessionToken,
+            maxAge = Duration.between(OffsetDateTime.now(), exchanged.response.expiresAt)
+                .coerceAtLeast(Duration.ZERO),
         )
-            .httpOnly(true)
-            .secure(true)
-            .sameSite("Strict")
-            .path("/")
-            .maxAge(Duration.between(java.time.OffsetDateTime.now(), exchanged.response.expiresAt).coerceAtLeast(Duration.ZERO))
-            .build()
-        response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString())
         response.setHeader(HttpHeaders.CACHE_CONTROL, "no-store")
         response.setHeader("Pragma", "no-cache")
         auditService.logWithContext {
-            action(AuditAction.CREATE)
+            action(AuditEventType.CREATE)
             resourceType("ParticipantFormSession")
             studyId(exchanged.response.studyId)
             success(true)
             additionalData(mapOf("formKind" to exchanged.response.formKind.name))
         }
-        // The session is committed by now; a study that vanished since the code was issued
-        // only costs the footer links, never the participant's form.
+        return withPolicyLinks(exchanged.response)
+    }
+
+    private fun withPolicyLinks(context: ParticipantFormSessionResponse): ParticipantFormSessionResponse {
         val settings = try {
-            studyManager.getStudySettings(exchanged.response.studyId)
+            studyManager.getStudySettings(context.studyId)
         } catch (_: NoSuchElementException) {
             emptyMap()
         }
-        return exchanged.response.withPolicyLinks(settings)
+        return context.withPolicyLinks(settings)
     }
 }
 
@@ -173,3 +256,5 @@ internal fun ParticipantFormSessionResponse.withPolicyLinks(
     val policy = settings[StudySettingType.ParticipantPolicy] as? StudyParticipantPolicy ?: return this
     return copy(privacyPolicyUrl = policy.privacyPolicyUrl, withdrawalUrl = policy.withdrawalUrl)
 }
+
+private data class FormCodeIssuer(val type: ParticipantAccessCodeIssuerType, val id: String)

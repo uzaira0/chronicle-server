@@ -1,65 +1,70 @@
 package com.openlattice.chronicle.controllers
 
+
+import com.openlattice.chronicle.storage.withTransaction
 import com.codahale.metrics.annotation.Timed
+import com.geekbeast.controllers.exceptions.ForbiddenException
 import com.google.common.base.MoreObjects
-import com.openlattice.chronicle.audit.AuditAction
+import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.audit.AuditService
 import com.openlattice.chronicle.audit.logWithContext
-import com.openlattice.chronicle.auditing.AuditEventType
 import com.openlattice.chronicle.auditing.AuditableEvent
 import com.openlattice.chronicle.auditing.AuditedTransactionBuilder
 import com.openlattice.chronicle.auditing.AuditingManager
-import com.openlattice.chronicle.configuration.RateLimit
-import com.openlattice.chronicle.configuration.RateLimitKeyStrategy
-import com.openlattice.chronicle.configuration.RateLimitType
 import com.openlattice.chronicle.authorization.AclKey
 import com.openlattice.chronicle.authorization.AuthorizationManager
 import com.openlattice.chronicle.authorization.AuthorizingComponent
 import com.openlattice.chronicle.authorization.Permission
 import com.openlattice.chronicle.authorization.principals.Principals
 import com.openlattice.chronicle.data.FileType
+import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
+import com.openlattice.chronicle.generated.SynchronousExportBounds
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
-import com.openlattice.chronicle.services.studies.StudyService
-import com.openlattice.chronicle.services.enrollment.EnrollmentManager
-import com.openlattice.chronicle.filters.ParticipantFormAccessFilter
 import com.openlattice.chronicle.participantaccess.ParticipantFormKind
-import com.openlattice.chronicle.services.timeusediary.TimeUseDiaryService
+import com.openlattice.chronicle.services.enrollment.EnrollmentManager
 import com.openlattice.chronicle.services.participantaccess.IdempotentSubmissionResult
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormAccessScope
 import com.openlattice.chronicle.services.participantaccess.ParticipantFormSubmissionReceiptService
+import com.openlattice.chronicle.services.participantaccess.ParticipantFormWindow
+import com.openlattice.chronicle.services.participantaccess.SubmissionReceiptScope
+import com.openlattice.chronicle.services.studies.StudyService
+import com.openlattice.chronicle.services.studies.requireStudyId
+import com.openlattice.chronicle.services.timeusediary.TimeUseDiaryService
+import com.openlattice.chronicle.storage.PinnedPlatformConnection
 import com.openlattice.chronicle.storage.StorageResolver
+import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.CONTROLLER
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.DATA_PATH
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.DATA_TYPE
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.END_DATE
-import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.FILE_NAME
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.IDS_PATH
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.PARTICIPANTS_PATH
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.PARTICIPANT_ID
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.PARTICIPANT_ID_PATH
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.PARTICIPANT_PATH
-import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.START_DATE
-import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.TIME_ZONE
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.SETTINGS_PATH
+import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.START_DATE
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.STUDY_ID
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.STUDY_ID_PATH
+import com.openlattice.chronicle.timeusediary.TimeUseDiaryApi.Companion.TIME_ZONE
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryDownloadDataType
 import com.openlattice.chronicle.timeusediary.TimeUseDiaryResponse
 import com.openlattice.chronicle.timeusediary.TimeUseDiarySettings
 import com.openlattice.chronicle.timeusediary.TimeUseDiarySettingsResponse
-import com.openlattice.chronicle.study.StudySettingType
 import com.openlattice.chronicle.util.ChronicleServerUtil
 import com.openlattice.chronicle.util.LogSanitizer
 import com.openlattice.chronicle.util.validateParticipantId
+import jakarta.servlet.http.HttpServletResponse
 import jakarta.validation.Valid
 import jakarta.validation.constraints.Size
 import org.slf4j.LoggerFactory
 import org.springframework.format.annotation.DateTimeFormat
-import org.springframework.http.MediaType
 import org.springframework.http.HttpStatus
-import org.springframework.validation.annotation.Validated
+import org.springframework.http.MediaType
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.ModelAttribute
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -71,7 +76,6 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.*
-import jakarta.servlet.http.HttpServletResponse
 
 /**
  * @author Andrew Carter andrew@openlattice.com
@@ -79,8 +83,6 @@ import jakarta.servlet.http.HttpServletResponse
 
 @RestController
 @RequestMapping(CONTROLLER)
-@Validated
-@RateLimit(type = RateLimitType.READ, keyStrategy = RateLimitKeyStrategy.STUDY)
 public open class TimeUseDiaryController(
     override val authorizationManager: AuthorizationManager,
     override val auditingManager: AuditingManager,
@@ -110,8 +112,7 @@ public open class TimeUseDiaryController(
         @PathVariable(PARTICIPANT_ID) participantId: String,
         @Valid @RequestBody @Size(max = 10_000) responses: List<TimeUseDiaryResponse>
     ): UUID {
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
+        val realStudyId = studyService.requireStudyId(studyId)
         validateParticipantId(participantId)
         if (!enrollmentManager.isKnownParticipant(realStudyId, participantId)) {
             throw ResponseStatusException(HttpStatus.NOT_FOUND, Messages.get("error.enrollment.participantNotRegistered"))
@@ -124,10 +125,8 @@ public open class TimeUseDiaryController(
                 ensureWriteAccess(AclKey(realStudyId))
                 IdempotentSubmissionResult(
                     storageResolver.getPlatformStorage().connection.use { conn ->
-                        val previousAutoCommit = conn.autoCommit
-                        conn.autoCommit = false
-                        try {
-                            com.openlattice.chronicle.storage.PinnedPlatformConnection.committing(storageResolver.getPlatformStorage(), conn) {
+                        conn.withTransaction {
+                            PinnedPlatformConnection.committing(storageResolver.getPlatformStorage(), conn) {
                                 storageResolver.getPlatformStorage().connection.use { borrowed ->
                                     AuditedTransactionBuilder<UUID>(borrowed, auditingManager)
                                         .transaction { connection ->
@@ -137,23 +136,21 @@ public open class TimeUseDiaryController(
                                         .buildAndRun()
                                 }
                             }
-                        } catch (failure: Exception) {
-                            conn.rollback()
-                            throw failure
-                        } finally {
-                            conn.autoCommit = previousAutoCommit
                         }
                     },
                     replayed = false,
                 )
             } else {
+                requireDiaryDateScope(participantScope, realStudyId, participantId, responses)
                 participantFormSubmissionReceiptService.executeWithSubmissionId(
-                    scope = participantScope,
-                    formKind = ParticipantFormKind.TIME_USE_DIARY,
-                    resourceKey = "time-use-diary:${participantScope.logicalDate ?: "unspecified"}",
-                    idempotencyKey = requireNotNull(ParticipantFormAccessFilter.currentIdempotencyKey()) {
-                        "Participant idempotency key was not established by the access filter"
-                    },
+                    receiptScope = SubmissionReceiptScope(
+                        participant = participantScope,
+                        formKind = ParticipantFormKind.TIME_USE_DIARY,
+                        resourceKey = ParticipantFormKind.TIME_USE_DIARY.dailySubmissionResourceKey(
+                            ParticipantFormAccessFilter.requireSubmissionDate(),
+                        ),
+                        idempotencyKey = ParticipantFormAccessFilter.requireIdempotencyKey(),
+                    ),
                     payload = responses,
                 ) { connection ->
                     timeUseDiaryService.submitTimeUseDiary(connection, realStudyId, participantId, responses)
@@ -161,10 +158,10 @@ public open class TimeUseDiaryController(
             }
             val submissionId = submissionResult.value
             if (participantScope != null && !submissionResult.replayed) {
-                recordEvent(tudSubmissionEvent(realStudyId, participantId, submissionId))
+                recordCommittedEvent(tudSubmissionEvent(realStudyId, participantId, submissionId))
             }
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("TimeUseDiary")
                 resourceId(submissionId)
                 studyId(realStudyId)
@@ -181,14 +178,30 @@ public open class TimeUseDiaryController(
             submissionId
         } catch (ex: Exception) {
             auditService.logWithContext {
-                action(AuditAction.DATA_SUBMISSION)
+                action(AuditEventType.DATA_SUBMISSION)
                 resourceType("TimeUseDiary")
                 studyId(realStudyId)
-                failed(ex.message ?: "TUD submission failed")
+                success(false)
                 additionalData(mapOf("participantRef" to LogSanitizer.stableFingerprint(participantId, "participant")))
             }
             throw ex
         }
+    }
+
+    private fun requireDiaryDateScope(
+        scope: ParticipantFormAccessScope,
+        studyId: UUID,
+        participantId: String,
+        responses: List<TimeUseDiaryResponse>,
+    ) {
+        val outsideScope = responses.any { response ->
+            val start = response.startDateTime ?: response.endDateTime
+            start != null && !scope.permits(
+                ParticipantFormKind.TIME_USE_DIARY, studyId, participantId, null,
+                window = ParticipantFormWindow(start, response.endDateTime ?: start),
+            )
+        }
+        if (outsideScope) throw ForbiddenException(Messages.get(ParticipantFormAccessFilter.INVALID_SESSION_MESSAGE_KEY))
     }
 
     private fun tudSubmissionEvent(studyId: UUID, participantId: String, submissionId: UUID): AuditableEvent =
@@ -210,19 +223,12 @@ public open class TimeUseDiaryController(
     override fun getTimeUseDiarySettings(
         @PathVariable(STUDY_ID) studyId: UUID,
     ): TimeUseDiarySettingsResponse {
-        // Participant-readable: the `/chronicle/v3/time-use-diary/**` GET tree is permitAll, so a
-        // participant (no authenticated principal) can read the study's diary variant settings.
-        // Study-scoped and RLS-enforced via getStudyId; returns only the non-sensitive variant
-        // flags (OSU/Sherbrooke/clock/locale) the web form needs to honor the configured
-        // instrument rather than relying on URL params. Mirrors submitTimeUseDiary's auth pattern.
-        val realStudyId = studyService.getStudyId(studyId)
-        checkNotNull(realStudyId) { "invalid study id" }
-        // Study.kt seeds a default TimeUseDiarySettings() for every study, so the cast normally
-        // holds; the fallback keeps a missing/legacy setting from throwing on an anonymous read.
+        ensureParticipantInstrumentRead(studyId, ParticipantFormKind.TIME_USE_DIARY)
+        val realStudyId = studyService.requireStudyId(studyId)
         val settings = studyService.getStudySettings(realStudyId)[StudySettingType.TimeUseDiary]
             as? TimeUseDiarySettings ?: TimeUseDiarySettings()
         auditService.logWithContext {
-            action(AuditAction.VIEW)
+            action(AuditEventType.VIEW)
             resourceType("TimeUseDiarySettings")
             studyId(realStudyId)
             success(true)
@@ -247,6 +253,7 @@ public open class TimeUseDiaryController(
             studyId,
             participantId,
             null,
+            window = ParticipantFormWindow(startDateTime, endDateTime),
         ) == true
         if (!participantAccess) {
             accessCheck(AclKey(studyId), EnumSet.of(Permission.READ))
@@ -262,7 +269,7 @@ public open class TimeUseDiaryController(
             startDateTime,
             endDateTime
         )
-        recordEvent(
+        recordReadEvent(
             AuditableEvent(
                 AclKey(studyId),
                 if (participantAccess) Principals.getAnonymousSecurablePrincipal().id
@@ -275,7 +282,7 @@ public open class TimeUseDiaryController(
             )
         )
         auditService.logWithContext {
-            action(AuditAction.PARTICIPANT_DATA_ACCESS)
+            action(AuditEventType.PARTICIPANT_DATA_ACCESS)
             resourceType("TimeUseDiary")
             studyId(studyId)
             success(true)
@@ -309,7 +316,7 @@ public open class TimeUseDiaryController(
             endDateTime,
             zone,
         )
-        recordEvent(
+        recordReadEvent(
             AuditableEvent(
                 AclKey(studyId),
                 eventType = AuditEventType.GET_TIME_USE_DIARY_SUBMISSION,
@@ -318,7 +325,7 @@ public open class TimeUseDiaryController(
             )
         )
         auditService.logWithContext {
-            action(AuditAction.LIST)
+            action(AuditEventType.LIST)
             resourceType("TimeUseDiary")
             studyId(studyId)
             success(true)
@@ -344,7 +351,7 @@ public open class TimeUseDiaryController(
             endDateTime
         )
         auditService.logWithContext {
-            action(AuditAction.DOWNLOAD)
+            action(AuditEventType.DOWNLOAD)
             resourceType("TimeUseDiary")
             studyId(studyId)
             success(true)
@@ -362,24 +369,18 @@ public open class TimeUseDiaryController(
     )
     public fun getStudyTUDSubmissions(
         @PathVariable(STUDY_ID) studyId: UUID,
-        @RequestParam(DATA_TYPE) dataType: TimeUseDiaryDownloadDataType,
-        @RequestParam(START_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) startDateTime: OffsetDateTime,
-        @RequestParam(END_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) endDateTime: OffsetDateTime,
+        @ModelAttribute request: TimeUseDiaryStudyExportRequest,
         response: HttpServletResponse
     ): Iterable<List<Map<String, Any>>> {
-        val data = getStudyTUDSubmissions(
-            studyId,
-            dataType,
-            startDateTime,
-            endDateTime
-        )
+        val dataType = request.dataType
+        val data = getStudyTUDSubmissions(studyId, dataType, request.startDate, request.endDate)
 
         val filename = "TimeUseDiary_${dataType}_${LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)}.csv"
 
         ChronicleServerUtil.setDownloadContentType(response, FileType.csv)
         ChronicleServerUtil.setContentDisposition(response, filename, FileType.csv)
 
-        recordEvent(
+        recordReadEvent(
             AuditableEvent(
                 aclKey = AclKey(studyId),
                 securablePrincipalId = Principals.getCurrentSecurablePrincipal().id,
@@ -392,6 +393,18 @@ public open class TimeUseDiaryController(
 
         return data
     }
+
+    /** Browser form POST of [getStudyTUDSubmissions]; the token resolver checks its CSRF form field. */
+    @Timed
+    @PostMapping(
+        path = [STUDY_ID_PATH + DATA_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE]
+    )
+    public fun postStudyTUDSubmissions(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @ModelAttribute request: TimeUseDiaryStudyExportRequest,
+        response: HttpServletResponse
+    ): Iterable<List<Map<String, Any>>> = getStudyTUDSubmissions(studyId, request, response)
 
     override fun getParticipantsTudSubmissions(
         studyId: UUID,
@@ -409,7 +422,7 @@ public open class TimeUseDiaryController(
             endDateTime
         )
         auditService.logWithContext {
-            action(AuditAction.DOWNLOAD)
+            action(AuditEventType.DOWNLOAD)
             resourceType("TimeUseDiary")
             studyId(studyId)
             success(true)
@@ -425,20 +438,17 @@ public open class TimeUseDiaryController(
         path = [STUDY_ID_PATH + PARTICIPANTS_PATH + DATA_PATH],
         produces = [MediaType.APPLICATION_JSON_VALUE]
     )
-    @RateLimit(type = RateLimitType.SENSITIVE, keyStrategy = RateLimitKeyStrategy.STUDY)
     public fun getParticipantsTudSubmissions(
         @PathVariable(STUDY_ID) studyId: UUID,
-        @RequestParam(PARTICIPANT_ID) @Size(max = SynchronousExportLimits.MAX_PARTICIPANTS) participantIds: Set<String>,
-        @RequestParam(DATA_TYPE) dataType: TimeUseDiaryDownloadDataType,
-        @RequestParam(START_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) startDateTime: OffsetDateTime?,
-        @RequestParam(END_DATE) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) endDateTime: OffsetDateTime?,
-        @RequestParam(FILE_NAME) @Size(max = 64) fileName: String?,
+        @Valid @ModelAttribute request: TimeUseDiaryParticipantsExportRequest,
         response: HttpServletResponse
     ): Iterable<List<Map<String, Any>>> {
+        val participantIds = request.participantId
+        val dataType = request.dataType
         val (boundedStart, boundedEnd) = SynchronousExportLimits.validate(
             participantIds,
-            startDateTime,
-            endDateTime,
+            request.startDate,
+            request.endDate,
         )
         val data = getParticipantsTudSubmissions(
             studyId,
@@ -449,11 +459,14 @@ public open class TimeUseDiaryController(
         )
 
         ChronicleServerUtil.setDownloadContentType(response, FileType.csv)
+        val defaultFileName = "TimeUseDiary_${dataType}_${LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)}"
         ChronicleServerUtil.setContentDisposition(
             response,
-            MoreObjects.firstNonNull(fileName, "TimeUseDiary_${dataType}_${LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE)}"), FileType.csv)
+            MoreObjects.firstNonNull(request.fileName, defaultFileName),
+            FileType.csv,
+        )
 
-        recordEvent(
+        recordReadEvent(
             AuditableEvent(
                 aclKey = AclKey(studyId),
                 securablePrincipalId = Principals.getCurrentSecurablePrincipal().id,
@@ -466,4 +479,37 @@ public open class TimeUseDiaryController(
 
         return data
     }
+
+    /** Browser form POST of [getParticipantsTudSubmissions]; the token resolver checks its CSRF form field. */
+    @Timed
+    @PostMapping(
+        path = [STUDY_ID_PATH + PARTICIPANTS_PATH + DATA_PATH],
+        produces = [MediaType.APPLICATION_JSON_VALUE]
+    )
+    public fun postParticipantsTudSubmissions(
+        @PathVariable(STUDY_ID) studyId: UUID,
+        @Valid @ModelAttribute request: TimeUseDiaryParticipantsExportRequest,
+        response: HttpServletResponse
+    ): Iterable<List<Map<String, Any>>> = getParticipantsTudSubmissions(studyId, request, response)
 }
+
+/** Query parameters for a whole-study time use diary download. */
+public data class TimeUseDiaryStudyExportRequest(
+    val dataType: TimeUseDiaryDownloadDataType,
+    @param:DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    val startDate: OffsetDateTime,
+    @param:DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    val endDate: OffsetDateTime,
+)
+
+/** Query parameters for a selected-participants time use diary download. */
+public data class TimeUseDiaryParticipantsExportRequest(
+    val dataType: TimeUseDiaryDownloadDataType,
+    val participantId: Set<String>,
+    @param:DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    val startDate: OffsetDateTime? = null,
+    @param:DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    val endDate: OffsetDateTime? = null,
+    @field:Size(max = SynchronousExportBounds.SYNC_EXPORT_MAX_FILENAME_CHARS)
+    val fileName: String? = null,
+)
