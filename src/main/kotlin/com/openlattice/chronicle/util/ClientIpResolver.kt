@@ -17,7 +17,7 @@ public object ClientIpResolver {
     private val ipLiteralPattern = Regex("^[0-9a-fA-F:.]+$")
     private val trustedProxyRangeCache = ConcurrentHashMap<String, List<IpAddressMatcher>>()
 
-    /** The deployment's proxy subnets, comma separated; the selfhost bundle always sets it to its Compose subnet. */
+    /** The deployment's proxy subnets, comma separated; the selfhost bundle sets it to web's one address on its internal core network. */
     public const val TRUSTED_PROXY_CIDRS_ENV: String = "CHRONICLE_TRUSTED_PROXY_CIDRS"
 
     /**

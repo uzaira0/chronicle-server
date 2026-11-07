@@ -41,7 +41,7 @@ client-ip-header-fallback: "X-Real-IP"
 trust-proxy-headers: true
 # Trust only a reverse proxy on this host by default; this matches the server-wide
 # default in ClientIpResolver. A deployment names its own proxy subnet in
-# CHRONICLE_TRUSTED_PROXY_CIDRS (selfhost sets it to CHRONICLE_SUBNET), which
+# CHRONICLE_TRUSTED_PROXY_CIDRS (selfhost sets it to web's core address, CHRONICLE_CORE_PREFIX.2/32), which
 # replaces this list. Never use a broad private range such as 10.0.0.0/8 or 172.16.0.0/12.
 trusted-proxy-cidrs:
   - "127.0.0.0/8"
