@@ -28,6 +28,7 @@ import com.openlattice.chronicle.services.surveys.SurveysService
 import com.openlattice.chronicle.services.timeusediary.TimeUseDiaryService
 import com.openlattice.chronicle.services.twilio.TwilioService
 import com.openlattice.chronicle.services.twilio.TwilioWebhookSignatureVerifier
+import com.openlattice.chronicle.configuration.ChronicleConfiguration
 import com.openlattice.chronicle.services.webhooks.WebhookService
 import com.openlattice.chronicle.storage.StorageResolver
 import java.io.IOException
@@ -101,10 +102,12 @@ public open class StudyServicesPod(
 
     @Bean
     public fun webhookService(
+        chronicleConfiguration: ChronicleConfiguration,
     ): WebhookService {
         return WebhookService(
             storageResolver,
-            idGenerationService
+            idGenerationService,
+            settings = chronicleConfiguration.webhooks,
         )
     }
 

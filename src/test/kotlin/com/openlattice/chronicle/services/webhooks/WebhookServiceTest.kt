@@ -1,5 +1,6 @@
 package com.openlattice.chronicle.services.webhooks
 
+import com.openlattice.chronicle.configuration.WebhookConfiguration
 import com.openlattice.chronicle.controllers.kAnyString
 import com.openlattice.chronicle.data.ParticipationStatus
 import com.openlattice.chronicle.study.ParticipantDataType
@@ -107,6 +108,42 @@ class WebhookServiceTest {
     @Test
     fun testServiceConstructsSuccessfully() {
         assertNotNull(service)
+    }
+
+    /** Self-host: the backend has no route off the host, so webhooks are refused and never delivered. */
+    @Test
+    fun disabledWebhooksRefuseRegistrationWithTheReasonAndNeverDeliver() {
+        val disabled = WebhookService(storageResolver, idGenerationService, deliveryExecutor,
+            hostResolver = { arrayOf(InetAddress.getByName("93.184.216.34")) },
+            settings = WebhookConfiguration(enabled = false))
+        val request = WebhookCreateRequest(url = "https://example.org/callback", secret = VALID_SECRET,
+            eventTypes = setOf(WebhookEventType.DATA_SUBMITTED))
+        val refused = assertThrows(ResponseStatusException::class.java) {
+            disabled.createWebhook(UUID.randomUUID(), "staff", request)
+        }
+        assertEquals(409, refused.statusCode.value())
+        assertTrue(refused.reason!!, refused.reason!!.contains("no outbound network access"))
+        val test = assertThrows(ResponseStatusException::class.java) {
+            disabled.testWebhook(UUID.randomUUID(), UUID.randomUUID())
+        }
+        assertEquals(refused.reason, test.reason)
+        assertEquals(0, disabled.enqueueEvent(mockConnection, UUID.randomUUID(), WebhookEventType.DATA_SUBMITTED,
+            WebhookPayload.DataSubmitted(ParticipantRef.fromParticipantId("p"), ParticipantDataType.UsageEvents, 1)))
+        disabled.dispatchPendingDeliveries()
+        verify(idGenerationService, never()).getNextId()
+        verify(storageResolver, never()).getPlatformStorage()
+        verify(mockConnection, never()).prepareStatement(kAnyString())
+        verify(deliveryExecutor, never()).execute(Mockito.any())
+    }
+
+    @Test
+    fun webhooksStayOnUnlessADeploymentTurnsThemOff() {
+        assertTrue(WebhookConfiguration().enabled)
+        val yaml = com.geekbeast.mappers.mappers.ObjectMappers.getYamlMapper()
+        assertFalse(yaml.readValue("webhooks:\n  enabled: false\n", com.openlattice.chronicle.configuration.ChronicleConfiguration::class.java)
+            .webhooks.enabled)
+        assertTrue(yaml.readValue("storageConfiguration: {}\n", com.openlattice.chronicle.configuration.ChronicleConfiguration::class.java)
+            .webhooks.enabled)
     }
 
     @Test

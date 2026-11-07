@@ -6,6 +6,7 @@ import com.openlattice.chronicle.observability.ChronicleMetrics
 import com.geekbeast.mappers.mappers.ObjectMappers
 import com.geekbeast.postgres.PostgresArrays
 import com.openlattice.chronicle.configuration.SsrfConfig
+import com.openlattice.chronicle.configuration.WebhookConfiguration
 import com.openlattice.chronicle.i18n.Messages
 import com.openlattice.chronicle.ids.HazelcastIdGenerationService
 import com.openlattice.chronicle.services.participantaccess.EnrollmentAccessCodeRepository
@@ -62,6 +63,8 @@ public open class WebhookService(
     private val idGenerationService: HazelcastIdGenerationService,
     private val deliveryExecutor: ExecutorService = newDeliveryExecutor(),
     private val httpClientTemplate: OkHttpClient = newHttpClientTemplate(),
+    // Before hostResolver, which callers pass as a trailing lambda.
+    private val settings: WebhookConfiguration = WebhookConfiguration(),
     private val hostResolver: (String) -> Array<InetAddress> = { hostname ->
         InetAddress.getAllByName(hostname)
     },
@@ -335,6 +338,7 @@ public open class WebhookService(
 
     @Suppress("TooGenericExceptionCaught")
     public fun createWebhook(studyId: UUID, userId: String, request: WebhookCreateRequest): WebhookRegistration {
+        settings.requireEnabled()
         validateCreateRequest(request)
         // Validate webhook URL against SSRF rules on registration
         validateWebhookUrl(request.url)
@@ -468,6 +472,7 @@ public open class WebhookService(
         eventType: WebhookEventType,
         data: WebhookPayload,
     ): Int {
+        if (!settings.enabled) return 0
         val payload = eventPayload(studyId, eventType, data)
         connection.prepareStatement(ENQUEUE_EVENT_SQL).use { statement ->
             statement.setString(1, eventType.name)
@@ -485,6 +490,7 @@ public open class WebhookService(
     }
 
     public fun testWebhook(studyId: UUID, webhookId: UUID) {
+        settings.requireEnabled()
         val eventType = WebhookEventType.STUDY_STATUS_CHANGED
         val payload = eventPayload(studyId, eventType, WebhookPayload.Test())
         val inserted = storageResolver.getPlatformStorage().connection.use { connection ->
@@ -518,7 +524,7 @@ public open class WebhookService(
         )
     }
 
-    private fun tryDispatch(): Boolean = try {
+    private fun tryDispatch(): Boolean = if (!settings.enabled) false else try {
         deliveryExecutor.execute(DeliveryTask())
         true
     } catch (_: RejectedExecutionException) {
@@ -532,6 +538,8 @@ public open class WebhookService(
      */
     @Scheduled(fixedDelay = 2_000L)
     public fun dispatchPendingDeliveries(): Unit = RLSRequestContext.withSystemContext {
+        // Rows queued before webhooks were turned off stay pending and are never sent.
+        if (!settings.enabled) return@withSystemContext
         repeat(SCHEDULED_DISPATCH_TASKS) {
             if (!tryDispatch()) return@withSystemContext
         }
@@ -980,5 +988,15 @@ public open class WebhookService(
             description = rs.getString("description"),
             createdAt = rs.getObject("created_at", OffsetDateTime::class.java)
         )
+    }
+}
+
+/**
+ * Refuses, naming the reason, when this deployment turned webhooks off. A file-level function, not a member:
+ * WebhookService is at detekt's TooManyFunctions threshold.
+ */
+private fun WebhookConfiguration.requireEnabled() {
+    if (!enabled) {
+        throw ResponseStatusException(HttpStatus.CONFLICT, Messages.get("error.webhook.disabled"))
     }
 }
